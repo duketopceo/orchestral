@@ -10,6 +10,8 @@ import sys
 from pathlib import Path
 
 from orchestral.config import ModelConfig, find_task, load_models, load_task
+from orchestral.privacy import scrub_all
+from orchestral.reporter import generate_html_report
 from orchestral.runner import Runner
 from orchestral.storage import RunStore
 
@@ -66,6 +68,12 @@ def cmd_run(args: argparse.Namespace) -> None:
 
 
 def cmd_report(args: argparse.Namespace) -> None:
+    if args.html:
+        path = generate_html_report(args.runs_dir, args.reports_dir)
+        print(f"HTML report generated: {path}")
+        print("Open it in a browser, or run: python -m http.server -d reports 8080")
+        return
+
     store = RunStore(args.runs_dir)
     runs = store.list_runs(
         orchestrator=args.orchestrator,
@@ -105,6 +113,13 @@ def cmd_report(args: argparse.Namespace) -> None:
     print(f"Total runs: {summary['runs']} | Total cost: ${summary['total_cost_usd']:.4f} | Total tokens: {summary['total_tokens']}")
 
 
+def cmd_scrub(args: argparse.Namespace) -> None:
+    copied = scrub_all(Path(args.runs_dir), Path(args.scrub_dir))
+    print(f"Scrubbed {len(copied)} runs to {args.scrub_dir}")
+    for c in copied:
+        print(f"  {c}")
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description="orchestral eval harness")
     p.add_argument("--runs-dir", default="runs", help="Root directory for run data")
@@ -123,6 +138,8 @@ def main() -> None:
     run.set_defaults(func=cmd_run)
 
     report = sub.add_parser("report", help="List and compare stored runs")
+    report.add_argument("--html", action="store_true", help="Generate a static HTML drill-down report in reports_dir")
+    report.add_argument("--reports-dir", default="reports", help="Output directory for HTML reports")
     report.add_argument("--task", help="Filter by task id")
     report.add_argument("--orchestrator", help="Filter by orchestrator")
     report.add_argument("--worker", help="Filter by worker")
@@ -131,6 +148,11 @@ def main() -> None:
     report.add_argument("--limit", type=int, default=None, help="Limit number of rows")
     report.add_argument("--json", action="store_true", help="Output as JSON")
     report.set_defaults(func=cmd_report)
+
+    scrub = sub.add_parser("scrub", help="Redact sensitive data from all runs for sharing")
+    scrub.add_argument("--runs-dir", default="runs", help="Source runs directory")
+    scrub.add_argument("--scrub-dir", default="runs-pub", help="Where to write scrubbed runs")
+    scrub.set_defaults(func=cmd_scrub)
 
     args = p.parse_args()
     if not hasattr(args, "func"):

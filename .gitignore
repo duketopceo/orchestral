@@ -3,6 +3,9 @@ __pycache__/
 .venv/
 .env
 runs/
+runs-pub/
 reports/*.png
 reports/*.html
+reports/*.json
+*.db
 .DS_Store

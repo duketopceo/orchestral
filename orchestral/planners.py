@@ -2,64 +2,204 @@
 
 from __future__ import annotations
 
+import html
 import json
 import random
 from typing import Any
 
 from orchestral.config import ModelConfig, TaskSpec
 from orchestral.logger import EventLogger
+from orchestral.openrouter import OpenRouterClient
 
 
-def _fake_call(
-    logger: EventLogger,
-    *,
-    phase: str,
-    step: int,
-    model: str,
-    role: str,
-    input_data: dict[str, Any],
-    output_data: dict[str, Any],
-    reasoning: str,
-) -> dict[str, Any]:
-    """Simulate an LLM call with deterministic-ish token counts and cost."""
+# ---------------------------------------------------------------------------
+# LLM call helpers
+# ---------------------------------------------------------------------------
+
+
+def _build_messages(role: str, input_data: dict[str, Any], expect_json: bool) -> list[dict[str, str]]:
+    system = "You are a helpful assistant."
+    if role == "orchestrator":
+        system = "You are an orchestrator. Produce a plan and subtasks for a worker to execute."
+    elif role == "worker":
+        system = "You are a worker. Execute the subtask and return the requested content."
+    elif role == "ce-doc-review":
+        system = "You are a document reviewer. Review the plan for scope, feasibility, and risks."
+    elif role == "ce-work":
+        system = "You are a worker/assembler. Verify the merged output against the success criteria."
+
+    if expect_json:
+        system += " Return only a JSON object. Do not wrap it in markdown."
+    else:
+        system += " Return only the requested artifact. Do not include extra commentary."
+
+    return [
+        {"role": "system", "content": system},
+        {"role": "user", "content": json.dumps(input_data, default=str)},
+    ]
+
+
+def _fake_cost(model_cfg: ModelConfig, input_data: dict[str, Any], output_data: dict[str, Any]) -> dict[str, Any]:
     input_chars = len(json.dumps(input_data, default=str))
     output_chars = len(json.dumps(output_data, default=str))
     input_tokens = max(100, input_chars // 4 + random.randint(0, 20))
     output_tokens = max(50, output_chars // 4 + random.randint(0, 20))
-    price_in, price_out = _prices_from_slug(model)
-    cost_usd = (input_tokens * price_in) + (output_tokens * price_out)
-
-    logger.log_llm_call(
-        phase=phase,
-        step=step,
-        model=model,
-        role=role,
-        messages=[{"role": "user", "content": json.dumps(input_data)}],
-        completion=output_data,
-        reasoning=reasoning,
-        input_tokens=input_tokens,
-        output_tokens=output_tokens,
-        cost_usd=cost_usd,
-        latency_ms=random.uniform(80, 1200),
-    )
-
+    cost_usd = (input_tokens * model_cfg.input_price) + (output_tokens * model_cfg.output_price)
     return {
-        "phase": phase,
-        "model": model,
+        "phase": "",
+        "model": model_cfg.slug,
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
         "cost_usd": cost_usd,
     }
 
 
-def _prices_from_slug(slug: str) -> tuple[float, float]:
-    if "deepseek" in slug.lower():
-        return 0.03 / 1_000_000, 0.10 / 1_000_000
-    if "glm" in slug.lower():
-        return 0.075 / 1_000_000, 0.25 / 1_000_000
-    if "fable" in slug.lower():
-        return 10.0 / 1_000_000, 50.0 / 1_000_000
-    return 1.0 / 1_000_000, 3.0 / 1_000_000
+def _llm_call(
+    *,
+    logger: EventLogger,
+    phase: str,
+    step: int,
+    model_cfg: ModelConfig,
+    role: str,
+    input_data: dict[str, Any],
+    reasoning: str,
+    client: OpenRouterClient | None,
+    dry_run: bool,
+    expect_json: bool = True,
+    max_tokens: int = 4096,
+    temperature: float = 0.4,
+) -> tuple[str, dict[str, Any]]:
+    if dry_run:
+        # deterministic fake output so the harness still exercises the path
+        fake_output = _fake_output(input_data, phase)
+        content = json.dumps(fake_output)
+        cost = _fake_cost(model_cfg, input_data, fake_output)
+        cost["phase"] = phase
+        logger.log_llm_call(
+            phase=phase,
+            step=step,
+            model=model_cfg.slug,
+            role=role,
+            messages=[{"role": "user", "content": json.dumps(input_data, default=str)}],
+            completion=fake_output,
+            reasoning=reasoning,
+            input_tokens=cost["input_tokens"],
+            output_tokens=cost["output_tokens"],
+            cost_usd=cost["cost_usd"],
+            latency_ms=random.uniform(80, 1200),
+        )
+        return content, cost
+
+    if client is None:
+        raise ValueError("OpenRouterClient is required for live runs")
+
+    messages = _build_messages(role, input_data, expect_json)
+    response_format = {"type": "json_object"} if expect_json else None
+    completion = client.chat(model=model_cfg.slug, messages=messages, max_tokens=max_tokens, temperature=temperature)
+
+    usage = completion["usage"]
+    cost_usd = (usage["prompt_tokens"] * model_cfg.input_price) + (usage["completion_tokens"] * model_cfg.output_price)
+    content = completion["content"]
+
+    logger.log_llm_call(
+        phase=phase,
+        step=step,
+        model=model_cfg.slug,
+        role=role,
+        messages=messages,
+        completion={
+            "content": content,
+            "usage": usage,
+            "id": completion.get("id"),
+        },
+        reasoning=reasoning,
+        input_tokens=usage["prompt_tokens"],
+        output_tokens=usage["completion_tokens"],
+        cost_usd=cost_usd,
+        latency_ms=completion["latency_ms"],
+    )
+
+    return content, {
+        "phase": phase,
+        "model": model_cfg.slug,
+        "input_tokens": usage["prompt_tokens"],
+        "output_tokens": usage["completion_tokens"],
+        "cost_usd": cost_usd,
+    }
+
+
+def _extract_json(content: str) -> Any:
+    """Parse JSON from a model response, tolerating code fences and extra text."""
+    text = content.strip()
+    if text.startswith("```"):
+        text = text.split("```")[1]
+        if text.startswith("json"):
+            text = text[4:]
+        text = text.strip()
+    # try to find the first JSON object or array
+    start = None
+    for i, ch in enumerate(text):
+        if ch in "{[":
+            start = i
+            break
+    if start is None:
+        raise ValueError(f"No JSON found in model response: {content[:200]}")
+    # naive brace matching
+    depth = 0
+    in_string = False
+    escape = False
+    for i, ch in enumerate(text[start:], start):
+        if escape:
+            escape = False
+            continue
+        if ch == "\\" and in_string:
+            escape = True
+            continue
+        if ch == '"' and in_string:
+            in_string = False
+            continue
+        if ch == '"' and not in_string:
+            in_string = True
+            continue
+        if in_string:
+            continue
+        if ch in "{[":
+            depth += 1
+        elif ch in "}]":
+            depth -= 1
+            if depth == 0:
+                return json.loads(text[start : i + 1])
+    raise ValueError(f"Could not extract JSON from model response: {content[:200]}")
+
+
+def _fake_output(input_data: dict[str, Any], phase: str) -> Any:
+    """Return plausible dry-run outputs per phase."""
+    if phase == "plan":
+        return {
+            "subtasks": [
+                {"id": 0, "description": "Write the HTML head and page structure"},
+                {"id": 1, "description": "Write the hero section"},
+                {"id": 2, "description": "Write the signup form"},
+            ],
+            "reasoning": "Decomposed the landing page into structure, hero, and form subtasks so a cheap worker can write each independently.",
+        }
+    if phase == "delegate":
+        return {
+            "content": "<!-- worker output -->",
+            "notes": "Dry-run worker output.",
+        }
+    if phase == "assemble":
+        return {"content": _build_html(input_data.get("prompt", ""), ["<!-- piece 1 -->", "<!-- piece 2 -->"])}
+    if phase == "confidence_check":
+        return {"score": 0.87, "gating_decision": "proceed"}
+    if phase == "doc_review":
+        return {"fixes_applied": 0, "proposed_fixes_count": 0, "decisions_count": 0, "fyi_count": 0}
+    return {"content": "dry-run"}
+
+
+# ---------------------------------------------------------------------------
+# Raw planner (no CE scaffolding)
+# ---------------------------------------------------------------------------
 
 
 def plan_raw(
@@ -68,32 +208,26 @@ def plan_raw(
     task: TaskSpec,
     orchestrator: ModelConfig,
     step: int,
+    client: OpenRouterClient | None,
     dry_run: bool,
-) -> tuple[dict[str, Any], dict[str, Any]]:
-    if not dry_run:
-        raise NotImplementedError("Real OpenRouter calls are not wired yet.")
-
-    plan = {
-        "task_id": task.id,
-        "orchestrator": orchestrator.slug,
-        "subtasks": [
-            {"id": 0, "description": "Write the HTML head and page structure"},
-            {"id": 1, "description": "Write the hero section"},
-            {"id": 2, "description": "Write the signup form"},
-        ],
-        "reasoning": "Decomposed the landing page into structure, hero, and form subtasks so a cheap worker can write each independently.",
-    }
-    cost = _fake_call(
-        logger,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    content, cost = _llm_call(
+        logger=logger,
         phase="plan",
         step=step,
-        model=orchestrator.slug,
+        model_cfg=orchestrator,
         role="orchestrator",
-        input_data={"prompt": task.prompt},
-        output_data=plan,
-        reasoning=plan["reasoning"],
+        input_data={"prompt": task.prompt, "task_type": task.type},
+        reasoning="Decompose the task into subtasks for the worker.",
+        client=client,
+        dry_run=dry_run,
+        expect_json=True,
     )
-    return plan, cost
+    plan = _extract_json(content)
+    plan["task_id"] = task.id
+    plan["orchestrator"] = orchestrator.slug
+    plan["planner"] = "raw"
+    return plan, [cost]
 
 
 def assemble_raw(
@@ -103,24 +237,59 @@ def assemble_raw(
     orchestrator: ModelConfig,
     step: int,
     results: list[dict[str, Any]],
+    client: OpenRouterClient | None,
     dry_run: bool,
-) -> tuple[str, dict[str, Any]]:
-    if not dry_run:
-        raise NotImplementedError("Real OpenRouter calls are not wired yet.")
-
-    pieces = [r["content"] for r in results]
-    artifact = _build_html(task.prompt, pieces)
-    cost = _fake_call(
-        logger,
+) -> tuple[str, list[dict[str, Any]]]:
+    content, cost = _llm_call(
+        logger=logger,
         phase="assemble",
         step=step,
-        model=orchestrator.slug,
+        model_cfg=orchestrator,
         role="orchestrator",
-        input_data={"worker_outputs": results},
-        output_data={"artifact_length": len(artifact)},
-        reasoning="Merged worker outputs into a single HTML artifact.",
+        input_data={"worker_outputs": results, "task_type": task.type},
+        reasoning="Merge worker outputs into a single artifact.",
+        client=client,
+        dry_run=dry_run,
+        expect_json=False,
     )
-    return artifact, cost
+    artifact = _extract_html(content) if content.strip().startswith("<") else _build_html(task.prompt, [r.get("content", "") for r in results])
+    return artifact, [cost]
+
+
+def delegate(
+    *,
+    logger: EventLogger,
+    step: int,
+    subtask: dict[str, Any],
+    worker: ModelConfig,
+    client: OpenRouterClient | None,
+    dry_run: bool,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    content, cost = _llm_call(
+        logger=logger,
+        phase="delegate",
+        step=step,
+        model_cfg=worker,
+        role="worker",
+        input_data={"subtask": subtask},
+        reasoning=f"Execute subtask {subtask.get('id')} with {worker.slug}.",
+        client=client,
+        dry_run=dry_run,
+        expect_json=True,
+    )
+    try:
+        output = _extract_json(content)
+        if not isinstance(output, dict):
+            output = {"content": str(output)}
+    except Exception:
+        output = {"content": content}
+    output.setdefault("subtask_id", subtask.get("id"))
+    return output, [cost]
+
+
+# ---------------------------------------------------------------------------
+# ce-plan enhanced planner
+# ---------------------------------------------------------------------------
 
 
 def plan_ce(
@@ -129,115 +298,61 @@ def plan_ce(
     task: TaskSpec,
     orchestrator: ModelConfig,
     step: int,
+    client: OpenRouterClient | None,
     dry_run: bool,
-) -> tuple[dict[str, Any], dict[str, Any]]:
-    """ce-plan style planning: sections, confidence, assumptions, risks."""
-    if not dry_run:
-        raise NotImplementedError("Real OpenRouter calls are not wired yet.")
-
-    # 1. Structured planning call
-    plan = {
-        "task_id": task.id,
-        "orchestrator": orchestrator.slug,
-        "planner": "ce-plan",
-        "sections": {
-            "goal": f"Produce a responsive landing page for: {task.prompt[:80]}",
-            "approach": "Decompose into HTML structure, hero, and signup form; delegate each to a cheap worker; assemble and validate.",
-            "subtasks": [
-                {
-                    "id": 0,
-                    "description": "Write the HTML head and page structure",
-                    "confidence": 0.95,
-                    "risk": "low",
-                    "dependencies": [],
-                },
-                {
-                    "id": 1,
-                    "description": "Write the hero section",
-                    "confidence": 0.85,
-                    "risk": "medium",
-                    "dependencies": [0],
-                },
-                {
-                    "id": 2,
-                    "description": "Write the signup form",
-                    "confidence": 0.80,
-                    "risk": "medium",
-                    "dependencies": [0],
-                },
-            ],
-            "assumptions": [
-                "Worker can produce valid HTML snippets from a subtask prompt.",
-                "Assembling snippets in order yields a parseable page.",
-            ],
-            "risks": [
-                "Worker may omit required form validation.",
-                "Assembled page may lack visual polish unless worker CSS is consistent.",
-            ],
-            "success_criteria": ["HTML parses", "non-empty", "has title", "has CTA", "has form"],
-        },
-        "reasoning": "Confidence-weighted plan with explicit dependencies and risks, similar to ce-plan output.",
-    }
-    cost = _fake_call(
-        logger,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    content, plan_cost = _llm_call(
+        logger=logger,
         phase="plan",
         step=step,
-        model=orchestrator.slug,
+        model_cfg=orchestrator,
         role="orchestrator",
-        input_data={"prompt": task.prompt, "planner": "ce-plan"},
-        output_data=plan,
-        reasoning=plan["reasoning"],
+        input_data={"prompt": task.prompt, "task_type": task.type, "mode": "ce-plan"},
+        reasoning="Produce a ce-plan style plan with sections, confidence, assumptions, and risks.",
+        client=client,
+        dry_run=dry_run,
+        expect_json=True,
     )
+    plan = _extract_json(content)
+    plan["task_id"] = task.id
+    plan["orchestrator"] = orchestrator.slug
+    plan["planner"] = "ce-plan"
 
-    # 2. Confidence check
-    confidence_data = {
-        "score": 0.87,
-        "assessment": "High confidence in structure and hero; medium risk on form validation.",
-        "gating_decision": "proceed",
-    }
-    _fake_call(
-        logger,
-        phase="plan",
+    conf_content, conf_cost = _llm_call(
+        logger=logger,
+        phase="confidence_check",
         step=step + 1,
-        model=orchestrator.slug,
+        model_cfg=orchestrator,
         role="orchestrator",
-        input_data={"plan": plan},
-        output_data=confidence_data,
-        reasoning="Self-review the plan against success criteria before delegating.",
+        input_data={"plan": plan, "prompt": "Review the plan and assign a confidence score and gating decision."},
+        reasoning="Confidence check: verify the plan is strong enough before delegating.",
+        client=client,
+        dry_run=dry_run,
+        expect_json=True,
     )
-    plan["confidence_check"] = confidence_data
+    try:
+        plan["confidence_check"] = _extract_json(conf_content)
+    except Exception:
+        plan["confidence_check"] = {"raw": conf_content}
 
-    # 3. Headless doc-review (synthetic)
-    doc_review = {
-        "fixes_applied": 0,
-        "proposed_fixes_count": 0,
-        "decisions_count": 0,
-        "fyi_count": 1,
-        "findings": [
-            {
-                "type": "fyi",
-                "message": "Consider adding a meta viewport tag during assembly.",
-            }
-        ],
-    }
-    _fake_call(
-        logger,
-        phase="plan",
+    review_content, review_cost = _llm_call(
+        logger=logger,
+        phase="doc_review",
         step=step + 2,
-        model=orchestrator.slug,
+        model_cfg=orchestrator,
         role="ce-doc-review",
-        input_data={"plan": plan},
-        output_data=doc_review,
-        reasoning="Headless doc-review pass: catch scope/grounding issues before work begins.",
+        input_data={"plan": plan, "prompt": "Review the plan for scope, feasibility, and risks. Return JSON findings."},
+        reasoning="Headless doc-review pass to catch scope/grounding issues before work begins.",
+        client=client,
+        dry_run=dry_run,
+        expect_json=True,
     )
-    plan["doc_review"] = doc_review
+    try:
+        plan["doc_review"] = _extract_json(review_content)
+    except Exception:
+        plan["doc_review"] = {"raw": review_content}
 
-    total_cost = cost["cost_usd"]
-    for c in [plan.get("confidence_check", {}), plan.get("doc_review", {})]:
-        # token costs already logged in fake calls above; for the returned cost we keep the first one
-        pass
-
-    return plan, cost
+    return plan, [plan_cost, conf_cost, review_cost]
 
 
 def assemble_ce(
@@ -247,55 +362,69 @@ def assemble_ce(
     orchestrator: ModelConfig,
     step: int,
     results: list[dict[str, Any]],
+    client: OpenRouterClient | None,
     dry_run: bool,
-) -> tuple[str, dict[str, Any]]:
-    """ce-plan style assembly with a post-merge review pass."""
-    if not dry_run:
-        raise NotImplementedError("Real OpenRouter calls are not wired yet.")
-
-    pieces = [r["content"] for r in results]
-    artifact = _build_html(task.prompt, pieces)
-
-    # Assembly with explicit review of each worker output
-    cost = _fake_call(
-        logger,
+) -> tuple[str, list[dict[str, Any]]]:
+    content, cost = _llm_call(
+        logger=logger,
         phase="assemble",
         step=step,
-        model=orchestrator.slug,
+        model_cfg=orchestrator,
         role="orchestrator",
-        input_data={"worker_outputs": results, "success_criteria": ["parses", "non_empty", "has_title", "has_cta", "has_form"]},
-        output_data={"artifact_length": len(artifact), "passed": True},
-        reasoning="Merge worker outputs and check each success criterion before returning the artifact.",
-    )
-
-    # Final check pass
-    final_check = {
-        "checks": {
-            "doctype_present": True,
-            "meta_viewport": True,
-            "title_present": True,
-            "cta_present": True,
-            "form_present": True,
+        input_data={
+            "worker_outputs": results,
+            "task_type": task.type,
+            "success_criteria": ["parses", "non_empty", "has_title", "has_cta", "has_form"],
         },
-        "passed": True,
-    }
-    _fake_call(
-        logger,
+        reasoning="Merge worker outputs and verify success criteria before returning the artifact.",
+        client=client,
+        dry_run=dry_run,
+        expect_json=False,
+    )
+    artifact = _extract_html(content) if content.strip().startswith("<") else _build_html(task.prompt, [r.get("content", "") for r in results])
+
+    final_content, final_cost = _llm_call(
+        logger=logger,
         phase="assemble",
         step=step + 1,
-        model=orchestrator.slug,
+        model_cfg=orchestrator,
         role="ce-work",
-        input_data={"artifact": artifact},
-        output_data=final_check,
+        input_data={"artifact": artifact, "success_criteria": ["parses", "non_empty", "has_title", "has_cta", "has_form"]},
         reasoning="Final verification pass before marking assembly complete.",
+        client=client,
+        dry_run=dry_run,
+        expect_json=True,
     )
+    try:
+        _extract_json(final_content)
+    except Exception:
+        pass
 
-    return artifact, cost
+    return artifact, [cost, final_cost]
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _extract_html(content: str) -> str:
+    """Extract the HTML document from a model response."""
+    text = content.strip()
+    if "```html" in text:
+        text = text.split("```html")[1].split("```")[0].strip()
+    elif "```" in text:
+        text = text.split("```")[1].split("```")[0].strip()
+    if "<!doctype" in text.lower():
+        start = text.lower().find("<!doctype")
+        return text[start:]
+    if "<html" in text.lower():
+        start = text.lower().find("<html")
+        return text[start:]
+    return text
 
 
 def _build_html(prompt: str, pieces: list[str]) -> str:
-    import html
-
     body = "\n".join(f"<section>{p}</section>" for p in pieces)
     return (
         "<!doctype html>\n"

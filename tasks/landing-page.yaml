@@ -1,0 +1,19 @@
+id: landing-page-coffee
+type: html
+prompt: |
+  Build a responsive landing page for a premium coffee subscription service.
+  The page needs:
+    - A clear hero with headline and CTA
+    - A 3-tier pricing section
+    - An email signup form
+    - A footer
+validation:
+  - html_parses
+  - non_empty
+  - has_title
+  - has_cta
+  - has_form
+assets: []
+metadata:
+  difficulty: easy
+  estimated_subtasks: 3

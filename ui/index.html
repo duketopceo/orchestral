@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>orchestral runs</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 2rem; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { border: 1px solid #ccc; padding: 0.5rem; text-align: left; }
+    th { cursor: pointer; background: #f5f5f5; }
+    tr:hover { background: #fafafa; }
+    .run-dir { font-family: monospace; font-size: 0.85rem; }
+  </style>
+</head>
+<body>
+  <h1>orchestral runs</h1>
+  <p>Open the console for now; this page will be wired to <code>runs/index.db</code> once the report generator exports JSON.</p>
+  <table id="runs">
+    <thead>
+      <tr>
+        <th data-key="run_id">run_id</th>
+        <th data-key="started_at">started</th>
+        <th data-key="orchestrator">orchestrator</th>
+        <th data-key="task_id">task</th>
+        <th data-key="worker">worker</th>
+        <th data-key="total_cost_usd">cost</th>
+        <th data-key="score">score</th>
+        <th data-key="passes">pass</th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+
+  <script>
+    // The report command can export runs.json; load it here and sort by columns.
+    let runs = [];
+    let sortKey = 'started_at';
+    let sortDesc = true;
+
+    async function load() {
+      try {
+        const res = await fetch('runs.json');
+        runs = await res.json();
+      } catch (e) {
+        console.warn('No runs.json found. Generate one with: python harness.py report --json > ui/runs.json');
+        return;
+      }
+      render();
+    }
+
+    function render() {
+      const dir = sortDesc ? -1 : 1;
+      runs.sort((a, b) => {
+        const va = a[sortKey] ?? 0, vb = b[sortKey] ?? 0;
+        return va < vb ? -1 * dir : va > vb ? 1 * dir : 0;
+      });
+      const tbody = document.querySelector('#runs tbody');
+      tbody.innerHTML = runs.map(r => `
+        <tr>
+          <td><a href="../${r.run_dir}/run.json">${r.run_id}</a></td>
+          <td>${r.started_at}</td>
+          <td>${r.orchestrator}</td>
+          <td>${r.task_id}</td>
+          <td>${r.worker}</td>
+          <td>$${r.total_cost_usd.toFixed(4)}</td>
+          <td>${r.score ?? '-'}</td>
+          <td>${r.passes ?? '-'}</td>
+        </tr>
+      `).join('');
+    }
+
+    document.querySelectorAll('th').forEach(th => {
+      th.addEventListener('click', () => {
+        const key = th.dataset.key;
+        if (sortKey === key) sortDesc = !sortDesc;
+        else { sortKey = key; sortDesc = true; }
+        render();
+      });
+    });
+
+    load();
+  </script>
+</body>
+</html>

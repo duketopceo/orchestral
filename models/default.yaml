@@ -1,0 +1,48 @@
+models:
+  - slug: "~deepseek/deepseek-v4-flash-latest"
+    name: "DeepSeek V4 Flash Latest"
+    role: worker
+    input_price_per_mtok: 0.03
+    output_price_per_mtok: 0.10
+    context: 1048576
+    max_tokens: 131072
+
+  - slug: "deepseek/deepseek-v4-flash-0731"
+    name: "DeepSeek V4 Flash 0731"
+    role: worker
+    input_price_per_mtok: 0.03
+    output_price_per_mtok: 0.10
+    context: 1048576
+    max_tokens: 131072
+
+  - slug: "z-ai/glm-5.3-flash"
+    name: "GLM 5.3 Flash"
+    role: worker
+    input_price_per_mtok: 0.075
+    output_price_per_mtok: 0.25
+    context: 1048576
+    max_tokens: 8192
+
+  - slug: "claude-fable-5-1"
+    name: "Claude Fable 5.1"
+    role: reference
+    input_price_per_mtok: 10.0
+    output_price_per_mtok: 50.0
+    context: 1048576
+    max_tokens: 131072
+
+  - slug: "x-ai/grok-4.6"
+    name: "Grok 4.6"
+    role: orchestrator
+    input_price_per_mtok: 2.0
+    output_price_per_mtok: 6.0
+    context: 500000
+    max_tokens: 131072
+
+  - slug: "google/gemini-3.8-flash"
+    name: "Gemini 3.8 Flash"
+    role: orchestrator
+    input_price_per_mtok: 0.75
+    output_price_per_mtok: 3.75
+    context: 1048576
+    max_tokens: 65536

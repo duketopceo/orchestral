@@ -41,10 +41,37 @@ API integrations.
 ```
 tasks/           task specs (YAML)
 models/          orchestrator and worker model configs
-runs/            output artifacts, one directory per orchestrator×worker pairing
+runs/            output artifacts (ignored by git)
 reports/         comparison tables (markdown)
+ui/              static web UI for browsing runs
+orchestral/      library modules (storage, logger, config, runner)
 harness.py       main CLI
 ```
+
+## Storage
+
+Eval artifacts are **kept local**, not committed to Git. GitHub only holds the
+code, task specs, and model configs.
+
+Each run is a folder:
+
+```
+runs/{orchestrator}/{task}/{worker}/{run_id}/
+  run.json       # metadata, cost, score, status
+  events.jsonl   # every agent action, reasoning, tool call, latency
+  plan.json      # orchestrator decomposition
+  worker-*.json  # individual worker outputs
+  artifact.*     # assembled final output (html, json, zip, ...)
+  cost.json      # per-call cost breakdown
+  report.json    # validation and judge results
+```
+
+`runs/index.db` is an SQLite database that indexes every run. The CLI uses it for
+fast sorting and filtering, and the web UI can load it later without walking the
+whole tree.
+
+If you outgrow local storage, swap `orchestral/storage.py` to use R2/S3 or a
+separate `orchestral-runs` repo. The default keeps it cheap and private.
 
 ## Usage
 

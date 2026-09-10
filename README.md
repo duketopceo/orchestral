@@ -105,6 +105,8 @@ Copy `.github/workflows/orchestral.yml` into the target repo and set the
 For a true "reviewer" experience like TestDriver, build a GitHub App that uses
 the same code path; the Action is the simplest per-repo setup today.
 
+This repo also runs `orchestral` on its own PRs as a dogfood test.
+
 ## License
 
 MIT

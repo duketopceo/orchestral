@@ -228,3 +228,112 @@ def generate_html_report(runs_dir: str | Path = "runs", reports_dir: str | Path 
 
     (reports / "index.html").write_text(_index_html(runs), encoding="utf-8")
     return reports / "index.html"
+
+
+def _bar_html(label: str, value: float, max_value: float) -> str:
+    pct = (value / max_value * 100) if max_value else 0
+    return (
+        f"<tr><td>{_esc(label)}</td>"
+        f"<td style='width:200px'><div style='width:{pct:.1f}%;background:#2563eb;height:1rem;border-radius:0.25rem;'></div></td>"
+        f"<td>${value:.6f}</td></tr>"
+    )
+
+
+def _dashboard_html(runs: list[Any], summary: dict[str, Any]) -> str:
+    total = summary["runs"]
+    total_cost = summary["total_cost_usd"]
+    total_tokens = summary["total_tokens"]
+    passes = [r for r in runs if r.passes is True]
+    pass_rate = (len(passes) / total * 100) if total else 0
+
+    # aggregates
+    by_planner: dict[str, dict[str, float]] = {}
+    by_orchestrator: dict[str, dict[str, float]] = {}
+    by_worker: dict[str, dict[str, float]] = {}
+    for r in runs:
+        planner = r.config.get("planner", "raw") if r.config else "raw"
+        _bucket(by_planner, planner, r)
+        _bucket(by_orchestrator, r.orchestrator, r)
+        _bucket(by_worker, r.worker, r)
+
+    recent_rows = ""
+    for r in runs[:20]:
+        planner = r.config.get("planner", "raw") if r.config else "raw"
+        pass_label = str(r.passes) if r.passes is not None else "-"
+        tokens = r.total_input_tokens + r.total_output_tokens
+        recent_rows += (
+            f"<tr><td><a href='{r.run_id}.html'>{r.run_id}</a></td>"
+            f"<td>{_esc(planner)}</td><td>{_esc(r.orchestrator)}</td>"
+            f"<td>{_esc(r.worker)}</td><td>${r.total_cost_usd:.6f}</td>"
+            f"<td>{tokens}</td><td>{pass_label}</td></tr>"
+        )
+
+    def rows(table: dict[str, dict[str, float]]) -> str:
+        max_cost = max((v["cost"] for v in table.values()), default=0.0)
+        return "".join(_bar_html(k, v["cost"], max_cost) for k, v in sorted(table.items(), key=lambda x: -x[1]["cost"]))
+
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>orchestral dashboard</title>
+  {STYLE}
+</head>
+<body>
+  <h1>orchestral dashboard</h1>
+  <a href="index.html">&larr; per-run drill-down</a>
+
+  <div class="summary">
+    <div class="card"><div class="metric">{total}</div><small>runs</small></div>
+    <div class="card"><div class="metric">${total_cost:.4f}</div><small>total cost</small></div>
+    <div class="card"><div class="metric">{total_tokens}</div><small>total tokens</small></div>
+    <div class="card"><div class="metric">{pass_rate:.1f}%</div><small>pass rate</small></div>
+  </div>
+
+  <div class="section">
+    <h2>Cost by planner</h2>
+    <table>{rows(by_planner)}</table>
+  </div>
+
+  <div class="section">
+    <h2>Cost by orchestrator</h2>
+    <table>{rows(by_orchestrator)}</table>
+  </div>
+
+  <div class="section">
+    <h2>Cost by worker</h2>
+    <table>{rows(by_worker)}</table>
+  </div>
+
+  <div class="section">
+    <h2>Recent runs</h2>
+    <table>
+      <tr><th>run_id</th><th>planner</th><th>orchestrator</th><th>worker</th><th>cost</th><th>tokens</th><th>pass</th></tr>
+      {recent_rows}
+    </table>
+  </div>
+</body>
+</html>
+"""
+
+
+def _bucket(table: dict[str, dict[str, float]], key: str, run: Any) -> None:
+    if key not in table:
+        table[key] = {"cost": 0.0, "tokens": 0, "runs": 0}
+    table[key]["cost"] += run.total_cost_usd
+    table[key]["tokens"] += run.total_input_tokens + run.total_output_tokens
+    table[key]["runs"] += 1
+
+
+def generate_dashboard(runs_dir: str | Path = "runs", reports_dir: str | Path = "reports") -> Path:
+    """Generate a stats dashboard from all stored runs."""
+    reports = Path(reports_dir)
+    reports.mkdir(parents=True, exist_ok=True)
+
+    store = RunStore(runs_dir)
+    runs = store.list_runs(limit=None)
+    summary = store.summary()
+
+    (reports / "dashboard.html").write_text(_dashboard_html(runs, summary), encoding="utf-8")
+    return reports / "dashboard.html"

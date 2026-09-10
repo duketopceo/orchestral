@@ -11,7 +11,7 @@ from pathlib import Path
 
 from orchestral.config import ModelConfig, find_task, load_models, load_task
 from orchestral.privacy import scrub_all
-from orchestral.reporter import generate_html_report
+from orchestral.reporter import generate_dashboard, generate_html_report
 from orchestral.runner import Runner
 from orchestral.storage import RunStore
 
@@ -122,6 +122,12 @@ def cmd_scrub(args: argparse.Namespace) -> None:
         print(f"  {c}")
 
 
+def cmd_dashboard(args: argparse.Namespace) -> None:
+    path = generate_dashboard(args.runs_dir, args.reports_dir)
+    print(f"Dashboard generated: {path}")
+    print("Open it in a browser, or run: python -m http.server -d reports 8080")
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description="orchestral eval harness")
     p.add_argument("--runs-dir", default="runs", help="Root directory for run data")
@@ -156,6 +162,11 @@ def main() -> None:
     scrub.add_argument("--runs-dir", default="runs", help="Source runs directory")
     scrub.add_argument("--scrub-dir", default="runs-pub", help="Where to write scrubbed runs")
     scrub.set_defaults(func=cmd_scrub)
+
+    dashboard = sub.add_parser("dashboard", help="Generate a unified stats dashboard")
+    dashboard.add_argument("--runs-dir", default="runs", help="Root directory for run data")
+    dashboard.add_argument("--reports-dir", default="reports", help="Output directory for HTML reports")
+    dashboard.set_defaults(func=cmd_dashboard)
 
     args = p.parse_args()
     if not hasattr(args, "func"):

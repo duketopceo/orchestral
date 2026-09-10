@@ -8,6 +8,7 @@ import random
 from typing import Any
 
 from orchestral.config import ModelConfig, TaskSpec
+from orchestral.costs import compute_cost, token_usage_from_raw
 from orchestral.logger import EventLogger
 from orchestral.openrouter import OpenRouterClient
 
@@ -97,8 +98,8 @@ def _llm_call(
     response_format = {"type": "json_object"} if expect_json else None
     completion = client.chat(model=model_cfg.slug, messages=messages, max_tokens=max_tokens, temperature=temperature)
 
-    usage = completion["usage"]
-    cost_usd = (usage["prompt_tokens"] * model_cfg.input_price) + (usage["completion_tokens"] * model_cfg.output_price)
+    usage = token_usage_from_raw(completion["usage"])
+    cost_usd, _ = compute_cost(usage, model_cfg)
     content = completion["content"]
 
     logger.log_llm_call(
@@ -109,12 +110,12 @@ def _llm_call(
         messages=messages,
         completion={
             "content": content,
-            "usage": usage,
+            "usage": usage.to_dict(),
             "id": completion.get("id"),
         },
         reasoning=reasoning,
-        input_tokens=usage["prompt_tokens"],
-        output_tokens=usage["completion_tokens"],
+        input_tokens=usage.prompt_tokens,
+        output_tokens=usage.completion_tokens,
         cost_usd=cost_usd,
         latency_ms=completion["latency_ms"],
     )
@@ -122,9 +123,10 @@ def _llm_call(
     return content, {
         "phase": phase,
         "model": model_cfg.slug,
-        "input_tokens": usage["prompt_tokens"],
-        "output_tokens": usage["completion_tokens"],
+        "input_tokens": usage.prompt_tokens,
+        "output_tokens": usage.completion_tokens,
         "cost_usd": cost_usd,
+        "usage": usage.to_dict(),
     }
 
 

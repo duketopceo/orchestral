@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from orchestral.config import ModelConfig, TaskSpec
+from orchestral.costs import CostLedger
 from orchestral.logger import EventLogger
 from orchestral.openrouter import OpenRouterClient
 from orchestral.planners import assemble_ce, assemble_raw, delegate, plan_ce, plan_raw
@@ -57,7 +58,7 @@ class Runner:
             reasoning="Initialised run directory, SQLite index, and event log.",
         )
 
-        cost_breakdown: list[dict[str, Any]] = []
+        ledger = CostLedger()
         meta: RunMeta | None = None
 
         try:
@@ -81,7 +82,7 @@ class Runner:
                     dry_run=self.dry_run,
                 )
             (run_dir / "plan.json").write_text(json.dumps(plan, indent=2, default=str))
-            cost_breakdown.extend(plan_costs)
+            ledger.add_many(plan_costs)
 
             # 2. Delegate each subtask to the worker
             results: list[dict[str, Any]] = []
@@ -102,7 +103,7 @@ class Runner:
                 )
                 results.append(out)
                 (run_dir / f"worker-{i}.json").write_text(json.dumps(out, indent=2, default=str))
-                cost_breakdown.extend(worker_costs)
+                ledger.add_many(worker_costs)
 
             # 3. Assemble final artifact
             assembly_step = 3 + len(subtasks)
@@ -128,17 +129,17 @@ class Runner:
                 )
             ext = _artifact_ext(task.type)
             (run_dir / f"artifact{ext}").write_text(artifact)
-            cost_breakdown.extend(assembly_costs)
+            ledger.add_many(assembly_costs)
 
             # 4. Validate
             passes, report = self._validate(task, artifact)
             (run_dir / "report.json").write_text(json.dumps(report, indent=2, default=str))
 
             # 5. Final accounting
-            total_cost = sum(c["cost_usd"] for c in cost_breakdown)
-            total_input = sum(c["input_tokens"] for c in cost_breakdown)
-            total_output = sum(c["output_tokens"] for c in cost_breakdown)
-            (run_dir / "cost.json").write_text(json.dumps(cost_breakdown, indent=2, default=str))
+            total_cost = ledger.total_cost_usd()
+            total_input = ledger.total_input_tokens()
+            total_output = ledger.total_output_tokens()
+            (run_dir / "cost.json").write_text(json.dumps(ledger.to_breakdown(), indent=2, default=str))
 
             meta = self.store.get_run(run_id)
             assert meta is not None

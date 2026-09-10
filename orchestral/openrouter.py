@@ -86,6 +86,8 @@ class OpenRouterClient:
                     "prompt_tokens": usage.get("prompt_tokens", 0),
                     "completion_tokens": usage.get("completion_tokens", 0),
                     "total_tokens": usage.get("total_tokens", 0),
+                    "cached_tokens": usage.get("cached_tokens", 0),
+                    "reasoning_tokens": usage.get("reasoning_tokens", 0),
                 },
                 "latency_ms": (time.time() - start) * 1000,
                 "raw_response": data,

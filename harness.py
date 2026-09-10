@@ -14,6 +14,7 @@ from orchestral.privacy import scrub_all
 from orchestral.reporter import generate_dashboard, generate_html_report
 from orchestral.runner import Runner
 from orchestral.storage import RunStore
+from orchestral.tui import run_tui
 
 
 def _model_from_arg(slug: str, models_dir: str = "models") -> ModelConfig:
@@ -128,6 +129,10 @@ def cmd_dashboard(args: argparse.Namespace) -> None:
     print("Open it in a browser, or run: python -m http.server -d reports 8080")
 
 
+def cmd_tui(args: argparse.Namespace) -> None:
+    run_tui(runs_dir=args.runs_dir, refresh=args.refresh)
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description="orchestral eval harness")
     p.add_argument("--runs-dir", default="runs", help="Root directory for run data")
@@ -167,6 +172,11 @@ def main() -> None:
     dashboard.add_argument("--runs-dir", default="runs", help="Root directory for run data")
     dashboard.add_argument("--reports-dir", default="reports", help="Output directory for HTML reports")
     dashboard.set_defaults(func=cmd_dashboard)
+
+    tui = sub.add_parser("tui", help="Render a terminal dashboard")
+    tui.add_argument("--runs-dir", default="runs", help="Root directory for run data")
+    tui.add_argument("--refresh", action="store_true", help="Auto-refresh every 5s")
+    tui.set_defaults(func=cmd_tui)
 
     args = p.parse_args()
     if not hasattr(args, "func"):

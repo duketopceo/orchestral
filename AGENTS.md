@@ -16,6 +16,7 @@ python3 harness.py run --task landing-page-coffee --orchestrator deepseek/deepse
 python3 harness.py report
 python3 harness.py report --html
 python3 harness.py dashboard
+python3 harness.py tui
 python3 harness.py scrub
 ```
 

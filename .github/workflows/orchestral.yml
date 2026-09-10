@@ -1,0 +1,92 @@
+name: orchestral eval
+
+on:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      task:
+        description: "Task id from tasks/*.yaml"
+        required: true
+        default: "landing-page-coffee"
+      orchestrator:
+        description: "OpenRouter model slug for the orchestrator"
+        required: true
+        default: "deepseek/deepseek-v4-flash-0731"
+      worker:
+        description: "OpenRouter model slug for the worker"
+        required: true
+        default: "z-ai/glm-5.3-flash"
+      planner:
+        description: "Planner strategy: raw or ce-plan"
+        required: true
+        default: "raw"
+
+jobs:
+  eval:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    env:
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      TASK: ${{ inputs.task || 'landing-page-coffee' }}
+      ORCHESTRATOR: ${{ inputs.orchestrator || 'deepseek/deepseek-v4-flash-0731' }}
+      WORKER: ${{ inputs.worker || 'z-ai/glm-5.3-flash' }}
+      PLANNER: ${{ inputs.planner || 'raw' }}
+      MAX_COST_USD: "0.05"
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install orchestral
+        run: pip install -e .
+
+      - name: Run eval
+        run: python3 harness.py run --task "$TASK" --orchestrator "$ORCHESTRATOR" --worker "$WORKER" --planner "$PLANNER"
+
+      - name: Generate reports
+        run: |
+          python3 harness.py dashboard
+          python3 harness.py report --html
+          python3 harness.py report > reports/summary.txt
+
+      - name: Upload reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: orchestral-reports
+          path: reports/
+
+      - name: Comment on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const summary = fs.readFileSync('reports/summary.txt', 'utf8');
+            const body = `## orchestral eval\n\n\`\`\`\n${summary}\n\`\`\`\n\nReports are attached as the \`orchestral-reports\` artifact.`;
+            github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body
+            });
+
+      - name: Review threshold
+        if: github.event_name == 'pull_request'
+        run: |
+          cost=$(python3 - << 'PY'
+          import sqlite3, json, sys
+          conn = sqlite3.connect('runs/index.db')
+          row = conn.execute("SELECT total_cost_usd, passes FROM runs ORDER BY started_at DESC LIMIT 1").fetchone()
+          print(row[0] if row else 0.0)
+          PY
+          )
+          if (( $(echo "$cost > $MAX_COST_USD" | bc -l) )); then
+            gh pr review ${{ github.event.pull_request.html_url }} --request-changes --body "orchestral eval cost \${cost} exceeded \${MAX_COST_USD} budget"
+          else
+            gh pr review ${{ github.event.pull_request.html_url }} --approve --body "orchestral eval passed within \${MAX_COST_USD} budget"
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

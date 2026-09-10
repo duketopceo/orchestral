@@ -86,7 +86,24 @@ python harness.py run --task tasks/landing-page.yaml --orchestrators 3 --workers
 
 # Generate comparison report
 python harness.py report --task tasks/landing-page.yaml
+
+# Terminal dashboard
+python harness.py tui
 ```
+
+## GitHub Action (per-repo, no local install)
+
+Copy `.github/workflows/orchestral.yml` into the target repo and set the
+`OPENROUTER_API_KEY` secret. On every PR it:
+
+- installs `orchestral`
+- runs the eval
+- uploads the HTML report + dashboard as artifacts
+- comments the cost/token summary on the PR
+- approves the PR if `total_cost_usd <= MAX_COST_USD`, requests changes if not
+
+For a true "reviewer" experience like TestDriver, build a GitHub App that uses
+the same code path; the Action is the simplest per-repo setup today.
 
 ## License
 

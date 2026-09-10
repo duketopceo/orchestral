@@ -5,13 +5,13 @@ from __future__ import annotations
 import html.parser
 import json
 import random
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from orchestral.config import ModelConfig, TaskSpec
 from orchestral.logger import EventLogger
+from orchestral.planners import assemble_ce, assemble_raw, plan_ce, plan_raw
 from orchestral.storage import RunMeta, RunStore
 
 
@@ -20,8 +20,9 @@ class ValidationError(Exception):
 
 
 class Runner:
-    def __init__(self, *, dry_run: bool = False):
+    def __init__(self, *, dry_run: bool = False, planner: str = "raw"):
         self.dry_run = dry_run
+        self.planner = planner
         self.store = RunStore()
 
     def run(self, task: TaskSpec, orchestrator: ModelConfig, worker: ModelConfig) -> RunMeta:
@@ -31,6 +32,7 @@ class Runner:
             worker.slug,
             config={
                 "dry_run": self.dry_run,
+                "planner": self.planner,
                 "orchestrator": orchestrator.to_dict(),
                 "worker": worker.to_dict(),
             },
@@ -42,7 +44,12 @@ class Runner:
             event_type="run_start",
             model="",
             role="harness",
-            input_data={"task": task.id, "orchestrator": orchestrator.slug, "worker": worker.slug},
+            input_data={
+                "task": task.id,
+                "orchestrator": orchestrator.slug,
+                "worker": worker.slug,
+                "planner": self.planner,
+            },
             output_data={"run_id": run_id, "dry_run": self.dry_run},
             reasoning="Initialised run directory, SQLite index, and event log.",
         )
@@ -52,20 +59,54 @@ class Runner:
 
         try:
             # 1. Plan
-            plan, plan_cost = self._plan(logger, task, orchestrator)
+            if self.planner == "ce-plan":
+                plan, plan_cost = plan_ce(
+                    logger=logger,
+                    task=task,
+                    orchestrator=orchestrator,
+                    step=1,
+                    dry_run=self.dry_run,
+                )
+            else:
+                plan, plan_cost = plan_raw(
+                    logger=logger,
+                    task=task,
+                    orchestrator=orchestrator,
+                    step=1,
+                    dry_run=self.dry_run,
+                )
             (run_dir / "plan.json").write_text(json.dumps(plan, indent=2, default=str))
             cost_breakdown.append(plan_cost)
 
             # 2. Delegate each subtask to the worker
             results: list[dict[str, Any]] = []
-            for i, sub in enumerate(plan.get("subtasks", [])):
-                out, worker_cost = self._delegate(logger, i, sub, worker)
+            subtasks = plan.get("subtasks") or plan.get("sections", {}).get("subtasks", [])
+            for i, sub in enumerate(subtasks):
+                out, worker_cost = self._delegate(logger, i + 3, sub, worker)
                 results.append(out)
                 (run_dir / f"worker-{i}.json").write_text(json.dumps(out, indent=2, default=str))
                 cost_breakdown.append(worker_cost)
 
             # 3. Assemble final artifact
-            artifact, assembly_cost = self._assemble(logger, task, orchestrator, results)
+            assembly_step = 3 + len(subtasks)
+            if self.planner == "ce-plan":
+                artifact, assembly_cost = assemble_ce(
+                    logger=logger,
+                    task=task,
+                    orchestrator=orchestrator,
+                    step=assembly_step,
+                    results=results,
+                    dry_run=self.dry_run,
+                )
+            else:
+                artifact, assembly_cost = assemble_raw(
+                    logger=logger,
+                    task=task,
+                    orchestrator=orchestrator,
+                    step=assembly_step,
+                    results=results,
+                    dry_run=self.dry_run,
+                )
             ext = _artifact_ext(task.type)
             (run_dir / f"artifact{ext}").write_text(artifact)
             cost_breakdown.append(assembly_cost)
@@ -93,7 +134,7 @@ class Runner:
 
             logger.log(
                 phase="end",
-                step=len(cost_breakdown),
+                step=assembly_step + 2,
                 event_type="run_end",
                 model="",
                 role="harness",
@@ -125,24 +166,6 @@ class Runner:
         finally:
             logger.close()
 
-    def _plan(self, logger: EventLogger, task: TaskSpec, orchestrator: ModelConfig) -> tuple[dict[str, Any], dict[str, Any]]:
-        if not self.dry_run:
-            raise NotImplementedError("Real OpenRouter calls are not wired yet.")
-
-        # dry-run: produce a deterministic-looking plan
-        plan = {
-            "task_id": task.id,
-            "orchestrator": orchestrator.slug,
-            "subtasks": [
-                {"id": 0, "description": "Write the HTML head and page structure"},
-                {"id": 1, "description": "Write the hero section"},
-                {"id": 2, "description": "Write the signup form"},
-            ],
-            "reasoning": "Decomposed the landing page into structure, hero, and form subtasks so a cheap worker can write each independently.",
-        }
-        cost = self._fake_call(logger, phase="plan", step=1, model=orchestrator.slug, role="orchestrator", input_data={"prompt": task.prompt}, output_data=plan, reasoning=plan["reasoning"])
-        return plan, cost
-
     def _delegate(self, logger: EventLogger, step: int, subtask: dict[str, Any], worker: ModelConfig) -> tuple[dict[str, Any], dict[str, Any]]:
         if not self.dry_run:
             raise NotImplementedError("Real OpenRouter calls are not wired yet.")
@@ -152,35 +175,35 @@ class Runner:
             "content": f"<!-- worker output for subtask {subtask['id']}: {subtask['description']} -->",
             "notes": "Dry-run worker output.",
         }
-        cost = self._fake_call(
-            logger,
+
+        input_chars = len(json.dumps(subtask, default=str))
+        output_chars = len(json.dumps(output, default=str))
+        input_tokens = max(50, input_chars // 4 + random.randint(0, 10))
+        output_tokens = max(30, output_chars // 4 + random.randint(0, 10))
+        price_in, price_out = _prices_from_slug(worker.slug)
+        cost_usd = (input_tokens * price_in) + (output_tokens * price_out)
+
+        logger.log_llm_call(
             phase="delegate",
-            step=step + 2,
+            step=step,
             model=worker.slug,
             role="worker",
-            input_data={"subtask": subtask},
-            output_data=output,
+            messages=[{"role": "user", "content": json.dumps(subtask)}],
+            completion=output,
             reasoning=f"Executed subtask {subtask['id']} with {worker.slug}.",
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cost_usd=cost_usd,
+            latency_ms=random.uniform(80, 1200),
         )
-        return output, cost
 
-    def _assemble(self, logger: EventLogger, task: TaskSpec, orchestrator: ModelConfig, results: list[dict[str, Any]]) -> tuple[str, dict[str, Any]]:
-        if not self.dry_run:
-            raise NotImplementedError("Real OpenRouter calls are not wired yet.")
-
-        pieces = [r["content"] for r in results]
-        artifact = _build_html(task.prompt, pieces)
-        cost = self._fake_call(
-            logger,
-            phase="assemble",
-            step=len(results) + 2,
-            model=orchestrator.slug,
-            role="orchestrator",
-            input_data={"worker_outputs": results},
-            output_data={"artifact_length": len(artifact)},
-            reasoning="Merged worker outputs into a single HTML artifact.",
-        )
-        return artifact, cost
+        return output, {
+            "phase": "delegate",
+            "model": worker.slug,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "cost_usd": cost_usd,
+        }
 
     def _validate(self, task: TaskSpec, artifact: str) -> tuple[bool, dict[str, Any]]:
         errors: list[str] = []
@@ -194,76 +217,27 @@ class Runner:
             errors.append("Artifact is empty.")
         if "<title>" not in artifact:
             errors.append("Missing <title>.")
+        if "meta name='viewport'" not in artifact and 'meta name="viewport"' not in artifact:
+            errors.append("Missing viewport meta tag.")
 
         report: dict[str, Any] = {
             "task_id": task.id,
             "artifact_length": len(artifact),
-            "checks": {"parses": not parser.errors, "title": "<title>" in artifact, "non_empty": bool(artifact.strip())},
+            "checks": {
+                "parses": not parser.errors,
+                "title": "<title>" in artifact,
+                "non_empty": bool(artifact.strip()),
+                "viewport": "meta name='viewport'" in artifact or 'meta name="viewport"' in artifact,
+            },
             "errors": parser.errors + errors,
-            # score is a stub until LLM-as-judge or human grading
             "score": None,
         }
         passes = not (parser.errors or errors)
         return passes, report
 
-    def _fake_call(
-        self,
-        logger: EventLogger,
-        phase: str,
-        step: int,
-        model: str,
-        role: str,
-        input_data: dict[str, Any],
-        output_data: dict[str, Any],
-        reasoning: str,
-    ) -> dict[str, Any]:
-        """Simulate an LLM call with deterministic-ish token counts and cost."""
-        # Naive token estimate: ~1 token per 4 chars
-        input_chars = len(json.dumps(input_data, default=str))
-        output_chars = len(json.dumps(output_data, default=str))
-        input_tokens = max(100, input_chars // 4 + random.randint(0, 20))
-        output_tokens = max(50, output_chars // 4 + random.randint(0, 20))
-
-        # parse the model slug to get a price per token from the task config
-        price_in, price_out = _prices_from_slug(model)
-        cost_usd = (input_tokens * price_in) + (output_tokens * price_out)
-
-        logger.log_llm_call(
-            phase=phase,
-            step=step,
-            model=model,
-            role=role,
-            messages=[{"role": "user", "content": json.dumps(input_data)}],
-            completion=output_data,
-            reasoning=reasoning,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            cost_usd=cost_usd,
-            latency_ms=random.uniform(80, 1200),
-        )
-
-        return {
-            "phase": phase,
-            "model": model,
-            "input_tokens": input_tokens,
-            "output_tokens": output_tokens,
-            "cost_usd": cost_usd,
-        }
-
 
 def _artifact_ext(task_type: str) -> str:
     return {"html": ".html", "image": ".png", "video": ".mp4", "api": ".json", "multi-file": ".zip"}.get(task_type, ".txt")
-
-
-def _build_html(prompt: str, pieces: list[str]) -> str:
-    body = "\n".join(f"<section>{p}</section>" for p in pieces)
-    return (
-        "<!doctype html>\n"
-        "<html lang='en'>\n"
-        "<head><meta charset='utf-8'><title>orchestral dry-run</title></head>\n"
-        f"<body>\n<h1>{html.escape(prompt[:80])}</h1>\n{body}\n</body>\n"
-        "</html>"
-    )
 
 
 class _HTMLValidator(html.parser.HTMLParser):
@@ -279,7 +253,6 @@ class _HTMLValidator(html.parser.HTMLParser):
 
 
 def _prices_from_slug(slug: str) -> tuple[float, float]:
-    """Return cheap placeholder prices per token for dry-run cost math."""
     if "deepseek" in slug.lower():
         return 0.03 / 1_000_000, 0.10 / 1_000_000
     if "glm" in slug.lower():

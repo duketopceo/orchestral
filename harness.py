@@ -59,7 +59,7 @@ def cmd_run(args: argparse.Namespace) -> None:
     orchestrator.role = "orchestrator"
     worker.role = "worker"
 
-    runner = Runner(dry_run=args.dry_run)
+    runner = Runner(dry_run=args.dry_run, planner=args.planner)
     meta = runner.run(task, orchestrator, worker)
     print(f"Run {meta.run_id} {meta.status}")
     print(f"  Directory: {meta.run_dir}")
@@ -102,11 +102,13 @@ def cmd_report(args: argparse.Namespace) -> None:
         print(json.dumps(out, indent=2, default=str))
         return
 
-    print(f"{'run_id':<13} {'orchestrator':<30} {'task':<20} {'worker':<35} {'cost':>10} {'score':>6} {'pass':>5}")
-    print("-" * 140)
+    print(f"{'run_id':<13} {'planner':<10} {'orchestrator':<30} {'task':<20} {'worker':<35} {'cost':>10} {'tokens':>7} {'pass':>5}")
+    print("-" * 145)
     for r in runs:
-        score = f"{r.score:.2f}" if r.score is not None else "-"
-        print(f"{r.run_id:<13} {r.orchestrator:<30} {r.task_id:<20} {r.worker:<35} ${r.total_cost_usd:>8.4f} {score:>6} {str(r.passes):>5}")
+        planner = r.config.get("planner", "raw") if r.config else "raw"
+        pass_label = str(r.passes) if r.passes is not None else "-"
+        tokens = r.total_input_tokens + r.total_output_tokens
+        print(f"{r.run_id:<13} {planner:<10} {r.orchestrator:<30} {r.task_id:<20} {r.worker:<35} ${r.total_cost_usd:>8.4f} {tokens:>7} {pass_label:>5}")
 
     print()
     summary = store.summary()
@@ -134,6 +136,7 @@ def main() -> None:
     run.add_argument("--task", required=True, help="Task id or path")
     run.add_argument("--orchestrator", required=True, help="OpenRouter model slug for the orchestrator")
     run.add_argument("--worker", required=True, help="OpenRouter model slug for the worker")
+    run.add_argument("--planner", default="raw", choices=["raw", "ce-plan"], help="Orchestrator planning strategy: raw or ce-plan")
     run.add_argument("--dry-run", action="store_true", help="Do not call OpenRouter; generate sample data for storage testing")
     run.set_defaults(func=cmd_run)
 

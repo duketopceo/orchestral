@@ -73,20 +73,19 @@ jobs:
               body
             });
 
-      - name: Review threshold
+      - name: Enforce cost budget
         if: github.event_name == 'pull_request'
         run: |
           cost=$(python3 - << 'PY'
-          import sqlite3, json, sys
+          import sqlite3
           conn = sqlite3.connect('runs/index.db')
-          row = conn.execute("SELECT total_cost_usd, passes FROM runs ORDER BY started_at DESC LIMIT 1").fetchone()
+          row = conn.execute("SELECT total_cost_usd FROM runs ORDER BY started_at DESC LIMIT 1").fetchone()
           print(row[0] if row else 0.0)
           PY
           )
           if (( $(echo "$cost > $MAX_COST_USD" | bc -l) )); then
-            gh pr review ${{ github.event.pull_request.html_url }} --request-changes --body "orchestral eval cost \${cost} exceeded \${MAX_COST_USD} budget"
+            echo "orchestral eval cost \${cost} exceeded \${MAX_COST_USD} budget"
+            exit 1
           else
-            gh pr review ${{ github.event.pull_request.html_url }} --approve --body "orchestral eval passed within \${MAX_COST_USD} budget"
+            echo "orchestral eval passed within \${MAX_COST_USD} budget"
           fi
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -87,6 +87,11 @@ class Runner:
             results: list[dict[str, Any]] = []
             subtasks = plan.get("subtasks") or plan.get("sections", {}).get("subtasks", [])
             for i, sub in enumerate(subtasks):
+                # models sometimes return a list of strings; normalize to dicts
+                if isinstance(sub, str):
+                    sub = {"id": i, "description": sub}
+                elif not isinstance(sub, dict):
+                    sub = {"id": i, "description": str(sub)}
                 out, worker_costs = delegate(
                     logger=logger,
                     step=i + 3,

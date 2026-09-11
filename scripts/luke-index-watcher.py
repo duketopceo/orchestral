@@ -20,6 +20,7 @@ import datetime
 import hashlib
 import os
 import re
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -350,9 +351,11 @@ def install_hook() -> None:
             break
         lines.insert(insert_at, cmd)
         hook_path.write_text("\n".join(lines) + "\n")
+        # preserve existing permissions, just ensure user-executable
+        os.chmod(hook_path, hook_path.stat().st_mode | stat.S_IXUSR)
     else:
         hook_path.write_text("#!/bin/sh\n" + cmd + "\n")
-    os.chmod(hook_path, 0o755)
+        os.chmod(hook_path, 0o700)
     print(f"Installed pre-commit hook: {hook_path}")
 
 

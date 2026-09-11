@@ -59,9 +59,12 @@ def cmd_run(args: argparse.Namespace) -> None:
     worker = _model_from_arg(args.worker, args.models_dir)
     orchestrator.role = "orchestrator"
     worker.role = "worker"
+    judge = _model_from_arg(args.judge, args.models_dir) if args.judge else None
+    if judge is not None:
+        judge.role = "judge"
 
     runner = Runner(dry_run=args.dry_run, planner=args.planner)
-    meta = runner.run(task, orchestrator, worker)
+    meta = runner.run(task, orchestrator, worker, judge)
     print(f"Run {meta.run_id} {meta.status}")
     print(f"  Directory: {meta.run_dir}")
     print(f"  Cost: ${meta.total_cost_usd:.6f} | Tokens: {meta.total_input_tokens + meta.total_output_tokens}")
@@ -148,6 +151,7 @@ def main() -> None:
     run.add_argument("--orchestrator", required=True, help="OpenRouter model slug for the orchestrator")
     run.add_argument("--worker", required=True, help="OpenRouter model slug for the worker")
     run.add_argument("--planner", default="raw", choices=["raw", "ce-plan"], help="Orchestrator planning strategy: raw or ce-plan")
+    run.add_argument("--judge", default=None, help="OpenRouter model slug for an optional LLM-as-judge pass")
     run.add_argument("--dry-run", action="store_true", help="Do not call OpenRouter; generate sample data for storage testing")
     run.set_defaults(func=cmd_run)
 

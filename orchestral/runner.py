@@ -10,6 +10,7 @@ from typing import Any
 
 from orchestral.config import ModelConfig, TaskSpec
 from orchestral.costs import CostLedger
+from orchestral.judge import judge_artifact
 from orchestral.logger import EventLogger
 from orchestral.openrouter import OpenRouterClient
 from orchestral.planners import assemble_ce, assemble_raw, delegate, plan_ce, plan_raw
@@ -29,7 +30,7 @@ class Runner:
         if not dry_run:
             self.client = OpenRouterClient()
 
-    def run(self, task: TaskSpec, orchestrator: ModelConfig, worker: ModelConfig) -> RunMeta:
+    def run(self, task: TaskSpec, orchestrator: ModelConfig, worker: ModelConfig, judge: ModelConfig | None = None) -> RunMeta:
         run_id, run_dir = self.store.new_run(
             orchestrator.slug,
             task.id,
@@ -133,9 +134,29 @@ class Runner:
 
             # 4. Validate
             passes, report = self._validate(task, artifact)
+
+            # 5. Judge (optional)
+            if judge is not None:
+                judge_step = assembly_step + 3
+                judge_result, judge_costs = judge_artifact(
+                    logger=logger,
+                    step=judge_step,
+                    task=task,
+                    artifact=artifact,
+                    judge=judge,
+                    client=self.client,
+                    dry_run=self.dry_run,
+                )
+                ledger.add_many(judge_costs)
+                report["judge"] = judge_result
+                if judge_result.get("score") is not None:
+                    report["score"] = judge_result["score"]
+                if judge_result.get("passed") is not None:
+                    passes = passes and judge_result["passed"]
+
             (run_dir / "report.json").write_text(json.dumps(report, indent=2, default=str))
 
-            # 5. Final accounting
+            # 6. Final accounting
             total_cost = ledger.total_cost_usd()
             total_input = ledger.total_input_tokens()
             total_output = ledger.total_output_tokens()
@@ -154,7 +175,7 @@ class Runner:
 
             logger.log(
                 phase="end",
-                step=assembly_step + 2,
+                step=assembly_step + 4,
                 event_type="run_end",
                 model="",
                 role="harness",

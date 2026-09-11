@@ -9,3 +9,4 @@ reports/*.html
 reports/*.json
 *.db
 .DS_Store
+data/

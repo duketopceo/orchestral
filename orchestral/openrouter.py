@@ -21,7 +21,7 @@ NON_RETRYABLE_STATUSES = {400, 401, 403, 404, 422}
 
 class OpenRouterClient:
     def __init__(self, api_key: str | None = None, base_url: str = "https://openrouter.ai/api/v1"):
-        self.api_key = api_key or os.environ.get("OPENROUTER_API_KEY")
+        self.api_key = (api_key or os.environ.get("OPENROUTER_API_KEY") or "").strip()
         if not self.api_key:
             raise ValueError("OPENROUTER_API_KEY is not set")
         self.client = httpx.Client(base_url=base_url, timeout=120.0, follow_redirects=True)

@@ -15,6 +15,22 @@ models:
     context: 1048576
     max_tokens: 131072
 
+  - slug: "deepseek/deepseek-v4.1-flash"
+    name: "DeepSeek V4.1 Flash"
+    role: worker
+    input_price_per_mtok: 0.15
+    output_price_per_mtok: 0.60
+    context: 1048576
+    max_tokens: 131072
+
+  - slug: "deepseek/deepseek-v4-pro"
+    name: "DeepSeek V4 Pro"
+    role: orchestrator
+    input_price_per_mtok: 0.58
+    output_price_per_mtok: 1.74
+    context: 1048576
+    max_tokens: 131072
+
   - slug: "z-ai/glm-5.3-flash"
     name: "GLM 5.3 Flash"
     role: worker

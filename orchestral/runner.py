@@ -94,17 +94,52 @@ class Runner:
                     sub = {"id": i, "description": sub}
                 elif not isinstance(sub, dict):
                     sub = {"id": i, "description": str(sub)}
-                out, worker_costs = delegate(
-                    logger=logger,
-                    step=i + 3,
-                    subtask=sub,
-                    worker=worker,
-                    client=self.client,
-                    dry_run=self.dry_run,
-                )
+                out: dict[str, Any] | None = None
+                attempts = max(1, worker.retry_limit + 1)
+                for attempt in range(attempts):
+                    try:
+                        out, worker_costs = delegate(
+                            logger=logger,
+                            step=i + 3,
+                            subtask=sub,
+                            worker=worker,
+                            client=self.client,
+                            dry_run=self.dry_run,
+                        )
+                        ledger.add_many(worker_costs)
+                    except Exception as exc:
+                        out = None
+                        logger.log(
+                            phase="delegate",
+                            step=i + 3,
+                            event_type="worker_error",
+                            model=worker.slug,
+                            role="worker",
+                            input_data={"subtask": sub},
+                            output_data={"attempt": attempt + 1, "max_attempts": attempts},
+                            reasoning=f"Worker call raised an exception on attempt {attempt + 1}.",
+                            error=str(exc),
+                        )
+                        if attempt + 1 >= attempts:
+                            raise
+                        continue
+                    if out.get("content"):
+                        break
+                    logger.log(
+                        phase="delegate",
+                        step=i + 3,
+                        event_type="worker_retry",
+                        model=worker.slug,
+                        role="worker",
+                        input_data={"subtask": sub},
+                        output_data={"attempt": attempt + 1, "max_attempts": attempts},
+                        reasoning=f"Worker returned empty content on attempt {attempt + 1}; retrying.",
+                    )
+                if out is None:
+                    raise ValidationError(f"Worker {worker.slug} produced no output for subtask {sub.get('id')}")
+                out["attempts"] = attempt + 1
                 results.append(out)
                 (run_dir / f"worker-{i}.json").write_text(json.dumps(out, indent=2, default=str))
-                ledger.add_many(worker_costs)
 
             # 3. Assemble final artifact
             assembly_step = 3 + len(subtasks)
@@ -210,34 +245,64 @@ class Runner:
                 self.client.close()
 
     def _validate(self, task: TaskSpec, artifact: str) -> tuple[bool, dict[str, Any]]:
+        requested = set(task.validation) if task.validation else {"html_parses", "non_empty", "has_title"}
+        # "html" is the shorthand used by generated batch tasks
+        if "html" in requested:
+            requested.discard("html")
+            requested |= {"html_parses", "non_empty"}
+        checks: dict[str, bool] = {}
         errors: list[str] = []
-        parser = _HTMLValidator()
-        try:
-            parser.feed(artifact)
-        except Exception as exc:
-            errors.append(f"HTML parse error: {exc}")
 
-        if not artifact.strip():
-            errors.append("Artifact is empty.")
-        if "<title>" not in artifact:
-            errors.append("Missing <title>.")
-        if "meta name='viewport'" not in artifact and 'meta name="viewport"' not in artifact:
-            errors.append("Missing viewport meta tag.")
+        if "html_parses" in requested:
+            parser = _HTMLValidator()
+            try:
+                parser.feed(artifact)
+            except Exception as exc:
+                parser.errors.append(str(exc))
+            checks["html_parses"] = not parser.errors
+            errors.extend(f"HTML parse error: {e}" for e in parser.errors)
+
+        lowered = artifact.lower()
+
+        if "non_empty" in requested:
+            checks["non_empty"] = bool(artifact.strip())
+            if not checks["non_empty"]:
+                errors.append("Artifact is empty.")
+        if "has_title" in requested:
+            checks["has_title"] = "<title>" in lowered
+            if not checks["has_title"]:
+                errors.append("Missing <title>.")
+        if "has_cta" in requested:
+            checks["has_cta"] = any(
+                token in lowered
+                for token in ("cta", "sign up", "signup", "subscribe", "get started", "buy now", "learn more")
+            )
+            if not checks["has_cta"]:
+                errors.append("Missing call-to-action.")
+        if "has_form" in requested:
+            checks["has_form"] = "<form" in lowered
+            if not checks["has_form"]:
+                errors.append("Missing <form>.")
+        if "has_viewport" in requested:
+            checks["has_viewport"] = 'name="viewport"' in lowered or "name='viewport'" in lowered
+            if not checks["has_viewport"]:
+                errors.append("Missing viewport meta tag.")
+        if "no_placeholder" in requested:
+            checks["no_placeholder"] = not any(
+                token in lowered
+                for token in ("lorem ipsum", "placeholder text", "todo:", "your text here", "[insert")
+            )
+            if not checks["no_placeholder"]:
+                errors.append("Artifact contains placeholder text.")
 
         report: dict[str, Any] = {
             "task_id": task.id,
             "artifact_length": len(artifact),
-            "checks": {
-                "parses": not parser.errors,
-                "title": "<title>" in artifact,
-                "non_empty": bool(artifact.strip()),
-                "viewport": "meta name='viewport'" in artifact or 'meta name="viewport"' in artifact,
-            },
-            "errors": parser.errors + errors,
+            "checks": checks,
+            "errors": errors,
             "score": None,
         }
-        passes = not (parser.errors or errors)
-        return passes, report
+        return all(checks.values()) if checks else True, report
 
 
 def _artifact_ext(task_type: str) -> str:

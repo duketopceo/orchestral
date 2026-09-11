@@ -82,8 +82,17 @@ def cmd_grid(args: argparse.Namespace) -> None:
 
     task_path = _task_from_arg(args.task, args.tasks_dir)
     task = load_task(task_path)
-    orchestrators = [_model_from_arg(s, args.models_dir) for s in _slugs_from_arg(args.orchestrators)]
-    workers = [_model_from_arg(s, args.models_dir) for s in _slugs_from_arg(args.workers)]
+
+    if args.orchestrators and args.workers:
+        orchestrators = [_model_from_arg(s, args.models_dir) for s in _slugs_from_arg(args.orchestrators)]
+        workers = [_model_from_arg(s, args.models_dir) for s in _slugs_from_arg(args.workers)]
+    else:
+        configured = load_models(args.models_dir)
+        orchestrators = [m for m in configured if m.role == "orchestrator"]
+        workers = [m for m in configured if m.role == "worker"]
+        if not orchestrators or not workers:
+            print("No orchestrator/worker models configured. Pass --orchestrators and --workers, or add role fields in models/*.yaml.")
+            sys.exit(1)
     results: list[dict[str, Any]] = []
 
     for orchestrator in orchestrators:
@@ -253,8 +262,8 @@ def main() -> None:
 
     grid = sub.add_parser("grid", help="Run a matrix of orchestrators × workers")
     grid.add_argument("--task", required=True, help="Task id or path")
-    grid.add_argument("--orchestrators", required=True, help="Comma-separated OpenRouter model slugs")
-    grid.add_argument("--workers", required=True, help="Comma-separated OpenRouter model slugs")
+    grid.add_argument("--orchestrators", default=None, help="Comma-separated OpenRouter model slugs (default: all models with role=orchestrator)")
+    grid.add_argument("--workers", default=None, help="Comma-separated OpenRouter model slugs (default: all models with role=worker)")
     grid.add_argument("--planner", default="raw", choices=["raw", "ce-plan"], help="Orchestrator planning strategy")
     grid.add_argument("--dry-run", action="store_true", help="Do not call OpenRouter; generate sample data for storage testing")
     grid.add_argument("--json", action="store_true", help="Output grid summary as JSON")

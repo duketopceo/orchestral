@@ -432,6 +432,9 @@ def _build_html(prompt: str, pieces: list[str]) -> str:
         "<!doctype html>\n"
         "<html lang='en'>\n"
         "<head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'><title>orchestral dry-run</title></head>\n"
-        f"<body>\n<h1>{html.escape(prompt[:80])}</h1>\n{body}\n</body>\n"
+        f"<body>\n<h1>{html.escape(prompt[:80])}</h1>\n{body}\n"
+        "<a href='#signup' class='cta'>Get started</a>\n"
+        "<form id='signup'><input type='email' name='email'><button type='submit'>Subscribe</button></form>\n"
+        "</body>\n"
         "</html>"
     )

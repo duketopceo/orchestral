@@ -16,6 +16,7 @@ class ModelConfig:
     output_price_per_mtok: float
     context: int = 128_000
     max_tokens: int = 8_192
+    retry_limit: int = 2
     metadata: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -36,6 +37,7 @@ class ModelConfig:
             "output_price_per_mtok": self.output_price_per_mtok,
             "context": self.context,
             "max_tokens": self.max_tokens,
+            "retry_limit": self.retry_limit,
             "metadata": self.metadata,
         }
 

@@ -16,7 +16,13 @@ class ModelConfig:
     output_price_per_mtok: float
     context: int = 128_000
     max_tokens: int = 8_192
+    retry_limit: int = 2
+    price_per_image: float = 0.0
     metadata: dict[str, Any] = field(default_factory=dict)
+
+    def supports(self, modality: str) -> bool:
+        """True when the model declares the modality in metadata.modalities."""
+        return modality in (self.metadata.get("modalities") or [])
 
     @property
     def input_price(self) -> float:
@@ -36,6 +42,8 @@ class ModelConfig:
             "output_price_per_mtok": self.output_price_per_mtok,
             "context": self.context,
             "max_tokens": self.max_tokens,
+            "retry_limit": self.retry_limit,
+            "price_per_image": self.price_per_image,
             "metadata": self.metadata,
         }
 
@@ -64,6 +72,8 @@ def load_models(path: Path | str = "models") -> list[ModelConfig]:
     for f in sorted(root.glob("*.yaml")):
         data = load_yaml(f)
         for item in data.get("models", []):
+            if str(item.get("slug", "")).startswith("~"):
+                continue  # ~ prefix marks a disabled entry
             configs.append(ModelConfig(**item))
     return configs
 
@@ -75,7 +85,7 @@ def load_task(path: Path | str) -> TaskSpec:
 
 def find_task(task_id: str, root: Path | str = "tasks") -> Optional[Path]:
     root = Path(root)
-    for f in root.glob("*.yaml"):
+    for f in sorted(root.rglob("*.yaml")):
         data = load_yaml(f)
         if data.get("id") == task_id:
             return f

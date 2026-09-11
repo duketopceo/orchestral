@@ -113,47 +113,64 @@ def repo_version() -> str:
     return "1.0.0"
 
 
+# Legacy header labels seen in older indexes -> current schema keys
+LEGACY_HEADERS = {
+    "File": "Path",
+    "What It Does": "What it is",
+    "Why It's There": "Why it's here",
+    "Inter-File Dependencies": "Depends on",
+}
+
+
+def _split_row(line: str) -> List[str]:
+    """Split a markdown table row on unescaped pipes; unescape \\| in cells."""
+    parts = re.split(r"(?<!\\)\|", line)
+    return [p.strip().replace("\\|", "|") for p in parts[1:-1]]
+
+
 def parse_existing_index() -> Dict[str, Dict[str, str]]:
-    """Parse the current INDEX.md for hand-maintained per-file metadata."""
+    """Parse the current INDEX.md for hand-maintained per-file metadata.
+
+    Column mapping is driven by each table's own header row so legacy
+    schemas ("File | What It Does | ...") still round-trip correctly.
+    """
     existing: Dict[str, Dict[str, str]] = {}
     if not INDEX_PATH.exists():
         return existing
 
+    # Collect tables as (header, data rows) pairs
+    tables: List[Tuple[List[str], List[str]]] = []
     in_table = False
-    table_lines: List[str] = []
-    for raw in INDEX_PATH.read_text().splitlines():
-        if raw.startswith("| ") and " | " in raw:
+    block: List[str] = []
+    for raw in INDEX_PATH.read_text().splitlines() + [""]:
+        if raw.startswith("|") and " | " in raw:
             in_table = True
-            table_lines.append(raw)
-        elif in_table and not raw.startswith("|"):
+            block.append(raw)
+        elif in_table:
             in_table = False
+            if len(block) >= 2:
+                tables.append((_split_row(block[0]), block[2:]))
+            block = []
 
-    if not table_lines:
-        return existing
-
-    # First table row is headers, second is separator; rest are data
-    for line in table_lines[2:]:
-        cells = [c.strip() for c in line.split("|")[1:-1]]
-        if not cells or not cells[0] or cells[0] == "Path":
-            continue
-        # Try to map known shapes
-        path = cells[0]
-        mapping = {}
-        if len(cells) >= 5 and cells[2] in ("What It Does", "What it is"):
-            # File | Version / Timestamp | What It Does | Why It's There | Inter-File Dependencies
-            mapping = {
-                "Version": cells[1].split()[0] if cells[1] else repo_version(),
-                "What it is": cells[2] if cells[2] not in ("What It Does", "What it is") else "",
-                "Why it's here": cells[3] if cells[3] != "Why It's There" else "",
-                "Depends on": cells[4] if cells[4] != "Inter-File Dependencies" else "",
-            }
-        else:
-            # Assume columns are Path | Version | Last updated | What it is | ...
-            for i, key in enumerate(COLUMNS):
-                mapping[key] = cells[i] if i < len(cells) else ""
-            mapping.pop("Path", None)
-            mapping.pop("Last updated", None)
-        existing[path] = mapping
+    for header, data_lines in tables:
+        keys = [LEGACY_HEADERS.get(h, h) for h in header]
+        for line in data_lines:
+            cells = _split_row(line)
+            if not cells or not cells[0]:
+                continue
+            mapping: Dict[str, str] = {}
+            path = cells[0]
+            for i, key in enumerate(keys):
+                if key in ("Path", "File"):
+                    if i == 0:
+                        continue
+                    path = cells[i] if i < len(cells) else path
+                    continue
+                if key == "Last updated":
+                    continue
+                if i < len(cells):
+                    mapping[key] = cells[i]
+            existing[path] = mapping
     return existing
 
 
@@ -255,9 +272,10 @@ def build_index_content() -> str:
 def make_table(rows: List[Tuple[str, str, str, str, str, str]]) -> str:
     if not rows:
         return "_No files in this section._"
+    esc = lambda c: c.replace("|", "\\|")
     header = "| " + " | ".join(COLUMNS) + " |"
     sep = "|" + "|".join([" --- " for _ in COLUMNS]) + "|"
-    body = ["| " + " | ".join(row) + " |" for row in rows]
+    body = ["| " + " | ".join(esc(c) for c in row) + " |" for row in rows]
     return "\n".join([header, sep] + body)
 
 
@@ -267,12 +285,33 @@ def generate() -> None:
     print(f"Wrote {INDEX_PATH} ({len(content)} bytes)")
 
 
+_TS_RE = re.compile(r"\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2})?)?")
+
+
+def _normalize_for_check(content: str) -> str:
+    """Strip volatile metadata so --check compares stable content only.
+
+    The "Last synced" wall-clock line and per-file git timestamps always
+    differ between the commit that generated the index and a later check,
+    so they are excluded from equality. File presence and preserved
+    metadata still must match.
+    """
+    lines = []
+    for line in content.splitlines():
+        if line.startswith("> **Last synced:**"):
+            continue
+        if line.lstrip().startswith("|"):
+            line = _TS_RE.sub("<ts>", line)
+        lines.append(line)
+    return "\n".join(lines)
+
+
 def check() -> bool:
-    generated = build_index_content()
     if not INDEX_PATH.exists():
         print("INDEX.md is missing. Run: python scripts/luke-index-watcher.py")
         return False
-    existing = INDEX_PATH.read_text()
+    generated = _normalize_for_check(build_index_content())
+    existing = _normalize_for_check(INDEX_PATH.read_text())
     if generated == existing:
         print("INDEX.md is up to date.")
         return True
@@ -281,16 +320,39 @@ def check() -> bool:
 
 
 def install_hook() -> None:
-    hooks_dir = REPO_ROOT / ".git" / "hooks"
-    hook_path = hooks_dir / "pre-commit"
-    cmd = 'python3 scripts/luke-index-watcher.py && git add INDEX.md\n'
+    # Resolve via git so worktrees (where .git is a file) work too
+    out = subprocess.run(
+        ["git", "-C", str(REPO_ROOT), "rev-parse", "--git-path", "hooks/pre-commit"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    hook_path = Path(out.stdout.strip())
+    if not hook_path.is_absolute():
+        hook_path = REPO_ROOT / hook_path
+    hook_path.parent.mkdir(parents=True, exist_ok=True)
+
+    cmd = "python3 scripts/luke-index-watcher.py && git add INDEX.md"
     if hook_path.exists():
         text = hook_path.read_text()
-        if cmd not in text:
-            hook_path.write_text(text + cmd)
+        if cmd in text:
+            print(f"pre-commit hook already installed: {hook_path}")
+            return
+        lines = text.splitlines()
+        # Insert before a terminal `exit` so our command isn't unreachable
+        insert_at = len(lines)
+        for i in range(len(lines) - 1, -1, -1):
+            stripped = lines[i].strip()
+            if not stripped:
+                continue
+            if stripped == "exit" or stripped.startswith("exit "):
+                insert_at = i
+            break
+        lines.insert(insert_at, cmd)
+        hook_path.write_text("\n".join(lines) + "\n")
     else:
-        hook_path.write_text("#!/bin/sh\n" + cmd)
-        os.chmod(hook_path, 0o755)
+        hook_path.write_text("#!/bin/sh\n" + cmd + "\n")
+    os.chmod(hook_path, 0o755)
     print(f"Installed pre-commit hook: {hook_path}")
 
 

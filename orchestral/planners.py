@@ -2,15 +2,22 @@
 
 from __future__ import annotations
 
+import base64
 import html
 import json
 import random
 from typing import Any
 
 from orchestral.config import ModelConfig, TaskSpec
-from orchestral.costs import compute_cost, token_usage_from_raw
+from orchestral.costs import compute_cost, compute_image_cost, token_usage_from_raw
 from orchestral.logger import EventLogger
 from orchestral.openrouter import OpenRouterClient
+
+
+# 1x1 transparent PNG used as the deterministic dry-run image artifact
+TINY_PNG = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+)
 
 
 # ---------------------------------------------------------------------------
@@ -289,9 +296,115 @@ def delegate(
     return output, [cost]
 
 
-# ---------------------------------------------------------------------------
-# ce-plan enhanced planner
-# ---------------------------------------------------------------------------
+def delegate_image(
+    *,
+    logger: EventLogger,
+    step: int,
+    subtask: dict[str, Any],
+    worker: ModelConfig,
+    client: OpenRouterClient | None,
+    dry_run: bool,
+) -> tuple[dict[str, Any], bytes, list[dict[str, Any]]]:
+    """Generate one image for a subtask brief via the Images API."""
+    prompt = subtask.get("prompt") or subtask.get("description") or str(subtask)
+    if dry_run:
+        image_bytes = TINY_PNG
+        cost = {
+            "phase": "delegate",
+            "model": worker.slug,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": compute_image_cost(worker, None, 1),
+        }
+        logger.log_llm_call(
+            phase="delegate",
+            step=step,
+            model=worker.slug,
+            role="worker",
+            messages=[{"role": "user", "content": prompt}],
+            completion={"image": "<dry-run png>", "bytes": len(image_bytes)},
+            reasoning=f"Generate image for subtask {subtask.get('id')} with {worker.slug}.",
+            input_tokens=0,
+            output_tokens=0,
+            cost_usd=cost["cost_usd"],
+            latency_ms=random.uniform(80, 1200),
+        )
+        return {"subtask_id": subtask.get("id"), "prompt": prompt}, image_bytes, [cost]
+
+    if client is None:
+        raise ValueError("OpenRouterClient is required for live runs")
+
+    completion = client.images(model=worker.slug, prompt=prompt)
+    image_bytes = completion["image_bytes"]
+    usage = token_usage_from_raw(completion["usage"])
+    cost_usd = compute_image_cost(worker, usage, 1)
+
+    logger.log_llm_call(
+        phase="delegate",
+        step=step,
+        model=worker.slug,
+        role="worker",
+        messages=[{"role": "user", "content": prompt}],
+        completion={
+            "image_bytes": len(image_bytes),
+            "usage": usage.to_dict(),
+            "id": completion.get("id"),
+        },
+        reasoning=f"Generate image for subtask {subtask.get('id')} with {worker.slug}.",
+        input_tokens=usage.prompt_tokens,
+        output_tokens=usage.completion_tokens,
+        cost_usd=cost_usd,
+        latency_ms=completion["latency_ms"],
+    )
+    return {"subtask_id": subtask.get("id"), "prompt": prompt}, image_bytes, [{
+        "phase": "delegate",
+        "model": worker.slug,
+        "input_tokens": usage.prompt_tokens,
+        "output_tokens": usage.completion_tokens,
+        "cost_usd": cost_usd,
+        "usage": usage.to_dict(),
+    }]
+
+
+def assemble_image(
+    *,
+    logger: EventLogger,
+    task: TaskSpec,
+    orchestrator: ModelConfig,
+    step: int,
+    results: list[dict[str, Any]],
+    client: OpenRouterClient | None,
+    dry_run: bool,
+) -> tuple[int, list[dict[str, Any]]]:
+    """Orchestrator picks the winning worker image by subtask index."""
+    content, cost = _llm_call(
+        logger=logger,
+        phase="assemble",
+        step=step,
+        model_cfg=orchestrator,
+        role="orchestrator",
+        input_data={
+            "prompt": task.prompt,
+            "candidates": [
+                {"subtask_id": r.get("subtask_id"), "prompt": r.get("prompt")}
+                for r in results
+            ],
+            "task_type": task.type,
+        },
+        reasoning="Select the subtask index whose generated image best satisfies the task.",
+        client=client,
+        dry_run=dry_run,
+        expect_json=True,
+    )
+    try:
+        selection = _extract_json(content)
+        idx = int(selection.get("subtask_id", selection.get("index", 0)))
+    except Exception:
+        idx = 0
+    # resolve subtask_id to a position in results, clamped to range
+    position = next((i for i, r in enumerate(results) if r.get("subtask_id") == idx), 0)
+    position = max(0, min(position, len(results) - 1))
+    return position, [cost]
 
 
 def plan_ce(
@@ -432,6 +545,9 @@ def _build_html(prompt: str, pieces: list[str]) -> str:
         "<!doctype html>\n"
         "<html lang='en'>\n"
         "<head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'><title>orchestral dry-run</title></head>\n"
-        f"<body>\n<h1>{html.escape(prompt[:80])}</h1>\n{body}\n</body>\n"
+        f"<body>\n<h1>{html.escape(prompt[:80])}</h1>\n{body}\n"
+        "<a href='#signup' class='cta'>Get started</a>\n"
+        "<form id='signup'><input type='email' name='email'><button type='submit'>Subscribe</button></form>\n"
+        "</body>\n"
         "</html>"
     )

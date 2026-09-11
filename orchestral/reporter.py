@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import html as html_module
 import json
-import sqlite3
-from datetime import datetime
+import shutil
+from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +32,11 @@ STYLE = """
   .section { margin-top: 2rem; }
   .summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 1rem; }
   .card { border: 1px solid #e5e7eb; border-radius: 0.5rem; padding: 1rem; background: #fafafa; }
+  .gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 1rem; }
+  .gallery .card { padding: 0; overflow: hidden; }
+  .gallery .thumb { width: 100%; height: 240px; border: 0; border-bottom: 1px solid #e5e7eb; display: block; object-fit: cover; object-position: top; background: #fff; }
+  .gallery .meta { padding: 0.75rem; font-size: 0.85rem; }
+  .gallery .meta .tags { margin-top: 0.4rem; }
 </style>
 """
 
@@ -201,7 +206,7 @@ def _index_html(runs: list[Any]) -> str:
 </head>
 <body>
   <h1>orchestral runs</h1>
-  <p>Click a run to drill into events, plan, cost, and artifact.</p>
+  <p>Click a run to drill into events, plan, cost, and artifact. <a href="gallery.html">Visual gallery</a> &middot; <a href="dashboard.html">Dashboard</a></p>
   <table>
     <tr>
       <th>run_id</th><th>started</th><th>orchestrator</th><th>task</th><th>worker</th>
@@ -227,7 +232,83 @@ def generate_html_report(runs_dir: str | Path = "runs", reports_dir: str | Path 
         (reports / f"{r.run_id}.html").write_text(_run_card(r, run_dir), encoding="utf-8")
 
     (reports / "index.html").write_text(_index_html(runs), encoding="utf-8")
+    (reports / "gallery.html").write_text(generate_gallery(runs, reports), encoding="utf-8")
     return reports / "index.html"
+
+
+def _copy_for_gallery(src: Path, dest: Path) -> bool:
+    try:
+        shutil.copyfile(src, dest)
+        return True
+    except OSError:
+        return False
+
+
+def _gallery_card(run: Any, shots_dir: Path) -> str:
+    run_dir = Path(run.run_dir)
+    shot = run_dir / "screenshot.png"
+    artifact = _find_artifact(run_dir)
+
+    if shot.exists() and _copy_for_gallery(shot, shots_dir / f"{run.run_id}.png"):
+        thumb = f"<img class='thumb' src='shots/{run.run_id}.png' loading='lazy' alt='screenshot'>"
+    elif artifact and artifact.suffix == ".html" and _copy_for_gallery(artifact, shots_dir / f"{run.run_id}.html"):
+        thumb = f"<iframe class='thumb' src='shots/{run.run_id}.html' sandbox loading='lazy'></iframe>"
+    elif artifact and artifact.suffix == ".png" and _copy_for_gallery(artifact, shots_dir / f"{run.run_id}-artifact.png"):
+        thumb = f"<img class='thumb' src='shots/{run.run_id}-artifact.png' loading='lazy' alt='artifact'>"
+    else:
+        thumb = "<div class='thumb'>no visual artifact</div>"
+
+    pass_cls = "pass" if run.passes else "fail" if run.passes is False else ""
+    pass_label = str(run.passes) if run.passes is not None else "-"
+    score = f"{run.score:.2f}" if run.score is not None else "-"
+    return (
+        f"<div class='card'>"
+        f"<a href='{run.run_id}.html'>{thumb}</a>"
+        f"<div class='meta'>"
+        f"<div><a href='{run.run_id}.html'>{run.run_id}</a></div>"
+        f"<div>{_esc(run.orchestrator)} &rarr; {_esc(run.worker)}</div>"
+        f"<div class='tags'><span class='tag {pass_cls}'>{pass_label}</span> "
+        f"<span class='tag'>score {score}</span> "
+        f"<span class='tag'>${run.total_cost_usd:.4f}</span></div>"
+        f"</div></div>"
+    )
+
+
+def generate_gallery(runs: list[Any], reports_dir: Path, task_id: str | None = None) -> str:
+    """Render a visual comparison grid: one card per run, grouped by task."""
+    finished = [r for r in runs if r.status == "finished"]
+    if task_id:
+        finished = [r for r in finished if r.task_id == task_id]
+
+    by_task: dict[str, list[Any]] = defaultdict(list)
+    for r in finished:
+        by_task[r.task_id].append(r)
+
+    shots_dir = reports_dir / "shots"
+    if finished:
+        shots_dir.mkdir(exist_ok=True)
+    sections = "".join(
+        f"<div class='section'><h2>{_esc(tid)}</h2><div class='gallery'>"
+        + "".join(_gallery_card(r, shots_dir) for r in by_task[tid])
+        + "</div></div>"
+        for tid in sorted(by_task)
+    ) or "<p>No finished runs yet.</p>"
+
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>orchestral gallery</title>
+  {STYLE}
+</head>
+<body>
+  <h1>orchestral gallery</h1>
+  <a href="index.html">&larr; all runs</a> &middot; <a href="dashboard.html">dashboard</a>
+  {sections}
+</body>
+</html>
+"""
 
 
 def _bar_html(label: str, value: float, max_value: float) -> str:
@@ -282,7 +363,7 @@ def _dashboard_html(runs: list[Any], summary: dict[str, Any]) -> str:
 </head>
 <body>
   <h1>orchestral dashboard</h1>
-  <a href="index.html">&larr; per-run drill-down</a>
+  <a href="index.html">&larr; per-run drill-down</a> &middot; <a href="gallery.html">gallery</a>
 
   <div class="summary">
     <div class="card"><div class="metric">{total}</div><small>runs</small></div>

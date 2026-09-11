@@ -29,11 +29,11 @@
 
 ## v0.3 — Judgment and refinement
 
-- [ ] LLM-as-judge (frontier model scores each output, cached)
-- [ ] Retry-limit ablation: does more retries fix bad workers or just burn tokens?
-- [ ] Orchestrator prompt ablation: terse vs detailed planning prompts
-- [ ] Cost-per-quality scatter plot (matplotlib)
-- [ ] Historical model performance tracking across runs
+- [x] LLM-as-judge (frontier model scores each output, cached) — `--judge` on run/grid/batch/ablate, results cached in `runs/index.db` keyed on (task, judge, artifact sha); `--no-judge-cache` bypasses reads; image tasks judged via vision-capable models
+- [x] Retry-limit ablation — `harness.py ablate --sweep retry_limit=0,1,2` (does more retries fix bad workers or just burn tokens?)
+- [x] Orchestrator prompt ablation — `prompts/orchestrator-*.md` variants + `--prompt-variant`; sweep via `ablate --sweep prompt_variant=terse,detailed`
+- [x] Cost-per-quality scatter plot — inline SVG on `dashboard.html` (zero-dep instead of matplotlib)
+- [x] Historical model performance tracking — `harness.py history` + per-role tables on the dashboard
 - [ ] Video generation task type (when OpenRouter supports it reliably)
 
 **Goal:** move from "look at the pages" to "rank the pairings automatically."

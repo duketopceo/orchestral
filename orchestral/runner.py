@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import html.parser
 import json
 from datetime import datetime, timezone
@@ -30,9 +31,21 @@ class ValidationError(Exception):
 
 
 class Runner:
-    def __init__(self, *, dry_run: bool = False, planner: str = "raw", runs_dir: str | Path = "runs"):
+    def __init__(
+        self,
+        *,
+        dry_run: bool = False,
+        planner: str = "raw",
+        runs_dir: str | Path = "runs",
+        prompt_variant: str | None = None,
+        sweep: dict[str, Any] | None = None,
+        use_judge_cache: bool = True,
+    ):
         self.dry_run = dry_run
         self.planner = planner
+        self.prompt_variant = prompt_variant
+        self.sweep = sweep
+        self.use_judge_cache = use_judge_cache
         self.store = RunStore(runs_dir)
         self.client: OpenRouterClient | None = None
         if not dry_run:
@@ -46,6 +59,9 @@ class Runner:
             config={
                 "dry_run": self.dry_run,
                 "planner": self.planner,
+                "prompt_variant": self.prompt_variant,
+                "sweep": self.sweep,
+                "judge": judge.slug if judge else None,
                 "orchestrator": orchestrator.to_dict(),
                 "worker": worker.to_dict(),
             },
@@ -80,6 +96,7 @@ class Runner:
                     step=1,
                     client=self.client,
                     dry_run=self.dry_run,
+                    prompt_variant=self.prompt_variant,
                 )
             else:
                 plan, plan_costs = plan_raw(
@@ -89,6 +106,7 @@ class Runner:
                     step=1,
                     client=self.client,
                     dry_run=self.dry_run,
+                    prompt_variant=self.prompt_variant,
                 )
             (run_dir / "plan.json").write_text(json.dumps(plan, indent=2, default=str))
             ledger.add_many(plan_costs)
@@ -217,18 +235,36 @@ class Runner:
                 ledger.add_many(assembly_costs)
                 passes, report = self._validate(task, artifact)
 
-            # 4. Judge (optional — text artifacts only)
-            if judge is not None and not is_image:
+            # 4. Judge (optional; image tasks need a vision-capable judge model)
+            if judge is not None:
                 judge_step = assembly_step + 3
-                judge_result, judge_costs = judge_artifact(
-                    logger=logger,
-                    step=judge_step,
-                    task=task,
-                    artifact=artifact,
-                    judge=judge,
-                    client=self.client,
-                    dry_run=self.dry_run,
-                )
+                artifact_sha = hashlib.sha256(artifact_bytes if is_image else artifact.encode()).hexdigest()
+                judge_result = self.store.get_judge_result(task.id, judge.slug, artifact_sha) if self.use_judge_cache else None
+                if judge_result is not None:
+                    logger.log(
+                        phase="judge",
+                        step=judge_step,
+                        event_type="judge_cache_hit",
+                        model=judge.slug,
+                        role="judge",
+                        input_data={"task": task.id, "artifact_sha256": artifact_sha},
+                        output_data=judge_result,
+                        reasoning="Judge result served from cache; no API call made.",
+                    )
+                    judge_costs = []
+                else:
+                    judge_result, judge_costs = judge_artifact(
+                        logger=logger,
+                        step=judge_step,
+                        task=task,
+                        artifact="" if is_image else artifact,
+                        judge=judge,
+                        client=self.client,
+                        dry_run=self.dry_run,
+                        image_bytes=artifact_bytes if is_image else None,
+                    )
+                    if not self.dry_run:
+                        self.store.put_judge_result(task.id, judge.slug, artifact_sha, judge_result)
                 ledger.add_many(judge_costs)
                 report["judge"] = judge_result
                 if judge_result.get("score") is not None:

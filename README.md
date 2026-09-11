@@ -87,6 +87,20 @@ python harness.py run --task tasks/landing-page.yaml --orchestrators 3 --workers
 # Generate comparison report
 python harness.py report --task tasks/landing-page.yaml
 
+# Judge every run with a frontier model (results are cached on artifact hash)
+python harness.py grid --task landing-page-coffee --judge anthropic/claude-haiku-4.5 --jobs 5
+
+# Ablate one knob on a single pairing
+python harness.py ablate --task landing-page-coffee \
+    --orchestrator deepseek/deepseek-v4-flash-0731 --worker z-ai/glm-5.3-flash \
+    --sweep retry_limit=0,1,2
+python harness.py ablate --task landing-page-coffee \
+    --orchestrator deepseek/deepseek-v4-flash-0731 --worker z-ai/glm-5.3-flash \
+    --sweep prompt_variant=terse,detailed
+
+# Per-model history across all stored runs
+python harness.py history
+
 # Terminal dashboard
 python harness.py tui
 ```

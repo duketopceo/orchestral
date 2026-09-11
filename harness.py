@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import os
 import sys
@@ -12,8 +13,9 @@ from pathlib import Path
 from typing import Any
 
 from orchestral.config import ModelConfig, find_task, load_models, load_task
+from orchestral.planners import available_prompt_variants, load_prompt_variant
 from orchestral.privacy import scrub_all
-from orchestral.reporter import generate_dashboard, generate_html_report
+from orchestral.reporter import generate_dashboard, generate_html_report, model_history
 from orchestral.runner import Runner
 from orchestral.storage import RunStore
 from orchestral.tui import run_tui
@@ -48,6 +50,43 @@ def _task_from_arg(task_id: str, tasks_dir: str = "tasks") -> Path:
     return path
 
 
+def _judge_from_arg(args: argparse.Namespace) -> ModelConfig | None:
+    judge = _model_from_arg(args.judge, args.models_dir) if getattr(args, "judge", None) else None
+    if judge is not None:
+        judge.role = "judge"
+    return judge
+
+
+def _check_prompt_variant(args: argparse.Namespace) -> None:
+    """Fail fast on an unknown --prompt-variant before any run starts."""
+    variant = getattr(args, "prompt_variant", None)
+    if not variant:
+        return
+    try:
+        load_prompt_variant(variant)
+    except FileNotFoundError as exc:
+        print(str(exc), file=sys.stderr)
+        sys.exit(1)
+
+
+def _runner_kwargs(args: argparse.Namespace, **extra: Any) -> dict[str, Any]:
+    return {
+        "dry_run": args.dry_run,
+        "planner": args.planner,
+        "runs_dir": args.runs_dir,
+        "prompt_variant": getattr(args, "prompt_variant", None),
+        "use_judge_cache": not getattr(args, "no_judge_cache", False),
+        **extra,
+    }
+
+
+def _apply_retry_limit(worker: ModelConfig, args: argparse.Namespace) -> ModelConfig:
+    if getattr(args, "retry_limit", None) is not None:
+        worker = copy.copy(worker)
+        worker.retry_limit = args.retry_limit
+    return worker
+
+
 def cmd_init(args: argparse.Namespace) -> None:
     store = RunStore(args.runs_dir)
     print(f"Run store ready at {store.root}")
@@ -59,17 +98,16 @@ def cmd_run(args: argparse.Namespace) -> None:
         print("OPENROUTER_API_KEY is not set. Pass --dry-run to test the harness without calling OpenRouter.")
         sys.exit(1)
 
+    _check_prompt_variant(args)
     task_path = _task_from_arg(args.task, args.tasks_dir)
     task = load_task(task_path)
     orchestrator = _model_from_arg(args.orchestrator, args.models_dir)
-    worker = _model_from_arg(args.worker, args.models_dir)
+    worker = _apply_retry_limit(_model_from_arg(args.worker, args.models_dir), args)
     orchestrator.role = "orchestrator"
     worker.role = "worker"
-    judge = _model_from_arg(args.judge, args.models_dir) if args.judge else None
-    if judge is not None:
-        judge.role = "judge"
+    judge = _judge_from_arg(args)
 
-    runner = Runner(dry_run=args.dry_run, planner=args.planner, runs_dir=args.runs_dir)
+    runner = Runner(**_runner_kwargs(args))
     meta = runner.run(task, orchestrator, worker, judge)
     print(f"Run {meta.run_id} {meta.status}")
     print(f"  Directory: {meta.run_dir}")
@@ -85,6 +123,8 @@ def cmd_grid(args: argparse.Namespace) -> None:
     task_path = _task_from_arg(args.task, args.tasks_dir)
     task = load_task(task_path)
     RunStore(args.runs_dir)  # ensure WAL mode is set before parallel runners connect
+    _check_prompt_variant(args)
+    judge = _judge_from_arg(args)
 
     def _configured_workers() -> list[ModelConfig]:
         pool = [m for m in load_models(args.models_dir) if m.role == "worker"]
@@ -113,8 +153,8 @@ def cmd_grid(args: argparse.Namespace) -> None:
     def _one(orchestrator: ModelConfig, worker: ModelConfig) -> dict[str, Any]:
         orchestrator.role = "orchestrator"
         worker.role = "worker"
-        runner = Runner(dry_run=args.dry_run, planner=args.planner, runs_dir=args.runs_dir)
-        meta = runner.run(task, orchestrator, worker)
+        runner = Runner(**_runner_kwargs(args))
+        meta = runner.run(task, orchestrator, _apply_retry_limit(worker, args), judge)
         return {
             "orchestrator": orchestrator.slug,
             "worker": worker.slug,
@@ -175,17 +215,19 @@ def cmd_batch(args: argparse.Namespace) -> None:
             paths.append(_task_from_arg(t, args.tasks_dir))
 
     orchestrator = _model_from_arg(args.orchestrator, args.models_dir)
-    worker = _model_from_arg(args.worker, args.models_dir)
+    worker = _apply_retry_limit(_model_from_arg(args.worker, args.models_dir), args)
     orchestrator.role = "orchestrator"
     worker.role = "worker"
     RunStore(args.runs_dir)  # ensure WAL mode is set before parallel runners connect
+    _check_prompt_variant(args)
+    judge = _judge_from_arg(args)
 
     results: list[dict[str, Any]] = []
 
     def _one(path: Path) -> dict[str, Any]:
         task = load_task(path)
-        runner = Runner(dry_run=args.dry_run, planner=args.planner, runs_dir=args.runs_dir)
-        meta = runner.run(task, orchestrator, worker)
+        runner = Runner(**_runner_kwargs(args))
+        meta = runner.run(task, orchestrator, worker, judge)
         return {
             "task_id": task.id,
             "task_path": str(path),
@@ -221,6 +263,115 @@ def cmd_batch(args: argparse.Namespace) -> None:
         print(json.dumps(results, indent=2, default=str))
     if failures:
         sys.exit(1)
+
+
+# Supported ablation knobs: name -> value caster
+SWEEP_KNOBS = {"retry_limit": int, "prompt_variant": str}
+MAX_SWEEP_VALUES = 8
+
+
+def cmd_ablate(args: argparse.Namespace) -> None:
+    if not args.dry_run and not os.environ.get("OPENROUTER_API_KEY"):
+        print("OPENROUTER_API_KEY is not set. Pass --dry-run to test the harness without calling OpenRouter.")
+        sys.exit(1)
+
+    knob, sep, raw = args.sweep.partition("=")
+    if not sep or knob not in SWEEP_KNOBS:
+        print(f"--sweep must be <knob>=<csv> with knob one of: {', '.join(SWEEP_KNOBS)}", file=sys.stderr)
+        sys.exit(1)
+    caster = SWEEP_KNOBS[knob]
+    try:
+        values = [caster(v.strip()) for v in raw.split(",") if v.strip()]
+    except ValueError:
+        print(f"Invalid value in --sweep {args.sweep}: expected {caster.__name__}", file=sys.stderr)
+        sys.exit(1)
+    if not values or len(values) > MAX_SWEEP_VALUES:
+        print(f"--sweep needs 1-{MAX_SWEEP_VALUES} values", file=sys.stderr)
+        sys.exit(1)
+    if knob == "prompt_variant":
+        known = available_prompt_variants()
+        bad = [v for v in values if v not in known]
+        if bad:
+            print(f"Unknown prompt variant(s) {bad}. Available: {', '.join(known) or '(none)'}", file=sys.stderr)
+            sys.exit(1)
+
+    _check_prompt_variant(args)
+    task = load_task(_task_from_arg(args.task, args.tasks_dir))
+    orchestrator = _model_from_arg(args.orchestrator, args.models_dir)
+    base_worker = _model_from_arg(args.worker, args.models_dir)
+    orchestrator.role = "orchestrator"
+    base_worker.role = "worker"
+    RunStore(args.runs_dir)
+    judge = _judge_from_arg(args)
+
+    def _one(value: Any) -> dict[str, Any]:
+        worker = copy.copy(base_worker)
+        kwargs = _runner_kwargs(args, sweep={"knob": knob, "value": value})
+        if knob == "retry_limit":
+            worker.retry_limit = value
+        else:
+            kwargs["prompt_variant"] = value
+        meta = Runner(**kwargs).run(task, orchestrator, worker, judge)
+        return {
+            "value": value,
+            "passes": meta.passes,
+            "score": meta.score,
+            "cost": meta.total_cost_usd,
+            "tokens": meta.total_input_tokens + meta.total_output_tokens,
+            "run_id": meta.run_id,
+        }
+
+    results: list[dict[str, Any]] = []
+    failures = 0
+    if args.jobs > 1:
+        with ThreadPoolExecutor(max_workers=args.jobs) as pool:
+            futures = {pool.submit(_one, v): v for v in values}
+            for fut in as_completed(futures):
+                try:
+                    results.append(fut.result())
+                except Exception as exc:
+                    failures += 1
+                    print(f"[fail] {knob}={futures[fut]}: {exc}", file=sys.stderr)
+    else:
+        for v in values:
+            try:
+                results.append(_one(v))
+            except Exception as exc:
+                failures += 1
+                print(f"[fail] {knob}={v}: {exc}", file=sys.stderr)
+    order = {v: i for i, v in enumerate(values)}
+    results.sort(key=lambda r: order[r["value"]])
+
+    print(f"\nAblation: {knob} on {task.id} ({orchestrator.slug} → {base_worker.slug})")
+    print(f"{knob:<16} {'cost':>10} {'tokens':>8} {'pass':>6} {'score':>6}")
+    for r in results:
+        score = f"{r['score']:.2f}" if r['score'] is not None else "-"
+        print(f"{str(r['value']):<16} ${r['cost']:.6f} {r['tokens']:>8} {str(r['passes']):>6} {score:>6}")
+
+    if args.json:
+        print(json.dumps(results, indent=2, default=str))
+    if failures:
+        sys.exit(1)
+
+
+def cmd_history(args: argparse.Namespace) -> None:
+    store = RunStore(args.runs_dir)
+    runs = store.list_runs(
+        orchestrator=args.orchestrator,
+        worker=args.worker,
+        limit=None,
+    )
+    history = model_history(runs)
+    for role in ("orchestrator", "worker", "judge"):
+        table = history[role]
+        if not table:
+            continue
+        print(f"\n{role.capitalize()} history")
+        print(f"{'model':<45} {'runs':>5} {'pass%':>7} {'avg score':>9} {'avg cost':>11} {'total cost':>11}")
+        for name, s in sorted(table.items(), key=lambda kv: -kv[1]["total_cost"]):
+            pass_pct = f"{s['pass_rate'] * 100:.1f}" if s["pass_rate"] is not None else "-"
+            score = f"{s['avg_score']:.2f}" if s["avg_score"] is not None else "-"
+            print(f"{name:<45} {s['runs']:>5} {pass_pct:>7} {score:>9} ${s['avg_cost']:>10.6f} ${s['total_cost']:>10.4f}")
 
 
 def cmd_report(args: argparse.Namespace) -> None:
@@ -359,23 +510,28 @@ def main() -> None:
     init = sub.add_parser("init", help="Create the runs directory and SQLite index")
     init.set_defaults(func=cmd_init)
 
+    def _add_run_flags(sp: argparse.ArgumentParser) -> None:
+        sp.add_argument("--planner", default="raw", choices=["raw", "ce-plan"], help="Orchestrator planning strategy: raw or ce-plan")
+        sp.add_argument("--judge", default=None, help="OpenRouter model slug for an optional LLM-as-judge pass (vision-capable for image tasks)")
+        sp.add_argument("--no-judge-cache", action="store_true", help="Bypass judge result cache reads (still writes)")
+        sp.add_argument("--retry-limit", type=int, default=None, help="Override the worker's retry_limit for this invocation")
+        sp.add_argument("--prompt-variant", default=None, help="Orchestrator prompt variant from prompts/orchestrator-<name>.md")
+        sp.add_argument("--dry-run", action="store_true", help="Do not call OpenRouter; generate sample data for storage testing")
+        sp.add_argument("--json", action="store_true", help="Output the summary as JSON")
+
     run = sub.add_parser("run", help="Run one orchestrator × worker pairing")
     run.add_argument("--task", required=True, help="Task id or path")
     run.add_argument("--orchestrator", required=True, help="OpenRouter model slug for the orchestrator")
     run.add_argument("--worker", required=True, help="OpenRouter model slug for the worker")
-    run.add_argument("--planner", default="raw", choices=["raw", "ce-plan"], help="Orchestrator planning strategy: raw or ce-plan")
-    run.add_argument("--judge", default=None, help="OpenRouter model slug for an optional LLM-as-judge pass")
-    run.add_argument("--dry-run", action="store_true", help="Do not call OpenRouter; generate sample data for storage testing")
+    _add_run_flags(run)
     run.set_defaults(func=cmd_run)
 
     grid = sub.add_parser("grid", help="Run a matrix of orchestrators × workers")
     grid.add_argument("--task", required=True, help="Task id or path")
     grid.add_argument("--orchestrators", default=None, help="Comma-separated OpenRouter model slugs (default: all models with role=orchestrator)")
     grid.add_argument("--workers", default=None, help="Comma-separated OpenRouter model slugs (default: all models with role=worker)")
-    grid.add_argument("--planner", default="raw", choices=["raw", "ce-plan"], help="Orchestrator planning strategy")
     grid.add_argument("--jobs", type=int, default=1, help="Run pairings in parallel with N workers")
-    grid.add_argument("--dry-run", action="store_true", help="Do not call OpenRouter; generate sample data for storage testing")
-    grid.add_argument("--json", action="store_true", help="Output grid summary as JSON")
+    _add_run_flags(grid)
     grid.set_defaults(func=cmd_grid)
 
     batch = sub.add_parser("batch", help="Run one orchestrator × worker pairing across many tasks")
@@ -383,11 +539,23 @@ def main() -> None:
     batch.add_argument("--batch-tasks", nargs="+", default=None, help="Task ids or paths to run")
     batch.add_argument("--orchestrator", required=True, help="OpenRouter model slug for the orchestrator")
     batch.add_argument("--worker", required=True, help="OpenRouter model slug for the worker")
-    batch.add_argument("--planner", default="raw", choices=["raw", "ce-plan"], help="Orchestrator planning strategy")
     batch.add_argument("--jobs", type=int, default=1, help="Run tasks in parallel with N workers")
-    batch.add_argument("--dry-run", action="store_true", help="Do not call OpenRouter; generate sample data for storage testing")
-    batch.add_argument("--json", action="store_true", help="Output batch summary as JSON")
+    _add_run_flags(batch)
     batch.set_defaults(func=cmd_batch)
+
+    ablate = sub.add_parser("ablate", help="Sweep one knob (retry_limit, prompt_variant) for a pairing")
+    ablate.add_argument("--task", required=True, help="Task id or path")
+    ablate.add_argument("--orchestrator", required=True, help="OpenRouter model slug for the orchestrator")
+    ablate.add_argument("--worker", required=True, help="OpenRouter model slug for the worker")
+    ablate.add_argument("--sweep", required=True, help="knob=v1,v2,... (knobs: retry_limit, prompt_variant)")
+    ablate.add_argument("--jobs", type=int, default=1, help="Run sweep points in parallel with N workers")
+    _add_run_flags(ablate)
+    ablate.set_defaults(func=cmd_ablate)
+
+    history = sub.add_parser("history", help="Per-model aggregate history across all stored runs")
+    history.add_argument("--orchestrator", help="Filter by orchestrator")
+    history.add_argument("--worker", help="Filter by worker")
+    history.set_defaults(func=cmd_history)
 
     report = sub.add_parser("report", help="List and compare stored runs")
     report.add_argument("--html", action="store_true", help="Generate a static HTML drill-down report in reports_dir")

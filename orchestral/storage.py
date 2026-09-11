@@ -95,6 +95,18 @@ class RunStore:
                 conn.execute(
                     f"CREATE INDEX IF NOT EXISTS idx_{column} ON runs({column})"
                 )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS judge_cache (
+                    task_id TEXT NOT NULL,
+                    judge_slug TEXT NOT NULL,
+                    artifact_sha256 TEXT NOT NULL,
+                    result_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY (task_id, judge_slug, artifact_sha256)
+                )
+                """
+            )
 
     def new_run(
         self,
@@ -193,6 +205,21 @@ class RunStore:
         with self._connect() as conn:
             rows = conn.execute(query, params).fetchall()
         return [_row_to_meta(row) for row in rows]
+
+    def get_judge_result(self, task_id: str, judge_slug: str, artifact_sha256: str) -> Optional[dict[str, Any]]:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT result_json FROM judge_cache WHERE task_id = ? AND judge_slug = ? AND artifact_sha256 = ?",
+                (task_id, judge_slug, artifact_sha256),
+            ).fetchone()
+        return json.loads(row[0]) if row else None
+
+    def put_judge_result(self, task_id: str, judge_slug: str, artifact_sha256: str, result: dict[str, Any]) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO judge_cache VALUES (?, ?, ?, ?, ?)",
+                (task_id, judge_slug, artifact_sha256, json.dumps(result, default=str), datetime.now(timezone.utc).isoformat()),
+            )
 
     def summary(self) -> dict[str, Any]:
         with self._connect() as conn:

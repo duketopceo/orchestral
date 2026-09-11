@@ -7,6 +7,7 @@ harness so it stays provider-agnostic.
 
 from __future__ import annotations
 
+import base64
 import json
 import random
 from typing import Any
@@ -35,6 +36,22 @@ Return only a JSON object with this exact shape:
 }}
 """
 
+JUDGE_PROMPT_IMAGE = """You are an expert judge evaluating the output of an AI system.
+
+Task: {prompt}
+
+The artifact is the attached image.
+
+Score the image from 0.0 to 1.0 based on how well it satisfies the task.
+Return only a JSON object with this exact shape:
+
+{{
+  "score": <float between 0.0 and 1.0>,
+  "passed": <boolean>,
+  "reasoning": "<concise explanation>"
+}}
+"""
+
 
 def judge_artifact(
     *,
@@ -45,6 +62,7 @@ def judge_artifact(
     judge: ModelConfig,
     client: OpenRouterClient | None,
     dry_run: bool,
+    image_bytes: bytes | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Return judge result and list of call costs."""
     if dry_run or client is None:
@@ -72,9 +90,17 @@ def judge_artifact(
         )
         return result, [cost]
 
+    if image_bytes is not None:
+        b64 = base64.b64encode(image_bytes).decode()
+        user_content: Any = [
+            {"type": "text", "text": JUDGE_PROMPT_IMAGE.format(prompt=task.prompt)},
+            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}},
+        ]
+    else:
+        user_content = JUDGE_PROMPT.format(prompt=task.prompt, artifact=artifact[:2000])
     messages = [
         {"role": "system", "content": "You are an expert judge. Return only a JSON object."},
-        {"role": "user", "content": JUDGE_PROMPT.format(prompt=task.prompt, artifact=artifact[:2000])},
+        {"role": "user", "content": user_content},
     ]
     completion = client.chat(model=judge.slug, messages=messages, max_tokens=4096, temperature=0.2)
     content = completion["content"]

@@ -31,6 +31,10 @@ def _model_from_arg(slug: str, models_dir: str = "models") -> ModelConfig:
     )
 
 
+def _slugs_from_arg(arg: str) -> list[str]:
+    return [s.strip() for s in arg.split(",") if s.strip()]
+
+
 def _task_from_arg(task_id: str, tasks_dir: str = "tasks") -> Path:
     path = find_task(task_id, tasks_dir)
     if path is None:
@@ -69,6 +73,45 @@ def cmd_run(args: argparse.Namespace) -> None:
     print(f"  Directory: {meta.run_dir}")
     print(f"  Cost: ${meta.total_cost_usd:.6f} | Tokens: {meta.total_input_tokens + meta.total_output_tokens}")
     print(f"  Passes: {meta.passes} | Score: {meta.score}")
+
+
+def cmd_grid(args: argparse.Namespace) -> None:
+    if not args.dry_run and not os.environ.get("OPENROUTER_API_KEY"):
+        print("OPENROUTER_API_KEY is not set. Pass --dry-run to test the harness without calling OpenRouter.")
+        sys.exit(1)
+
+    task_path = _task_from_arg(args.task, args.tasks_dir)
+    task = load_task(task_path)
+    orchestrators = [_model_from_arg(s, args.models_dir) for s in _slugs_from_arg(args.orchestrators)]
+    workers = [_model_from_arg(s, args.models_dir) for s in _slugs_from_arg(args.workers)]
+    results: list[dict[str, Any]] = []
+
+    for orchestrator in orchestrators:
+        orchestrator.role = "orchestrator"
+        for worker in workers:
+            worker.role = "worker"
+            runner = Runner(dry_run=args.dry_run, planner=args.planner)
+            meta = runner.run(task, orchestrator, worker)
+            results.append(
+                {
+                    "orchestrator": orchestrator.slug,
+                    "worker": worker.slug,
+                    "passes": meta.passes,
+                    "score": meta.score,
+                    "cost": meta.total_cost_usd,
+                    "tokens": meta.total_input_tokens + meta.total_output_tokens,
+                    "run_id": meta.run_id,
+                }
+            )
+
+    print("\nGrid summary")
+    print(f"{'orchestrator':<40} {'worker':<40} {'cost':>10} {'tokens':>8} {'pass':>6} {'score'}")
+    for r in results:
+        score = f"{r['score']:.2f}" if r['score'] is not None else "-"
+        print(f"{r['orchestrator']:<40} {r['worker']:<40} ${r['cost']:.6f} {r['tokens']:>8} {str(r['passes']):>6} {score}")
+
+    if args.json:
+        print(json.dumps(results, indent=2, default=str))
 
 
 def cmd_report(args: argparse.Namespace) -> None:
@@ -154,6 +197,15 @@ def main() -> None:
     run.add_argument("--judge", default=None, help="OpenRouter model slug for an optional LLM-as-judge pass")
     run.add_argument("--dry-run", action="store_true", help="Do not call OpenRouter; generate sample data for storage testing")
     run.set_defaults(func=cmd_run)
+
+    grid = sub.add_parser("grid", help="Run a matrix of orchestrators × workers")
+    grid.add_argument("--task", required=True, help="Task id or path")
+    grid.add_argument("--orchestrators", required=True, help="Comma-separated OpenRouter model slugs")
+    grid.add_argument("--workers", required=True, help="Comma-separated OpenRouter model slugs")
+    grid.add_argument("--planner", default="raw", choices=["raw", "ce-plan"], help="Orchestrator planning strategy")
+    grid.add_argument("--dry-run", action="store_true", help="Do not call OpenRouter; generate sample data for storage testing")
+    grid.add_argument("--json", action="store_true", help="Output grid summary as JSON")
+    grid.set_defaults(func=cmd_grid)
 
     report = sub.add_parser("report", help="List and compare stored runs")
     report.add_argument("--html", action="store_true", help="Generate a static HTML drill-down report in reports_dir")

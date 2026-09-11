@@ -463,7 +463,7 @@ _SCATTER_PALETTE = ["#2563eb", "#dc2626", "#16a34a", "#d97706", "#9333ea", "#089
 
 def _scatter_svg(runs: list[Any]) -> str:
     """Cost-vs-quality SVG scatter: x = run cost, y = judge score or pass (1/0)."""
-    pts = [r for r in runs if r.status == "finished" and r.total_cost_usd > 0]
+    pts = [r for r in runs if r.status == "finished"]
     if not pts:
         return "<p>No finished runs yet.</p>"
     w, h, pad_l, pad_r, pad_t, pad_b = 720, 340, 70, 20, 20, 50
@@ -481,13 +481,14 @@ def _scatter_svg(runs: list[Any]) -> str:
     def py(q: float) -> float:
         return pad_t + (1 - q) * (h - pad_t - pad_b)
 
-    orch_colors: dict[str, str] = {}
+    pairing_colors: dict[str, str] = {}
     circles = []
     for r in pts:
-        color = orch_colors.setdefault(r.orchestrator, _SCATTER_PALETTE[len(orch_colors) % len(_SCATTER_PALETTE)])
+        pairing = f"{r.orchestrator} → {r.worker}"
+        color = pairing_colors.setdefault(pairing, _SCATTER_PALETTE[len(pairing_colors) % len(_SCATTER_PALETTE)])
         q = quality(r)
         judged = r.score is not None
-        label = f"{_esc(r.orchestrator)} → {_esc(r.worker)} · {_esc(r.task_id)} · ${r.total_cost_usd:.4f} · {'score' if judged else 'pass'} {q:.2f}"
+        label = f"{_esc(pairing)} · {_esc(r.task_id)} · ${r.total_cost_usd:.4f} · {'score' if judged else 'pass'} {q:.2f}"
         circles.append(
             f"<circle cx='{px(r.total_cost_usd):.1f}' cy='{py(q):.1f}' r='5' fill='{color}'"
             f" fill-opacity='{0.85 if judged else 0.4}' stroke='{color}' stroke-width='1'>"
@@ -508,8 +509,8 @@ def _scatter_svg(runs: list[Any]) -> str:
         ticks.append(f"<text x='{x:.1f}' y='{h - pad_b + 18}' text-anchor='middle' font-size='11' fill='#6b7280'>${xv:.3f}</text>")
 
     legend = "".join(
-        f"<span class='tag' style='background:{c}22;color:{c}'>{_esc(o)}</span> "
-        for o, c in orch_colors.items()
+        f"<span class='tag' style='background:{c}22;color:{c}'>{_esc(pairing)}</span> "
+        for pairing, c in pairing_colors.items()
     )
     return (
         f"<svg viewBox='0 0 {w} {h}' style='max-width:720px;width:100%;height:auto'>"

@@ -42,10 +42,13 @@ def load_prompt_variant(variant: str, prompts_dir: Path | str = PROMPTS_DIR) -> 
     if not _VARIANT_NAME.match(variant):
         raise FileNotFoundError(f"Invalid prompt variant name '{variant}'")
     try:
-        return _read_prompt_file(str(Path(prompts_dir) / f"orchestrator-{variant}.md"))
+        text = _read_prompt_file(str(Path(prompts_dir) / f"orchestrator-{variant}.md"))
     except FileNotFoundError:
         known = ", ".join(available_prompt_variants(prompts_dir)) or "(none)"
         raise FileNotFoundError(f"Unknown prompt variant '{variant}'. Available: {known}") from None
+    if not text:
+        raise ValueError(f"Prompt variant '{variant}' is empty")
+    return text
 
 
 @lru_cache(maxsize=None)

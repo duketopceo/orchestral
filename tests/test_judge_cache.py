@@ -55,13 +55,16 @@ class TestJudgeCacheInRun(unittest.TestCase):
             judge=_model(judge_slug, "judge"),
         )
 
+    def _sha(self, task: TaskSpec, artifact_text: str) -> str:
+        return hashlib.sha256(task.prompt.encode() + b"\0" + artifact_text.encode()).hexdigest()
+
     @patch.dict(os.environ, {"OPENROUTER_API_KEY": "fake"})
     def test_cache_hit_serves_same_result(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = RunStore(tmp)
             task = TaskSpec(id="t", type="html", prompt="p")
             artifact = "<html>whatever</html>"
-            sha = hashlib.sha256(artifact.encode()).hexdigest()
+            sha = self._sha(task, artifact)
             seeded = {"score": 0.77, "passed": True, "reasoning": "cached"}
             store.put_judge_result(task.id, "j/model", sha, seeded)
 
@@ -77,7 +80,7 @@ class TestJudgeCacheInRun(unittest.TestCase):
             store = RunStore(tmp)
             task = TaskSpec(id="t", type="html", prompt="p")
             artifact = "<html>x</html>"
-            sha = hashlib.sha256(artifact.encode()).hexdigest()
+            sha = self._sha(task, artifact)
             store.put_judge_result(task.id, "j/model", sha, {"score": 0.1, "passed": False, "reasoning": "stale"})
 
             fresh = {"score": 0.9, "passed": True, "reasoning": "new"}
@@ -106,6 +109,28 @@ class TestJudgeCacheInRun(unittest.TestCase):
             self._judge(runner, task, "<html>a</html>", judge_slug="j/one")
             self._judge(runner, task, "<html>a</html>", judge_slug="j/two")
             self.assertEqual(runner.client.chat.call_count, 2)
+
+    @patch.dict(os.environ, {"OPENROUTER_API_KEY": "fake"})
+    def test_cache_key_changes_with_task_prompt(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = RunStore(tmp)
+            runner = self._runner(store, use_cache=True, reply={"score": 0.5, "passed": True, "reasoning": "r"})
+            self._judge(runner, TaskSpec(id="t", type="html", prompt="p1"), "<html>a</html>")
+            self._judge(runner, TaskSpec(id="t", type="html", prompt="p2"), "<html>a</html>")
+            self.assertEqual(runner.client.chat.call_count, 2)
+
+    @patch.dict(os.environ, {"OPENROUTER_API_KEY": "fake"})
+    def test_parse_failure_not_cached(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = RunStore(tmp)
+            task = TaskSpec(id="t", type="html", prompt="p")
+            runner = self._runner(store, use_cache=True, reply={})
+            runner.client.chat.return_value["content"] = "not json at all"
+            result, _ = self._judge(runner, task, "<html>a</html>")
+            self.assertTrue(result["parse_failed"])
+            with store._connect() as conn:
+                count = conn.execute("SELECT COUNT(*) FROM judge_cache").fetchone()[0]
+            self.assertEqual(count, 0)
 
     def test_dry_run_does_not_populate_cache(self):
         with tempfile.TemporaryDirectory() as tmp:

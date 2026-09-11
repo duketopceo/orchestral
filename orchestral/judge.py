@@ -124,6 +124,7 @@ def judge_artifact(
             "score": 0.0,
             "passed": False,
             "reasoning": f"Could not parse judge response: {content[:200]}",
+            "parse_failed": True,
         }
 
     result["score"] = float(result.get("score", 0.0))

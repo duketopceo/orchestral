@@ -238,6 +238,17 @@ class Runner:
 
             # 4. Judge (optional; image tasks need a vision-capable judge model)
             if judge is not None:
+                if is_image and judge.metadata.get("vision") is not True:
+                    logger.log(
+                        phase="judge",
+                        step=assembly_step + 2,
+                        event_type="judge_warning",
+                        model=judge.slug,
+                        role="judge",
+                        input_data={"task": task.id},
+                        output_data={},
+                        reasoning="Judge model has no `vision: true` metadata; image judging may fail at the API.",
+                    )
                 judge_result, judge_costs = self._judge_with_cache(
                     logger=logger,
                     step=assembly_step + 3,
@@ -352,7 +363,8 @@ class Runner:
             )
 
         payload = artifact_bytes if artifact_bytes is not None else (artifact_text or "").encode()
-        sha = hashlib.sha256(payload).hexdigest()
+        # task prompt is part of the key so a task edit under the same id invalidates
+        sha = hashlib.sha256(task.prompt.encode() + b"\0" + payload).hexdigest()
         with self.store.judge_lock((task.id, judge.slug, sha)):
             if self.use_judge_cache:
                 cached = self.store.get_judge_result(task.id, judge.slug, sha)
@@ -372,7 +384,9 @@ class Runner:
                 logger=logger, step=step, task=task, artifact=artifact_text or "",
                 judge=judge, client=self.client, dry_run=False, image_bytes=artifact_bytes,
             )
-            self.store.put_judge_result(task.id, judge.slug, sha, result)
+            # synthetic parse-failure results are transient — don't poison the cache
+            if not result.get("parse_failed"):
+                self.store.put_judge_result(task.id, judge.slug, sha, result)
             return result, costs
 
     def _validate(self, task: TaskSpec, artifact: str) -> tuple[bool, dict[str, Any]]:

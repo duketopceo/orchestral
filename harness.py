@@ -56,9 +56,7 @@ def _task_from_arg(task_id: str, tasks_dir: str = "tasks") -> Path:
 
 def _judge_from_arg(args: argparse.Namespace, known: dict[str, ModelConfig] | None = None) -> ModelConfig | None:
     judge = _model_from_arg(args.judge, args.models_dir, known) if getattr(args, "judge", None) else None
-    if judge is not None:
-        judge.role = "judge"
-    return judge
+    return replace(judge, role="judge") if judge is not None else None
 
 
 def _check_prompt_variant(args: argparse.Namespace) -> None:
@@ -78,6 +76,9 @@ def _run_preamble(args: argparse.Namespace) -> tuple[RunStore, dict[str, ModelCo
     one RunStore (primes WAL before parallel runners), and the optional judge."""
     if not args.dry_run and not os.environ.get("OPENROUTER_API_KEY"):
         print("OPENROUTER_API_KEY is not set. Pass --dry-run to test the harness without calling OpenRouter.")
+        sys.exit(1)
+    if getattr(args, "retry_limit", None) is not None and not 0 <= args.retry_limit <= 10:
+        print("--retry-limit must be between 0 and 10", file=sys.stderr)
         sys.exit(1)
     _check_prompt_variant(args)
     store = RunStore(args.runs_dir)
@@ -112,10 +113,8 @@ def cmd_init(args: argparse.Namespace) -> None:
 def cmd_run(args: argparse.Namespace) -> None:
     store, known, judge = _run_preamble(args)
     task = load_task(_task_from_arg(args.task, args.tasks_dir))
-    orchestrator = _model_from_arg(args.orchestrator, args.models_dir, known)
-    worker = _apply_retry_limit(_model_from_arg(args.worker, args.models_dir, known), args)
-    orchestrator.role = "orchestrator"
-    worker.role = "worker"
+    orchestrator = replace(_model_from_arg(args.orchestrator, args.models_dir, known), role="orchestrator")
+    worker = _apply_retry_limit(replace(_model_from_arg(args.worker, args.models_dir, known), role="worker"), args)
 
     meta = Runner(**_runner_kwargs(args, store)).run(task, orchestrator, worker, judge)
     if args.json:
@@ -235,10 +234,8 @@ def cmd_batch(args: argparse.Namespace) -> None:
                 raise FileNotFoundError(f"No task found for id '{t}' in {args.tasks_dir}")
             paths.append(p)
 
-    orchestrator = _model_from_arg(args.orchestrator, args.models_dir, known)
-    worker = _apply_retry_limit(_model_from_arg(args.worker, args.models_dir, known), args)
-    orchestrator.role = "orchestrator"
-    worker.role = "worker"
+    orchestrator = replace(_model_from_arg(args.orchestrator, args.models_dir, known), role="orchestrator")
+    worker = _apply_retry_limit(replace(_model_from_arg(args.worker, args.models_dir, known), role="worker"), args)
 
     results: list[dict[str, Any]] = []
 
@@ -313,13 +310,11 @@ def cmd_ablate(args: argparse.Namespace) -> None:
 
     store, known, judge = _run_preamble(args)
     task = load_task(_task_from_arg(args.task, args.tasks_dir))
-    orchestrator = _model_from_arg(args.orchestrator, args.models_dir, known)
+    orchestrator = replace(_model_from_arg(args.orchestrator, args.models_dir, known), role="orchestrator")
     base_worker = _model_from_arg(args.worker, args.models_dir, known)
-    orchestrator.role = "orchestrator"
-    base_worker.role = "worker"
 
     def _one(value: Any) -> dict[str, Any]:
-        worker = replace(base_worker, retry_limit=value) if knob == "retry_limit" else _apply_retry_limit(base_worker, args)
+        worker = replace(base_worker, role="worker", retry_limit=value) if knob == "retry_limit" else _apply_retry_limit(replace(base_worker, role="worker"), args)
         kwargs = _runner_kwargs(args, store, sweep={"knob": knob, "value": value})
         if knob == "prompt_variant":
             kwargs["prompt_variant"] = value

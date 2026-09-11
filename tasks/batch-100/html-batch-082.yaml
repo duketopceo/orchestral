@@ -1,0 +1,8 @@
+id: html-batch-082
+type: html
+prompt: Create a landing page for a open-source fonts library targeted at open-source
+  developers. Write a strong headline, a 2-3 sentence value proposition, three feature
+  bullets, and a call-to-action button. Output a single self-contained HTML file with
+  inline CSS.
+validation:
+- html

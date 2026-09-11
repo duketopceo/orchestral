@@ -114,6 +114,59 @@ def cmd_grid(args: argparse.Namespace) -> None:
         print(json.dumps(results, indent=2, default=str))
 
 
+def cmd_batch(args: argparse.Namespace) -> None:
+    if not args.dry_run and not os.environ.get("OPENROUTER_API_KEY"):
+        print("OPENROUTER_API_KEY is not set. Pass --dry-run to test the harness without calling OpenRouter.")
+        sys.exit(1)
+
+    if not args.batch_dir and not args.batch_tasks:
+        print("Pass either --batch-dir or --batch-tasks")
+        sys.exit(1)
+
+    paths: list[Path] = []
+    if args.batch_dir:
+        dir_path = Path(args.batch_dir)
+        if not dir_path.is_dir():
+            raise FileNotFoundError(f"Batch directory not found: {args.batch_dir}")
+        paths = sorted(dir_path.glob("*.yaml"))
+        if not paths:
+            raise FileNotFoundError(f"No .yaml task files in {args.batch_dir}")
+    else:
+        for t in args.batch_tasks:
+            paths.append(_task_from_arg(t, args.tasks_dir))
+
+    orchestrator = _model_from_arg(args.orchestrator, args.models_dir)
+    worker = _model_from_arg(args.worker, args.models_dir)
+    orchestrator.role = "orchestrator"
+    worker.role = "worker"
+
+    results: list[dict[str, Any]] = []
+    for path in paths:
+        task = load_task(path)
+        runner = Runner(dry_run=args.dry_run, planner=args.planner)
+        meta = runner.run(task, orchestrator, worker)
+        results.append(
+            {
+                "task_id": task.id,
+                "task_path": str(path),
+                "passes": meta.passes,
+                "score": meta.score,
+                "cost": meta.total_cost_usd,
+                "tokens": meta.total_input_tokens + meta.total_output_tokens,
+                "run_id": meta.run_id,
+            }
+        )
+
+    print(f"\nBatch summary ({len(results)} tasks)")
+    print(f"{'task_id':<30} {'cost':>10} {'tokens':>8} {'pass':>6} {'score':>6}")
+    for r in results:
+        score = f"{r['score']:.2f}" if r['score'] is not None else "-"
+        print(f"{r['task_id']:<30} ${r['cost']:.6f} {r['tokens']:>8} {str(r['passes']):>6} {score:>6}")
+
+    if args.json:
+        print(json.dumps(results, indent=2, default=str))
+
+
 def cmd_report(args: argparse.Namespace) -> None:
     if args.html:
         path = generate_html_report(args.runs_dir, args.reports_dir)
@@ -206,6 +259,16 @@ def main() -> None:
     grid.add_argument("--dry-run", action="store_true", help="Do not call OpenRouter; generate sample data for storage testing")
     grid.add_argument("--json", action="store_true", help="Output grid summary as JSON")
     grid.set_defaults(func=cmd_grid)
+
+    batch = sub.add_parser("batch", help="Run one orchestrator × worker pairing across many tasks")
+    batch.add_argument("--batch-dir", default=None, help="Directory of task .yaml files to run")
+    batch.add_argument("--batch-tasks", nargs="+", default=None, help="Task ids or paths to run")
+    batch.add_argument("--orchestrator", required=True, help="OpenRouter model slug for the orchestrator")
+    batch.add_argument("--worker", required=True, help="OpenRouter model slug for the worker")
+    batch.add_argument("--planner", default="raw", choices=["raw", "ce-plan"], help="Orchestrator planning strategy")
+    batch.add_argument("--dry-run", action="store_true", help="Do not call OpenRouter; generate sample data for storage testing")
+    batch.add_argument("--json", action="store_true", help="Output batch summary as JSON")
+    batch.set_defaults(func=cmd_batch)
 
     report = sub.add_parser("report", help="List and compare stored runs")
     report.add_argument("--html", action="store_true", help="Generate a static HTML drill-down report in reports_dir")

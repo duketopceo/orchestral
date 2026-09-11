@@ -20,8 +20,8 @@
 - [x] 100 HTML page task batch (10 prompts × all pairings) — specs in `tasks/batch-100/`, `harness.py batch` command
 - [ ] Add image generation task type (OpenRouter multimodal)
 - [ ] Expand model grid: 5 orchestrators × 10 workers
-- [ ] Parallel runs (asyncio or multiprocessing, one pairing per process)
-- [ ] Cost table sorted by quality-per-dollar
+- [x] Parallel runs (`--jobs N` on `grid` and `batch`, thread pool, SQLite WAL index)
+- [x] Cost table sorted by quality-per-dollar (`harness.py report --pairings`)
 - [ ] Screenshot capture for HTML outputs (playwright)
 - [ ] Visual comparison grid (HTML gallery page)
 

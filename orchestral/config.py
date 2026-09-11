@@ -77,7 +77,7 @@ def load_task(path: Path | str) -> TaskSpec:
 
 def find_task(task_id: str, root: Path | str = "tasks") -> Optional[Path]:
     root = Path(root)
-    for f in root.glob("*.yaml"):
+    for f in sorted(root.rglob("*.yaml")):
         data = load_yaml(f)
         if data.get("id") == task_id:
             return f

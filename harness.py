@@ -7,7 +7,9 @@ import argparse
 import json
 import os
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from typing import Any
 
 from orchestral.config import ModelConfig, find_task, load_models, load_task
 from orchestral.privacy import scrub_all
@@ -67,7 +69,7 @@ def cmd_run(args: argparse.Namespace) -> None:
     if judge is not None:
         judge.role = "judge"
 
-    runner = Runner(dry_run=args.dry_run, planner=args.planner)
+    runner = Runner(dry_run=args.dry_run, planner=args.planner, runs_dir=args.runs_dir)
     meta = runner.run(task, orchestrator, worker, judge)
     print(f"Run {meta.run_id} {meta.status}")
     print(f"  Directory: {meta.run_dir}")
@@ -82,6 +84,7 @@ def cmd_grid(args: argparse.Namespace) -> None:
 
     task_path = _task_from_arg(args.task, args.tasks_dir)
     task = load_task(task_path)
+    RunStore(args.runs_dir)  # ensure WAL mode is set before parallel runners connect
 
     if args.orchestrators and args.workers:
         orchestrators = [_model_from_arg(s, args.models_dir) for s in _slugs_from_arg(args.orchestrators)]
@@ -95,23 +98,36 @@ def cmd_grid(args: argparse.Namespace) -> None:
             sys.exit(1)
     results: list[dict[str, Any]] = []
 
-    for orchestrator in orchestrators:
+    pairings = [(o, w) for o in orchestrators for w in workers]
+
+    def _one(orchestrator: ModelConfig, worker: ModelConfig) -> dict[str, Any]:
         orchestrator.role = "orchestrator"
-        for worker in workers:
-            worker.role = "worker"
-            runner = Runner(dry_run=args.dry_run, planner=args.planner)
-            meta = runner.run(task, orchestrator, worker)
-            results.append(
-                {
-                    "orchestrator": orchestrator.slug,
-                    "worker": worker.slug,
-                    "passes": meta.passes,
-                    "score": meta.score,
-                    "cost": meta.total_cost_usd,
-                    "tokens": meta.total_input_tokens + meta.total_output_tokens,
-                    "run_id": meta.run_id,
-                }
-            )
+        worker.role = "worker"
+        runner = Runner(dry_run=args.dry_run, planner=args.planner, runs_dir=args.runs_dir)
+        meta = runner.run(task, orchestrator, worker)
+        return {
+            "orchestrator": orchestrator.slug,
+            "worker": worker.slug,
+            "passes": meta.passes,
+            "score": meta.score,
+            "cost": meta.total_cost_usd,
+            "tokens": meta.total_input_tokens + meta.total_output_tokens,
+            "run_id": meta.run_id,
+        }
+
+    if args.jobs > 1:
+        with ThreadPoolExecutor(max_workers=args.jobs) as pool:
+            futures = {pool.submit(_one, o, w): (o.slug, w.slug) for o, w in pairings}
+            for fut in as_completed(futures):
+                o_slug, w_slug = futures[fut]
+                try:
+                    results.append(fut.result())
+                except Exception as exc:
+                    print(f"[fail] {o_slug} × {w_slug}: {exc}", file=sys.stderr)
+        results.sort(key=lambda r: (r["orchestrator"], r["worker"]))
+    else:
+        for o, w in pairings:
+            results.append(_one(o, w))
 
     print("\nGrid summary")
     print(f"{'orchestrator':<40} {'worker':<40} {'cost':>10} {'tokens':>8} {'pass':>6} {'score'}")
@@ -148,23 +164,36 @@ def cmd_batch(args: argparse.Namespace) -> None:
     worker = _model_from_arg(args.worker, args.models_dir)
     orchestrator.role = "orchestrator"
     worker.role = "worker"
+    RunStore(args.runs_dir)  # ensure WAL mode is set before parallel runners connect
 
     results: list[dict[str, Any]] = []
-    for path in paths:
+
+    def _one(path: Path) -> dict[str, Any]:
         task = load_task(path)
-        runner = Runner(dry_run=args.dry_run, planner=args.planner)
+        runner = Runner(dry_run=args.dry_run, planner=args.planner, runs_dir=args.runs_dir)
         meta = runner.run(task, orchestrator, worker)
-        results.append(
-            {
-                "task_id": task.id,
-                "task_path": str(path),
-                "passes": meta.passes,
-                "score": meta.score,
-                "cost": meta.total_cost_usd,
-                "tokens": meta.total_input_tokens + meta.total_output_tokens,
-                "run_id": meta.run_id,
-            }
-        )
+        return {
+            "task_id": task.id,
+            "task_path": str(path),
+            "passes": meta.passes,
+            "score": meta.score,
+            "cost": meta.total_cost_usd,
+            "tokens": meta.total_input_tokens + meta.total_output_tokens,
+            "run_id": meta.run_id,
+        }
+
+    if args.jobs > 1:
+        with ThreadPoolExecutor(max_workers=args.jobs) as pool:
+            futures = {pool.submit(_one, p): p for p in paths}
+            for fut in as_completed(futures):
+                try:
+                    results.append(fut.result())
+                except Exception as exc:
+                    print(f"[fail] {futures[fut]}: {exc}", file=sys.stderr)
+        results.sort(key=lambda r: r["task_id"])
+    else:
+        for path in paths:
+            results.append(_one(path))
 
     print(f"\nBatch summary ({len(results)} tasks)")
     print(f"{'task_id':<30} {'cost':>10} {'tokens':>8} {'pass':>6} {'score':>6}")
@@ -192,6 +221,10 @@ def cmd_report(args: argparse.Namespace) -> None:
         descending=args.desc,
         limit=args.limit,
     )
+
+    if args.pairings:
+        _print_pairing_table(runs)
+        return
 
     if args.json:
         out = [
@@ -222,6 +255,34 @@ def cmd_report(args: argparse.Namespace) -> None:
     print()
     summary = store.summary()
     print(f"Total runs: {summary['runs']} | Total cost: ${summary['total_cost_usd']:.4f} | Total tokens: {summary['total_tokens']}")
+
+
+def _print_pairing_table(runs: list[Any]) -> None:
+    """Aggregate runs by orchestrator × worker, sorted by quality per dollar."""
+    groups: dict[tuple[str, str], list[Any]] = {}
+    for r in runs:
+        if r.status != "finished":
+            continue
+        groups.setdefault((r.orchestrator, r.worker), []).append(r)
+
+    rows = []
+    for (orch, work), group in groups.items():
+        cost = sum(r.total_cost_usd for r in group)
+        tokens = sum(r.total_input_tokens + r.total_output_tokens for r in group)
+        passed = sum(1 for r in group if r.passes)
+        scored = [r.score for r in group if r.score is not None]
+        avg_score = sum(scored) / len(scored) if scored else None
+        # quality = avg score if judged, else pass rate; per dollar of total spend
+        quality = avg_score if avg_score is not None else passed / len(group)
+        qpd = quality / cost if cost > 0 else float("inf")
+        rows.append((orch, work, len(group), passed, avg_score, cost, tokens, qpd))
+
+    rows.sort(key=lambda r: -r[7])
+    print(f"{'orchestrator':<35} {'worker':<35} {'runs':>5} {'pass':>5} {'avg score':>9} {'total cost':>11} {'tokens':>8} {'quality/$':>10}")
+    print("-" * 135)
+    for orch, work, n, passed, avg_score, cost, tokens, qpd in rows:
+        score = f"{avg_score:.2f}" if avg_score is not None else "-"
+        print(f"{orch:<35} {work:<35} {n:>5} {passed:>5} {score:>9} ${cost:>10.4f} {tokens:>8} {qpd:>10.1f}")
 
 
 def cmd_scrub(args: argparse.Namespace) -> None:
@@ -265,6 +326,7 @@ def main() -> None:
     grid.add_argument("--orchestrators", default=None, help="Comma-separated OpenRouter model slugs (default: all models with role=orchestrator)")
     grid.add_argument("--workers", default=None, help="Comma-separated OpenRouter model slugs (default: all models with role=worker)")
     grid.add_argument("--planner", default="raw", choices=["raw", "ce-plan"], help="Orchestrator planning strategy")
+    grid.add_argument("--jobs", type=int, default=1, help="Run pairings in parallel with N workers")
     grid.add_argument("--dry-run", action="store_true", help="Do not call OpenRouter; generate sample data for storage testing")
     grid.add_argument("--json", action="store_true", help="Output grid summary as JSON")
     grid.set_defaults(func=cmd_grid)
@@ -275,6 +337,7 @@ def main() -> None:
     batch.add_argument("--orchestrator", required=True, help="OpenRouter model slug for the orchestrator")
     batch.add_argument("--worker", required=True, help="OpenRouter model slug for the worker")
     batch.add_argument("--planner", default="raw", choices=["raw", "ce-plan"], help="Orchestrator planning strategy")
+    batch.add_argument("--jobs", type=int, default=1, help="Run tasks in parallel with N workers")
     batch.add_argument("--dry-run", action="store_true", help="Do not call OpenRouter; generate sample data for storage testing")
     batch.add_argument("--json", action="store_true", help="Output batch summary as JSON")
     batch.set_defaults(func=cmd_batch)
@@ -287,6 +350,7 @@ def main() -> None:
     report.add_argument("--worker", help="Filter by worker")
     report.add_argument("--sort", default="started_at", help="Column to sort by")
     report.add_argument("--desc", action="store_true", default=True, help="Sort descending")
+    report.add_argument("--pairings", action="store_true", help="Aggregate by orchestrator × worker, sorted by quality per dollar")
     report.add_argument("--limit", type=int, default=None, help="Limit number of rows")
     report.add_argument("--json", action="store_true", help="Output as JSON")
     report.set_defaults(func=cmd_report)

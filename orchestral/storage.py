@@ -60,7 +60,10 @@ class RunStore:
         self._init_db()
 
     def _init_db(self) -> None:
-        with sqlite3.connect(self.db) as conn:
+        with sqlite3.connect(self.db, timeout=30.0) as conn:
+            # WAL so parallel runners can write the index concurrently
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA busy_timeout=10000")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS runs (
@@ -120,7 +123,7 @@ class RunStore:
         (run_dir / "run.json").write_text(json.dumps(meta.to_dict(), indent=2, default=str))
 
     def index_meta(self, meta: RunMeta) -> None:
-        with sqlite3.connect(self.db) as conn:
+        with sqlite3.connect(self.db, timeout=30.0) as conn:
             conn.execute(
                 """
                 INSERT OR REPLACE INTO runs
@@ -145,7 +148,7 @@ class RunStore:
             )
 
     def get_run(self, run_id: str) -> Optional[RunMeta]:
-        with sqlite3.connect(self.db) as conn:
+        with sqlite3.connect(self.db, timeout=30.0) as conn:
             row = conn.execute("SELECT * FROM runs WHERE run_id = ?", (run_id,)).fetchone()
         if not row:
             return None
@@ -180,12 +183,12 @@ class RunStore:
             query += " LIMIT ?"
             params.append(limit)
 
-        with sqlite3.connect(self.db) as conn:
+        with sqlite3.connect(self.db, timeout=30.0) as conn:
             rows = conn.execute(query, params).fetchall()
         return [_row_to_meta(row) for row in rows]
 
     def summary(self) -> dict[str, Any]:
-        with sqlite3.connect(self.db) as conn:
+        with sqlite3.connect(self.db, timeout=30.0) as conn:
             total = conn.execute("SELECT COUNT(*) FROM runs").fetchone()[0]
             cost = conn.execute("SELECT SUM(total_cost_usd) FROM runs").fetchone()[0] or 0.0
             tokens = conn.execute("SELECT SUM(total_input_tokens + total_output_tokens) FROM runs").fetchone()[0] or 0

@@ -22,10 +22,10 @@ class ValidationError(Exception):
 
 
 class Runner:
-    def __init__(self, *, dry_run: bool = False, planner: str = "raw"):
+    def __init__(self, *, dry_run: bool = False, planner: str = "raw", runs_dir: str | Path = "runs"):
         self.dry_run = dry_run
         self.planner = planner
-        self.store = RunStore()
+        self.store = RunStore(runs_dir)
         self.client: OpenRouterClient | None = None
         if not dry_run:
             self.client = OpenRouterClient()

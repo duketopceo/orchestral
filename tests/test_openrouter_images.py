@@ -100,6 +100,19 @@ class TestImagesEndpoint(unittest.TestCase):
             client.images(model="img/model", prompt="x")
 
 
+class TestChatNullContent(unittest.TestCase):
+    def test_null_content_becomes_empty_string(self):
+        # regression: CI eval run got "content": null and crashed on .strip()
+        client = _client()
+        client.client.post = MagicMock(return_value=_response(200, {
+            "id": "x", "model": "m",
+            "choices": [{"message": {"content": None}}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+        }))
+        out = client.chat(model="m", messages=[{"role": "user", "content": "hi"}])
+        self.assertEqual(out["content"], "")
+
+
 class TestImageCost(unittest.TestCase):
     def _cfg(self, per_image: float = 0.03) -> ModelConfig:
         return ModelConfig(

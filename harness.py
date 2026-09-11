@@ -118,6 +118,9 @@ def cmd_run(args: argparse.Namespace) -> None:
     worker.role = "worker"
 
     meta = Runner(**_runner_kwargs(args, store)).run(task, orchestrator, worker, judge)
+    if args.json:
+        print(json.dumps(meta.to_dict(), indent=2, default=str))
+        return
     print(f"Run {meta.run_id} {meta.status}")
     print(f"  Directory: {meta.run_dir}")
     print(f"  Cost: ${meta.total_cost_usd:.6f} | Tokens: {meta.total_input_tokens + meta.total_output_tokens}")
@@ -153,9 +156,10 @@ def cmd_grid(args: argparse.Namespace) -> None:
     pairings = [(o, w) for o in orchestrators for w in workers]
 
     def _one(orchestrator: ModelConfig, worker: ModelConfig) -> dict[str, Any]:
-        orchestrator.role = "orchestrator"
-        worker.role = "worker"
-        meta = Runner(**_runner_kwargs(args, store)).run(task, orchestrator, _apply_retry_limit(worker, args), judge)
+        # copy per pairing — ModelConfig objects from `known` are shared across threads
+        orchestrator = replace(orchestrator, role="orchestrator")
+        worker = _apply_retry_limit(replace(worker, role="worker"), args)
+        meta = Runner(**_runner_kwargs(args, store)).run(task, orchestrator, worker, judge)
         return {
             "orchestrator": orchestrator.slug,
             "worker": worker.slug,
@@ -180,13 +184,17 @@ def cmd_grid(args: argparse.Namespace) -> None:
         results.sort(key=lambda r: (r["orchestrator"], r["worker"]))
     else:
         for o, w in pairings:
-            results.append(_one(o, w))
+            try:
+                results.append(_one(o, w))
+            except Exception as exc:
+                failures += 1
+                print(f"[fail] {o.slug} × {w.slug}: {exc}", file=sys.stderr)
 
     print("\nGrid summary")
-    print(f"{'orchestrator':<40} {'worker':<40} {'cost':>10} {'tokens':>8} {'pass':>6} {'score'}")
+    print(f"{'orchestrator':<40} {'worker':<40} {'cost':>10} {'tokens':>8} {'pass':>6} {'score':>6}")
     for r in results:
         score = f"{r['score']:.2f}" if r['score'] is not None else "-"
-        print(f"{r['orchestrator']:<40} {r['worker']:<40} ${r['cost']:.6f} {r['tokens']:>8} {str(r['passes']):>6} {score}")
+        print(f"{r['orchestrator']:<40} {r['worker']:<40} ${r['cost']:.6f} {r['tokens']:>8} {str(r['passes']):>6} {score:>6}")
 
     if args.json:
         print(json.dumps(results, indent=2, default=str))
@@ -290,6 +298,9 @@ def cmd_ablate(args: argparse.Namespace) -> None:
     except ValueError:
         print(f"Invalid value in --sweep {args.sweep}: expected {caster.__name__}", file=sys.stderr)
         sys.exit(1)
+    if knob == "retry_limit" and any(not 0 <= v <= 10 for v in values):
+        print("retry_limit sweep values must be between 0 and 10", file=sys.stderr)
+        sys.exit(1)
     if not values or len(values) > MAX_SWEEP_VALUES:
         print(f"--sweep needs 1-{MAX_SWEEP_VALUES} values", file=sys.stderr)
         sys.exit(1)
@@ -370,7 +381,7 @@ def cmd_history(args: argparse.Namespace) -> None:
         print(f"\n{role.capitalize()} history")
         print(f"{'model':<45} {'runs':>5} {'pass%':>7} {'avg score':>9} {'avg cost':>11} {'total cost':>11}")
         for name, s in sorted(table.items(), key=lambda kv: -kv[1]["total_cost"]):
-            pass_pct = f"{s['pass_rate'] * 100:.1f}" if s["pass_rate"] is not None else "-"
+            pass_pct = f"{s['pass_rate'] * 100:.1f}%" if s["pass_rate"] is not None else "-"
             score = f"{s['avg_score']:.2f}" if s["avg_score"] is not None else "-"
             print(f"{name:<45} {s['runs']:>5} {pass_pct:>7} {score:>9} ${s['avg_cost']:>10.6f} ${s['total_cost']:>10.4f}")
 

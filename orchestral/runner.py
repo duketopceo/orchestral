@@ -338,10 +338,22 @@ class Runner:
         artifact_text: str | None,
         judge: ModelConfig,
     ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-        # cache participates only in live runs — dry runs must stay deterministic
-        if not self.dry_run:
-            payload = artifact_bytes if artifact_bytes is not None else (artifact_text or "").encode()
-            sha = hashlib.sha256(payload).hexdigest()
+        """Judge an artifact, serving identical artifacts from the persistent cache.
+
+        The cache is keyed on (task, judge slug, artifact sha256) and participates
+        only in live runs — dry runs never read or write it so they stay
+        deterministic. A per-key lock serializes get->call->put across threads so
+        two parallel runs with identical artifacts don't duplicate the API call.
+        """
+        if self.dry_run:
+            return judge_artifact(
+                logger=logger, step=step, task=task, artifact=artifact_text or "",
+                judge=judge, client=self.client, dry_run=True, image_bytes=artifact_bytes,
+            )
+
+        payload = artifact_bytes if artifact_bytes is not None else (artifact_text or "").encode()
+        sha = hashlib.sha256(payload).hexdigest()
+        with self.store.judge_lock((task.id, judge.slug, sha)):
             if self.use_judge_cache:
                 cached = self.store.get_judge_result(task.id, judge.slug, sha)
                 if cached is not None:
@@ -356,19 +368,12 @@ class Runner:
                         reasoning="Judge result served from cache; no API call made.",
                     )
                     return cached, []
-        result, costs = judge_artifact(
-            logger=logger,
-            step=step,
-            task=task,
-            artifact=artifact_text or "",
-            judge=judge,
-            client=self.client,
-            dry_run=self.dry_run,
-            image_bytes=artifact_bytes,
-        )
-        if not self.dry_run:
+            result, costs = judge_artifact(
+                logger=logger, step=step, task=task, artifact=artifact_text or "",
+                judge=judge, client=self.client, dry_run=False, image_bytes=artifact_bytes,
+            )
             self.store.put_judge_result(task.id, judge.slug, sha, result)
-        return result, costs
+            return result, costs
 
     def _validate(self, task: TaskSpec, artifact: str) -> tuple[bool, dict[str, Any]]:
         requested = set(task.validation) if task.validation else {"html_parses", "non_empty", "has_title"}

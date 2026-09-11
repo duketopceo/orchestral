@@ -17,9 +17,11 @@ CLI and the web UI without walking the filesystem every time.
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
-from contextlib import closing, contextmanager
+import threading
 import uuid
+from contextlib import closing, contextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -58,6 +60,8 @@ class RunStore:
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
         self.db = self.root / DB_NAME
+        self._judge_locks: dict[tuple[str, str, str], threading.Lock] = {}
+        self._judge_locks_mu = threading.Lock()
         self._init_db()
 
     @contextmanager
@@ -118,10 +122,13 @@ class RunStore:
         """Create a new run directory and index entry."""
         run_id = uuid.uuid4().hex[:12]
         now = datetime.now(timezone.utc).isoformat()
-        # slugify the slash so the path is filesystem-safe
+        # slugify every component so ids can't escape the runs root
         safe_orch = _safe_name(orchestrator)
         safe_worker = _safe_name(worker)
-        run_dir = self.root / safe_orch / task_id / safe_worker / run_id
+        safe_task = _safe_name(task_id)
+        run_dir = self.root / safe_orch / safe_task / safe_worker / run_id
+        if not run_dir.resolve().is_relative_to(self.root.resolve()):
+            raise ValueError(f"Unsafe run path derived from task/model ids: {run_dir}")
         run_dir.mkdir(parents=True, exist_ok=True)
 
         meta = RunMeta(
@@ -197,6 +204,8 @@ class RunStore:
         if task_id:
             query += " AND task_id = ?"
             params.append(task_id)
+        if order_by not in _SORTABLE_COLUMNS:
+            order_by = "started_at"
         query += f" ORDER BY {order_by} {'DESC' if descending else 'ASC'}"
         if limit:
             query += " LIMIT ?"
@@ -205,6 +214,11 @@ class RunStore:
         with self._connect() as conn:
             rows = conn.execute(query, params).fetchall()
         return [_row_to_meta(row) for row in rows]
+
+    def judge_lock(self, key: tuple[str, str, str]) -> threading.Lock:
+        """Per-(task, judge, artifact) lock so parallel runners don't duplicate judge calls."""
+        with self._judge_locks_mu:
+            return self._judge_locks.setdefault(key, threading.Lock())
 
     def get_judge_result(self, task_id: str, judge_slug: str, artifact_sha256: str) -> Optional[dict[str, Any]]:
         with self._connect() as conn:
@@ -237,9 +251,15 @@ class RunStore:
         }
 
 
+_SORTABLE_COLUMNS = {"run_id", "started_at", "finished_at", "status", "orchestrator", "worker", "task_id", "total_cost_usd", "score"}
+
+
 def _safe_name(name: str) -> str:
-    """Replace path separators so model slugs become safe directory names."""
-    return name.replace("/", "-").replace("\\", "-")
+    """Make a slug safe as a single path component (no separators or dot segments)."""
+    safe = re.sub(r"[^a-zA-Z0-9._-]", "-", name).lstrip(".")
+    if not safe or set(safe) <= {"."}:
+        return "_"
+    return safe
 
 
 def _row_to_meta(row: sqlite3.Row) -> RunMeta:

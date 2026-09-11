@@ -35,6 +35,9 @@ Return only a JSON object with this exact shape:
 }}
 """
 
+# base64 inflates ~33%, so this keeps judge payloads under ~10MB
+MAX_JUDGE_IMAGE_BYTES = 7_500_000
+
 
 def judge_artifact(
     *,
@@ -48,6 +51,19 @@ def judge_artifact(
     image_bytes: bytes | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Return judge result and list of call costs."""
+    if image_bytes is not None and len(image_bytes) > MAX_JUDGE_IMAGE_BYTES:
+        result = {"score": None, "passed": None, "reasoning": f"image too large to judge ({len(image_bytes)} bytes)"}
+        logger.log(
+            phase="judge",
+            step=step,
+            event_type="judge_skipped",
+            model=judge.slug,
+            role="judge",
+            input_data={"task": task.id},
+            output_data=result,
+            reasoning="Image exceeds judge payload cap; skipped without an API call.",
+        )
+        return result, []
     artifact_section = (
         "The artifact is the attached image."
         if image_bytes is not None

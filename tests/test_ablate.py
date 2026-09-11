@@ -81,6 +81,33 @@ class TestAblate(unittest.TestCase):
                 harness.cmd_ablate(args)
         self.assertEqual(ctx.exception.code, 1)
 
+    def test_out_of_range_retry_limit_exits(self):
+        args = _args(sweep="retry_limit=0,99", runs_dir=tempfile.mkdtemp())
+        with redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit) as ctx:
+                harness.cmd_ablate(args)
+        self.assertEqual(ctx.exception.code, 1)
+
+    def test_parallel_sweep_marks_all_runs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            args = _args(sweep="retry_limit=0,1,2", jobs=3, runs_dir=tmp)
+            with redirect_stdout(io.StringIO()):
+                harness.cmd_ablate(args)
+            from orchestral.storage import RunStore
+            runs = RunStore(tmp).list_runs(limit=None)
+            self.assertEqual(len(runs), 3)
+            for r in runs:
+                self.assertEqual(r.status, "finished")
+            self.assertEqual(sorted(r.config["sweep"]["value"] for r in runs), [0, 1, 2])
+
+    def test_prompt_variant_default_accepted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            args = _args(sweep="prompt_variant=default,terse", runs_dir=tmp)
+            with redirect_stdout(io.StringIO()):
+                harness.cmd_ablate(args)
+            from orchestral.storage import RunStore
+            self.assertEqual(len(RunStore(tmp).list_runs(limit=None)), 2)
+
 
 if __name__ == "__main__":
     unittest.main()

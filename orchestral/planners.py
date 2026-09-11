@@ -6,6 +6,7 @@ import base64
 import html
 import json
 import random
+import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -33,10 +34,13 @@ def available_prompt_variants(prompts_dir: Path | str = PROMPTS_DIR) -> list[str
     return sorted(p.stem.removeprefix("orchestrator-") for p in root.glob("orchestrator-*.md"))
 
 
+_VARIANT_NAME = re.compile(r"^[a-zA-Z0-9_-]+$")
+
+
 def load_prompt_variant(variant: str, prompts_dir: Path | str = PROMPTS_DIR) -> str:
-    """Load prompts/orchestrator-<variant>.md; 'default' returns the built-in."""
-    if variant == "default":
-        return ORCHESTRATOR_DEFAULT_PROMPT
+    """Load prompts/orchestrator-<variant>.md (including 'default')."""
+    if not _VARIANT_NAME.match(variant):
+        raise FileNotFoundError(f"Invalid prompt variant name '{variant}'")
     try:
         return _read_prompt_file(str(Path(prompts_dir) / f"orchestrator-{variant}.md"))
     except FileNotFoundError:

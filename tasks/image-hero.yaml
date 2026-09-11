@@ -1,0 +1,13 @@
+id: image-hero-coffee
+type: image
+prompt: |
+  Generate a hero image for a premium coffee subscription landing page.
+  Warm morning light, a ceramic pour-over setup on a wooden table, steam
+  rising from the cup. Photorealistic, 16:9 aspect, no text.
+validation:
+  - non_empty
+  - png_signature
+assets: []
+metadata:
+  difficulty: easy
+  estimated_subtasks: 3

@@ -20,6 +20,9 @@ ui = [
     "fastapi>=0.110",
     "uvicorn>=0.30",
 ]
+shots = [
+    "playwright>=1.40",
+]
 
 [project.scripts]
 orchestral = "harness:main"

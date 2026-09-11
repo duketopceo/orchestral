@@ -52,6 +52,100 @@ models:
     max_tokens: 32768
     retry_limit: 2
 
+  - slug: "meta-llama/llama-4.2-scout"
+    name: "Llama 4.2 Scout"
+    role: worker
+    input_price_per_mtok: 0.08
+    output_price_per_mtok: 0.30
+    context: 1048576
+    max_tokens: 32768
+    retry_limit: 2
+
+  - slug: "mistralai/devstral-2-small"
+    name: "Devstral 2 Small"
+    role: worker
+    input_price_per_mtok: 0.06
+    output_price_per_mtok: 0.18
+    context: 262144
+    max_tokens: 32768
+    retry_limit: 2
+
+  - slug: "openai/gpt-5.4-mini"
+    name: "GPT 5.4 Mini"
+    role: worker
+    input_price_per_mtok: 0.25
+    output_price_per_mtok: 1.00
+    context: 400000
+    max_tokens: 65536
+    retry_limit: 2
+
+  - slug: "google/gemini-3.8-flash-lite"
+    name: "Gemini 3.8 Flash Lite"
+    role: worker
+    input_price_per_mtok: 0.10
+    output_price_per_mtok: 0.40
+    context: 1048576
+    max_tokens: 65536
+    retry_limit: 2
+
+  - slug: "x-ai/grok-4.5-fast-mini"
+    name: "Grok 4.5 Fast Mini"
+    role: worker
+    input_price_per_mtok: 0.30
+    output_price_per_mtok: 0.90
+    context: 131072
+    max_tokens: 32768
+    retry_limit: 2
+
+  - slug: "anthropic/claude-5.2-haiku"
+    name: "Claude 5.2 Haiku"
+    role: worker
+    input_price_per_mtok: 0.80
+    output_price_per_mtok: 4.00
+    context: 200000
+    max_tokens: 32768
+    retry_limit: 2
+
+  - slug: "google/gemini-3.1-flash-image"
+    name: "Gemini 3.1 Flash Image"
+    role: worker
+    input_price_per_mtok: 0.30
+    output_price_per_mtok: 1.20
+    context: 131072
+    max_tokens: 8192
+    retry_limit: 1
+    price_per_image: 0.03
+    metadata:
+      modalities: [image]
+
+  - slug: "bytedance-seed/seedream-4.5"
+    name: "Seedream 4.5"
+    role: worker
+    input_price_per_mtok: 0.0
+    output_price_per_mtok: 0.0
+    context: 8192
+    max_tokens: 8192
+    retry_limit: 1
+    price_per_image: 0.035
+    metadata:
+      modalities: [image]
+
+  - slug: "qwen/qwen3.5-max"
+    name: "Qwen 3.5 Max"
+    role: orchestrator
+    input_price_per_mtok: 1.20
+    output_price_per_mtok: 4.80
+    context: 262144
+    max_tokens: 65536
+
+  - slug: "mistralai/mistral-large-3"
+    name: "Mistral Large 3"
+    role: orchestrator
+    input_price_per_mtok: 0.50
+    output_price_per_mtok: 1.50
+    context: 262144
+    max_tokens: 32768
+
   - slug: "claude-fable-5-1"
     name: "Claude Fable 5.1"
     role: reference

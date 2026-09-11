@@ -119,5 +119,17 @@ def compute_cost(usage: TokenUsage, model_cfg: ModelConfig) -> tuple[float, Toke
     return usd(cost), usage
 
 
+def compute_image_cost(model_cfg: ModelConfig, usage: TokenUsage | None = None, n: int = 1) -> float:
+    """Cost for an image generation call.
+
+    Uses token usage when the API reports it, otherwise falls back to the
+    configured per-image price on the model config.
+    """
+    if usage is not None and (usage.prompt_tokens or usage.completion_tokens):
+        cost, _ = compute_cost(usage, model_cfg)
+        return cost
+    return usd(_token_component(n, model_cfg.price_per_image))
+
+
 def usd(value: Decimal) -> float:
     return float(value.quantize(USD_QUANT, rounding=ROUND_HALF_UP))

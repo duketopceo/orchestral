@@ -1,0 +1,13 @@
+id: image-logo-minimal
+type: image
+prompt: |
+  Generate a minimal logo mark for a developer tools brand called "orchestral".
+  A simple geometric baton or conductor motif, flat vector style, single accent
+  color on transparent or solid dark background. No text.
+validation:
+  - non_empty
+  - png_signature
+assets: []
+metadata:
+  difficulty: medium
+  estimated_subtasks: 2

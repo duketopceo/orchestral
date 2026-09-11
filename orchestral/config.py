@@ -17,7 +17,12 @@ class ModelConfig:
     context: int = 128_000
     max_tokens: int = 8_192
     retry_limit: int = 2
+    price_per_image: float = 0.0
     metadata: dict[str, Any] = field(default_factory=dict)
+
+    def supports(self, modality: str) -> bool:
+        """True when the model declares the modality in metadata.modalities."""
+        return modality in (self.metadata.get("modalities") or [])
 
     @property
     def input_price(self) -> float:
@@ -38,6 +43,7 @@ class ModelConfig:
             "context": self.context,
             "max_tokens": self.max_tokens,
             "retry_limit": self.retry_limit,
+            "price_per_image": self.price_per_image,
             "metadata": self.metadata,
         }
 
@@ -66,6 +72,8 @@ def load_models(path: Path | str = "models") -> list[ModelConfig]:
     for f in sorted(root.glob("*.yaml")):
         data = load_yaml(f)
         for item in data.get("models", []):
+            if str(item.get("slug", "")).startswith("~"):
+                continue  # ~ prefix marks a disabled entry
             configs.append(ModelConfig(**item))
     return configs
 

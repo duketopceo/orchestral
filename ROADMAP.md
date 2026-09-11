@@ -18,12 +18,12 @@
 ## v0.2 — More tasks, more models
 
 - [x] 100 HTML page task batch (10 prompts × all pairings) — specs in `tasks/batch-100/`, `harness.py batch` command
-- [ ] Add image generation task type (OpenRouter multimodal)
-- [ ] Expand model grid: 5 orchestrators × 10 workers
+- [x] Add image generation task type (OpenRouter Images API, `artifact.png`, per-image pricing)
+- [x] Expand model grid: 5 orchestrators × 10 workers (image workers filtered by `modalities` metadata)
 - [x] Parallel runs (`--jobs N` on `grid` and `batch`, thread pool, SQLite WAL index)
 - [x] Cost table sorted by quality-per-dollar (`harness.py report --pairings`)
-- [ ] Screenshot capture for HTML outputs (playwright)
-- [ ] Visual comparison grid (HTML gallery page)
+- [x] Screenshot capture for HTML outputs (`harness.py shots`, optional `playwright` extra, auto-capture at end of run)
+- [x] Visual comparison grid (`reports/gallery.html`, screenshot thumbnails with iframe fallback)
 
 **Goal:** answer the core question with enough data points to be meaningful.
 

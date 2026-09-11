@@ -13,7 +13,15 @@ from orchestral.costs import CostLedger
 from orchestral.judge import judge_artifact
 from orchestral.logger import EventLogger
 from orchestral.openrouter import OpenRouterClient
-from orchestral.planners import assemble_ce, assemble_raw, delegate, plan_ce, plan_raw
+from orchestral.planners import (
+    assemble_ce,
+    assemble_image,
+    assemble_raw,
+    delegate,
+    delegate_image,
+    plan_ce,
+    plan_raw,
+)
 from orchestral.storage import RunMeta, RunStore
 
 
@@ -86,7 +94,9 @@ class Runner:
             ledger.add_many(plan_costs)
 
             # 2. Delegate each subtask to the worker
+            is_image = task.type == "image"
             results: list[dict[str, Any]] = []
+            image_paths: list[Path | None] = []
             subtasks = plan.get("subtasks") or plan.get("sections", {}).get("subtasks", [])
             for i, sub in enumerate(subtasks):
                 # models sometimes return a list of strings; normalize to dicts
@@ -95,17 +105,28 @@ class Runner:
                 elif not isinstance(sub, dict):
                     sub = {"id": i, "description": str(sub)}
                 out: dict[str, Any] | None = None
+                img_bytes: bytes = b""
                 attempts = max(1, worker.retry_limit + 1)
                 for attempt in range(attempts):
                     try:
-                        out, worker_costs = delegate(
-                            logger=logger,
-                            step=i + 3,
-                            subtask=sub,
-                            worker=worker,
-                            client=self.client,
-                            dry_run=self.dry_run,
-                        )
+                        if is_image:
+                            out, img_bytes, worker_costs = delegate_image(
+                                logger=logger,
+                                step=i + 3,
+                                subtask=sub,
+                                worker=worker,
+                                client=self.client,
+                                dry_run=self.dry_run,
+                            )
+                        else:
+                            out, worker_costs = delegate(
+                                logger=logger,
+                                step=i + 3,
+                                subtask=sub,
+                                worker=worker,
+                                client=self.client,
+                                dry_run=self.dry_run,
+                            )
                         ledger.add_many(worker_costs)
                     except Exception as exc:
                         out = None
@@ -123,7 +144,7 @@ class Runner:
                         if attempt + 1 >= attempts:
                             raise
                         continue
-                    if out.get("content"):
+                    if (img_bytes if is_image else out.get("content")):
                         break
                     logger.log(
                         phase="delegate",
@@ -133,18 +154,24 @@ class Runner:
                         role="worker",
                         input_data={"subtask": sub},
                         output_data={"attempt": attempt + 1, "max_attempts": attempts},
-                        reasoning=f"Worker returned empty content on attempt {attempt + 1}; retrying.",
+                        reasoning=f"Worker returned empty output on attempt {attempt + 1}; retrying.",
                     )
                 if out is None:
                     raise ValidationError(f"Worker {worker.slug} produced no output for subtask {sub.get('id')}")
                 out["attempts"] = attempt + 1
                 results.append(out)
                 (run_dir / f"worker-{i}.json").write_text(json.dumps(out, indent=2, default=str))
+                if is_image and img_bytes:
+                    img_path = run_dir / f"worker-{i}.png"
+                    img_path.write_bytes(img_bytes)
+                    image_paths.append(img_path)
+                else:
+                    image_paths.append(None)
 
             # 3. Assemble final artifact
             assembly_step = 3 + len(subtasks)
-            if self.planner == "ce-plan":
-                artifact, assembly_costs = assemble_ce(
+            if is_image:
+                position, assembly_costs = assemble_image(
                     logger=logger,
                     task=task,
                     orchestrator=orchestrator,
@@ -153,25 +180,42 @@ class Runner:
                     client=self.client,
                     dry_run=self.dry_run,
                 )
+                ledger.add_many(assembly_costs)
+                selected = image_paths[position] if 0 <= position < len(image_paths) else None
+                if selected is None:
+                    # orchestrator picked a subtask with no image; fall back to first captured
+                    selected = next((p for p in image_paths if p is not None), None)
+                artifact_bytes = selected.read_bytes() if selected else b""
+                (run_dir / "artifact.png").write_bytes(artifact_bytes)
+                passes, report = self._validate_image(task, artifact_bytes)
             else:
-                artifact, assembly_costs = assemble_raw(
-                    logger=logger,
-                    task=task,
-                    orchestrator=orchestrator,
-                    step=assembly_step,
-                    results=results,
-                    client=self.client,
-                    dry_run=self.dry_run,
-                )
-            ext = _artifact_ext(task.type)
-            (run_dir / f"artifact{ext}").write_text(artifact)
-            ledger.add_many(assembly_costs)
+                if self.planner == "ce-plan":
+                    artifact, assembly_costs = assemble_ce(
+                        logger=logger,
+                        task=task,
+                        orchestrator=orchestrator,
+                        step=assembly_step,
+                        results=results,
+                        client=self.client,
+                        dry_run=self.dry_run,
+                    )
+                else:
+                    artifact, assembly_costs = assemble_raw(
+                        logger=logger,
+                        task=task,
+                        orchestrator=orchestrator,
+                        step=assembly_step,
+                        results=results,
+                        client=self.client,
+                        dry_run=self.dry_run,
+                    )
+                ext = _artifact_ext(task.type)
+                (run_dir / f"artifact{ext}").write_text(artifact)
+                ledger.add_many(assembly_costs)
+                passes, report = self._validate(task, artifact)
 
-            # 4. Validate
-            passes, report = self._validate(task, artifact)
-
-            # 5. Judge (optional)
-            if judge is not None:
+            # 4. Judge (optional — text artifacts only)
+            if judge is not None and not is_image:
                 judge_step = assembly_step + 3
                 judge_result, judge_costs = judge_artifact(
                     logger=logger,
@@ -190,6 +234,26 @@ class Runner:
                     passes = passes and judge_result["passed"]
 
             (run_dir / "report.json").write_text(json.dumps(report, indent=2, default=str))
+
+            # 5. Screenshot for HTML artifacts (optional, degrades cleanly)
+            if task.type == "html":
+                artifact_path = run_dir / "artifact.html"
+                if artifact_path.exists():
+                    try:
+                        from orchestral.shots import ScreenshotUnavailable, capture_html
+
+                        capture_html(artifact_path, run_dir / "screenshot.png")
+                    except ScreenshotUnavailable as exc:
+                        logger.log(
+                            phase="shots",
+                            step=assembly_step + 5,
+                            event_type="screenshot_skipped",
+                            model="",
+                            role="harness",
+                            input_data={"artifact": str(artifact_path)},
+                            output_data={"reason": str(exc)},
+                            reasoning="Playwright or browser binaries unavailable; screenshot skipped.",
+                        )
 
             # 6. Final accounting
             total_cost = ledger.total_cost_usd()
@@ -295,14 +359,40 @@ class Runner:
             if not checks["no_placeholder"]:
                 errors.append("Artifact contains placeholder text.")
 
-        report: dict[str, Any] = {
-            "task_id": task.id,
-            "artifact_length": len(artifact),
-            "checks": checks,
-            "errors": errors,
-            "score": None,
-        }
-        return all(checks.values()) if checks else True, report
+        return _validation_report(task, checks, errors, len(artifact))
+
+    def _validate_image(self, task: TaskSpec, artifact: bytes) -> tuple[bool, dict[str, Any]]:
+        requested = set(task.validation) if task.validation else {"non_empty", "png_signature"}
+        checks: dict[str, bool] = {}
+        errors: list[str] = []
+
+        if "non_empty" in requested:
+            checks["non_empty"] = bool(artifact)
+            if not checks["non_empty"]:
+                errors.append("Artifact is empty.")
+        if "png_signature" in requested:
+            checks["png_signature"] = artifact.startswith(PNG_MAGIC) and artifact.endswith(PNG_IEND)
+            if not checks["png_signature"]:
+                errors.append("Artifact is not a well-formed PNG (bad magic or missing IEND).")
+
+        return _validation_report(task, checks, errors, len(artifact))
+
+
+PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+PNG_IEND = b"IEND\xaeB`\x82"
+
+
+def _validation_report(
+    task: TaskSpec, checks: dict[str, bool], errors: list[str], artifact_length: int
+) -> tuple[bool, dict[str, Any]]:
+    report: dict[str, Any] = {
+        "task_id": task.id,
+        "artifact_length": artifact_length,
+        "checks": checks,
+        "errors": errors,
+        "score": None,
+    }
+    return all(checks.values()), report
 
 
 def _artifact_ext(task_type: str) -> str:

@@ -93,8 +93,14 @@ def cmd_grid(args: argparse.Namespace) -> None:
         configured = load_models(args.models_dir)
         orchestrators = [m for m in configured if m.role == "orchestrator"]
         workers = [m for m in configured if m.role == "worker"]
+        if task.type == "image":
+            # only workers that can generate images
+            workers = [m for m in workers if m.supports("image")]
+        else:
+            # image-only workers can't produce text artifacts
+            workers = [m for m in workers if not m.supports("image")]
         if not orchestrators or not workers:
-            print("No orchestrator/worker models configured. Pass --orchestrators and --workers, or add role fields in models/*.yaml.")
+            print("No orchestrator/worker models configured for this task type. Pass --orchestrators and --workers, or add role/modalities fields in models/*.yaml.")
             sys.exit(1)
     results: list[dict[str, Any]] = []
 
@@ -302,6 +308,34 @@ def cmd_tui(args: argparse.Namespace) -> None:
     run_tui(runs_dir=args.runs_dir, refresh=args.refresh)
 
 
+def cmd_shots(args: argparse.Namespace) -> None:
+    from orchestral.shots import ScreenshotUnavailable, browser_session, capture_run
+
+    store = RunStore(args.runs_dir)
+    runs = store.list_runs(task_id=args.task, limit=None)
+    captured = current = failed = no_artifact = 0
+    try:
+        with browser_session() as browser:
+            for r in runs:
+                try:
+                    _, status = capture_run(r.run_dir, force=args.all, browser=browser)
+                except ScreenshotUnavailable as exc:
+                    failed += 1
+                    if failed == 1:
+                        print(f"Screenshot unavailable: {exc}")
+                    continue
+                if status == "captured":
+                    captured += 1
+                elif status == "current":
+                    current += 1
+                else:
+                    no_artifact += 1
+    except ScreenshotUnavailable as exc:
+        print(f"Screenshot unavailable: {exc}")
+        return
+    print(f"screenshots: {captured} captured, {current} already current, {no_artifact} no HTML artifact, {failed} unavailable")
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description="orchestral eval harness")
     p.add_argument("--runs-dir", default="runs", help="Root directory for run data")
@@ -369,6 +403,12 @@ def main() -> None:
     tui.add_argument("--runs-dir", default="runs", help="Root directory for run data")
     tui.add_argument("--refresh", action="store_true", help="Auto-refresh every 5s")
     tui.set_defaults(func=cmd_tui)
+
+    shots = sub.add_parser("shots", help="Screenshot HTML artifacts in stored runs (requires playwright extra)")
+    shots.add_argument("--runs-dir", default="runs", help="Root directory for run data")
+    shots.add_argument("--task", default=None, help="Only capture runs for this task id")
+    shots.add_argument("--all", action="store_true", help="Re-capture even when screenshots are current")
+    shots.set_defaults(func=cmd_shots)
 
     args = p.parse_args()
     if not hasattr(args, "func"):

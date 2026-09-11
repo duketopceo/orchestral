@@ -86,22 +86,26 @@ def cmd_grid(args: argparse.Namespace) -> None:
     task = load_task(task_path)
     RunStore(args.runs_dir)  # ensure WAL mode is set before parallel runners connect
 
-    if args.orchestrators and args.workers:
-        orchestrators = [_model_from_arg(s, args.models_dir) for s in _slugs_from_arg(args.orchestrators)]
-        workers = [_model_from_arg(s, args.models_dir) for s in _slugs_from_arg(args.workers)]
-    else:
-        configured = load_models(args.models_dir)
-        orchestrators = [m for m in configured if m.role == "orchestrator"]
-        workers = [m for m in configured if m.role == "worker"]
+    def _configured_workers() -> list[ModelConfig]:
+        pool = [m for m in load_models(args.models_dir) if m.role == "worker"]
         if task.type == "image":
             # only workers that can generate images
-            workers = [m for m in workers if m.supports("image")]
-        else:
-            # image-only workers can't produce text artifacts
-            workers = [m for m in workers if not m.supports("image")]
-        if not orchestrators or not workers:
-            print("No orchestrator/worker models configured for this task type. Pass --orchestrators and --workers, or add role/modalities fields in models/*.yaml.")
-            sys.exit(1)
+            return [m for m in pool if m.supports("image")]
+        # image-only workers can't produce text artifacts; a multimodal worker
+        # (modalities includes text) or one with no modalities stays eligible
+        return [m for m in pool if not m.metadata.get("modalities") or m.supports("text")]
+
+    if args.orchestrators:
+        orchestrators = [_model_from_arg(s, args.models_dir) for s in _slugs_from_arg(args.orchestrators)]
+    else:
+        orchestrators = [m for m in load_models(args.models_dir) if m.role == "orchestrator"]
+    if args.workers:
+        workers = [_model_from_arg(s, args.models_dir) for s in _slugs_from_arg(args.workers)]
+    else:
+        workers = _configured_workers()
+    if not orchestrators or not workers:
+        print("No orchestrator/worker models configured for this task type. Pass --orchestrators and --workers, or add role/modalities fields in models/*.yaml.")
+        sys.exit(1)
     results: list[dict[str, Any]] = []
 
     pairings = [(o, w) for o in orchestrators for w in workers]
@@ -121,6 +125,7 @@ def cmd_grid(args: argparse.Namespace) -> None:
             "run_id": meta.run_id,
         }
 
+    failures = 0
     if args.jobs > 1:
         with ThreadPoolExecutor(max_workers=args.jobs) as pool:
             futures = {pool.submit(_one, o, w): (o.slug, w.slug) for o, w in pairings}
@@ -129,6 +134,7 @@ def cmd_grid(args: argparse.Namespace) -> None:
                 try:
                     results.append(fut.result())
                 except Exception as exc:
+                    failures += 1
                     print(f"[fail] {o_slug} × {w_slug}: {exc}", file=sys.stderr)
         results.sort(key=lambda r: (r["orchestrator"], r["worker"]))
     else:
@@ -143,6 +149,8 @@ def cmd_grid(args: argparse.Namespace) -> None:
 
     if args.json:
         print(json.dumps(results, indent=2, default=str))
+    if failures:
+        sys.exit(1)
 
 
 def cmd_batch(args: argparse.Namespace) -> None:
@@ -188,6 +196,7 @@ def cmd_batch(args: argparse.Namespace) -> None:
             "run_id": meta.run_id,
         }
 
+    failures = 0
     if args.jobs > 1:
         with ThreadPoolExecutor(max_workers=args.jobs) as pool:
             futures = {pool.submit(_one, p): p for p in paths}
@@ -195,6 +204,7 @@ def cmd_batch(args: argparse.Namespace) -> None:
                 try:
                     results.append(fut.result())
                 except Exception as exc:
+                    failures += 1
                     print(f"[fail] {futures[fut]}: {exc}", file=sys.stderr)
         results.sort(key=lambda r: r["task_id"])
     else:
@@ -209,6 +219,8 @@ def cmd_batch(args: argparse.Namespace) -> None:
 
     if args.json:
         print(json.dumps(results, indent=2, default=str))
+    if failures:
+        sys.exit(1)
 
 
 def cmd_report(args: argparse.Namespace) -> None:
@@ -277,8 +289,9 @@ def _print_pairing_table(runs: list[Any]) -> None:
         tokens = sum(r.total_input_tokens + r.total_output_tokens for r in group)
         passed = sum(1 for r in group if r.passes)
         scored = [r.score for r in group if r.score is not None]
-        avg_score = sum(scored) / len(scored) if scored else None
-        # quality = avg score if judged, else pass rate; per dollar of total spend
+        # only trust avg score when every run in the group was judged;
+        # a partial score set would hide unscored runs' pass results
+        avg_score = sum(scored) / len(scored) if len(scored) == len(group) and scored else None
         quality = avg_score if avg_score is not None else passed / len(group)
         qpd = quality / cost if cost > 0 else float("inf")
         rows.append((orch, work, len(group), passed, avg_score, cost, tokens, qpd))

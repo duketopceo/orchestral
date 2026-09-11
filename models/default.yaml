@@ -43,29 +43,29 @@ models:
     max_tokens: 8192
     retry_limit: 2
 
-  - slug: "qwen/qwen3.5-coder-flash"
-    name: "Qwen 3.5 Coder Flash"
+  - slug: "qwen/qwen3-coder-flash"
+    name: "Qwen 3 Coder Flash"
+    role: worker
+    input_price_per_mtok: 0.20
+    output_price_per_mtok: 0.97
+    context: 1000000
+    max_tokens: 32768
+    retry_limit: 2
+
+  - slug: "meta-llama/llama-4-scout"
+    name: "Llama 4 Scout"
     role: worker
     input_price_per_mtok: 0.10
-    output_price_per_mtok: 0.40
-    context: 262144
-    max_tokens: 32768
-    retry_limit: 2
-
-  - slug: "meta-llama/llama-4.2-scout"
-    name: "Llama 4.2 Scout"
-    role: worker
-    input_price_per_mtok: 0.08
     output_price_per_mtok: 0.30
-    context: 1048576
+    context: 1310720
     max_tokens: 32768
     retry_limit: 2
 
-  - slug: "mistralai/devstral-2-small"
-    name: "Devstral 2 Small"
+  - slug: "mistralai/devstral-2512"
+    name: "Devstral 2512"
     role: worker
-    input_price_per_mtok: 0.06
-    output_price_per_mtok: 0.18
+    input_price_per_mtok: 0.40
+    output_price_per_mtok: 2.00
     context: 262144
     max_tokens: 32768
     retry_limit: 2
@@ -79,29 +79,29 @@ models:
     max_tokens: 65536
     retry_limit: 2
 
-  - slug: "google/gemini-3.8-flash-lite"
-    name: "Gemini 3.8 Flash Lite"
+  - slug: "google/gemini-3.1-flash-lite"
+    name: "Gemini 3.1 Flash Lite"
     role: worker
-    input_price_per_mtok: 0.10
-    output_price_per_mtok: 0.40
+    input_price_per_mtok: 0.25
+    output_price_per_mtok: 1.50
     context: 1048576
     max_tokens: 65536
     retry_limit: 2
 
-  - slug: "x-ai/grok-4.5-fast-mini"
-    name: "Grok 4.5 Fast Mini"
+  - slug: "mistralai/mistral-small-3.2-24b-instruct"
+    name: "Mistral Small 3.2"
     role: worker
-    input_price_per_mtok: 0.30
-    output_price_per_mtok: 0.90
+    input_price_per_mtok: 0.07
+    output_price_per_mtok: 0.20
     context: 131072
     max_tokens: 32768
     retry_limit: 2
 
-  - slug: "anthropic/claude-5.2-haiku"
-    name: "Claude 5.2 Haiku"
+  - slug: "anthropic/claude-haiku-4.5"
+    name: "Claude Haiku 4.5"
     role: worker
-    input_price_per_mtok: 0.80
-    output_price_per_mtok: 4.00
+    input_price_per_mtok: 1.00
+    output_price_per_mtok: 5.00
     context: 200000
     max_tokens: 32768
     retry_limit: 2
@@ -118,35 +118,35 @@ models:
     metadata:
       modalities: [image]
 
-  - slug: "bytedance-seed/seedream-4.5"
-    name: "Seedream 4.5"
+  - slug: "google/gemini-2.5-flash-image"
+    name: "Gemini 2.5 Flash Image"
     role: worker
-    input_price_per_mtok: 0.0
-    output_price_per_mtok: 0.0
-    context: 8192
+    input_price_per_mtok: 0.30
+    output_price_per_mtok: 2.50
+    context: 32768
     max_tokens: 8192
     retry_limit: 1
-    price_per_image: 0.035
+    price_per_image: 0.039
     metadata:
       modalities: [image]
 
-  - slug: "qwen/qwen3.5-max"
-    name: "Qwen 3.5 Max"
+  - slug: "qwen/qwen3-max"
+    name: "Qwen 3 Max"
     role: orchestrator
-    input_price_per_mtok: 1.20
-    output_price_per_mtok: 4.80
+    input_price_per_mtok: 0.78
+    output_price_per_mtok: 3.90
     context: 262144
     max_tokens: 65536
 
-  - slug: "mistralai/mistral-large-3"
-    name: "Mistral Large 3"
+  - slug: "mistralai/mistral-large-2512"
+    name: "Mistral Large 2512"
     role: orchestrator
     input_price_per_mtok: 0.50
     output_price_per_mtok: 1.50
     context: 262144
     max_tokens: 32768
 
-  - slug: "claude-fable-5-1"
+  - slug: "anthropic/claude-fable-5.1"
     name: "Claude Fable 5.1"
     role: reference
     input_price_per_mtok: 10.0

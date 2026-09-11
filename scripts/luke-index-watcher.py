@@ -352,7 +352,7 @@ def install_hook() -> None:
         hook_path.write_text("\n".join(lines) + "\n")
     else:
         hook_path.write_text("#!/bin/sh\n" + cmd + "\n")
-        os.chmod(hook_path, 0o755)
+    os.chmod(hook_path, 0o755)
     print(f"Installed pre-commit hook: {hook_path}")
 
 

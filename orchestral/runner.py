@@ -171,15 +171,18 @@ class Runner:
             # 3. Assemble final artifact
             assembly_step = 3 + len(subtasks)
             if is_image:
-                position, assembly_costs = assemble_image(
-                    logger=logger,
-                    task=task,
-                    orchestrator=orchestrator,
-                    step=assembly_step,
-                    results=results,
-                    client=self.client,
-                    dry_run=self.dry_run,
-                )
+                if any(p is not None for p in image_paths):
+                    position, assembly_costs = assemble_image(
+                        logger=logger,
+                        task=task,
+                        orchestrator=orchestrator,
+                        step=assembly_step,
+                        results=results,
+                        client=self.client,
+                        dry_run=self.dry_run,
+                    )
+                else:
+                    position, assembly_costs = 0, []
                 ledger.add_many(assembly_costs)
                 selected = image_paths[position] if 0 <= position < len(image_paths) else None
                 if selected is None:
@@ -392,7 +395,9 @@ def _validation_report(
         "errors": errors,
         "score": None,
     }
-    return all(checks.values()), report
+    # zero recognised checks means the validation list was unknown names — a
+    # silent pass would hide the typo, so require at least one check
+    return bool(checks) and all(checks.values()), report
 
 
 def _artifact_ext(task_type: str) -> str:

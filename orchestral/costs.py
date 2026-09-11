@@ -125,7 +125,11 @@ def compute_image_cost(model_cfg: ModelConfig, usage: TokenUsage | None = None, 
     Uses token usage when the API reports it, otherwise falls back to the
     configured per-image price on the model config.
     """
-    if usage is not None and (usage.prompt_tokens or usage.completion_tokens):
+    if (
+        usage is not None
+        and (usage.prompt_tokens or usage.completion_tokens)
+        and (model_cfg.input_price_per_mtok or model_cfg.output_price_per_mtok)
+    ):
         cost, _ = compute_cost(usage, model_cfg)
         return cost
     return usd(_token_component(n, model_cfg.price_per_image))

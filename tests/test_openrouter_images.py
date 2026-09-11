@@ -70,10 +70,13 @@ class TestImagesEndpoint(unittest.TestCase):
         client.client.post = MagicMock(return_value=_response(200, {
             "data": [{"url": "https://cdn.example.com/img.png"}],
         }))
-        get_resp = MagicMock()
-        get_resp.raise_for_status = MagicMock()
-        get_resp.content = PNG_BYTES
-        client.client.get = MagicMock(return_value=get_resp)
+        stream_resp = MagicMock()
+        stream_resp.raise_for_status = MagicMock()
+        stream_resp.iter_bytes = MagicMock(return_value=iter([PNG_BYTES]))
+        client.client.stream = MagicMock(return_value=MagicMock(
+            __enter__=MagicMock(return_value=stream_resp),
+            __exit__=MagicMock(return_value=False),
+        ))
         out = client.images(model="img/model", prompt="x")
         self.assertEqual(out["image_bytes"], PNG_BYTES)
 

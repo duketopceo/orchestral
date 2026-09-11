@@ -22,6 +22,7 @@ BASE_RETRY_DELAY_SECONDS = 1.0
 NON_RETRYABLE_STATUSES = {400, 401, 403, 404, 422}
 
 _PRIVATE_HOST_MARKERS = ("localhost", "127.", "0.", "10.", "192.168.", "169.254.", "::1")
+_MAX_IMAGE_BYTES = 25 * 1024 * 1024
 
 
 def _is_private_host(hostname: str) -> bool:
@@ -163,9 +164,16 @@ class OpenRouterClient:
         host = parsed.hostname or ""
         if parsed.scheme != "https" or _is_private_host(host):
             raise OpenRouterError(f"Refusing to download image from untrusted URL: {parsed.scheme}://{host}")
-        response = self.client.get(url)
-        response.raise_for_status()
-        return response.content
+        with self.client.stream("GET", url, follow_redirects=False) as response:
+            response.raise_for_status()
+            chunks = []
+            size = 0
+            for chunk in response.iter_bytes():
+                size += len(chunk)
+                if size > _MAX_IMAGE_BYTES:
+                    raise OpenRouterError(f"Image download exceeded {_MAX_IMAGE_BYTES} bytes")
+                chunks.append(chunk)
+        return b"".join(chunks)
 
     def close(self) -> None:
         self.client.close()

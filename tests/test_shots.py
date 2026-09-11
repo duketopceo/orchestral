@@ -6,6 +6,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import MagicMock
 
 from orchestral.shots import ScreenshotUnavailable, capture_run
 
@@ -45,6 +46,25 @@ class TestCaptureRun(unittest.TestCase):
                 return  # degraded path is a pass
             self.assertEqual(status, "captured")
             self.assertTrue(path and path.exists() and path.stat().st_size > 0)
+
+    def test_capture_with_fake_browser(self):
+        """Injected browser objects exercise the capture path without playwright."""
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            (run_dir / "artifact.html").write_text("<html><body><h1>hi</h1></body></html>")
+
+            page = MagicMock()
+            def _shot(*, path, full_page):
+                Path(path).write_bytes(b"png")
+            page.screenshot.side_effect = _shot
+            browser = MagicMock()
+            browser.new_page.return_value = page
+
+            path, status = capture_run(run_dir, browser=browser)
+            self.assertEqual(status, "captured")
+            self.assertTrue(path.exists())
+            page.route.assert_called_once()  # network isolation applied
+            page.close.assert_called_once()
 
 
 if __name__ == "__main__":

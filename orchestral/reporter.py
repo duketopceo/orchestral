@@ -525,14 +525,15 @@ def _scatter_svg(runs: list[Any]) -> str:
 
 
 def _history_table_html(table: dict[str, dict[str, Any]], role: str) -> str:
-    rows = ""
-    for name, s in sorted(table.items(), key=lambda kv: -kv[1]["total_cost"]):
+    def _row(name: str, s: dict[str, Any]) -> str:
         pass_pct = f"{s['pass_rate'] * 100:.1f}%" if s["pass_rate"] is not None else "-"
         score = f"{s['avg_score']:.2f}" if s["avg_score"] is not None else "-"
-        rows += (
+        return (
             f"<tr><td>{_esc(name)}</td><td>{s['runs']}</td><td>{pass_pct}</td>"
             f"<td>{score}</td><td>${s['avg_cost']:.6f}</td><td>${s['total_cost']:.4f}</td></tr>"
         )
+
+    rows = "".join(_row(name, s) for name, s in sorted(table.items(), key=lambda kv: -kv[1]["total_cost"]))
     return (
         f"<div class='section'><h2>{_esc(role.capitalize())} history</h2>"
         f"<table><tr><th>model</th><th>runs</th><th>pass rate</th><th>avg score</th><th>avg cost</th><th>total cost</th></tr>"

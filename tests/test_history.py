@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-import tempfile
 import unittest
-from pathlib import Path
 
 from orchestral.reporter import _dashboard_html, model_history
-from orchestral.storage import RunMeta, RunStore
+from orchestral.storage import RunMeta
 
 
 def _meta(rid: str, orch: str, worker: str, *, cost: float, score=None, passes=True, judge=None, status="finished"):

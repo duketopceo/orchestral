@@ -4,15 +4,15 @@
 from __future__ import annotations
 
 import argparse
-import copy
 import json
 import os
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from orchestral.config import ModelConfig, find_task, load_models, load_task
+from orchestral.config import ModelConfig, find_task, load_models, load_task, load_yaml
 from orchestral.planners import available_prompt_variants, load_prompt_variant
 from orchestral.privacy import scrub_all
 from orchestral.reporter import generate_dashboard, generate_html_report, model_history
@@ -21,10 +21,14 @@ from orchestral.storage import RunStore
 from orchestral.tui import run_tui
 
 
-def _model_from_arg(slug: str, models_dir: str = "models") -> ModelConfig:
-    for cfg in load_models(models_dir):
-        if cfg.slug == slug:
-            return cfg
+def _model_map(models_dir: str) -> dict[str, ModelConfig]:
+    return {m.slug: m for m in load_models(models_dir)}
+
+
+def _model_from_arg(slug: str, models_dir: str = "models", known: dict[str, ModelConfig] | None = None) -> ModelConfig:
+    cfg = (known if known is not None else _model_map(models_dir)).get(slug)
+    if cfg is not None:
+        return cfg
     # If the slug is not in the config, treat it as an ad-hoc model with cheap defaults.
     return ModelConfig(
         slug=slug,
@@ -50,8 +54,8 @@ def _task_from_arg(task_id: str, tasks_dir: str = "tasks") -> Path:
     return path
 
 
-def _judge_from_arg(args: argparse.Namespace) -> ModelConfig | None:
-    judge = _model_from_arg(args.judge, args.models_dir) if getattr(args, "judge", None) else None
+def _judge_from_arg(args: argparse.Namespace, known: dict[str, ModelConfig] | None = None) -> ModelConfig | None:
+    judge = _model_from_arg(args.judge, args.models_dir, known) if getattr(args, "judge", None) else None
     if judge is not None:
         judge.role = "judge"
     return judge
@@ -69,21 +73,33 @@ def _check_prompt_variant(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
-def _runner_kwargs(args: argparse.Namespace, **extra: Any) -> dict[str, Any]:
+def _run_preamble(args: argparse.Namespace) -> tuple[RunStore, dict[str, ModelConfig], ModelConfig | None]:
+    """Shared command preamble: API-key guard, prompt-variant check, model map,
+    one RunStore (primes WAL before parallel runners), and the optional judge."""
+    if not args.dry_run and not os.environ.get("OPENROUTER_API_KEY"):
+        print("OPENROUTER_API_KEY is not set. Pass --dry-run to test the harness without calling OpenRouter.")
+        sys.exit(1)
+    _check_prompt_variant(args)
+    store = RunStore(args.runs_dir)
+    known = _model_map(args.models_dir)
+    return store, known, _judge_from_arg(args, known)
+
+
+def _runner_kwargs(args: argparse.Namespace, store: RunStore, **extra: Any) -> dict[str, Any]:
     return {
         "dry_run": args.dry_run,
         "planner": args.planner,
         "runs_dir": args.runs_dir,
         "prompt_variant": getattr(args, "prompt_variant", None),
         "use_judge_cache": not getattr(args, "no_judge_cache", False),
+        "store": store,
         **extra,
     }
 
 
 def _apply_retry_limit(worker: ModelConfig, args: argparse.Namespace) -> ModelConfig:
     if getattr(args, "retry_limit", None) is not None:
-        worker = copy.copy(worker)
-        worker.retry_limit = args.retry_limit
+        worker = replace(worker, retry_limit=args.retry_limit)
     return worker
 
 
@@ -94,21 +110,14 @@ def cmd_init(args: argparse.Namespace) -> None:
 
 
 def cmd_run(args: argparse.Namespace) -> None:
-    if not args.dry_run and not os.environ.get("OPENROUTER_API_KEY"):
-        print("OPENROUTER_API_KEY is not set. Pass --dry-run to test the harness without calling OpenRouter.")
-        sys.exit(1)
-
-    _check_prompt_variant(args)
-    task_path = _task_from_arg(args.task, args.tasks_dir)
-    task = load_task(task_path)
-    orchestrator = _model_from_arg(args.orchestrator, args.models_dir)
-    worker = _apply_retry_limit(_model_from_arg(args.worker, args.models_dir), args)
+    store, known, judge = _run_preamble(args)
+    task = load_task(_task_from_arg(args.task, args.tasks_dir))
+    orchestrator = _model_from_arg(args.orchestrator, args.models_dir, known)
+    worker = _apply_retry_limit(_model_from_arg(args.worker, args.models_dir, known), args)
     orchestrator.role = "orchestrator"
     worker.role = "worker"
-    judge = _judge_from_arg(args)
 
-    runner = Runner(**_runner_kwargs(args))
-    meta = runner.run(task, orchestrator, worker, judge)
+    meta = Runner(**_runner_kwargs(args, store)).run(task, orchestrator, worker, judge)
     print(f"Run {meta.run_id} {meta.status}")
     print(f"  Directory: {meta.run_dir}")
     print(f"  Cost: ${meta.total_cost_usd:.6f} | Tokens: {meta.total_input_tokens + meta.total_output_tokens}")
@@ -116,18 +125,11 @@ def cmd_run(args: argparse.Namespace) -> None:
 
 
 def cmd_grid(args: argparse.Namespace) -> None:
-    if not args.dry_run and not os.environ.get("OPENROUTER_API_KEY"):
-        print("OPENROUTER_API_KEY is not set. Pass --dry-run to test the harness without calling OpenRouter.")
-        sys.exit(1)
-
-    task_path = _task_from_arg(args.task, args.tasks_dir)
-    task = load_task(task_path)
-    RunStore(args.runs_dir)  # ensure WAL mode is set before parallel runners connect
-    _check_prompt_variant(args)
-    judge = _judge_from_arg(args)
+    store, known, judge = _run_preamble(args)
+    task = load_task(_task_from_arg(args.task, args.tasks_dir))
 
     def _configured_workers() -> list[ModelConfig]:
-        pool = [m for m in load_models(args.models_dir) if m.role == "worker"]
+        pool = [m for m in known.values() if m.role == "worker"]
         if task.type == "image":
             # only workers that can generate images
             return [m for m in pool if m.supports("image")]
@@ -136,11 +138,11 @@ def cmd_grid(args: argparse.Namespace) -> None:
         return [m for m in pool if not m.metadata.get("modalities") or m.supports("text")]
 
     if args.orchestrators:
-        orchestrators = [_model_from_arg(s, args.models_dir) for s in _slugs_from_arg(args.orchestrators)]
+        orchestrators = [_model_from_arg(s, args.models_dir, known) for s in _slugs_from_arg(args.orchestrators)]
     else:
-        orchestrators = [m for m in load_models(args.models_dir) if m.role == "orchestrator"]
+        orchestrators = [m for m in known.values() if m.role == "orchestrator"]
     if args.workers:
-        workers = [_model_from_arg(s, args.models_dir) for s in _slugs_from_arg(args.workers)]
+        workers = [_model_from_arg(s, args.models_dir, known) for s in _slugs_from_arg(args.workers)]
     else:
         workers = _configured_workers()
     if not orchestrators or not workers:
@@ -153,8 +155,7 @@ def cmd_grid(args: argparse.Namespace) -> None:
     def _one(orchestrator: ModelConfig, worker: ModelConfig) -> dict[str, Any]:
         orchestrator.role = "orchestrator"
         worker.role = "worker"
-        runner = Runner(**_runner_kwargs(args))
-        meta = runner.run(task, orchestrator, _apply_retry_limit(worker, args), judge)
+        meta = Runner(**_runner_kwargs(args, store)).run(task, orchestrator, _apply_retry_limit(worker, args), judge)
         return {
             "orchestrator": orchestrator.slug,
             "worker": worker.slug,
@@ -193,10 +194,18 @@ def cmd_grid(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
+def _task_index(tasks_dir: str) -> dict[str, Path]:
+    """One-pass task id -> path index for resolving many ids at once."""
+    index: dict[str, Path] = {}
+    for f in sorted(Path(tasks_dir).rglob("*.yaml")):
+        data = load_yaml(f)
+        if isinstance(data, dict) and data.get("id"):
+            index[data["id"]] = f
+    return index
+
+
 def cmd_batch(args: argparse.Namespace) -> None:
-    if not args.dry_run and not os.environ.get("OPENROUTER_API_KEY"):
-        print("OPENROUTER_API_KEY is not set. Pass --dry-run to test the harness without calling OpenRouter.")
-        sys.exit(1)
+    store, known, judge = _run_preamble(args)
 
     if not args.batch_dir and not args.batch_tasks:
         print("Pass either --batch-dir or --batch-tasks")
@@ -211,23 +220,23 @@ def cmd_batch(args: argparse.Namespace) -> None:
         if not paths:
             raise FileNotFoundError(f"No .yaml task files in {args.batch_dir}")
     else:
+        index = _task_index(args.tasks_dir)
         for t in args.batch_tasks:
-            paths.append(_task_from_arg(t, args.tasks_dir))
+            p = index.get(t) or (Path(t) if Path(t).exists() else None)
+            if p is None:
+                raise FileNotFoundError(f"No task found for id '{t}' in {args.tasks_dir}")
+            paths.append(p)
 
-    orchestrator = _model_from_arg(args.orchestrator, args.models_dir)
-    worker = _apply_retry_limit(_model_from_arg(args.worker, args.models_dir), args)
+    orchestrator = _model_from_arg(args.orchestrator, args.models_dir, known)
+    worker = _apply_retry_limit(_model_from_arg(args.worker, args.models_dir, known), args)
     orchestrator.role = "orchestrator"
     worker.role = "worker"
-    RunStore(args.runs_dir)  # ensure WAL mode is set before parallel runners connect
-    _check_prompt_variant(args)
-    judge = _judge_from_arg(args)
 
     results: list[dict[str, Any]] = []
 
     def _one(path: Path) -> dict[str, Any]:
         task = load_task(path)
-        runner = Runner(**_runner_kwargs(args))
-        meta = runner.run(task, orchestrator, worker, judge)
+        meta = Runner(**_runner_kwargs(args, store)).run(task, orchestrator, worker, judge)
         return {
             "task_id": task.id,
             "task_path": str(path),
@@ -271,17 +280,13 @@ MAX_SWEEP_VALUES = 8
 
 
 def cmd_ablate(args: argparse.Namespace) -> None:
-    if not args.dry_run and not os.environ.get("OPENROUTER_API_KEY"):
-        print("OPENROUTER_API_KEY is not set. Pass --dry-run to test the harness without calling OpenRouter.")
-        sys.exit(1)
-
     knob, sep, raw = args.sweep.partition("=")
     if not sep or knob not in SWEEP_KNOBS:
         print(f"--sweep must be <knob>=<csv> with knob one of: {', '.join(SWEEP_KNOBS)}", file=sys.stderr)
         sys.exit(1)
     caster = SWEEP_KNOBS[knob]
     try:
-        values = [caster(v.strip()) for v in raw.split(",") if v.strip()]
+        values = [caster(v) for v in _slugs_from_arg(raw)]
     except ValueError:
         print(f"Invalid value in --sweep {args.sweep}: expected {caster.__name__}", file=sys.stderr)
         sys.exit(1)
@@ -289,27 +294,23 @@ def cmd_ablate(args: argparse.Namespace) -> None:
         print(f"--sweep needs 1-{MAX_SWEEP_VALUES} values", file=sys.stderr)
         sys.exit(1)
     if knob == "prompt_variant":
-        known = available_prompt_variants()
-        bad = [v for v in values if v not in known]
+        known_variants = available_prompt_variants()
+        bad = [v for v in values if v not in known_variants]
         if bad:
-            print(f"Unknown prompt variant(s) {bad}. Available: {', '.join(known) or '(none)'}", file=sys.stderr)
+            print(f"Unknown prompt variant(s) {bad}. Available: {', '.join(known_variants) or '(none)'}", file=sys.stderr)
             sys.exit(1)
 
-    _check_prompt_variant(args)
+    store, known, judge = _run_preamble(args)
     task = load_task(_task_from_arg(args.task, args.tasks_dir))
-    orchestrator = _model_from_arg(args.orchestrator, args.models_dir)
-    base_worker = _model_from_arg(args.worker, args.models_dir)
+    orchestrator = _model_from_arg(args.orchestrator, args.models_dir, known)
+    base_worker = _model_from_arg(args.worker, args.models_dir, known)
     orchestrator.role = "orchestrator"
     base_worker.role = "worker"
-    RunStore(args.runs_dir)
-    judge = _judge_from_arg(args)
 
     def _one(value: Any) -> dict[str, Any]:
-        worker = copy.copy(base_worker)
-        kwargs = _runner_kwargs(args, sweep={"knob": knob, "value": value})
-        if knob == "retry_limit":
-            worker.retry_limit = value
-        else:
+        worker = replace(base_worker, retry_limit=value) if knob == "retry_limit" else _apply_retry_limit(base_worker, args)
+        kwargs = _runner_kwargs(args, store, sweep={"knob": knob, "value": value})
+        if knob == "prompt_variant":
             kwargs["prompt_variant"] = value
         meta = Runner(**kwargs).run(task, orchestrator, worker, judge)
         return {

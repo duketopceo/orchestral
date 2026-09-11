@@ -16,33 +16,16 @@ from orchestral.config import ModelConfig, TaskSpec
 from orchestral.costs import compute_cost, token_usage_from_raw
 from orchestral.logger import EventLogger
 from orchestral.openrouter import OpenRouterClient
+from orchestral.planners import _extract_json
 
 JUDGE_PROMPT = """You are an expert judge evaluating the output of an AI system.
 
 Task: {prompt}
 
 Artifact:
-```html
-{artifact}
-```
+{artifact_section}
 
 Score the artifact from 0.0 to 1.0 based on how well it satisfies the task.
-Return only a JSON object with this exact shape:
-
-{{
-  "score": <float between 0.0 and 1.0>,
-  "passed": <boolean>,
-  "reasoning": "<concise explanation>"
-}}
-"""
-
-JUDGE_PROMPT_IMAGE = """You are an expert judge evaluating the output of an AI system.
-
-Task: {prompt}
-
-The artifact is the attached image.
-
-Score the image from 0.0 to 1.0 based on how well it satisfies the task.
 Return only a JSON object with this exact shape:
 
 {{
@@ -65,6 +48,13 @@ def judge_artifact(
     image_bytes: bytes | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Return judge result and list of call costs."""
+    artifact_section = (
+        "The artifact is the attached image."
+        if image_bytes is not None
+        else f"```html\n{artifact[:2000]}\n```"
+    )
+    prompt_text = JUDGE_PROMPT.format(prompt=task.prompt, artifact_section=artifact_section)
+
     if dry_run or client is None:
         result = _fake_judge_result()
         cost = {
@@ -80,7 +70,7 @@ def judge_artifact(
             step=step,
             model=judge.slug,
             role="judge",
-            messages=[{"role": "user", "content": JUDGE_PROMPT.format(prompt=task.prompt, artifact=artifact[:2000])}],
+            messages=[{"role": "user", "content": prompt_text}],
             completion=result,
             reasoning="Dry-run judge evaluation.",
             input_tokens=cost["input_tokens"],
@@ -93,11 +83,11 @@ def judge_artifact(
     if image_bytes is not None:
         b64 = base64.b64encode(image_bytes).decode()
         user_content: Any = [
-            {"type": "text", "text": JUDGE_PROMPT_IMAGE.format(prompt=task.prompt)},
+            {"type": "text", "text": prompt_text},
             {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}},
         ]
     else:
-        user_content = JUDGE_PROMPT.format(prompt=task.prompt, artifact=artifact[:2000])
+        user_content = prompt_text
     messages = [
         {"role": "system", "content": "You are an expert judge. Return only a JSON object."},
         {"role": "user", "content": user_content},
@@ -155,44 +145,3 @@ def judge_artifact(
 
 def _fake_judge_result() -> dict[str, Any]:
     return {"score": None, "passed": None, "reasoning": "Dry-run; no judge model was called."}
-
-
-def _extract_json(content: str) -> Any:
-    text = content.strip()
-    if text.startswith("```"):
-        text = text.split("```")[1]
-        if text.startswith("json"):
-            text = text[4:]
-        text = text.strip()
-    start = None
-    for i, ch in enumerate(text):
-        if ch in "{[":
-            start = i
-            break
-    if start is None:
-        raise ValueError(f"No JSON found in judge response: {content[:200]}")
-    depth = 0
-    in_string = False
-    escape = False
-    for i, ch in enumerate(text[start:], start):
-        if escape:
-            escape = False
-            continue
-        if ch == "\\" and in_string:
-            escape = True
-            continue
-        if ch == '"' and in_string:
-            in_string = False
-            continue
-        if ch == '"' and not in_string:
-            in_string = True
-            continue
-        if in_string:
-            continue
-        if ch in "{[":
-            depth += 1
-        elif ch in "}]":
-            depth -= 1
-            if depth == 0:
-                return json.loads(text[start : i + 1])
-    raise ValueError(f"Could not extract JSON from judge response: {content[:200]}")

@@ -6,6 +6,7 @@ import base64
 import html
 import json
 import random
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -36,11 +37,16 @@ def load_prompt_variant(variant: str, prompts_dir: Path | str = PROMPTS_DIR) -> 
     """Load prompts/orchestrator-<variant>.md; 'default' returns the built-in."""
     if variant == "default":
         return ORCHESTRATOR_DEFAULT_PROMPT
-    path = Path(prompts_dir) / f"orchestrator-{variant}.md"
-    if not path.exists():
+    try:
+        return _read_prompt_file(str(Path(prompts_dir) / f"orchestrator-{variant}.md"))
+    except FileNotFoundError:
         known = ", ".join(available_prompt_variants(prompts_dir)) or "(none)"
-        raise FileNotFoundError(f"Unknown prompt variant '{variant}'. Available: {known}")
-    return path.read_text(encoding="utf-8").strip()
+        raise FileNotFoundError(f"Unknown prompt variant '{variant}'. Available: {known}") from None
+
+
+@lru_cache(maxsize=None)
+def _read_prompt_file(path: str) -> str:
+    return Path(path).read_text(encoding="utf-8").strip()
 
 
 # ---------------------------------------------------------------------------

@@ -40,13 +40,14 @@ class Runner:
         prompt_variant: str | None = None,
         sweep: dict[str, Any] | None = None,
         use_judge_cache: bool = True,
+        store: RunStore | None = None,
     ):
         self.dry_run = dry_run
         self.planner = planner
         self.prompt_variant = prompt_variant
         self.sweep = sweep
         self.use_judge_cache = use_judge_cache
-        self.store = RunStore(runs_dir)
+        self.store = store or RunStore(runs_dir)
         self.client: OpenRouterClient | None = None
         if not dry_run:
             self.client = OpenRouterClient()
@@ -237,34 +238,14 @@ class Runner:
 
             # 4. Judge (optional; image tasks need a vision-capable judge model)
             if judge is not None:
-                judge_step = assembly_step + 3
-                artifact_sha = hashlib.sha256(artifact_bytes if is_image else artifact.encode()).hexdigest()
-                judge_result = self.store.get_judge_result(task.id, judge.slug, artifact_sha) if self.use_judge_cache else None
-                if judge_result is not None:
-                    logger.log(
-                        phase="judge",
-                        step=judge_step,
-                        event_type="judge_cache_hit",
-                        model=judge.slug,
-                        role="judge",
-                        input_data={"task": task.id, "artifact_sha256": artifact_sha},
-                        output_data=judge_result,
-                        reasoning="Judge result served from cache; no API call made.",
-                    )
-                    judge_costs = []
-                else:
-                    judge_result, judge_costs = judge_artifact(
-                        logger=logger,
-                        step=judge_step,
-                        task=task,
-                        artifact="" if is_image else artifact,
-                        judge=judge,
-                        client=self.client,
-                        dry_run=self.dry_run,
-                        image_bytes=artifact_bytes if is_image else None,
-                    )
-                    if not self.dry_run:
-                        self.store.put_judge_result(task.id, judge.slug, artifact_sha, judge_result)
+                judge_result, judge_costs = self._judge_with_cache(
+                    logger=logger,
+                    step=assembly_step + 3,
+                    task=task,
+                    artifact_bytes=artifact_bytes if is_image else None,
+                    artifact_text=None if is_image else artifact,
+                    judge=judge,
+                )
                 ledger.add_many(judge_costs)
                 report["judge"] = judge_result
                 if judge_result.get("score") is not None:
@@ -346,6 +327,48 @@ class Runner:
             logger.close()
             if self.client is not None:
                 self.client.close()
+
+    def _judge_with_cache(
+        self,
+        *,
+        logger: EventLogger,
+        step: int,
+        task: TaskSpec,
+        artifact_bytes: bytes | None,
+        artifact_text: str | None,
+        judge: ModelConfig,
+    ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        # cache participates only in live runs — dry runs must stay deterministic
+        if not self.dry_run:
+            payload = artifact_bytes if artifact_bytes is not None else (artifact_text or "").encode()
+            sha = hashlib.sha256(payload).hexdigest()
+            if self.use_judge_cache:
+                cached = self.store.get_judge_result(task.id, judge.slug, sha)
+                if cached is not None:
+                    logger.log(
+                        phase="judge",
+                        step=step,
+                        event_type="judge_cache_hit",
+                        model=judge.slug,
+                        role="judge",
+                        input_data={"task": task.id, "artifact_sha256": sha},
+                        output_data=cached,
+                        reasoning="Judge result served from cache; no API call made.",
+                    )
+                    return cached, []
+        result, costs = judge_artifact(
+            logger=logger,
+            step=step,
+            task=task,
+            artifact=artifact_text or "",
+            judge=judge,
+            client=self.client,
+            dry_run=self.dry_run,
+            image_bytes=artifact_bytes,
+        )
+        if not self.dry_run:
+            self.store.put_judge_result(task.id, judge.slug, sha, result)
+        return result, costs
 
     def _validate(self, task: TaskSpec, artifact: str) -> tuple[bool, dict[str, Any]]:
         requested = set(task.validation) if task.validation else {"html_parses", "non_empty", "has_title"}

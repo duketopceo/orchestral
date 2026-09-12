@@ -12,10 +12,14 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from datasets import load_dataset
-
-
 def main() -> None:
+    try:
+        from datasets import load_dataset
+    except ModuleNotFoundError:
+        raise SystemExit(
+            "The 'datasets' package is required. Install it with: pip install datasets"
+        )
+
     out_dir = Path(__file__).resolve().parents[1] / "data"
     out_dir.mkdir(exist_ok=True)
     out_path = out_dir / "swe-bench-50.jsonl"

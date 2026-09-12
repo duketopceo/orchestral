@@ -1,4 +1,4 @@
-"""Pydantic models for tasks, model configs, and run settings."""
+"""Dataclass models for tasks, model configs, and run settings."""
 
 from __future__ import annotations
 

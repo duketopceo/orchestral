@@ -6,6 +6,9 @@ import base64
 import html
 import json
 import random
+import re
+from functools import lru_cache
+from pathlib import Path
 from typing import Any
 
 from orchestral.config import ModelConfig, TaskSpec
@@ -19,16 +22,54 @@ TINY_PNG = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
 )
 
+PROMPTS_DIR = Path(__file__).resolve().parent.parent / "prompts"
+ORCHESTRATOR_DEFAULT_PROMPT = "You are an orchestrator. Produce a plan and subtasks for a worker to execute."
+
+
+def available_prompt_variants(prompts_dir: Path | str = PROMPTS_DIR) -> list[str]:
+    """Prompt-variant names available as prompts/orchestrator-<name>.md."""
+    root = Path(prompts_dir)
+    if not root.exists():
+        return []
+    return sorted(p.stem.removeprefix("orchestrator-") for p in root.glob("orchestrator-*.md"))
+
+
+_VARIANT_NAME = re.compile(r"^[a-zA-Z0-9_-]+$")
+
+
+def load_prompt_variant(variant: str, prompts_dir: Path | str = PROMPTS_DIR) -> str:
+    """Load prompts/orchestrator-<variant>.md (including 'default')."""
+    if not _VARIANT_NAME.match(variant):
+        raise FileNotFoundError(f"Invalid prompt variant name '{variant}'")
+    try:
+        text = _read_prompt_file(str(Path(prompts_dir) / f"orchestrator-{variant}.md"))
+    except FileNotFoundError:
+        known = ", ".join(available_prompt_variants(prompts_dir)) or "(none)"
+        raise FileNotFoundError(f"Unknown prompt variant '{variant}'. Available: {known}") from None
+    if not text:
+        raise ValueError(f"Prompt variant '{variant}' is empty")
+    return text
+
+
+@lru_cache(maxsize=None)
+def _read_prompt_file(path: str) -> str:
+    return Path(path).read_text(encoding="utf-8").strip()
+
 
 # ---------------------------------------------------------------------------
 # LLM call helpers
 # ---------------------------------------------------------------------------
 
 
-def _build_messages(role: str, input_data: dict[str, Any], expect_json: bool) -> list[dict[str, str]]:
+def _build_messages(
+    role: str,
+    input_data: dict[str, Any],
+    expect_json: bool,
+    system_override: str | None = None,
+) -> list[dict[str, str]]:
     system = "You are a helpful assistant."
     if role == "orchestrator":
-        system = "You are an orchestrator. Produce a plan and subtasks for a worker to execute."
+        system = system_override or ORCHESTRATOR_DEFAULT_PROMPT
     elif role == "worker":
         system = "You are a worker. Execute the subtask and return the requested content."
     elif role == "ce-doc-review":
@@ -76,6 +117,7 @@ def _llm_call(
     expect_json: bool = True,
     max_tokens: int = 4096,
     temperature: float = 0.4,
+    system_override: str | None = None,
 ) -> tuple[str, dict[str, Any]]:
     if dry_run:
         # deterministic fake output so the harness still exercises the path
@@ -101,7 +143,7 @@ def _llm_call(
     if client is None:
         raise ValueError("OpenRouterClient is required for live runs")
 
-    messages = _build_messages(role, input_data, expect_json)
+    messages = _build_messages(role, input_data, expect_json, system_override)
     response_format = {"type": "json_object"} if expect_json else None
     completion = client.chat(model=model_cfg.slug, messages=messages, max_tokens=max_tokens, temperature=temperature)
 
@@ -219,6 +261,7 @@ def plan_raw(
     step: int,
     client: OpenRouterClient | None,
     dry_run: bool,
+    prompt_variant: str | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     content, cost = _llm_call(
         logger=logger,
@@ -231,6 +274,7 @@ def plan_raw(
         client=client,
         dry_run=dry_run,
         expect_json=True,
+        system_override=load_prompt_variant(prompt_variant) if prompt_variant else None,
     )
     plan = _extract_json(content)
     plan["task_id"] = task.id
@@ -415,6 +459,7 @@ def plan_ce(
     step: int,
     client: OpenRouterClient | None,
     dry_run: bool,
+    prompt_variant: str | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     content, plan_cost = _llm_call(
         logger=logger,
@@ -427,6 +472,7 @@ def plan_ce(
         client=client,
         dry_run=dry_run,
         expect_json=True,
+        system_override=load_prompt_variant(prompt_variant) if prompt_variant else None,
     )
     plan = _extract_json(content)
     plan["task_id"] = task.id

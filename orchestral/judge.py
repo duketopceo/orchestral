@@ -7,6 +7,7 @@ harness so it stays provider-agnostic.
 
 from __future__ import annotations
 
+import base64
 import json
 import random
 from typing import Any
@@ -15,15 +16,14 @@ from orchestral.config import ModelConfig, TaskSpec
 from orchestral.costs import compute_cost, token_usage_from_raw
 from orchestral.logger import EventLogger
 from orchestral.openrouter import OpenRouterClient
+from orchestral.planners import _extract_json
 
 JUDGE_PROMPT = """You are an expert judge evaluating the output of an AI system.
 
 Task: {prompt}
 
 Artifact:
-```html
-{artifact}
-```
+{artifact_section}
 
 Score the artifact from 0.0 to 1.0 based on how well it satisfies the task.
 Return only a JSON object with this exact shape:
@@ -35,6 +35,9 @@ Return only a JSON object with this exact shape:
 }}
 """
 
+# base64 inflates ~33%, so this keeps judge payloads under ~10MB
+MAX_JUDGE_IMAGE_BYTES = 7_500_000
+
 
 def judge_artifact(
     *,
@@ -45,8 +48,29 @@ def judge_artifact(
     judge: ModelConfig,
     client: OpenRouterClient | None,
     dry_run: bool,
+    image_bytes: bytes | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Return judge result and list of call costs."""
+    if image_bytes is not None and len(image_bytes) > MAX_JUDGE_IMAGE_BYTES:
+        result = {"score": None, "passed": None, "reasoning": f"image too large to judge ({len(image_bytes)} bytes)"}
+        logger.log(
+            phase="judge",
+            step=step,
+            event_type="judge_skipped",
+            model=judge.slug,
+            role="judge",
+            input_data={"task": task.id},
+            output_data=result,
+            reasoning="Image exceeds judge payload cap; skipped without an API call.",
+        )
+        return result, []
+    artifact_section = (
+        "The artifact is the attached image."
+        if image_bytes is not None
+        else f"```html\n{artifact[:2000]}\n```"
+    )
+    prompt_text = JUDGE_PROMPT.format(prompt=task.prompt, artifact_section=artifact_section)
+
     if dry_run or client is None:
         result = _fake_judge_result()
         cost = {
@@ -62,7 +86,7 @@ def judge_artifact(
             step=step,
             model=judge.slug,
             role="judge",
-            messages=[{"role": "user", "content": JUDGE_PROMPT.format(prompt=task.prompt, artifact=artifact[:2000])}],
+            messages=[{"role": "user", "content": prompt_text}],
             completion=result,
             reasoning="Dry-run judge evaluation.",
             input_tokens=cost["input_tokens"],
@@ -72,9 +96,28 @@ def judge_artifact(
         )
         return result, [cost]
 
+    if image_bytes is not None:
+        b64 = base64.b64encode(image_bytes).decode()
+        user_content: Any = [
+            {"type": "text", "text": prompt_text},
+            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}},
+        ]
+        # The raw payload is sent to the judge but must not land in
+        # events.jsonl — it would duplicate the full artifact as base64.
+        log_content: Any = [
+            {"type": "text", "text": prompt_text},
+            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,[{len(image_bytes)} image bytes redacted]"}},
+        ]
+    else:
+        user_content = prompt_text
+        log_content = prompt_text
     messages = [
         {"role": "system", "content": "You are an expert judge. Return only a JSON object."},
-        {"role": "user", "content": JUDGE_PROMPT.format(prompt=task.prompt, artifact=artifact[:2000])},
+        {"role": "user", "content": user_content},
+    ]
+    log_messages = [
+        {"role": "system", "content": "You are an expert judge. Return only a JSON object."},
+        {"role": "user", "content": log_content},
     ]
     completion = client.chat(model=judge.slug, messages=messages, max_tokens=4096, temperature=0.2)
     content = completion["content"]
@@ -92,6 +135,7 @@ def judge_artifact(
             "score": 0.0,
             "passed": False,
             "reasoning": f"Could not parse judge response: {content[:200]}",
+            "parse_failed": True,
         }
 
     result["score"] = float(result.get("score", 0.0))
@@ -104,7 +148,7 @@ def judge_artifact(
         step=step,
         model=judge.slug,
         role="judge",
-        messages=messages,
+        messages=log_messages,
         completion={
             "content": content,
             "usage": usage.to_dict(),
@@ -129,44 +173,3 @@ def judge_artifact(
 
 def _fake_judge_result() -> dict[str, Any]:
     return {"score": None, "passed": None, "reasoning": "Dry-run; no judge model was called."}
-
-
-def _extract_json(content: str) -> Any:
-    text = content.strip()
-    if text.startswith("```"):
-        text = text.split("```")[1]
-        if text.startswith("json"):
-            text = text[4:]
-        text = text.strip()
-    start = None
-    for i, ch in enumerate(text):
-        if ch in "{[":
-            start = i
-            break
-    if start is None:
-        raise ValueError(f"No JSON found in judge response: {content[:200]}")
-    depth = 0
-    in_string = False
-    escape = False
-    for i, ch in enumerate(text[start:], start):
-        if escape:
-            escape = False
-            continue
-        if ch == "\\" and in_string:
-            escape = True
-            continue
-        if ch == '"' and in_string:
-            in_string = False
-            continue
-        if ch == '"' and not in_string:
-            in_string = True
-            continue
-        if in_string:
-            continue
-        if ch in "{[":
-            depth += 1
-        elif ch in "}]":
-            depth -= 1
-            if depth == 0:
-                return json.loads(text[start : i + 1])
-    raise ValueError(f"Could not extract JSON from judge response: {content[:200]}")

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import html.parser
 import json
 from datetime import datetime, timezone
@@ -30,10 +31,23 @@ class ValidationError(Exception):
 
 
 class Runner:
-    def __init__(self, *, dry_run: bool = False, planner: str = "raw", runs_dir: str | Path = "runs"):
+    def __init__(
+        self,
+        *,
+        dry_run: bool = False,
+        planner: str = "raw",
+        runs_dir: str | Path = "runs",
+        prompt_variant: str | None = None,
+        sweep: dict[str, Any] | None = None,
+        use_judge_cache: bool = True,
+        store: RunStore | None = None,
+    ):
         self.dry_run = dry_run
         self.planner = planner
-        self.store = RunStore(runs_dir)
+        self.prompt_variant = prompt_variant
+        self.sweep = sweep
+        self.use_judge_cache = use_judge_cache
+        self.store = store or RunStore(runs_dir)
         self.client: OpenRouterClient | None = None
         if not dry_run:
             self.client = OpenRouterClient()
@@ -46,6 +60,9 @@ class Runner:
             config={
                 "dry_run": self.dry_run,
                 "planner": self.planner,
+                "prompt_variant": self.prompt_variant,
+                "sweep": self.sweep,
+                "judge": judge.slug if judge else None,
                 "orchestrator": orchestrator.to_dict(),
                 "worker": worker.to_dict(),
             },
@@ -80,6 +97,7 @@ class Runner:
                     step=1,
                     client=self.client,
                     dry_run=self.dry_run,
+                    prompt_variant=self.prompt_variant,
                 )
             else:
                 plan, plan_costs = plan_raw(
@@ -89,6 +107,7 @@ class Runner:
                     step=1,
                     client=self.client,
                     dry_run=self.dry_run,
+                    prompt_variant=self.prompt_variant,
                 )
             (run_dir / "plan.json").write_text(json.dumps(plan, indent=2, default=str))
             ledger.add_many(plan_costs)
@@ -217,17 +236,26 @@ class Runner:
                 ledger.add_many(assembly_costs)
                 passes, report = self._validate(task, artifact)
 
-            # 4. Judge (optional — text artifacts only)
-            if judge is not None and not is_image:
-                judge_step = assembly_step + 3
-                judge_result, judge_costs = judge_artifact(
+            # 4. Judge (optional; image tasks need a vision-capable judge model)
+            if judge is not None:
+                if is_image and judge.metadata.get("vision") is not True:
+                    logger.log(
+                        phase="judge",
+                        step=assembly_step + 2,
+                        event_type="judge_warning",
+                        model=judge.slug,
+                        role="judge",
+                        input_data={"task": task.id},
+                        output_data={},
+                        reasoning="Judge model has no `vision: true` metadata; image judging may fail at the API.",
+                    )
+                judge_result, judge_costs = self._judge_with_cache(
                     logger=logger,
-                    step=judge_step,
+                    step=assembly_step + 3,
                     task=task,
-                    artifact=artifact,
+                    artifact_bytes=artifact_bytes if is_image else None,
+                    artifact_text=None if is_image else artifact,
                     judge=judge,
-                    client=self.client,
-                    dry_run=self.dry_run,
                 )
                 ledger.add_many(judge_costs)
                 report["judge"] = judge_result
@@ -310,6 +338,56 @@ class Runner:
             logger.close()
             if self.client is not None:
                 self.client.close()
+
+    def _judge_with_cache(
+        self,
+        *,
+        logger: EventLogger,
+        step: int,
+        task: TaskSpec,
+        artifact_bytes: bytes | None,
+        artifact_text: str | None,
+        judge: ModelConfig,
+    ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        """Judge an artifact, serving identical artifacts from the persistent cache.
+
+        The cache is keyed on (task, judge slug, artifact sha256) and participates
+        only in live runs — dry runs never read or write it so they stay
+        deterministic. A per-key lock serializes get->call->put across threads so
+        two parallel runs with identical artifacts don't duplicate the API call.
+        """
+        if self.dry_run:
+            return judge_artifact(
+                logger=logger, step=step, task=task, artifact=artifact_text or "",
+                judge=judge, client=self.client, dry_run=True, image_bytes=artifact_bytes,
+            )
+
+        payload = artifact_bytes if artifact_bytes is not None else (artifact_text or "").encode()
+        # task prompt is part of the key so a task edit under the same id invalidates
+        sha = hashlib.sha256(task.prompt.encode() + b"\0" + payload).hexdigest()
+        with self.store.judge_lock((task.id, judge.slug, sha)):
+            if self.use_judge_cache:
+                cached = self.store.get_judge_result(task.id, judge.slug, sha)
+                if cached is not None:
+                    logger.log(
+                        phase="judge",
+                        step=step,
+                        event_type="judge_cache_hit",
+                        model=judge.slug,
+                        role="judge",
+                        input_data={"task": task.id, "artifact_sha256": sha},
+                        output_data=cached,
+                        reasoning="Judge result served from cache; no API call made.",
+                    )
+                    return cached, []
+            result, costs = judge_artifact(
+                logger=logger, step=step, task=task, artifact=artifact_text or "",
+                judge=judge, client=self.client, dry_run=False, image_bytes=artifact_bytes,
+            )
+            # synthetic parse-failure results are transient — don't poison the cache
+            if not result.get("parse_failed"):
+                self.store.put_judge_result(task.id, judge.slug, sha, result)
+            return result, costs
 
     def _validate(self, task: TaskSpec, artifact: str) -> tuple[bool, dict[str, Any]]:
         requested = set(task.validation) if task.validation else {"html_parses", "non_empty", "has_title"}

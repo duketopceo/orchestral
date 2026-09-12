@@ -17,6 +17,8 @@ python3 harness.py report
 python3 harness.py report --html
 python3 harness.py dashboard
 python3 harness.py tui
+python3 harness.py history
+python3 harness.py ablate --task landing-page-coffee --orchestrator deepseek/deepseek-v4-flash-0731 --worker z-ai/glm-5.3-flash --sweep retry_limit=0,1,2 --dry-run
 python3 harness.py scrub
 ```
 

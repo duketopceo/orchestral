@@ -60,6 +60,8 @@ models:
     context: 1310720
     max_tokens: 32768
     retry_limit: 2
+    metadata:
+      vision: true
 
   - slug: "mistralai/devstral-2512"
     name: "Devstral 2512"
@@ -78,6 +80,8 @@ models:
     context: 400000
     max_tokens: 65536
     retry_limit: 2
+    metadata:
+      vision: true
 
   - slug: "google/gemini-3.1-flash-lite"
     name: "Gemini 3.1 Flash Lite"
@@ -87,6 +91,8 @@ models:
     context: 1048576
     max_tokens: 65536
     retry_limit: 2
+    metadata:
+      vision: true
 
   - slug: "mistralai/mistral-small-3.2-24b-instruct"
     name: "Mistral Small 3.2"
@@ -96,6 +102,8 @@ models:
     context: 131072
     max_tokens: 32768
     retry_limit: 2
+    metadata:
+      vision: true
 
   - slug: "anthropic/claude-haiku-4.5"
     name: "Claude Haiku 4.5"
@@ -105,6 +113,8 @@ models:
     context: 200000
     max_tokens: 32768
     retry_limit: 2
+    metadata:
+      vision: true
 
   - slug: "google/gemini-3.1-flash-image"
     name: "Gemini 3.1 Flash Image"
@@ -137,6 +147,8 @@ models:
     output_price_per_mtok: 3.90
     context: 262144
     max_tokens: 65536
+    metadata:
+      vision: true
 
   - slug: "mistralai/mistral-large-2512"
     name: "Mistral Large 2512"
@@ -153,6 +165,8 @@ models:
     output_price_per_mtok: 50.0
     context: 1048576
     max_tokens: 131072
+    metadata:
+      vision: true
 
   - slug: "x-ai/grok-4.6"
     name: "Grok 4.6"
@@ -161,6 +175,8 @@ models:
     output_price_per_mtok: 6.0
     context: 500000
     max_tokens: 131072
+    metadata:
+      vision: true
 
   - slug: "google/gemini-3.8-flash"
     name: "Gemini 3.8 Flash"
@@ -169,3 +185,5 @@ models:
     output_price_per_mtok: 3.75
     context: 1048576
     max_tokens: 65536
+    metadata:
+      vision: true

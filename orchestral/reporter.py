@@ -353,6 +353,14 @@ def _dashboard_html(runs: list[Any], summary: dict[str, Any]) -> str:
         max_cost = max((v["cost"] for v in table.values()), default=0.0)
         return "".join(_bar_html(k, v["cost"], max_cost) for k, v in sorted(table.items(), key=lambda x: -x[1]["cost"]))
 
+    scatter = _scatter_svg(runs)
+    history = model_history(runs)
+    history_sections = "".join(
+        _history_table_html(history[role], role)
+        for role in ("orchestrator", "worker", "judge")
+        if history[role]
+    )
+
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -388,6 +396,13 @@ def _dashboard_html(runs: list[Any], summary: dict[str, Any]) -> str:
   </div>
 
   <div class="section">
+    <h2>Cost vs quality</h2>
+    {scatter}
+  </div>
+
+  {history_sections}
+
+  <div class="section">
     <h2>Recent runs</h2>
     <table>
       <tr><th>run_id</th><th>planner</th><th>orchestrator</th><th>worker</th><th>cost</th><th>tokens</th><th>pass</th></tr>
@@ -405,6 +420,126 @@ def _bucket(table: dict[str, dict[str, float]], key: str, run: Any) -> None:
     table[key]["cost"] += run.total_cost_usd
     table[key]["tokens"] += run.total_input_tokens + run.total_output_tokens
     table[key]["runs"] += 1
+
+
+def model_history(runs: list[Any]) -> dict[str, dict[str, dict[str, Any]]]:
+    """Aggregate finished runs into per-model stats by role.
+
+    Returns {"orchestrator": {slug: stats}, "worker": {...}, "judge": {...}}
+    where stats carry runs, pass_rate, avg_score, avg_cost, total_cost, tokens.
+    """
+    out: dict[str, dict[str, dict[str, Any]]] = {"orchestrator": {}, "worker": {}, "judge": {}}
+
+    def acc(role: str, name: str, run: Any) -> None:
+        g = out[role].setdefault(name, {"runs": 0, "passed": 0, "scores": [], "cost": 0.0, "tokens": 0})
+        g["runs"] += 1
+        g["passed"] += 1 if run.passes else 0
+        if run.score is not None:
+            g["scores"].append(run.score)
+        g["cost"] += run.total_cost_usd
+        g["tokens"] += run.total_input_tokens + run.total_output_tokens
+
+    for r in runs:
+        if r.status != "finished":
+            continue
+        acc("orchestrator", r.orchestrator, r)
+        acc("worker", r.worker, r)
+        judge = (r.config or {}).get("judge")
+        if judge:
+            acc("judge", judge, r)
+
+    for table in out.values():
+        for name, s in table.items():
+            s["pass_rate"] = s["passed"] / s["runs"] if s["runs"] else None
+            s["avg_score"] = sum(s["scores"]) / len(s["scores"]) if s["scores"] else None
+            s["avg_cost"] = s["cost"] / s["runs"] if s["runs"] else 0.0
+            s["total_cost"] = s["cost"]
+            del s["passed"], s["scores"], s["cost"]
+    return out
+
+
+_SCATTER_PALETTE = ["#2563eb", "#dc2626", "#16a34a", "#d97706", "#9333ea", "#0891b2", "#db2777", "#65a30d"]
+
+
+def _scatter_svg(runs: list[Any]) -> str:
+    """Cost-vs-quality SVG scatter: x = run cost, y = judge score or pass (1/0)."""
+    pts = [r for r in runs if r.status == "finished"]
+    if not pts:
+        return "<p>No finished runs yet.</p>"
+    w, h, pad_l, pad_r, pad_t, pad_b = 720, 340, 70, 20, 20, 50
+    xs = [r.total_cost_usd for r in pts]
+    x_max = max(xs) or 1.0
+
+    def quality(r: Any) -> float:
+        if r.score is not None:
+            return r.score
+        return 1.0 if r.passes else 0.0
+
+    def px(v: float) -> float:
+        return pad_l + (v / x_max) * (w - pad_l - pad_r)
+
+    def py(q: float) -> float:
+        return pad_t + (1 - q) * (h - pad_t - pad_b)
+
+    pairing_colors: dict[str, str] = {}
+    circles = []
+    for r in pts:
+        pairing = f"{r.orchestrator} → {r.worker}"
+        color = pairing_colors.setdefault(pairing, _SCATTER_PALETTE[len(pairing_colors) % len(_SCATTER_PALETTE)])
+        q = quality(r)
+        judged = r.score is not None
+        label = f"{_esc(pairing)} · {_esc(r.task_id)} · ${r.total_cost_usd:.4f} · {'score' if judged else 'pass'} {q:.2f}"
+        circles.append(
+            f"<circle cx='{px(r.total_cost_usd):.1f}' cy='{py(q):.1f}' r='5' fill='{color}'"
+            f" fill-opacity='{0.85 if judged else 0.4}' stroke='{color}' stroke-width='1'>"
+            f"<title>{label}</title></circle>"
+        )
+
+    ticks = []
+    for i in range(5):
+        yv = i / 4
+        y = py(yv)
+        ticks.append(
+            f"<line x1='{pad_l}' y1='{y:.1f}' x2='{w - pad_r}' y2='{y:.1f}' stroke='#e5e7eb'/>"
+            f"<text x='{pad_l - 8}' y='{y + 4:.1f}' text-anchor='end' font-size='11' fill='#6b7280'>{yv:.2f}</text>"
+        )
+    for i in range(6):
+        xv = x_max * i / 5
+        x = px(xv)
+        ticks.append(f"<text x='{x:.1f}' y='{h - pad_b + 18}' text-anchor='middle' font-size='11' fill='#6b7280'>${xv:.3f}</text>")
+
+    legend = "".join(
+        f"<span class='tag' style='background:{c}22;color:{c}'>{_esc(pairing)}</span> "
+        for pairing, c in pairing_colors.items()
+    )
+    return (
+        f"<svg viewBox='0 0 {w} {h}' style='max-width:720px;width:100%;height:auto'>"
+        + "".join(ticks)
+        + f"<line x1='{pad_l}' y1='{pad_t}' x2='{pad_l}' y2='{h - pad_b}' stroke='#9ca3af'/>"
+        + f"<line x1='{pad_l}' y1='{h - pad_b}' x2='{w - pad_r}' y2='{h - pad_b}' stroke='#9ca3af'/>"
+        + "".join(circles)
+        + f"<text x='{(pad_l + w - pad_r) / 2:.0f}' y='{h - 8}' text-anchor='middle' font-size='12' fill='#374151'>cost per run (USD)</text>"
+        + "</svg>"
+        + f"<p style='font-size:0.85rem;color:#6b7280'>y = judge score; unjudged runs plotted as pass 1.0 / fail 0.0 (faded).</p>"
+        + f"<div class='tags'>{legend}</div>"
+    )
+
+
+def _history_table_html(table: dict[str, dict[str, Any]], role: str) -> str:
+    def _row(name: str, s: dict[str, Any]) -> str:
+        pass_pct = f"{s['pass_rate'] * 100:.1f}%" if s["pass_rate"] is not None else "-"
+        score = f"{s['avg_score']:.2f}" if s["avg_score"] is not None else "-"
+        return (
+            f"<tr><td>{_esc(name)}</td><td>{s['runs']}</td><td>{pass_pct}</td>"
+            f"<td>{score}</td><td>${s['avg_cost']:.6f}</td><td>${s['total_cost']:.4f}</td></tr>"
+        )
+
+    rows = "".join(_row(name, s) for name, s in sorted(table.items(), key=lambda kv: -kv[1]["total_cost"]))
+    return (
+        f"<div class='section'><h2>{_esc(role.capitalize())} history</h2>"
+        f"<table><tr><th>model</th><th>runs</th><th>pass rate</th><th>avg score</th><th>avg cost</th><th>total cost</th></tr>"
+        f"{rows}</table></div>"
+    )
 
 
 def generate_dashboard(runs_dir: str | Path = "runs", reports_dir: str | Path = "reports") -> Path:

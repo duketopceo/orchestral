@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
@@ -170,6 +171,31 @@ class TestImageJudgeMessages(unittest.TestCase):
         types = {p["type"] for p in user_msg}
         self.assertEqual(types, {"text", "image_url"})
         self.assertTrue(user_msg[1]["image_url"]["url"].startswith("data:image/png;base64,"))
+
+    def test_logged_messages_redact_image_payload(self):
+        judge = _model("j/vision", "judge")
+        client = MagicMock()
+        client.chat.return_value = {
+            "content": '{"score": 0.8, "passed": true, "reasoning": "nice"}',
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+            "latency_ms": 100,
+            "id": "x",
+        }
+        logger = MagicMock()
+        judge_artifact(
+            logger=logger,
+            step=1,
+            task=TaskSpec(id="img", type="image", prompt="a logo"),
+            artifact="",
+            judge=judge,
+            client=client,
+            dry_run=False,
+            image_bytes=b"\x89PNG fake",
+        )
+        logged_msg = logger.log_llm_call.call_args.kwargs["messages"][1]["content"]
+        logged_url = logged_msg[1]["image_url"]["url"]
+        self.assertNotIn(base64.b64encode(b"\x89PNG fake").decode(), logged_url)
+        self.assertIn("redacted", logged_url)
 
     def test_oversized_image_skips_api_call(self):
         from orchestral.judge import MAX_JUDGE_IMAGE_BYTES

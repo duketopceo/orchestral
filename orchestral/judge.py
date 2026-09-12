@@ -101,11 +101,22 @@ def judge_artifact(
             {"type": "text", "text": prompt_text},
             {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}},
         ]
+        # The raw payload is sent to the judge but must not land in
+        # events.jsonl — it would duplicate the full artifact as base64.
+        log_content: Any = [
+            {"type": "text", "text": prompt_text},
+            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,[{len(image_bytes)} image bytes redacted]"}},
+        ]
     else:
         user_content = prompt_text
+        log_content = prompt_text
     messages = [
         {"role": "system", "content": "You are an expert judge. Return only a JSON object."},
         {"role": "user", "content": user_content},
+    ]
+    log_messages = [
+        {"role": "system", "content": "You are an expert judge. Return only a JSON object."},
+        {"role": "user", "content": log_content},
     ]
     completion = client.chat(model=judge.slug, messages=messages, max_tokens=4096, temperature=0.2)
     content = completion["content"]
@@ -136,7 +147,7 @@ def judge_artifact(
         step=step,
         model=judge.slug,
         role="judge",
-        messages=messages,
+        messages=log_messages,
         completion={
             "content": content,
             "usage": usage.to_dict(),

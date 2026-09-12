@@ -1,6 +1,7 @@
 # orchestral
 
-OpenRouter eval harness for testing orchestrator→worker model pairs.
+Eval harness for testing orchestrator→worker model pairs over OpenRouter or
+any OpenAI-compatible endpoint.
 
 A big model plans and delegates. Small models write the code. We measure whether
 cheap planners + cheap workers produce good output at tiny cost, or whether you
@@ -18,34 +19,94 @@ Does the quality of the final output depend more on:
 ## How it works
 
 1. Define a task (e.g. "build a landing page for X") in a YAML spec
-2. Pick orchestrator models and worker models from OpenRouter
-3. The harness runs every orchestrator × worker pairing through:
+2. Pick orchestrator and worker model slugs
+3. The harness runs each orchestrator × worker pairing through:
    - **Plan**: orchestrator decomposes the task into subtasks
    - **Delegate**: each subtask prompt goes to a worker model
    - **Assemble**: orchestrator merges worker outputs into a final artifact
-   - **Validate**: structural checks (parses, non-empty, no errors)
+   - **Validate**: structural checks (parses, non-empty, no placeholders)
+   - **Judge** (optional): an LLM scores the artifact
    - **Retry**: failed subtasks go back to the worker (configurable limit)
 4. Results land in `runs/` with the artifact, plan JSON, cost breakdown, and timing
-5. A comparison report ranks pairings by quality-per-dollar
+5. Reports rank pairings by quality-per-dollar
+
+## Install
+
+```bash
+pip install -e .            # from a clone
+pip install "orchestral @ git+https://github.com/duketopceo/orchestral"  # or straight from git
+pip install -e .[shots]     # optional: screenshot capture (playwright)
+pip install -e .[dev]       # optional: ruff + mypy for development
+```
+
+Set your provider key (OpenRouter is the default):
+
+```bash
+export OPENROUTER_API_KEY=sk-or-...
+```
+
+Other providers work via `metadata` on the model config — see
+[docs/providers.md](docs/providers.md).
+
+## Quickstart
+
+```bash
+orchestral init                    # create runs/ + SQLite index
+orchestral run --task landing-page-coffee \
+    --orchestrator deepseek/deepseek-v4-flash-0731 \
+    --worker z-ai/glm-5.3-flash --dry-run   # no API calls, sample data
+orchestral run --task landing-page-coffee \
+    --orchestrator deepseek/deepseek-v4-flash-0731 \
+    --worker z-ai/glm-5.3-flash             # real run
+orchestral report                  # table of stored runs
+orchestral dashboard               # reports/dashboard.html
+```
+
+`python harness.py ...` works identically if you prefer not to install.
+
+## Commands
+
+| Command | What it does |
+|---|---|
+| `init` | Create the runs directory and SQLite index |
+| `run` | One orchestrator × worker pairing on one task |
+| `grid` | Every orchestrator × worker pairing on one task (`--orchestrators`, `--workers`, `--jobs`) |
+| `batch` | One pairing across many tasks (`--batch-dir` or `--batch-tasks`, `--jobs`) |
+| `ablate` | Sweep one knob for a pairing (`--sweep retry_limit=0,1,2` or `prompt_variant=terse,detailed`) |
+| `history` | Per-model aggregates across all stored runs |
+| `report` | List/compare runs (`--pairings`, `--html`, `--sort`, `--json`) |
+| `dashboard` | Static HTML dashboard with cost-vs-quality scatter |
+| `tui` | Live terminal dashboard (`--refresh`) |
+| `shots` | Screenshot stored HTML artifacts (needs `[shots]` extra) |
+| `scrub` | Redact secrets/paths from `runs/` into `runs-pub/` + `manifest.json` |
+
+Shared run flags (on `run`, `grid`, `batch`, `ablate`): `--planner raw|ce-plan`,
+`--judge <slug>`, `--no-judge-cache`, `--retry-limit N`, `--prompt-variant NAME`,
+`--dry-run`, `--json`.
+
+Global flags (before the subcommand): `--runs-dir`, `--tasks-dir`, `--models-dir`.
 
 ## Task formats
 
-First task type: **HTML page generation** — cheap to run, visually verifiable by
-screenshot grid, and naturally decomposes into subtasks.
+Implemented task types: **HTML page generation** and **image generation**
+(OpenRouter Images API). Validation checks and the full schema are documented in
+[docs/task-spec.md](docs/task-spec.md); model config fields in
+[docs/model-config.md](docs/model-config.md).
 
-Planned task types: video generation, image generation, multi-file projects,
-API integrations.
+Planned task types: video generation, multi-file projects, API integrations.
 
 ## Structure
 
 ```
 tasks/           task specs (YAML)
 models/          orchestrator and worker model configs
+prompts/         orchestrator prompt variants
 runs/            output artifacts (ignored by git)
-reports/         comparison tables (markdown)
-ui/              static web UI for browsing runs
-orchestral/      library modules (storage, logger, config, runner)
-harness.py       main CLI
+runs-pub/        scrubbed, publishable output of `scrub` (ignored by git)
+reports/         generated reports/dashboards (ignored by git)
+orchestral/      library modules (storage, logger, config, runner, providers)
+harness.py       CLI entry point
+tests/           stdlib unittest suite
 ```
 
 ## Storage
@@ -61,65 +122,37 @@ runs/{orchestrator}/{task}/{worker}/{run_id}/
   events.jsonl   # every agent action, reasoning, tool call, latency
   plan.json      # orchestrator decomposition
   worker-*.json  # individual worker outputs
-  artifact.*     # assembled final output (html, json, zip, ...)
+  artifact.*     # assembled final output (html, png, ...)
+  screenshot.png # rendered capture for html artifacts (optional)
   cost.json      # per-call cost breakdown
   report.json    # validation and judge results
 ```
 
-`runs/index.db` is an SQLite database that indexes every run. The CLI uses it for
-fast sorting and filtering, and the web UI can load it later without walking the
-whole tree.
+`runs/index.db` is an SQLite index for fast sorting and filtering.
 
-If you outgrow local storage, swap `orchestral/storage.py` to use R2/S3 or a
-separate `orchestral-runs` repo. The default keeps it cheap and private.
+## Publishing results
 
-## Usage
+`orchestral scrub` copies allowlisted run artifacts into `runs-pub/`, redacts
+credentials/paths/endpoints, preserves binary files byte-for-byte, and writes a
+`manifest.json` index. See [docs/publishing.md](docs/publishing.md).
 
-```bash
-export OPENROUTER_API_KEY=sk-or-...
+## GitHub Action
 
-# Run a task across all orchestrator × worker pairings
-python harness.py run --task tasks/landing-page.yaml
+To run evals in *another* repo, install orchestral from git inside your
+workflow rather than copying this repo's workflow:
 
-# Run with a specific subset
-python harness.py run --task tasks/landing-page.yaml --orchestrators 3 --workers all
-
-# Generate comparison report
-python harness.py report --task tasks/landing-page.yaml
-
-# Judge every run with a frontier model (results are cached on artifact hash)
-python harness.py grid --task landing-page-coffee --judge anthropic/claude-haiku-4.5 --jobs 5
-
-# Ablate one knob on a single pairing
-python harness.py ablate --task landing-page-coffee \
-    --orchestrator deepseek/deepseek-v4-flash-0731 --worker z-ai/glm-5.3-flash \
-    --sweep retry_limit=0,1,2
-python harness.py ablate --task landing-page-coffee \
-    --orchestrator deepseek/deepseek-v4-flash-0731 --worker z-ai/glm-5.3-flash \
-    --sweep prompt_variant=terse,detailed
-
-# Per-model history across all stored runs
-python harness.py history
-
-# Terminal dashboard
-python harness.py tui
+```yaml
+- uses: actions/setup-python@v5
+  with: {python-version: "3.11"}
+- run: pip install "orchestral @ git+https://github.com/duketopceo/orchestral"
+- run: orchestral run --task landing-page-coffee --orchestrator "$ORCH" --worker "$WORK"
+  env:
+    OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
 ```
 
-## GitHub Action (per-repo, no local install)
-
-Copy `.github/workflows/orchestral.yml` into the target repo and set the
-`OPENROUTER_API_KEY` secret. On every PR it:
-
-- installs `orchestral`
-- runs the eval
-- uploads the HTML report + dashboard as artifacts
-- comments the cost/token summary on the PR
-- approves the PR if `total_cost_usd <= MAX_COST_USD`, requests changes if not
-
-For a true "reviewer" experience like TestDriver, build a GitHub App that uses
-the same code path; the Action is the simplest per-repo setup today.
-
-This repo also runs `orchestral` on its own PRs as a dogfood test.
+This repo's own `.github/workflows/orchestral.yml` dogfoods the harness on
+internal PRs (skipped on forks, which can't see the secret). `.github/workflows/ci.yml`
+runs tests, lint, and types on every PR with no secrets required.
 
 ## License
 

@@ -15,6 +15,7 @@ from typing import Any
 from orchestral.config import ModelConfig, find_task, load_models, load_task, load_yaml
 from orchestral.planners import available_prompt_variants, load_prompt_variant
 from orchestral.privacy import scrub_all
+from orchestral.providers import provider_key
 from orchestral.reporter import generate_dashboard, generate_html_report, model_history
 from orchestral.runner import Runner
 from orchestral.storage import RunStore
@@ -72,11 +73,8 @@ def _check_prompt_variant(args: argparse.Namespace) -> None:
 
 
 def _run_preamble(args: argparse.Namespace) -> tuple[RunStore, dict[str, ModelConfig], ModelConfig | None]:
-    """Shared command preamble: API-key guard, prompt-variant check, model map,
+    """Shared command preamble: prompt-variant check, model map,
     one RunStore (primes WAL before parallel runners), and the optional judge."""
-    if not args.dry_run and not os.environ.get("OPENROUTER_API_KEY"):
-        print("OPENROUTER_API_KEY is not set. Pass --dry-run to test the harness without calling OpenRouter.")
-        sys.exit(1)
     if getattr(args, "retry_limit", None) is not None and not 0 <= args.retry_limit <= 10:
         print("--retry-limit must be between 0 and 10", file=sys.stderr)
         sys.exit(1)
@@ -84,6 +82,26 @@ def _run_preamble(args: argparse.Namespace) -> tuple[RunStore, dict[str, ModelCo
     store = RunStore(args.runs_dir)
     known = _model_map(args.models_dir)
     return store, known, _judge_from_arg(args, known)
+
+
+def _check_provider_envs(args: argparse.Namespace, *models: ModelConfig | None) -> None:
+    """Fail fast naming every API-key env var the selected models' providers need."""
+    if args.dry_run:
+        return
+    missing = sorted({
+        env
+        for m in models
+        if m is not None
+        for env in [provider_key(m)[2]]
+        if env and not os.environ.get(env)
+    })
+    if missing:
+        print(
+            f"API key env var(s) not set: {', '.join(missing)}. "
+            "Set them for the configured providers, or pass --dry-run.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
 
 def _runner_kwargs(args: argparse.Namespace, store: RunStore, **extra: Any) -> dict[str, Any]:
@@ -115,6 +133,7 @@ def cmd_run(args: argparse.Namespace) -> None:
     task = load_task(_task_from_arg(args.task, args.tasks_dir))
     orchestrator = replace(_model_from_arg(args.orchestrator, args.models_dir, known), role="orchestrator")
     worker = _apply_retry_limit(replace(_model_from_arg(args.worker, args.models_dir, known), role="worker"), args)
+    _check_provider_envs(args, orchestrator, worker, judge)
 
     meta = Runner(**_runner_kwargs(args, store)).run(task, orchestrator, worker, judge)
     if args.json:
@@ -150,6 +169,7 @@ def cmd_grid(args: argparse.Namespace) -> None:
     if not orchestrators or not workers:
         print("No orchestrator/worker models configured for this task type. Pass --orchestrators and --workers, or add role/modalities fields in models/*.yaml.")
         sys.exit(1)
+    _check_provider_envs(args, *orchestrators, *workers, judge)
     results: list[dict[str, Any]] = []
 
     pairings = [(o, w) for o in orchestrators for w in workers]
@@ -236,6 +256,7 @@ def cmd_batch(args: argparse.Namespace) -> None:
 
     orchestrator = replace(_model_from_arg(args.orchestrator, args.models_dir, known), role="orchestrator")
     worker = _apply_retry_limit(replace(_model_from_arg(args.worker, args.models_dir, known), role="worker"), args)
+    _check_provider_envs(args, orchestrator, worker, judge)
 
     results: list[dict[str, Any]] = []
 
@@ -312,6 +333,7 @@ def cmd_ablate(args: argparse.Namespace) -> None:
     task = load_task(_task_from_arg(args.task, args.tasks_dir))
     orchestrator = replace(_model_from_arg(args.orchestrator, args.models_dir, known), role="orchestrator")
     base_worker = _model_from_arg(args.worker, args.models_dir, known)
+    _check_provider_envs(args, orchestrator, base_worker, judge)
 
     def _one(value: Any) -> dict[str, Any]:
         worker = replace(base_worker, role="worker", retry_limit=value) if knob == "retry_limit" else _apply_retry_limit(replace(base_worker, role="worker"), args)

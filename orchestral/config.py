@@ -18,6 +18,8 @@ class ModelConfig:
     max_tokens: int = 8_192
     retry_limit: int = 2
     price_per_image: float = 0.0
+    # metadata keys: provider ("openrouter"|"openai-compatible"), base_url,
+    # api_key_env, modalities, vision — see docs/model-config.md
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def supports(self, modality: str) -> bool:

@@ -20,6 +20,7 @@ from orchestral.costs import token_usage_from_raw
 MAX_RETRIES = 3
 BASE_RETRY_DELAY_SECONDS = 1.0
 NON_RETRYABLE_STATUSES = {400, 401, 403, 404, 422}
+DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
 
 _PRIVATE_HOST_MARKERS = ("localhost", "127.", "0.", "10.", "192.168.", "169.254.", "::1")
 _MAX_IMAGE_BYTES = 25 * 1024 * 1024
@@ -40,10 +41,24 @@ def _is_private_host(hostname: str) -> bool:
 
 
 class OpenRouterClient:
-    def __init__(self, api_key: str | None = None, base_url: str = "https://openrouter.ai/api/v1"):
-        self.api_key = (api_key or os.environ.get("OPENROUTER_API_KEY") or "").strip()
+    """OpenAI-compatible chat client; OpenRouter is the default endpoint.
+
+    `provider` names the configured backend ("openrouter" or
+    "openai-compatible"); `api_key_env` names the env var the key is read from.
+    The OpenRouter-only Images API is gated on provider == "openrouter".
+    """
+
+    def __init__(
+        self,
+        api_key: str | None = None,
+        base_url: str = DEFAULT_BASE_URL,
+        api_key_env: str = "OPENROUTER_API_KEY",
+        provider: str = "openrouter",
+    ):
+        self.provider = provider
+        self.api_key = (api_key or os.environ.get(api_key_env) or "").strip()
         if not self.api_key:
-            raise ValueError("OPENROUTER_API_KEY is not set")
+            raise ValueError(f"{api_key_env} is not set")
         self.client = httpx.Client(base_url=base_url, timeout=120.0, follow_redirects=True)
 
     def _post_with_retry(self, path: str, payload: dict[str, Any]) -> httpx.Response:
@@ -123,6 +138,11 @@ class OpenRouterClient:
         Returns a dict with `image_bytes` (decoded from b64_json), `usage`,
         and `latency_ms`, mirroring the `chat` return shape.
         """
+        if self.provider != "openrouter":
+            raise OpenRouterError(
+                f"image generation is only supported for provider 'openrouter'; "
+                f"provider {self.provider!r} is chat-only"
+            )
         start = time.time()
         payload: dict[str, Any] = {
             "model": model,

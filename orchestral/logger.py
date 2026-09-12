@@ -8,10 +8,9 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Optional
-
+from typing import Any, Self
 
 EVENT_SCHEMA_VERSION = "1"
 
@@ -36,16 +35,16 @@ class EventLogger:
         input_data: dict[str, Any],
         output_data: dict[str, Any],
         reasoning: str = "",
-        cost: Optional[dict[str, Any]] = None,
+        cost: dict[str, Any] | None = None,
         latency_ms: float = 0.0,
-        error: Optional[str] = None,
-        metadata: Optional[dict[str, Any]] = None,
+        error: str | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Append a single structured event and return it."""
         event: dict[str, Any] = {
             "event_id": uuid.uuid4().hex[:16],
             "schema_version": EVENT_SCHEMA_VERSION,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
             "phase": phase,
             "step": step,
             "type": event_type,
@@ -77,7 +76,7 @@ class EventLogger:
         output_tokens: int = 0,
         cost_usd: float = 0.0,
         latency_ms: float = 0.0,
-        error: Optional[str] = None,
+        error: str | None = None,
     ) -> dict[str, Any]:
         """Convenience wrapper for an OpenRouter LLM call."""
         return self.log(
@@ -102,7 +101,7 @@ class EventLogger:
         if not self._fh.closed:
             self._fh.close()
 
-    def __enter__(self) -> "EventLogger":
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:

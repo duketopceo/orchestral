@@ -5,6 +5,7 @@ Tracks per-call token usage and cost in Decimal to avoid floating-point drift.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
@@ -60,12 +61,12 @@ class CostLedger:
             )
         self.records.append(record)
 
-    def add_many(self, records: list[CostRecord | dict[str, Any]]) -> None:
+    def add_many(self, records: Sequence[CostRecord | dict[str, Any]]) -> None:
         for record in records:
             self.add(record)
 
     def total_cost_usd(self) -> float:
-        return usd(sum((Decimal(str(r.cost_usd)) for r in self.records), Decimal("0")))
+        return usd(sum((Decimal(str(r.cost_usd)) for r in self.records), Decimal(0)))
 
     def total_input_tokens(self) -> int:
         return sum(r.input_tokens for r in self.records)

@@ -24,6 +24,9 @@ on:
 jobs:
   eval:
     runs-on: ubuntu-latest
+    # Secrets aren't available to fork PRs — skip the paid eval there instead
+    # of failing every external contribution.
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
     permissions:
       pull-requests: write
     env:

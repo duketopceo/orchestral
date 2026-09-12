@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import html.parser
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -13,7 +13,6 @@ from orchestral.config import ModelConfig, TaskSpec
 from orchestral.costs import CostLedger
 from orchestral.judge import judge_artifact
 from orchestral.logger import EventLogger
-from orchestral.openrouter import OpenRouterClient
 from orchestral.planners import (
     assemble_ce,
     assemble_image,
@@ -23,6 +22,7 @@ from orchestral.planners import (
     plan_ce,
     plan_raw,
 )
+from orchestral.providers import provider_for, provider_key
 from orchestral.storage import RunMeta, RunStore
 
 
@@ -41,6 +41,7 @@ class Runner:
         sweep: dict[str, Any] | None = None,
         use_judge_cache: bool = True,
         store: RunStore | None = None,
+        clients: dict[str, Any] | None = None,
     ):
         self.dry_run = dry_run
         self.planner = planner
@@ -48,11 +49,54 @@ class Runner:
         self.sweep = sweep
         self.use_judge_cache = use_judge_cache
         self.store = store or RunStore(runs_dir)
-        self.client: OpenRouterClient | None = None
-        if not dry_run:
-            self.client = OpenRouterClient()
+        # role ("orchestrator"/"worker"/"judge") -> Provider, injected for tests
+        self._injected_clients = dict(clients or {})
+        # legacy single-client handle; tests may set this directly
+        self.client: Any = None
+        self._owned_clients: list[Any] = []
+
+    def _resolve_clients(
+        self,
+        orchestrator: ModelConfig,
+        worker: ModelConfig,
+        judge: ModelConfig | None,
+    ) -> dict[str, Any]:
+        """Map each role to a Provider, deduplicating by provider config.
+
+        Roles sharing a provider config share one client; injected clients win
+        over resolution. Returns {} for dry runs (call sites pass None).
+        """
+        if self.dry_run:
+            return {}
+        resolved: dict[str, Any] = {}
+        cache: dict[tuple[str, str, str], Any] = {}
+        for role, model in (("orchestrator", orchestrator), ("worker", worker), ("judge", judge)):
+            if model is None:
+                continue
+            if role in self._injected_clients:
+                resolved[role] = self._injected_clients[role]
+                continue
+            key = provider_key(model)
+            if key not in cache:
+                try:
+                    cache[key] = provider_for(model)
+                except Exception:
+                    for c in cache.values():
+                        c.close()
+                    raise
+            resolved[role] = cache[key]
+        self._owned_clients = list(cache.values())
+        return resolved
 
     def run(self, task: TaskSpec, orchestrator: ModelConfig, worker: ModelConfig, judge: ModelConfig | None = None) -> RunMeta:
+        # Resolve providers before the run dir exists — a bad provider config
+        # fails fast instead of leaving a run stuck at "running".
+        role_clients = self._resolve_clients(orchestrator, worker, judge)
+        providers = {
+            role: provider_key(model)
+            for role, model in (("orchestrator", orchestrator), ("worker", worker), ("judge", judge))
+            if model is not None
+        }
         run_id, run_dir = self.store.new_run(
             orchestrator.slug,
             task.id,
@@ -80,7 +124,14 @@ class Runner:
                 "worker": worker.slug,
                 "planner": self.planner,
             },
-            output_data={"run_id": run_id, "dry_run": self.dry_run},
+            output_data={
+                "run_id": run_id,
+                "dry_run": self.dry_run,
+                "providers": {
+                    role: {"provider": p, "base_url": u, "api_key_env": e}
+                    for role, (p, u, e) in providers.items()
+                },
+            },
             reasoning="Initialised run directory, SQLite index, and event log.",
         )
 
@@ -95,7 +146,7 @@ class Runner:
                     task=task,
                     orchestrator=orchestrator,
                     step=1,
-                    client=self.client,
+                    client=role_clients.get("orchestrator"),
                     dry_run=self.dry_run,
                     prompt_variant=self.prompt_variant,
                 )
@@ -105,7 +156,7 @@ class Runner:
                     task=task,
                     orchestrator=orchestrator,
                     step=1,
-                    client=self.client,
+                    client=role_clients.get("orchestrator"),
                     dry_run=self.dry_run,
                     prompt_variant=self.prompt_variant,
                 )
@@ -134,7 +185,7 @@ class Runner:
                                 step=i + 3,
                                 subtask=sub,
                                 worker=worker,
-                                client=self.client,
+                                client=role_clients.get("worker"),
                                 dry_run=self.dry_run,
                             )
                         else:
@@ -143,7 +194,7 @@ class Runner:
                                 step=i + 3,
                                 subtask=sub,
                                 worker=worker,
-                                client=self.client,
+                                client=role_clients.get("worker"),
                                 dry_run=self.dry_run,
                             )
                         ledger.add_many(worker_costs)
@@ -197,7 +248,7 @@ class Runner:
                         orchestrator=orchestrator,
                         step=assembly_step,
                         results=results,
-                        client=self.client,
+                        client=role_clients.get("orchestrator"),
                         dry_run=self.dry_run,
                     )
                 else:
@@ -218,7 +269,7 @@ class Runner:
                         orchestrator=orchestrator,
                         step=assembly_step,
                         results=results,
-                        client=self.client,
+                        client=role_clients.get("orchestrator"),
                         dry_run=self.dry_run,
                     )
                 else:
@@ -228,7 +279,7 @@ class Runner:
                         orchestrator=orchestrator,
                         step=assembly_step,
                         results=results,
-                        client=self.client,
+                        client=role_clients.get("orchestrator"),
                         dry_run=self.dry_run,
                     )
                 ext = _artifact_ext(task.type)
@@ -253,6 +304,7 @@ class Runner:
                     logger=logger,
                     step=assembly_step + 3,
                     task=task,
+                    client=role_clients.get("judge"),
                     artifact_bytes=artifact_bytes if is_image else None,
                     artifact_text=None if is_image else artifact,
                     judge=judge,
@@ -295,7 +347,7 @@ class Runner:
             meta = self.store.get_run(run_id)
             assert meta is not None
             meta.status = "finished"
-            meta.finished_at = datetime.now(timezone.utc).isoformat()
+            meta.finished_at = datetime.now(UTC).isoformat()
             meta.total_cost_usd = total_cost
             meta.total_input_tokens = total_input
             meta.total_output_tokens = total_output
@@ -320,7 +372,7 @@ class Runner:
             meta = self.store.get_run(run_id)
             if meta is not None:
                 meta.status = "failed"
-                meta.finished_at = datetime.now(timezone.utc).isoformat()
+                meta.finished_at = datetime.now(UTC).isoformat()
                 self.store.update_meta(meta)
             logger.log(
                 phase="end",
@@ -336,6 +388,8 @@ class Runner:
             raise
         finally:
             logger.close()
+            for c in self._owned_clients:
+                c.close()
             if self.client is not None:
                 self.client.close()
 
@@ -348,6 +402,7 @@ class Runner:
         artifact_bytes: bytes | None,
         artifact_text: str | None,
         judge: ModelConfig,
+        client: Any = None,
     ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
         """Judge an artifact, serving identical artifacts from the persistent cache.
 
@@ -356,10 +411,11 @@ class Runner:
         deterministic. A per-key lock serializes get->call->put across threads so
         two parallel runs with identical artifacts don't duplicate the API call.
         """
+        client = client or self.client
         if self.dry_run:
             return judge_artifact(
                 logger=logger, step=step, task=task, artifact=artifact_text or "",
-                judge=judge, client=self.client, dry_run=True, image_bytes=artifact_bytes,
+                judge=judge, client=client, dry_run=True, image_bytes=artifact_bytes,
             )
 
         payload = artifact_bytes if artifact_bytes is not None else (artifact_text or "").encode()
@@ -382,7 +438,7 @@ class Runner:
                     return cached, []
             result, costs = judge_artifact(
                 logger=logger, step=step, task=task, artifact=artifact_text or "",
-                judge=judge, client=self.client, dry_run=False, image_bytes=artifact_bytes,
+                judge=judge, client=client, dry_run=False, image_bytes=artifact_bytes,
             )
             # synthetic parse-failure results are transient — don't poison the cache
             if not result.get("parse_failed"):

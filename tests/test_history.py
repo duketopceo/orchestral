@@ -67,10 +67,8 @@ class TestHistoryCommand(unittest.TestCase):
     def _seed(self, tmp):
         from orchestral.storage import RunStore
         store = RunStore(tmp)
-        base = dict(
-            started_at="2026-01-01T00:00:00Z", finished_at="2026-01-01T00:01:00Z",
-            total_input_tokens=10, total_output_tokens=20, run_dir="/tmp/x",
-        )
+        base = {            "started_at": "2026-01-01T00:00:00Z", "finished_at": "2026-01-01T00:01:00Z",
+            "total_input_tokens": 10, "total_output_tokens": 20, "run_dir": "/tmp/x",}
         store.index_meta(RunMeta(run_id="a", orchestrator="o1", task_id="t", worker="w1",
                                  status="finished", total_cost_usd=0.01, score=0.8, passes=True,
                                  config={"judge": "j1"}, **base))

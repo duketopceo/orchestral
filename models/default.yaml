@@ -1,3 +1,11 @@
+# Models may carry a `metadata:` map with optional keys:
+#   provider: "openrouter" (default) or "openai-compatible"
+#   base_url: API base URL for openai-compatible providers
+#   api_key_env: env var holding the API key (default OPENROUTER_API_KEY /
+#                OPENAI_API_KEY by provider)
+#   modalities: ["text", "image"] — which task types the model can produce
+#   vision: true — model can judge image artifacts
+# Non-OpenRouter providers are chat-only; image tasks require OpenRouter.
 models:
   - slug: "~deepseek/deepseek-v4-flash-latest"
     name: "DeepSeek V4 Flash Latest"

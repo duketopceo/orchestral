@@ -1,10 +1,10 @@
-"""Pydantic models for tasks, model configs, and run settings."""
+"""Dataclass models for tasks, model configs, and run settings."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 
 @dataclass
@@ -18,6 +18,8 @@ class ModelConfig:
     max_tokens: int = 8_192
     retry_limit: int = 2
     price_per_image: float = 0.0
+    # metadata keys: provider ("openrouter"|"openai-compatible"), base_url,
+    # api_key_env, modalities, vision — see docs/model-config.md
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def supports(self, modality: str) -> bool:
@@ -83,7 +85,7 @@ def load_task(path: Path | str) -> TaskSpec:
     return TaskSpec(**data)
 
 
-def find_task(task_id: str, root: Path | str = "tasks") -> Optional[Path]:
+def find_task(task_id: str, root: Path | str = "tasks") -> Path | None:
     root = Path(root)
     for f in sorted(root.rglob("*.yaml")):
         data = load_yaml(f)

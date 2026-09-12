@@ -155,7 +155,7 @@ class TestImageJudgeMessages(unittest.TestCase):
             "id": "x",
         }
         logger = MagicMock()
-        result, costs = judge_artifact(
+        result, _costs = judge_artifact(
             logger=logger,
             step=1,
             task=TaskSpec(id="img", type="image", prompt="a logo"),
@@ -201,7 +201,7 @@ class TestImageJudgeMessages(unittest.TestCase):
         from orchestral.judge import MAX_JUDGE_IMAGE_BYTES
 
         client = MagicMock()
-        result, costs = judge_artifact(
+        result, _costs = judge_artifact(
             logger=MagicMock(),
             step=1,
             task=TaskSpec(id="img", type="image", prompt="a logo"),
@@ -212,7 +212,7 @@ class TestImageJudgeMessages(unittest.TestCase):
             image_bytes=b"x" * (MAX_JUDGE_IMAGE_BYTES + 1),
         )
         self.assertIsNone(result["score"])
-        self.assertEqual(costs, [])
+        self.assertEqual(_costs, [])
         client.chat.assert_not_called()
 
 

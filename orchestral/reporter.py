@@ -11,7 +11,6 @@ from typing import Any
 
 from orchestral.storage import RunStore
 
-
 STYLE = """
 <style>
   body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 2rem; }
@@ -79,7 +78,6 @@ def _run_card(run: Any, run_dir: Path) -> str:
         except Exception:
             artifact = f"<binary artifact: {artifact_path.name}>"
 
-    pass_cls = "pass" if meta.passes else "fail" if meta.passes is False else ""
     pass_label = str(meta.passes) if meta.passes is not None else "-"
 
     events_rows = ""
@@ -449,7 +447,7 @@ def model_history(runs: list[Any]) -> dict[str, dict[str, dict[str, Any]]]:
             acc("judge", judge, r)
 
     for table in out.values():
-        for name, s in table.items():
+        for s in table.values():
             s["pass_rate"] = s["passed"] / s["runs"] if s["runs"] else None
             s["avg_score"] = sum(s["scores"]) / len(s["scores"]) if s["scores"] else None
             s["avg_cost"] = s["cost"] / s["runs"] if s["runs"] else 0.0
@@ -520,7 +518,7 @@ def _scatter_svg(runs: list[Any]) -> str:
         + "".join(circles)
         + f"<text x='{(pad_l + w - pad_r) / 2:.0f}' y='{h - 8}' text-anchor='middle' font-size='12' fill='#374151'>cost per run (USD)</text>"
         + "</svg>"
-        + f"<p style='font-size:0.85rem;color:#6b7280'>y = judge score; unjudged runs plotted as pass 1.0 / fail 0.0 (faded).</p>"
+        + "<p style='font-size:0.85rem;color:#6b7280'>y = judge score; unjudged runs plotted as pass 1.0 / fail 0.0 (faded).</p>"
         + f"<div class='tags'>{legend}</div>"
     )
 

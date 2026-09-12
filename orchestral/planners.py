@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import base64
+import contextlib
 import html
 import json
 import random
 import re
-from functools import lru_cache
+from functools import cache
 from pathlib import Path
 from typing import Any
 
@@ -15,7 +16,6 @@ from orchestral.config import ModelConfig, TaskSpec
 from orchestral.costs import compute_cost, compute_image_cost, token_usage_from_raw
 from orchestral.logger import EventLogger
 from orchestral.openrouter import OpenRouterClient
-
 
 # 1x1 transparent PNG used as the deterministic dry-run image artifact
 TINY_PNG = base64.b64decode(
@@ -51,7 +51,7 @@ def load_prompt_variant(variant: str, prompts_dir: Path | str = PROMPTS_DIR) -> 
     return text
 
 
-@lru_cache(maxsize=None)
+@cache
 def _read_prompt_file(path: str) -> str:
     return Path(path).read_text(encoding="utf-8").strip()
 
@@ -144,7 +144,6 @@ def _llm_call(
         raise ValueError("OpenRouterClient is required for live runs")
 
     messages = _build_messages(role, input_data, expect_json, system_override)
-    response_format = {"type": "json_object"} if expect_json else None
     completion = client.chat(model=model_cfg.slug, messages=messages, max_tokens=max_tokens, temperature=temperature)
 
     usage = token_usage_from_raw(completion["usage"])
@@ -184,8 +183,7 @@ def _extract_json(content: str) -> Any:
     text = content.strip()
     if text.startswith("```"):
         text = text.split("```")[1]
-        if text.startswith("json"):
-            text = text[4:]
+        text = text.removeprefix("json")
         text = text.strip()
     # try to find the first JSON object or array
     start = None
@@ -353,7 +351,7 @@ def delegate_image(
     prompt = subtask.get("prompt") or subtask.get("description") or str(subtask)
     if dry_run:
         image_bytes = TINY_PNG
-        cost = {
+        cost: dict[str, Any] = {
             "phase": "delegate",
             "model": worker.slug,
             "input_tokens": 0,
@@ -556,10 +554,8 @@ def assemble_ce(
         dry_run=dry_run,
         expect_json=True,
     )
-    try:
+    with contextlib.suppress(Exception):
         _extract_json(final_content)
-    except Exception:
-        pass
 
     return artifact, [cost, final_cost]
 

@@ -4,11 +4,11 @@ __pycache__/
 .env
 runs/
 runs-pub/
-reports/*.png
-reports/*.html
-reports/*.json
+reports/
 *.db
 .DS_Store
 data/
 *.egg-info/
+build/
+dist/
 reports/shots/

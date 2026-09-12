@@ -40,9 +40,9 @@
 
 ## v1.0 — Shared tool
 
-- [ ] Publish as open-source repo with proper docs
-- [ ] Task spec schema documented
-- [ ] Model config schema documented
-- [ ] CI: lint, type check, basic integration test with mock OpenRouter
-- [ ] Example results published (the 100 HTML page grid)
-- [ ] Support non-OpenRouter providers (direct API keys for comparison)
+- [x] Publish as open-source repo with proper docs
+- [x] Task spec schema documented (`docs/task-spec.md`)
+- [x] Model config schema documented (`docs/model-config.md`)
+- [x] CI: lint, type check, basic integration test with mock providers (`.github/workflows/ci.yml`)
+- [ ] Example results published (the 100 HTML page grid) — `scrub` → `runs-pub/` + `manifest.json` ships the pipeline (`docs/publishing.md`); publishing real run data is a follow-up once run data is synced to this machine
+- [x] Support non-OpenRouter providers (OpenAI-compatible chat endpoints via `metadata.provider`/`base_url`/`api_key_env`; image tasks remain OpenRouter-only)

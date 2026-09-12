@@ -7,7 +7,7 @@ and commands.
 ## How to build and run
 
 ```bash
-cd /Users/lukekimball/GitHub/duketopceo/orchestral
+# run from the repo root
 pip install -e .
 
 python3 harness.py init
@@ -28,12 +28,12 @@ python3 harness.py scrub
 - Task specs go in `tasks/*.yaml`; model pricing/configs in `models/*.yaml`.
 - Eval data goes to `runs/` (ignored by Git). Never commit `runs/`.
 - Reports and scrubbed data go to `reports/` and `runs-pub/` (also ignored).
-- The web UI is in `ui/`, but generated static reports live in `reports/`.
+- Generated static reports live in `reports/`.
 
 ## What not to do
 
 - Do not load or reference the user's LifeOS, TELOS, skills, or private rules.
-- Do not add unrelated dependencies. Keep the stack: Python 3.11+, `pydantic`,
+- Do not add unrelated dependencies. Keep the stack: Python 3.11+,
   `pyyaml`, `httpx`, `rich`.
 - Do not commit eval artifacts or API keys.
 

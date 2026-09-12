@@ -23,10 +23,9 @@ import threading
 import uuid
 from contextlib import closing, contextmanager
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Optional
-
+from typing import Any
 
 RUNS_DIR = Path("runs")
 DB_NAME = "index.db"
@@ -40,12 +39,12 @@ class RunMeta:
     worker: str
     status: str
     started_at: str
-    finished_at: Optional[str] = None
+    finished_at: str | None = None
     total_cost_usd: float = 0.0
     total_input_tokens: int = 0
     total_output_tokens: int = 0
-    score: Optional[float] = None
-    passes: Optional[bool] = None
+    score: float | None = None
+    passes: bool | None = None
     run_dir: str = ""
     config: dict[str, Any] = field(default_factory=dict)
 
@@ -117,11 +116,11 @@ class RunStore:
         orchestrator: str,
         task_id: str,
         worker: str,
-        config: Optional[dict[str, Any]] = None,
+        config: dict[str, Any] | None = None,
     ) -> tuple[str, Path]:
         """Create a new run directory and index entry."""
         run_id = uuid.uuid4().hex[:12]
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         # slugify every component so ids can't escape the runs root
         safe_orch = _safe_name(orchestrator)
         safe_worker = _safe_name(worker)
@@ -173,7 +172,7 @@ class RunStore:
                 ),
             )
 
-    def get_run(self, run_id: str) -> Optional[RunMeta]:
+    def get_run(self, run_id: str) -> RunMeta | None:
         with self._connect() as conn:
             row = conn.execute("SELECT * FROM runs WHERE run_id = ?", (run_id,)).fetchone()
         if not row:
@@ -186,12 +185,12 @@ class RunStore:
 
     def list_runs(
         self,
-        orchestrator: Optional[str] = None,
-        worker: Optional[str] = None,
-        task_id: Optional[str] = None,
+        orchestrator: str | None = None,
+        worker: str | None = None,
+        task_id: str | None = None,
         order_by: str = "started_at",
         descending: bool = True,
-        limit: Optional[int] = None,
+        limit: int | None = None,
     ) -> list[RunMeta]:
         query = "SELECT * FROM runs WHERE 1=1"
         params: list[Any] = []
@@ -220,7 +219,7 @@ class RunStore:
         with self._judge_locks_mu:
             return self._judge_locks.setdefault(key, threading.Lock())
 
-    def get_judge_result(self, task_id: str, judge_slug: str, artifact_sha256: str) -> Optional[dict[str, Any]]:
+    def get_judge_result(self, task_id: str, judge_slug: str, artifact_sha256: str) -> dict[str, Any] | None:
         with self._connect() as conn:
             row = conn.execute(
                 "SELECT result_json FROM judge_cache WHERE task_id = ? AND judge_slug = ? AND artifact_sha256 = ?",
@@ -232,7 +231,7 @@ class RunStore:
         with self._connect() as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO judge_cache VALUES (?, ?, ?, ?, ?)",
-                (task_id, judge_slug, artifact_sha256, json.dumps(result, default=str), datetime.now(timezone.utc).isoformat()),
+                (task_id, judge_slug, artifact_sha256, json.dumps(result, default=str), datetime.now(UTC).isoformat()),
             )
 
     def summary(self) -> dict[str, Any]:

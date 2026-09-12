@@ -213,7 +213,7 @@ def cmd_grid(args: argparse.Namespace) -> None:
     print(f"{'orchestrator':<40} {'worker':<40} {'cost':>10} {'tokens':>8} {'pass':>6} {'score':>6}")
     for r in results:
         score = f"{r['score']:.2f}" if r['score'] is not None else "-"
-        print(f"{r['orchestrator']:<40} {r['worker']:<40} ${r['cost']:.6f} {r['tokens']:>8} {str(r['passes']):>6} {score:>6}")
+        print(f"{r['orchestrator']:<40} {r['worker']:<40} ${r['cost']:.6f} {r['tokens']:>8} {r['passes']!s:>6} {score:>6}")
 
     if args.json:
         print(json.dumps(results, indent=2, default=str))
@@ -292,7 +292,7 @@ def cmd_batch(args: argparse.Namespace) -> None:
     print(f"{'task_id':<30} {'cost':>10} {'tokens':>8} {'pass':>6} {'score':>6}")
     for r in results:
         score = f"{r['score']:.2f}" if r['score'] is not None else "-"
-        print(f"{r['task_id']:<30} ${r['cost']:.6f} {r['tokens']:>8} {str(r['passes']):>6} {score:>6}")
+        print(f"{r['task_id']:<30} ${r['cost']:.6f} {r['tokens']:>8} {r['passes']!s:>6} {score:>6}")
 
     if args.json:
         print(json.dumps(results, indent=2, default=str))
@@ -375,7 +375,7 @@ def cmd_ablate(args: argparse.Namespace) -> None:
     print(f"{knob:<16} {'cost':>10} {'tokens':>8} {'pass':>6} {'score':>6}")
     for r in results:
         score = f"{r['score']:.2f}" if r['score'] is not None else "-"
-        print(f"{str(r['value']):<16} ${r['cost']:.6f} {r['tokens']:>8} {str(r['passes']):>6} {score:>6}")
+        print(f"{r['value']!s:<16} ${r['cost']:.6f} {r['tokens']:>8} {r['passes']!s:>6} {score:>6}")
 
     if args.json:
         print(json.dumps(results, indent=2, default=str))

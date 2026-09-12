@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 
 @dataclass
@@ -85,7 +85,7 @@ def load_task(path: Path | str) -> TaskSpec:
     return TaskSpec(**data)
 
 
-def find_task(task_id: str, root: Path | str = "tasks") -> Optional[Path]:
+def find_task(task_id: str, root: Path | str = "tasks") -> Path | None:
     root = Path(root)
     for f in sorted(root.rglob("*.yaml")):
         data = load_yaml(f)

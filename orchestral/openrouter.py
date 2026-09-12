@@ -9,13 +9,12 @@ from __future__ import annotations
 import base64
 import os
 import time
-from typing import Any
+from typing import Any, Self
 from urllib.parse import urlparse
 
 import httpx
 
 from orchestral.costs import token_usage_from_raw
-
 
 MAX_RETRIES = 3
 BASE_RETRY_DELAY_SECONDS = 1.0
@@ -28,7 +27,7 @@ _MAX_IMAGE_BYTES = 25 * 1024 * 1024
 
 def _is_private_host(hostname: str) -> bool:
     h = hostname.lower()
-    if h.endswith(".local") or h.endswith(".internal"):
+    if h.endswith((".local", ".internal")):
         return True
     if h.startswith("172."):
         try:
@@ -198,7 +197,7 @@ class OpenRouterClient:
     def close(self) -> None:
         self.client.close()
 
-    def __enter__(self) -> "OpenRouterClient":
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:

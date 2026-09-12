@@ -7,9 +7,10 @@ ScreenshotUnavailable, which callers are expected to degrade on.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 
 class ScreenshotUnavailable(Exception):

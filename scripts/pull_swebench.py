@@ -12,13 +12,14 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+
 def main() -> None:
     try:
         from datasets import load_dataset
     except ModuleNotFoundError:
         raise SystemExit(
             "The 'datasets' package is required. Install it with: pip install datasets"
-        )
+        ) from None
 
     out_dir = Path(__file__).resolve().parents[1] / "data"
     out_dir.mkdir(exist_ok=True)

@@ -18,7 +18,6 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-
 # Extend this list with patterns that match your own sensitive data.
 PATTERNS = {
     "api_key": re.compile(
@@ -94,7 +93,9 @@ def scrub_text(text: str) -> str:
         if name == "url_auth":
             text = pattern.sub(r"\1[REDACTED_AUTH]@", text)
         else:
-            text = pattern.sub(lambda m: f"[REDACTED_{name}]", text)
+            def _redact(m: re.Match[str], n: str = name) -> str:
+                return f"[REDACTED_{n}]"
+            text = pattern.sub(_redact, text)
     return text
 
 

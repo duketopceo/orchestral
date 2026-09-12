@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import io
-import sys
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
@@ -12,23 +11,21 @@ import harness
 
 
 def _args(**over):
-    base = dict(
-        task="landing-page-coffee",
-        orchestrator="deepseek/deepseek-v4-flash-0731",
-        worker="z-ai/glm-5.3-flash",
-        sweep=None,
-        planner="raw",
-        judge=None,
-        no_judge_cache=False,
-        retry_limit=None,
-        prompt_variant=None,
-        jobs=1,
-        dry_run=True,
-        json=False,
-        runs_dir=None,
-        tasks_dir="tasks",
-        models_dir="models",
-    )
+    base = {        "task": "landing-page-coffee",
+        "orchestrator": "deepseek/deepseek-v4-flash-0731",
+        "worker": "z-ai/glm-5.3-flash",
+        "sweep": None,
+        "planner": "raw",
+        "judge": None,
+        "no_judge_cache": False,
+        "retry_limit": None,
+        "prompt_variant": None,
+        "jobs": 1,
+        "dry_run": True,
+        "json": False,
+        "runs_dir": None,
+        "tasks_dir": "tasks",
+        "models_dir": "models",}
     base.update(over)
     import argparse
     return argparse.Namespace(**base)
@@ -62,30 +59,26 @@ class TestAblate(unittest.TestCase):
 
     def test_unknown_knob_exits(self):
         args = _args(sweep="nonsense=1,2", runs_dir=tempfile.mkdtemp())
-        with redirect_stderr(io.StringIO()):
-            with self.assertRaises(SystemExit) as ctx:
-                harness.cmd_ablate(args)
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as ctx:
+            harness.cmd_ablate(args)
         self.assertEqual(ctx.exception.code, 1)
 
     def test_unknown_prompt_variant_exits(self):
         args = _args(sweep="prompt_variant=nosuchvariant", runs_dir=tempfile.mkdtemp())
-        with redirect_stderr(io.StringIO()):
-            with self.assertRaises(SystemExit) as ctx:
-                harness.cmd_ablate(args)
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as ctx:
+            harness.cmd_ablate(args)
         self.assertEqual(ctx.exception.code, 1)
 
     def test_too_many_values_exits(self):
         args = _args(sweep="retry_limit=0,1,2,3,4,5,6,7,8,9", runs_dir=tempfile.mkdtemp())
-        with redirect_stderr(io.StringIO()):
-            with self.assertRaises(SystemExit) as ctx:
-                harness.cmd_ablate(args)
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as ctx:
+            harness.cmd_ablate(args)
         self.assertEqual(ctx.exception.code, 1)
 
     def test_out_of_range_retry_limit_exits(self):
         args = _args(sweep="retry_limit=0,99", runs_dir=tempfile.mkdtemp())
-        with redirect_stderr(io.StringIO()):
-            with self.assertRaises(SystemExit) as ctx:
-                harness.cmd_ablate(args)
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as ctx:
+            harness.cmd_ablate(args)
         self.assertEqual(ctx.exception.code, 1)
 
     def test_parallel_sweep_marks_all_runs(self):

@@ -8,7 +8,6 @@ harness so it stays provider-agnostic.
 from __future__ import annotations
 
 import base64
-import json
 import random
 from typing import Any
 
@@ -52,7 +51,7 @@ def judge_artifact(
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Return judge result and list of call costs."""
     if image_bytes is not None and len(image_bytes) > MAX_JUDGE_IMAGE_BYTES:
-        result = {"score": None, "passed": None, "reasoning": f"image too large to judge ({len(image_bytes)} bytes)"}
+        result: dict[str, Any] = {"score": None, "passed": None, "reasoning": f"image too large to judge ({len(image_bytes)} bytes)"}
         logger.log(
             phase="judge",
             step=step,
@@ -73,7 +72,7 @@ def judge_artifact(
 
     if dry_run or client is None:
         result = _fake_judge_result()
-        cost = {
+        cost: dict[str, Any] = {
             "phase": "judge",
             "model": judge.slug,
             "input_tokens": 300,
@@ -143,7 +142,7 @@ def judge_artifact(
             "usage": usage.to_dict(),
             "id": completion.get("id"),
         },
-        reasoning=result.get("reasoning", ""),
+        reasoning=str(result.get("reasoning") or ""),
         input_tokens=usage.prompt_tokens,
         output_tokens=usage.completion_tokens,
         cost_usd=cost_usd,

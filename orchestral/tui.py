@@ -13,17 +13,16 @@ from rich.text import Text
 
 from orchestral.storage import RunStore
 
-
 BANNER = r"""
-   ____  ____  ____  ____  ____  ____  ____  ____  
-  / __ \/ __ \/ __ \/ __ \/ __ \/ __ \/ __ \/ __ \ 
+   ____  ____  ____  ____  ____  ____  ____  ____
+  / __ \/ __ \/ __ \/ __ \/ __ \/ __ \/ __ \/ __ \
  / / / / / / / / / / /_/ / /_/ / / / / / / / /_/ /
-/ / / / /_/ / /_/ / / / / / / / /_/ / / / / / / / 
+/ / / / /_/ / /_/ / / / / / / / /_/ / / / / / / /
 \__/_/\____/\____/_/ /_/_/\__/\____/_/ /_/_/\____/
 """
 
 
-def _run_row(run: Any) -> tuple[str, ...]:
+def _run_row(run: Any) -> tuple[Any, ...]:
     planner = run.config.get("planner", "raw") if run.config else "raw"
     pass_style = "green" if run.passes else "red" if run.passes is False else "dim"
     pass_label = Text(str(run.passes) if run.passes is not None else "-", style=pass_style)

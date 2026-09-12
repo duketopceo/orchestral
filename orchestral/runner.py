@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import html.parser
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -13,8 +13,6 @@ from orchestral.config import ModelConfig, TaskSpec
 from orchestral.costs import CostLedger
 from orchestral.judge import judge_artifact
 from orchestral.logger import EventLogger
-from orchestral.openrouter import OpenRouterClient
-from orchestral.providers import provider_for, provider_key
 from orchestral.planners import (
     assemble_ce,
     assemble_image,
@@ -24,6 +22,7 @@ from orchestral.planners import (
     plan_ce,
     plan_raw,
 )
+from orchestral.providers import provider_for, provider_key
 from orchestral.storage import RunMeta, RunStore
 
 
@@ -341,7 +340,7 @@ class Runner:
             meta = self.store.get_run(run_id)
             assert meta is not None
             meta.status = "finished"
-            meta.finished_at = datetime.now(timezone.utc).isoformat()
+            meta.finished_at = datetime.now(UTC).isoformat()
             meta.total_cost_usd = total_cost
             meta.total_input_tokens = total_input
             meta.total_output_tokens = total_output
@@ -366,7 +365,7 @@ class Runner:
             meta = self.store.get_run(run_id)
             if meta is not None:
                 meta.status = "failed"
-                meta.finished_at = datetime.now(timezone.utc).isoformat()
+                meta.finished_at = datetime.now(UTC).isoformat()
                 self.store.update_meta(meta)
             logger.log(
                 phase="end",

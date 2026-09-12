@@ -33,6 +33,10 @@ dependencies = [
 shots = [
     "playwright>=1.40",
 ]
+dev = [
+    "ruff>=0.6",
+    "mypy>=1.11",
+]
 
 [project.urls]
 Homepage = "https://github.com/duketopceo/orchestral"
@@ -48,3 +52,26 @@ py-modules = ["harness"]
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["orchestral*"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "UP", "B", "SIM", "C4", "RUF", "PIE", "PYI", "EXE", "W"]
+ignore = [
+    # Broad excepts are deliberate: retry loops, graceful degradation, and
+    # "never crash the harness" paths catch Exception on purpose.
+    "BLE001",
+    # EventLogger intentionally holds a file handle open for the run session.
+    "SIM115",
+    # The orchestrator × worker multiplication sign is deliberate UI text.
+    "RUF001", "RUF002",
+]
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
+strict_optional = true
+explicit_package_bases = true
+exclude = "(tests|scripts|ui)"

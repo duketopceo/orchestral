@@ -5,9 +5,9 @@ Tracks per-call token usage and cost in Decimal to avoid floating-point drift.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal
-from collections.abc import Sequence
 from typing import Any
 
 from orchestral.config import ModelConfig

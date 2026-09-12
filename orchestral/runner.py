@@ -78,12 +78,25 @@ class Runner:
                 continue
             key = provider_key(model)
             if key not in cache:
-                cache[key] = provider_for(model)
+                try:
+                    cache[key] = provider_for(model)
+                except Exception:
+                    for c in cache.values():
+                        c.close()
+                    raise
             resolved[role] = cache[key]
         self._owned_clients = list(cache.values())
         return resolved
 
     def run(self, task: TaskSpec, orchestrator: ModelConfig, worker: ModelConfig, judge: ModelConfig | None = None) -> RunMeta:
+        # Resolve providers before the run dir exists — a bad provider config
+        # fails fast instead of leaving a run stuck at "running".
+        role_clients = self._resolve_clients(orchestrator, worker, judge)
+        providers = {
+            role: provider_key(model)
+            for role, model in (("orchestrator", orchestrator), ("worker", worker), ("judge", judge))
+            if model is not None
+        }
         run_id, run_dir = self.store.new_run(
             orchestrator.slug,
             task.id,
@@ -99,12 +112,6 @@ class Runner:
             },
         )
         logger = EventLogger(run_dir)
-        role_clients = self._resolve_clients(orchestrator, worker, judge)
-        providers = {
-            role: provider_key(model)
-            for role, model in (("orchestrator", orchestrator), ("worker", worker), ("judge", judge))
-            if model is not None
-        }
         logger.log(
             phase="init",
             step=0,

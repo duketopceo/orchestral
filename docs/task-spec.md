@@ -47,11 +47,15 @@ metadata: {}                  # optional free-form map (video tasks read generat
   {"files": [{"path": "index.html", "content": "<!doctype html>..."}], "notes": "optional"}
   ```
 
-  Paths are normalized and validated: relative only, no `..`/absolute/UNC/drive
-  paths, no reserved device names, no control characters, ASCII only, no
-  percent escapes (a `%2e%2e%2f` spelling must never reach a member name), and
-  no two paths that collide once case-folded. A rejected path fails the run
-  rather than being renamed. Assembly is a deterministic merge by path — later
+  Paths are **canonicalized** (percent escapes decoded, `\` normalized to `/`,
+  leading `./` dropped, case-folded) and then validated: relative only, no
+  `..`/absolute/UNC/drive paths, no reserved device names, no control
+  characters, ASCII only, no residual `%`, no segment starting or ending with a
+  dot or space, and no two paths that collide once case-folded. Canonicalizing
+  means a worker's `Index.HTML` lands as `index.html` — declare
+  `expected_paths` in the same lowercase form. Anything that cannot be reduced
+  to a safe relative path fails the run rather than being renamed or dropped.
+  Assembly is a deterministic merge by path — later
   subtasks win, and every overwrite is listed in `report.json` under
   `merge_conflicts`. The zip is byte-reproducible, so identical file sets hash
   identically. File *contents* stay inside the archive: run traces record

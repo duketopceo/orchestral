@@ -52,9 +52,10 @@ class FilesetError(Exception):
 
 def check_response_size(content: str) -> None:
     """Reject an oversized worker response before it is parsed."""
-    if len(content) > MAX_WORKER_RESPONSE_BYTES:
+    size = _byte_len(content)
+    if size > MAX_WORKER_RESPONSE_BYTES:
         raise FilesetError(
-            f"Worker response is {len(content)} bytes, over the "
+            f"Worker response is {size} bytes, over the "
             f"{MAX_WORKER_RESPONSE_BYTES}-byte cap"
         )
 
@@ -72,12 +73,13 @@ def parse_fileset(data: Any) -> dict[str, str]:
         if not isinstance(raw_path, str) or not raw_path.strip():
             continue
         body = raw_content if isinstance(raw_content, str) else str(raw_content)
-        if len(body) > MAX_FILE_CONTENT_BYTES:
+        body_bytes = _byte_len(body)
+        if body_bytes > MAX_FILE_CONTENT_BYTES:
             raise FilesetError(
-                f"File {raw_path!r} is {len(body)} bytes, over the "
+                f"File {raw_path!r} is {body_bytes} bytes, over the "
                 f"{MAX_FILE_CONTENT_BYTES}-byte per-file cap"
             )
-        total_bytes += len(body)
+        total_bytes += body_bytes
         if total_bytes > MAX_TOTAL_UNCOMPRESSED_BYTES:
             raise FilesetError(
                 f"File set exceeds the {MAX_TOTAL_UNCOMPRESSED_BYTES}-byte total cap"
@@ -91,6 +93,12 @@ def parse_fileset(data: Any) -> dict[str, str]:
         raise FilesetError(f"File set has {len(files)} files, over the {MAX_FILES_PER_SET} cap")
     validate_fileset(files)
     return files
+
+
+def _byte_len(text: str) -> int:
+    """Caps are byte budgets: `len` counts code points, which under-counts
+    multi-byte text by up to 4x."""
+    return len(text.encode("utf-8"))
 
 
 def sanitize_path(path: str) -> str:
@@ -190,6 +198,11 @@ def build_zip(files: dict[str, str]) -> bytes:
     validate_fileset(files)
     if not all(isinstance(p, str) and isinstance(c, str) for p, c in files.items()):
         raise FilesetError("build_zip requires a dict of str paths to str contents")
+    # defense in depth: this is the last boundary before bytes exist, so no
+    # caller can zip a path that sanitization would have rewritten or rejected
+    for path in files:
+        if sanitize_path(path) != path:
+            raise FilesetError(f"Path {path!r} is not canonical — run it through parse_fileset")
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED,
                          compresslevel=_ZIP_COMPRESSLEVEL) as archive:

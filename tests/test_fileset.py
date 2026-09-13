@@ -188,6 +188,29 @@ class TestBuildZip(unittest.TestCase):
         with patch("orchestral.fileset.MAX_ZIP_OUTPUT_BYTES", 10), self.assertRaises(FilesetError):
             build_zip({"a.txt": "x" * 5000})
 
+    def test_rejects_non_canonical_path(self):
+        # build_zip is the last boundary before bytes exist — an unsanitized
+        # path must not be zippable even by a direct caller
+        for bad in ("Index.HTML", "../escape.txt", "a//b.txt", "a\\b.txt"):
+            with self.assertRaises(FilesetError, msg=bad):
+                build_zip({bad: "x"})
+
+    def test_rejects_non_string_values(self):
+        with self.assertRaises(FilesetError):
+            build_zip({"a.txt": 123})  # type: ignore[dict-item]
+
+
+class TestCapsAreByteBudgets(unittest.TestCase):
+    def test_multibyte_content_counts_as_bytes(self):
+        # 300k CJK characters are ~900KB of UTF-8, over the 500KB per-file cap
+        body = "\u4e2d" * 300_000
+        with self.assertRaises(FilesetError):
+            parse_fileset({"files": [{"path": "big.txt", "content": body}]})
+
+    def test_multibyte_response_counts_as_bytes(self):
+        with self.assertRaises(FilesetError):
+            check_response_size("\u4e2d" * 400_000)
+
 
 class TestSummaries(unittest.TestCase):
     def test_summarize_has_no_content(self):

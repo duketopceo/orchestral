@@ -3,9 +3,10 @@
 #   base_url: API base URL for openai-compatible providers
 #   api_key_env: env var holding the API key (default OPENROUTER_API_KEY /
 #                OPENAI_API_KEY by provider)
-#   modalities: ["text", "image"] — which task types the model can produce
+#   modalities: ["text", "image", "video"] — which task types the model can produce
 #   vision: true — model can judge image artifacts
-# Non-OpenRouter providers are chat-only; image tasks require OpenRouter.
+# price_per_video_second bills video tasks when the API reports no usage.cost.
+# Non-OpenRouter providers are chat-only; image and video tasks require OpenRouter.
 models:
   - slug: "~deepseek/deepseek-v4-flash-latest"
     name: "DeepSeek V4 Flash Latest"
@@ -147,6 +148,49 @@ models:
     price_per_image: 0.039
     metadata:
       modalities: [image]
+
+  # Video workers — disabled pending slug verification against
+  # GET /api/v1/videos/models. Remove the "~" prefix to enable once the
+  # slug, supported durations/resolutions, and pricing_skus are confirmed.
+  - slug: "~google/veo-3.1"
+    name: "Veo 3.1"
+    role: worker
+    input_price_per_mtok: 0.0
+    output_price_per_mtok: 0.0
+    retry_limit: 1
+    price_per_video_second: 0.50
+    metadata:
+      modalities: [video]
+
+  - slug: "~google/veo-3.1-lite"
+    name: "Veo 3.1 Lite"
+    role: worker
+    input_price_per_mtok: 0.0
+    output_price_per_mtok: 0.0
+    retry_limit: 1
+    price_per_video_second: 0.25
+    metadata:
+      modalities: [video]
+
+  - slug: "~minimax/hailuo-3"
+    name: "Hailuo 3"
+    role: worker
+    input_price_per_mtok: 0.0
+    output_price_per_mtok: 0.0
+    retry_limit: 1
+    price_per_video_second: 0.10
+    metadata:
+      modalities: [video]
+
+  - slug: "~alibaba/wan-2.7"
+    name: "Wan 2.7"
+    role: worker
+    input_price_per_mtok: 0.0
+    output_price_per_mtok: 0.0
+    retry_limit: 1
+    price_per_video_second: 0.10
+    metadata:
+      modalities: [video]
 
   - slug: "qwen/qwen3-max"
     name: "Qwen 3 Max"

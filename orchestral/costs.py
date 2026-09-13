@@ -136,5 +136,26 @@ def compute_image_cost(model_cfg: ModelConfig, usage: TokenUsage | None = None, 
     return usd(_token_component(n, model_cfg.price_per_image))
 
 
+def compute_video_cost(
+    model_cfg: ModelConfig,
+    api_cost: float | None = None,
+    duration_s: float | None = None,
+    n: int = 1,
+) -> float:
+    """Cost for a video generation call.
+
+    The async Videos API reports an authoritative `usage.cost` on the
+    completed job; when absent, fall back to the configured per-second
+    price times the requested duration.
+    """
+    if api_cost is not None:
+        return usd(Decimal(str(api_cost)) * n)
+    if duration_s and model_cfg.price_per_video_second:
+        return usd(
+            Decimal(str(duration_s)) * Decimal(str(model_cfg.price_per_video_second)) * n
+        )
+    return 0.0
+
+
 def usd(value: Decimal) -> float:
     return float(value.quantize(USD_QUANT, rounding=ROUND_HALF_UP))

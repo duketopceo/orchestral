@@ -18,6 +18,7 @@ class ModelConfig:
     max_tokens: int = 8_192
     retry_limit: int = 2
     price_per_image: float = 0.0
+    price_per_video_second: float = 0.0
     # metadata keys: provider ("openrouter"|"openai-compatible"), base_url,
     # api_key_env, modalities, vision — see docs/model-config.md
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -46,6 +47,7 @@ class ModelConfig:
             "max_tokens": self.max_tokens,
             "retry_limit": self.retry_limit,
             "price_per_image": self.price_per_image,
+            "price_per_video_second": self.price_per_video_second,
             "metadata": self.metadata,
         }
 

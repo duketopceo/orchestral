@@ -5,7 +5,7 @@ is a single task.
 
 ```yaml
 id: landing-page-coffee       # required; used in paths, filters, judge cache keys
-type: html                    # required; "html", "image", and "video" are implemented
+type: html                    # required; "html", "image", "video", "multi-file" are implemented
 prompt: |                     # required; the task brief given to the orchestrator
   Build a landing page for a coffee subscription service.
 
@@ -19,11 +19,11 @@ metadata: {}                  # optional free-form map (video tasks read generat
 | Field | Type | Default | Notes |
 |---|---|---|---|
 | `id` | str | required | Unique across `tasks/`; becomes a path component (`runs/{orch}/{task}/{worker}/{run_id}/`) |
-| `type` | str | required | `html`, `image`, `video` implemented; `api`, `multi-file` are reserved/planned |
+| `type` | str | required | `html`, `image`, `video`, `multi-file` implemented; `api` is reserved/planned |
 | `prompt` | str | required | Full task brief; the orchestrator decomposes it into subtasks |
 | `validation` | list[str] | `[]` | Check names; empty means the type's default set |
 | `assets` | list[str] | `[]` | Reserved; not consumed by the runner yet |
-| `metadata` | map | `{}` | Free-form; carried into run records. `video` tasks read `duration`, `resolution`, `aspect_ratio`, `generate_audio`, `seed` from here |
+| `metadata` | map | `{}` | Free-form; carried into run records. `video` tasks read `duration`, `resolution`, `aspect_ratio`, `generate_audio`, `seed`; `multi-file` tasks read `expected_paths` |
 
 ## Task types
 
@@ -39,6 +39,28 @@ metadata: {}                  # optional free-form map (video tasks read generat
   `duration` (seconds), `resolution`, `aspect_ratio`, `generate_audio`,
   `seed`. Video judging is not implemented — `--judge` is skipped and the
   score stays null.
+- **`multi-file`** — workers return a *set* of files instead of one document,
+  and the runner merges the sets into `artifact.zip`. Worker output is a JSON
+  object:
+
+  ```json
+  {"files": [{"path": "index.html", "content": "<!doctype html>..."}], "notes": "optional"}
+  ```
+
+  Paths are **canonicalized** (percent escapes decoded, `\` normalized to `/`,
+  leading `./` dropped, case-folded) and then validated: relative only, no
+  `..`/absolute/UNC/drive paths, no reserved device names, no control
+  characters, ASCII only, no residual `%`, no segment starting or ending with a
+  dot or space, and no two paths that collide once case-folded. Canonicalizing
+  means a worker's `Index.HTML` lands as `index.html` — declare
+  `expected_paths` in the same lowercase form. Anything that cannot be reduced
+  to a safe relative path fails the run rather than being renamed or dropped.
+  Assembly is a deterministic merge by path — later
+  subtasks win, and every overwrite is listed in `report.json` under
+  `merge_conflicts`. The zip is byte-reproducible, so identical file sets hash
+  identically. File *contents* stay inside the archive: run traces record
+  paths, sizes, and hashes only. Declare the files the task must produce in
+  `metadata.expected_paths` for the `has_paths` check.
 
 ## Validation checks
 
@@ -69,6 +91,17 @@ metadata: {}                  # optional free-form map (video tasks read generat
 | `non_empty` | the artifact has bytes |
 | `mp4_signature` | the first box is `ftyp` (ISO-BMFF container check; does not verify codecs or playability) |
 
+`multi-file` tasks (default set: `non_empty`, `zip_signature`):
+
+| Check | Passes when |
+|---|---|
+| `non_empty` | the artifact has bytes |
+| `zip_signature` | the archive opens as a zip |
+| `has_paths` | every path in `metadata.expected_paths` is present as a non-empty regular file |
+
+Unknown check names fail the run — including in a list that also contains known
+checks.
+
 ## Example
 
 ```yaml
@@ -78,4 +111,17 @@ prompt: |
   Build a landing page for "BrewLoop", a coffee subscription service.
   Include a hero, pricing tiers, and a signup form.
 validation: [html, has_cta, has_form, has_viewport, no_placeholder]
+```
+
+A multi-file task declares the files it expects, so `has_paths` can check the
+archive against the brief:
+
+```yaml
+id: multi-file-site
+type: multi-file
+prompt: |
+  Build a small static site: a landing page and the stylesheet it depends on.
+validation: [non_empty, zip_signature, has_paths]
+metadata:
+  expected_paths: [index.html, style.css]
 ```

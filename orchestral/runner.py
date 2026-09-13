@@ -4,13 +4,21 @@ from __future__ import annotations
 
 import hashlib
 import html.parser
+import io
 import json
+import zipfile
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from orchestral.config import ModelConfig, TaskSpec
 from orchestral.costs import CostLedger
+from orchestral.fileset import (
+    build_zip,
+    expected_paths,
+    manifest_listing,
+    merge_filesets,
+)
 from orchestral.judge import judge_artifact
 from orchestral.logger import EventLogger
 from orchestral.openrouter import OpenRouterVideoSubmittedError
@@ -20,6 +28,7 @@ from orchestral.planners import (
     assemble_raw,
     delegate,
     delegate_image,
+    delegate_multi,
     delegate_video,
     plan_ce,
     plan_raw,
@@ -168,9 +177,11 @@ class Runner:
             # 2. Delegate each subtask to the worker
             is_image = task.type == "image"
             is_video = task.type == "video"
+            is_multi = task.type == "multi-file"
             is_media = is_image or is_video
             results: list[dict[str, Any]] = []
             media_paths: list[Path | None] = []
+            file_sets: list[tuple[int, dict[str, str]]] = []
             media_ext = _artifact_ext(task.type)
             subtasks = plan.get("subtasks") or plan.get("sections", {}).get("subtasks", [])
             for i, sub in enumerate(subtasks):
@@ -181,6 +192,7 @@ class Runner:
                     sub = {"id": i, "description": str(sub)}
                 out: dict[str, Any] | None = None
                 media_bytes: bytes = b""
+                files: dict[str, str] = {}
                 attempts = max(1, worker.retry_limit + 1)
                 for attempt in range(attempts):
                     try:
@@ -195,6 +207,16 @@ class Runner:
                             )
                         elif is_video:
                             out, media_bytes, worker_costs = delegate_video(
+                                logger=logger,
+                                step=i + 3,
+                                subtask=sub,
+                                task=task,
+                                worker=worker,
+                                client=role_clients.get("worker"),
+                                dry_run=self.dry_run,
+                            )
+                        elif is_multi:
+                            out, files, worker_costs = delegate_multi(
                                 logger=logger,
                                 step=i + 3,
                                 subtask=sub,
@@ -232,7 +254,7 @@ class Runner:
                         if isinstance(exc, OpenRouterVideoSubmittedError) or attempt + 1 >= attempts:
                             raise
                         continue
-                    if (media_bytes if is_media else out.get("content")):
+                    if _subtask_produced_output(out, media_bytes, files, is_media, is_multi):
                         break
                     logger.log(
                         phase="delegate",
@@ -249,6 +271,8 @@ class Runner:
                 out["attempts"] = attempt + 1
                 results.append(out)
                 (run_dir / f"worker-{i}.json").write_text(json.dumps(out, indent=2, default=str))
+                if is_multi:
+                    file_sets.append((sub.get("id", i), files))
                 if is_media and media_bytes:
                     media_path = run_dir / f"worker-{i}{media_ext}"
                     media_path.write_bytes(media_bytes)
@@ -258,6 +282,8 @@ class Runner:
 
             # 3. Assemble final artifact
             assembly_step = 3 + len(subtasks)
+            judge_bytes: bytes | None = None
+            judge_text: str | None = None
             if is_media:
                 if any(p is not None for p in media_paths):
                     position, assembly_costs = assemble_media(
@@ -280,8 +306,23 @@ class Runner:
                 (run_dir / f"artifact{media_ext}").write_bytes(artifact_bytes)
                 if is_image:
                     passes, report = self._validate_image(task, artifact_bytes)
+                    judge_bytes = artifact_bytes
                 else:
                     passes, report = self._validate_video(task, artifact_bytes)
+            elif is_multi:
+                # Deterministic merge + zip: no orchestrator call, and the
+                # artifact is bytes — the HTML branch below writes text.
+                merged, conflicts = merge_filesets(file_sets)
+                if not merged:
+                    raise ValidationError("No files were produced for the multi-file task")
+                artifact_bytes = build_zip(merged)
+                (run_dir / "artifact.zip").write_bytes(artifact_bytes)
+                passes, report = self._validate_multi(task, artifact_bytes)
+                report["files"] = sorted(merged)
+                report["merge_conflicts"] = conflicts
+                # the judge sees a content-free listing — file bodies never
+                # enter the judge prompt, events, or report
+                judge_text = manifest_listing(merged)
             else:
                 if self.planner == "ce-plan":
                     artifact, assembly_costs = assemble_ce(
@@ -307,6 +348,7 @@ class Runner:
                 (run_dir / f"artifact{ext}").write_text(artifact)
                 ledger.add_many(assembly_costs)
                 passes, report = self._validate(task, artifact)
+                judge_text = artifact
 
             # 4. Judge (optional; image tasks need a vision-capable judge model;
             # video judging is deferred — there is no video-input judge path yet)
@@ -338,9 +380,10 @@ class Runner:
                     step=assembly_step + 3,
                     task=task,
                     client=role_clients.get("judge"),
-                    artifact_bytes=artifact_bytes if is_image else None,
-                    artifact_text=None if is_image else artifact,
+                    artifact_bytes=judge_bytes,
+                    artifact_text=judge_text,
                     judge=judge,
+                    language="text" if is_multi else "html",
                 )
                 ledger.add_many(judge_costs)
                 report["judge"] = judge_result
@@ -436,6 +479,7 @@ class Runner:
         artifact_text: str | None,
         judge: ModelConfig,
         client: Any = None,
+        language: str = "html",
     ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
         """Judge an artifact, serving identical artifacts from the persistent cache.
 
@@ -449,6 +493,7 @@ class Runner:
             return judge_artifact(
                 logger=logger, step=step, task=task, artifact=artifact_text or "",
                 judge=judge, client=client, dry_run=True, image_bytes=artifact_bytes,
+                language=language,
             )
 
         payload = artifact_bytes if artifact_bytes is not None else (artifact_text or "").encode()
@@ -472,6 +517,7 @@ class Runner:
             result, costs = judge_artifact(
                 logger=logger, step=step, task=task, artifact=artifact_text or "",
                 judge=judge, client=client, dry_run=False, image_bytes=artifact_bytes,
+                language=language,
             )
             # synthetic parse-failure results are transient — don't poison the cache
             if not result.get("parse_failed"):
@@ -547,6 +593,46 @@ class Runner:
 
         return _validation_report(task, checks, errors, len(artifact))
 
+    def _validate_multi(self, task: TaskSpec, artifact: bytes) -> tuple[bool, dict[str, Any]]:
+        requested = set(task.validation) if task.validation else {"non_empty", "zip_signature"}
+        known = {"non_empty", "zip_signature", "has_paths"}
+        checks: dict[str, bool] = {}
+        errors: list[str] = []
+
+        if "non_empty" in requested:
+            checks["non_empty"] = bool(artifact)
+            if not checks["non_empty"]:
+                errors.append("Artifact is empty.")
+        present: dict[str, int] = {}
+        if "zip_signature" in requested or "has_paths" in requested:
+            try:
+                with zipfile.ZipFile(io.BytesIO(artifact)) as archive:
+                    present = {
+                        info.filename: info.file_size
+                        for info in archive.infolist()
+                        if not info.filename.endswith("/")
+                    }
+            except zipfile.BadZipFile:
+                present = {}
+        if "zip_signature" in requested:
+            checks["zip_signature"] = zipfile.is_zipfile(io.BytesIO(artifact))
+            if not checks["zip_signature"]:
+                errors.append("Artifact is not a readable zip archive.")
+        if "has_paths" in requested:
+            declared = expected_paths(task.metadata)
+            missing = [p for p in declared if present.get(p, 0) <= 0]
+            checks["has_paths"] = bool(declared) and not missing
+            if not declared:
+                errors.append("has_paths requested but metadata.expected_paths is empty.")
+            elif missing:
+                errors.append(f"Missing or empty expected files: {', '.join(missing)}.")
+
+        unknown = sorted(requested - known)
+        if unknown:
+            errors.append(f"Unknown validation check(s): {', '.join(unknown)}.")
+        passes, report = _validation_report(task, checks, errors, len(artifact))
+        return passes and not unknown, report
+
     def _validate_video(self, task: TaskSpec, artifact: bytes) -> tuple[bool, dict[str, Any]]:
         requested = set(task.validation) if task.validation else {"non_empty", "mp4_signature"}
         checks: dict[str, bool] = {}
@@ -582,6 +668,21 @@ def _validation_report(
     # zero recognised checks means the validation list was unknown names — a
     # silent pass would hide the typo, so require at least one check
     return bool(checks) and all(checks.values()), report
+
+
+def _subtask_produced_output(
+    out: dict[str, Any], media_bytes: bytes, files: dict[str, str], is_media: bool, is_multi: bool
+) -> bool:
+    """Did this attempt produce anything worth keeping?
+
+    Media and multi-file subtasks have their own success signals — a multi-file
+    record carries paths, not `content`, so the text check would retry forever.
+    """
+    if is_media:
+        return bool(media_bytes)
+    if is_multi:
+        return bool(files)
+    return bool(out.get("content"))
 
 
 def _artifact_ext(task_type: str) -> str:

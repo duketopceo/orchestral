@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 
 from orchestral.planners import TINY_PNG as PNG_BYTES
@@ -155,6 +158,60 @@ class TestScrubAllManifest(unittest.TestCase):
             manifest = json.loads((out_dir / "manifest.json").read_text())
             self.assertEqual(len(manifest), 1)
             self.assertNotIn("run_id", manifest[0])
+
+
+class TestScrubArchivePolicy(unittest.TestCase):
+    def test_archive_omitted_and_recorded(self):
+        with tempfile.TemporaryDirectory() as td:
+            runs_dir = Path(td) / "runs"
+            run_dir = _make_run(runs_dir, "o/t/w/run1")
+            with zipfile.ZipFile(run_dir / "artifact.zip", "w") as archive:
+                archive.writestr("index.html", "SECRET_IN_ARCHIVE")
+            out_dir = Path(td) / "pub"
+
+            with contextlib.redirect_stderr(io.StringIO()) as stderr:
+                scrub_all(runs_dir, out_dir)
+
+            self.assertFalse((out_dir / "o/t/w/run1" / "artifact.zip").exists())
+            manifest = json.loads((out_dir / "manifest.json").read_text())
+            omissions = manifest[0]["scrub_omissions"]
+            self.assertEqual([o["file"] for o in omissions], ["artifact.zip"])
+            self.assertIn("cannot be redacted", omissions[0]["reason"])
+            # the warning names the run; the file name lives in the manifest
+            self.assertIn("o/t/w/run1", stderr.getvalue())
+
+    def test_other_binaries_still_copied(self):
+        with tempfile.TemporaryDirectory() as td:
+            runs_dir = Path(td) / "runs"
+            run_dir = _make_run(runs_dir, "o/t/w/run1")
+            (run_dir / "artifact.png").write_bytes(b"\x89PNG\r\n\x1a\nfake")
+            out_dir = Path(td) / "pub"
+
+            with contextlib.redirect_stderr(io.StringIO()) as stderr:
+                scrub_all(runs_dir, out_dir)
+
+            self.assertTrue((out_dir / "o/t/w/run1" / "artifact.png").exists())
+            manifest = json.loads((out_dir / "manifest.json").read_text())
+            self.assertNotIn("scrub_omissions", manifest[0])
+            self.assertEqual(stderr.getvalue(), "")
+
+    def test_text_redaction_still_applies_alongside_archive_skip(self):
+        with tempfile.TemporaryDirectory() as td:
+            runs_dir = Path(td) / "runs"
+            run_dir = _make_run(runs_dir, "o/t/w/run1")
+            with zipfile.ZipFile(run_dir / "artifact.zip", "w") as archive:
+                archive.writestr("index.html", "SECRET_IN_ARCHIVE")
+            secret = "sk-or-" + "a" * 30
+            (run_dir / "worker-0.json").write_text(json.dumps({"completion": {"content": secret}}))
+            out_dir = Path(td) / "pub"
+
+            with contextlib.redirect_stderr(io.StringIO()):
+                scrub_all(runs_dir, out_dir)
+
+            self.assertFalse((out_dir / "o/t/w/run1" / "artifact.zip").exists())
+            scrubbed = (out_dir / "o/t/w/run1" / "worker-0.json").read_text()
+            self.assertNotIn(secret, scrubbed)
+            self.assertIn("REDACTED", scrubbed)
 
 
 if __name__ == "__main__":

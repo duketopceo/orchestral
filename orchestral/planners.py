@@ -14,6 +14,13 @@ from typing import Any
 
 from orchestral.config import ModelConfig, TaskSpec
 from orchestral.costs import compute_cost, compute_image_cost, compute_video_cost, token_usage_from_raw
+from orchestral.fileset import (
+    FilesetError,
+    check_response_size,
+    expected_paths,
+    parse_fileset,
+    summarize_fileset,
+)
 from orchestral.logger import EventLogger
 from orchestral.openrouter import OpenRouterClient
 
@@ -507,6 +514,115 @@ def delegate_video(
     }]
 
 
+def delegate_multi(
+    *,
+    logger: EventLogger,
+    step: int,
+    subtask: dict[str, Any],
+    task: TaskSpec,
+    worker: ModelConfig,
+    client: OpenRouterClient | None,
+    dry_run: bool,
+) -> tuple[dict[str, Any], dict[str, str], list[dict[str, Any]]]:
+    """Produce one file set for a subtask brief.
+
+    Bypasses `_llm_call` on purpose: its dry-run fake output and its completion
+    logging both assume a single text artifact, and file *contents* must never
+    reach the event log. Only paths, sizes, and hashes are traced.
+    """
+    prompt = subtask.get("prompt") or subtask.get("description") or str(subtask)
+    declared = expected_paths(task.metadata) or ["index.html", "style.css"]
+    if dry_run:
+        files = {path: _fake_file_body(path) for path in declared}
+        cost = _fake_cost(worker, {"subtask": subtask}, {"paths": sorted(files)})
+        cost["phase"] = "delegate"
+        summary = summarize_fileset(files)
+        logger.log_llm_call(
+            phase="delegate",
+            step=step,
+            model=worker.slug,
+            role="worker",
+            messages=[{"role": "user", "content": prompt}],
+            completion={
+                "file_count": len(files),
+                "total_bytes": sum(summary["sizes"].values()),
+                "paths": summary["paths"],
+            },
+            reasoning=f"Produce a {len(files)}-file set for subtask {subtask.get('id')} with {worker.slug}.",
+            input_tokens=cost["input_tokens"],
+            output_tokens=cost["output_tokens"],
+            cost_usd=cost["cost_usd"],
+            latency_ms=random.uniform(80, 1200),
+        )
+        return {
+            "subtask_id": subtask.get("id"),
+            "notes": "Dry-run file set.",
+            **summary,
+        }, files, [cost]
+
+    if client is None:
+        raise ValueError("OpenRouterClient is required for live runs")
+
+    messages = _build_messages(
+        "worker",
+        {
+            "subtask": subtask,
+            "task_type": task.type,
+            "instructions": (
+                "Return a JSON object {\"files\": [{\"path\": ..., \"content\": ...}]} "
+                "containing every file this subtask must produce."
+            ),
+        },
+        expect_json=True,
+    )
+    completion = client.chat(model=worker.slug, messages=messages)
+    content = completion["content"]
+    check_response_size(content)
+    try:
+        data = _extract_json(content)
+    except ValueError as exc:
+        raise FilesetError(f"Worker returned no parseable file set: {exc}") from exc
+    files = parse_fileset(data)
+    if not files:
+        raise FilesetError("Worker returned no usable files")
+
+    usage = token_usage_from_raw(completion["usage"])
+    cost_usd, _ = compute_cost(usage, worker)
+    summary = summarize_fileset(files)
+    logger.log_llm_call(
+        phase="delegate",
+        step=step,
+        model=worker.slug,
+        role="worker",
+        messages=messages,
+        completion={
+            "file_count": len(files),
+            "total_bytes": sum(summary["sizes"].values()),
+            "paths": summary["paths"],
+            "usage": usage.to_dict(),
+            "id": completion.get("id"),
+        },
+        reasoning=f"Produce a {len(files)}-file set for subtask {subtask.get('id')} with {worker.slug}.",
+        input_tokens=usage.prompt_tokens,
+        output_tokens=usage.completion_tokens,
+        cost_usd=cost_usd,
+        latency_ms=completion["latency_ms"],
+    )
+    notes = data.get("notes") if isinstance(data, dict) else None
+    return {
+        "subtask_id": subtask.get("id"),
+        "notes": notes if isinstance(notes, str) else None,
+        **summary,
+    }, files, [{
+        "phase": "delegate",
+        "model": worker.slug,
+        "input_tokens": usage.prompt_tokens,
+        "output_tokens": usage.completion_tokens,
+        "cost_usd": cost_usd,
+        "usage": usage.to_dict(),
+    }]
+
+
 def assemble_media(
     *,
     logger: EventLogger,
@@ -678,6 +794,17 @@ def _extract_html(content: str) -> str:
         start = text.lower().find("<html")
         return text[start:]
     return text
+
+
+def _fake_file_body(path: str) -> str:
+    """Deterministic dry-run file body — shaped by extension, never real code."""
+    if path.endswith(".css"):
+        return "body { margin: 0; font-family: system-ui; }\n"
+    if path.endswith(".js"):
+        return "console.log('dry-run');\n"
+    if path.endswith(".json"):
+        return '{"dry_run": true}\n'
+    return f"<!doctype html>\n<title>orchestral dry-run</title>\n<!-- {path} -->\n"
 
 
 def _build_html(prompt: str, pieces: list[str]) -> str:

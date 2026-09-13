@@ -38,6 +38,13 @@
 
 **Goal:** move from "look at the pages" to "rank the pairings automatically."
 
+## v1.1 — More task types
+
+- [x] Multi-file project task type — workers return a JSON file set, merged deterministically into a byte-reproducible `artifact.zip`; `zip_signature`/`has_paths` validation, content-free traces, archives never published by `scrub`
+- [ ] API integration task type
+
+**Goal:** cover the delegation shapes a single artifact can't express.
+
 ## v1.0 — Shared tool
 
 - [x] Publish as open-source repo with proper docs

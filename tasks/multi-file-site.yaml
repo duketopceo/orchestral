@@ -1,0 +1,18 @@
+id: multi-file-site
+type: multi-file
+prompt: |
+  Build a small static site for a coffee subscription service: a landing page
+  and the stylesheet it depends on. The page needs a hero, a pricing section,
+  and a signup form; the stylesheet must style those sections and stay small
+  enough to read in one pass.
+validation:
+  - non_empty
+  - zip_signature
+  - has_paths
+assets: []
+metadata:
+  difficulty: medium
+  estimated_subtasks: 2
+  expected_paths:
+    - index.html
+    - style.css

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 
 from orchestral.reporter import generate_gallery
@@ -19,10 +20,15 @@ def _run(
     shot: bool = False,
     png_artifact: bool = False,
     mp4_artifact: bool = False,
+    zip_files: dict[str, str] | None = None,
 ) -> RunMeta:
     run_dir = runs_dir / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
-    if mp4_artifact:
+    if zip_files is not None:
+        with zipfile.ZipFile(run_dir / "artifact.zip", "w") as archive:
+            for path, body in zip_files.items():
+                archive.writestr(path, body)
+    elif mp4_artifact:
         (run_dir / "artifact.mp4").write_bytes(b"\x00\x00\x00\x18ftypmp42fake")
     elif png_artifact:
         (run_dir / "artifact.png").write_bytes(b"\x89PNG\r\n\x1a\nfake")
@@ -86,6 +92,17 @@ class TestGallery(unittest.TestCase):
             page = generate_gallery([_run(base, "r1", mp4_artifact=True)], reports)
             self.assertIn("<video class='thumb' src='shots/r1-artifact.mp4'", page)
             self.assertTrue((reports / "shots" / "r1-artifact.mp4").exists())
+
+    def test_zip_artifact_lists_members(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            reports = base / "reports"
+            reports.mkdir()
+            run = _run(base, "r1", zip_files={"index.html": "<h1>x</h1>", "style.css": "body{}"})
+            page = generate_gallery([run], reports)
+            self.assertIn("index.html", page)
+            self.assertIn("style.css", page)
+            self.assertIn("shots/r1-artifact.zip", page)
 
     def test_empty_store(self):
         with tempfile.TemporaryDirectory() as tmp:

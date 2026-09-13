@@ -27,10 +27,16 @@ grep -rniE "key|token|secret|/home/|/Users/" runs-pub/ | less
   (`https://user:pass@host`), internal hostnames (`.internal`, `.corp`, `.lan`,
   `.local`, `.home`, `.intranet`), emails, phone numbers, `/Users/…`,
   `/home/…`, `C:\Users\…` paths, and IPv4 addresses.
+- **Archives are omitted**: `artifact.zip` and other archive members are
+  skipped, because redaction cannot see inside an archive — a generated file
+  could carry a secret straight into `runs-pub/`. Each omission is recorded in
+  the run's manifest entry under `scrub_omissions`, with a warning naming the
+  run. Publishing multi-file results needs inner-file redaction first.
 - **Video runs**: `artifact.mp4`/`worker-*.mp4` copy verbatim; `events.jsonl`
   records the prompt and job id but never the video payload or job URLs.
-- **Copies verbatim**: known binary artifacts (`.png`, `.mp4`, `.zip`, fonts,
-  databases, or anything with NUL bytes).
+- **Copies verbatim**: known binary artifacts (`.png`, `.mp4`, fonts,
+  databases, or anything with NUL bytes) — except archives, which are omitted
+  as described above.
 - **Copies only allowlisted names**: `run.json`, `events.jsonl`, `plan.json`,
   `cost.json`, `report.json`, `worker-*`, `artifact.*`, `screenshot.*`,
   `judge*`. Random files you dropped into a run dir stay behind.

@@ -5,7 +5,7 @@ is a single task.
 
 ```yaml
 id: landing-page-coffee       # required; used in paths, filters, judge cache keys
-type: html                    # required; "html" or "image" are implemented
+type: html                    # required; "html", "image", and "video" are implemented
 prompt: |                     # required; the task brief given to the orchestrator
   Build a landing page for a coffee subscription service.
 
@@ -19,11 +19,11 @@ metadata: {}                  # optional free-form map (unused by the harness to
 | Field | Type | Default | Notes |
 |---|---|---|---|
 | `id` | str | required | Unique across `tasks/`; becomes a path component (`runs/{orch}/{task}/{worker}/{run_id}/`) |
-| `type` | str | required | `html` or `image` implemented; `video`, `api`, `multi-file` are reserved/planned |
+| `type` | str | required | `html`, `image`, `video` implemented; `api`, `multi-file` are reserved/planned |
 | `prompt` | str | required | Full task brief; the orchestrator decomposes it into subtasks |
 | `validation` | list[str] | `[]` | Check names; empty means the type's default set |
 | `assets` | list[str] | `[]` | Reserved; not consumed by the runner yet |
-| `metadata` | map | `{}` | Free-form; carried into run records |
+| `metadata` | map | `{}` | Free-form; carried into run records. `video` tasks read `duration`, `resolution`, `aspect_ratio`, `generate_audio`, `seed` from here |
 
 ## Task types
 
@@ -32,6 +32,13 @@ metadata: {}                  # optional free-form map (unused by the harness to
 - **`image`** — workers generate images via the provider's image API;
   the orchestrator picks the best; `artifact.png` is stored. Image tasks
   require the `openrouter` provider.
+- **`video`** — workers generate videos via OpenRouter's asynchronous
+  Videos API (submit job, poll to completion, download MP4); the orchestrator
+  picks the best; `artifact.mp4` is stored. Video tasks require the
+  `openrouter` provider. Generation parameters come from `metadata`:
+  `duration` (seconds), `resolution`, `aspect_ratio`, `generate_audio`,
+  `seed`. Video judging is not implemented — `--judge` is skipped and the
+  score stays null.
 
 ## Validation checks
 
@@ -54,6 +61,13 @@ metadata: {}                  # optional free-form map (unused by the harness to
 |---|---|
 | `non_empty` | the artifact has bytes |
 | `png_signature` | it has PNG magic bytes and an IEND trailer |
+
+`video` tasks (default set: `non_empty`, `mp4_signature`):
+
+| Check | Passes when |
+|---|---|
+| `non_empty` | the artifact has bytes |
+| `mp4_signature` | the first box is `ftyp` (ISO-BMFF container check; does not verify codecs or playability) |
 
 ## Example
 

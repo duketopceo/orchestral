@@ -7,6 +7,7 @@ config. API keys are read from the environment only — never from disk or git.
 from __future__ import annotations
 
 import base64
+import ipaddress
 import os
 import time
 from typing import Any, Self
@@ -36,6 +37,13 @@ def _is_private_host(hostname: str) -> bool:
     h = hostname.lower()
     if h.endswith((".local", ".internal")):
         return True
+    # canonical and non-canonical IP literals (hex, decimal, octal, IPv6)
+    try:
+        ip = ipaddress.ip_address(h)
+    except ValueError:
+        pass
+    else:
+        return ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_reserved
     if h.startswith("172."):
         try:
             second = int(h.split(".")[1])
@@ -234,6 +242,9 @@ class OpenRouterClient:
         if not job_id:
             raise OpenRouterError("Malformed videos response: missing job id")
         polling_url = urljoin(str(self.client.base_url), data.get("polling_url") or f"/videos/{job_id}")
+        poll_host = urlparse(polling_url).hostname or ""
+        if urlparse(polling_url).scheme != "https" or _is_private_host(poll_host):
+            raise OpenRouterError(f"Refusing to poll unsafe video job URL: {polling_url}")
 
         deadline = start + VIDEO_MAX_WAIT_SECONDS
         poll_errors = 0
@@ -241,23 +252,31 @@ class OpenRouterClient:
         while True:
             time.sleep(VIDEO_POLL_INTERVAL_SECONDS)
             try:
-                poll = self.client.get(polling_url, headers=self._headers(polling_url))
+                # no redirects: a redirect could carry the Authorization header
+                # to a foreign host, and the polling endpoint has no reason to
+                # issue one
+                poll = self.client.get(
+                    polling_url,
+                    headers=self._headers(polling_url),
+                    follow_redirects=False,
+                )
+                if poll.is_redirect:
+                    raise _PollingRedirectError()
                 poll.raise_for_status()
                 data = poll.json()
                 poll_errors = 0
-            except ValueError as exc:
+            except (ValueError, _PollingRedirectError) as exc:
                 poll_errors += 1
                 if poll_errors > VIDEO_MAX_POLL_ERRORS:
-                    raise OpenRouterError(f"video job {job_id} polling returned malformed JSON: {exc}") from exc
-            except httpx.HTTPStatusError as exc:
-                if exc.response.status_code in NON_RETRYABLE_STATUSES:
+                    raise OpenRouterError(
+                        f"video job {job_id} polling failed after "
+                        f"{poll_errors} consecutive errors: {exc}"
+                    ) from exc
+            except (httpx.HTTPStatusError, httpx.TimeoutException, httpx.NetworkError) as exc:
+                if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code in NON_RETRYABLE_STATUSES:
                     raise OpenRouterError(
                         f"OpenRouter poll error {exc.response.status_code}: {exc.response.text}"
                     ) from exc
-                poll_errors += 1
-                if poll_errors > VIDEO_MAX_POLL_ERRORS:
-                    raise OpenRouterError(f"video job {job_id} polling failed: {exc}") from exc
-            except (httpx.TimeoutException, httpx.NetworkError) as exc:
                 poll_errors += 1
                 if poll_errors > VIDEO_MAX_POLL_ERRORS:
                     raise OpenRouterError(f"video job {job_id} polling failed: {exc}") from exc
@@ -339,6 +358,11 @@ class OpenRouterClient:
 
 class OpenRouterError(Exception):
     """Raised when the OpenRouter API returns an error."""
+
+
+class _PollingRedirectError(Exception):
+    """The video polling endpoint returned a redirect — counted as a
+    transient poll error so it never triggers a fresh billable job."""
 
 
 class OpenRouterVideoJobError(OpenRouterError):

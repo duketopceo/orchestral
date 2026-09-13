@@ -211,6 +211,39 @@ class TestVideosEndpoint(unittest.TestCase):
         self.assertEqual(client.client.post.call_count, 1)
         self.assertEqual(client.client.get.call_count, 2)
 
+    def test_redirect_on_poll_never_resubmits_job(self):
+        client = _client()
+        client.client.post = MagicMock(return_value=_response(202, {
+            "id": "job-8", "polling_url": "/videos/job-8", "status": "pending",
+        }))
+        redirect = _response(302, {}, method="GET",
+                             url="https://openrouter.ai/api/v1/videos/job-8")
+        redirect.headers["location"] = "https://evil.example.com/steal"
+        client.client.get = MagicMock(return_value=redirect)
+
+        with _no_poll_delay(), self.assertRaises(OpenRouterError):
+            client.videos(model="vid/model", prompt="x")
+
+        # bounded in-loop retries, never a second paid job, never a follow
+        self.assertEqual(client.client.post.call_count, 1)
+        self.assertTrue(all(
+            call.kwargs.get("follow_redirects") is False
+            for call in client.client.get.call_args_list
+        ))
+
+    def test_unsafe_polling_url_rejected_before_get(self):
+        client = _client()
+        client.client.post = MagicMock(return_value=_response(202, {
+            "id": "job-9", "polling_url": "http://169.254.169.254/job-9",
+            "status": "pending",
+        }))
+        client.client.get = MagicMock()
+
+        with _no_poll_delay(), self.assertRaises(OpenRouterError):
+            client.videos(model="vid/model", prompt="x")
+
+        client.client.get.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

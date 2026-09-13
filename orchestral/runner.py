@@ -13,12 +13,14 @@ from orchestral.config import ModelConfig, TaskSpec
 from orchestral.costs import CostLedger
 from orchestral.judge import judge_artifact
 from orchestral.logger import EventLogger
+from orchestral.openrouter import OpenRouterVideoJobError
 from orchestral.planners import (
     assemble_ce,
-    assemble_image,
+    assemble_media,
     assemble_raw,
     delegate,
     delegate_image,
+    delegate_video,
     plan_ce,
     plan_raw,
 )
@@ -165,8 +167,11 @@ class Runner:
 
             # 2. Delegate each subtask to the worker
             is_image = task.type == "image"
+            is_video = task.type == "video"
+            is_media = is_image or is_video
             results: list[dict[str, Any]] = []
-            image_paths: list[Path | None] = []
+            media_paths: list[Path | None] = []
+            media_ext = _artifact_ext(task.type)
             subtasks = plan.get("subtasks") or plan.get("sections", {}).get("subtasks", [])
             for i, sub in enumerate(subtasks):
                 # models sometimes return a list of strings; normalize to dicts
@@ -175,15 +180,25 @@ class Runner:
                 elif not isinstance(sub, dict):
                     sub = {"id": i, "description": str(sub)}
                 out: dict[str, Any] | None = None
-                img_bytes: bytes = b""
+                media_bytes: bytes = b""
                 attempts = max(1, worker.retry_limit + 1)
                 for attempt in range(attempts):
                     try:
                         if is_image:
-                            out, img_bytes, worker_costs = delegate_image(
+                            out, media_bytes, worker_costs = delegate_image(
                                 logger=logger,
                                 step=i + 3,
                                 subtask=sub,
+                                worker=worker,
+                                client=role_clients.get("worker"),
+                                dry_run=self.dry_run,
+                            )
+                        elif is_video:
+                            out, media_bytes, worker_costs = delegate_video(
+                                logger=logger,
+                                step=i + 3,
+                                subtask=sub,
+                                task=task,
                                 worker=worker,
                                 client=role_clients.get("worker"),
                                 dry_run=self.dry_run,
@@ -211,10 +226,12 @@ class Runner:
                             reasoning=f"Worker call raised an exception on attempt {attempt + 1}.",
                             error=str(exc),
                         )
-                        if attempt + 1 >= attempts:
+                        # A terminal video-job failure can never succeed on
+                        # retry — resubmitting would just bill another job.
+                        if isinstance(exc, OpenRouterVideoJobError) or attempt + 1 >= attempts:
                             raise
                         continue
-                    if (img_bytes if is_image else out.get("content")):
+                    if (media_bytes if is_media else out.get("content")):
                         break
                     logger.log(
                         phase="delegate",
@@ -231,18 +248,18 @@ class Runner:
                 out["attempts"] = attempt + 1
                 results.append(out)
                 (run_dir / f"worker-{i}.json").write_text(json.dumps(out, indent=2, default=str))
-                if is_image and img_bytes:
-                    img_path = run_dir / f"worker-{i}.png"
-                    img_path.write_bytes(img_bytes)
-                    image_paths.append(img_path)
+                if is_media and media_bytes:
+                    media_path = run_dir / f"worker-{i}{media_ext}"
+                    media_path.write_bytes(media_bytes)
+                    media_paths.append(media_path)
                 else:
-                    image_paths.append(None)
+                    media_paths.append(None)
 
             # 3. Assemble final artifact
             assembly_step = 3 + len(subtasks)
-            if is_image:
-                if any(p is not None for p in image_paths):
-                    position, assembly_costs = assemble_image(
+            if is_media:
+                if any(p is not None for p in media_paths):
+                    position, assembly_costs = assemble_media(
                         logger=logger,
                         task=task,
                         orchestrator=orchestrator,
@@ -254,13 +271,16 @@ class Runner:
                 else:
                     position, assembly_costs = 0, []
                 ledger.add_many(assembly_costs)
-                selected = image_paths[position] if 0 <= position < len(image_paths) else None
+                selected = media_paths[position] if 0 <= position < len(media_paths) else None
                 if selected is None:
-                    # orchestrator picked a subtask with no image; fall back to first captured
-                    selected = next((p for p in image_paths if p is not None), None)
+                    # orchestrator picked a subtask with no media; fall back to first captured
+                    selected = next((p for p in media_paths if p is not None), None)
                 artifact_bytes = selected.read_bytes() if selected else b""
-                (run_dir / "artifact.png").write_bytes(artifact_bytes)
-                passes, report = self._validate_image(task, artifact_bytes)
+                (run_dir / f"artifact{media_ext}").write_bytes(artifact_bytes)
+                if is_image:
+                    passes, report = self._validate_image(task, artifact_bytes)
+                else:
+                    passes, report = self._validate_video(task, artifact_bytes)
             else:
                 if self.planner == "ce-plan":
                     artifact, assembly_costs = assemble_ce(
@@ -287,8 +307,20 @@ class Runner:
                 ledger.add_many(assembly_costs)
                 passes, report = self._validate(task, artifact)
 
-            # 4. Judge (optional; image tasks need a vision-capable judge model)
-            if judge is not None:
+            # 4. Judge (optional; image tasks need a vision-capable judge model;
+            # video judging is deferred — there is no video-input judge path yet)
+            if judge is not None and is_video:
+                logger.log(
+                    phase="judge",
+                    step=assembly_step + 2,
+                    event_type="judge_skipped",
+                    model=judge.slug,
+                    role="judge",
+                    input_data={"task": task.id},
+                    output_data={"reason": "video judging deferred — no video-input judge path"},
+                    reasoning="Judge skipped: video artifacts cannot be judged by the current judge path.",
+                )
+            elif judge is not None:
                 if is_image and judge.metadata.get("vision") is not True:
                     logger.log(
                         phase="judge",
@@ -511,6 +543,23 @@ class Runner:
             checks["png_signature"] = artifact.startswith(PNG_MAGIC) and artifact.endswith(PNG_IEND)
             if not checks["png_signature"]:
                 errors.append("Artifact is not a well-formed PNG (bad magic or missing IEND).")
+
+        return _validation_report(task, checks, errors, len(artifact))
+
+    def _validate_video(self, task: TaskSpec, artifact: bytes) -> tuple[bool, dict[str, Any]]:
+        requested = set(task.validation) if task.validation else {"non_empty", "mp4_signature"}
+        checks: dict[str, bool] = {}
+        errors: list[str] = []
+
+        if "non_empty" in requested:
+            checks["non_empty"] = bool(artifact)
+            if not checks["non_empty"]:
+                errors.append("Artifact is empty.")
+        if "mp4_signature" in requested:
+            # ISO-BMFF: first box must be ftyp (4-byte size + 'ftyp' at offset 4)
+            checks["mp4_signature"] = len(artifact) >= 12 and artifact[4:8] == b"ftyp"
+            if not checks["mp4_signature"]:
+                errors.append("Artifact is not a well-formed MP4 (missing leading ftyp box).")
 
         return _validation_report(task, checks, errors, len(artifact))
 

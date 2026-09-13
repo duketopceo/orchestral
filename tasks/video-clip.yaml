@@ -1,0 +1,18 @@
+id: video-clip
+type: video
+prompt: |
+  Generate a short promotional video clip for a premium coffee subscription
+  landing page. Slow dolly-in on a ceramic pour-over setup on a wooden table,
+  steam rising from the cup, warm morning light through a window. Cinematic,
+  no text overlay.
+validation:
+  - non_empty
+  - mp4_signature
+assets: []
+metadata:
+  difficulty: medium
+  estimated_subtasks: 2
+  duration: 4
+  resolution: "720p"
+  aspect_ratio: "16:9"
+  generate_audio: false

@@ -149,40 +149,51 @@ models:
     metadata:
       modalities: [image]
 
-  # Video workers — disabled pending slug verification against
-  # GET /api/v1/videos/models. Remove the "~" prefix to enable once the
-  # slug, supported durations/resolutions, and pricing_skus are confirmed.
-  - slug: "~google/veo-3.1"
+  # Video workers — slugs verified against GET /api/v1/videos/models.
+  # price_per_video_second is the no-audio fallback rate; the completed
+  # job's usage.cost is authoritative when the API reports it.
+  # Per-model constraints (durations/resolutions) are enforced upstream —
+  # a task whose metadata asks for an unsupported combination fails the job.
+  - slug: "google/veo-3.1"
     name: "Veo 3.1"
     role: worker
     input_price_per_mtok: 0.0
     output_price_per_mtok: 0.0
     retry_limit: 1
-    price_per_video_second: 0.50
+    price_per_video_second: 0.20  # $0.20/s no-audio ($0.40/s 4K, $0.40-0.60/s with audio)
     metadata:
       modalities: [video]
+      durations: [4, 6, 8]
+      resolutions: ["720p", "1080p", "4K"]
+      aspect_ratios: ["16:9", "9:16"]
 
-  - slug: "~google/veo-3.1-lite"
+  - slug: "google/veo-3.1-lite"
     name: "Veo 3.1 Lite"
     role: worker
     input_price_per_mtok: 0.0
     output_price_per_mtok: 0.0
     retry_limit: 1
-    price_per_video_second: 0.25
+    price_per_video_second: 0.03  # $0.03/s no-audio 720p ($0.05/s 1080p or with audio)
     metadata:
       modalities: [video]
+      durations: [4, 6, 8]
+      resolutions: ["720p", "1080p"]
+      aspect_ratios: ["16:9", "9:16"]
 
-  - slug: "~minimax/hailuo-3"
+  - slug: "minimax/hailuo-3"
     name: "Hailuo 3"
     role: worker
     input_price_per_mtok: 0.0
     output_price_per_mtok: 0.0
     retry_limit: 1
-    price_per_video_second: 0.10
+    price_per_video_second: 0.13
     metadata:
       modalities: [video]
+      durations: [5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]  # no 4s — min is 5s
+      resolutions: ["2K"]
+      aspect_ratios: ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"]
 
-  - slug: "~alibaba/wan-2.7"
+  - slug: "alibaba/wan-2.7"
     name: "Wan 2.7"
     role: worker
     input_price_per_mtok: 0.0
@@ -191,6 +202,9 @@ models:
     price_per_video_second: 0.10
     metadata:
       modalities: [video]
+      durations: [2, 3, 4, 5, 6, 7, 8, 9, 10]
+      resolutions: ["720p", "1080p"]
+      aspect_ratios: ["16:9", "9:16", "1:1", "4:3", "3:4"]
 
   - slug: "qwen/qwen3-max"
     name: "Qwen 3 Max"

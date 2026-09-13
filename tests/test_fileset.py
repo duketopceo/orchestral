@@ -42,7 +42,7 @@ class TestParseFileset(unittest.TestCase):
 
     def test_non_string_content_is_coerced(self):
         files = parse_fileset({"files": [{"path": "data.json", "content": {"a": 1}}]})
-        self.assertIn("data.json", files)
+        self.assertEqual(files["data.json"], "{'a': 1}")
 
     def test_paths_are_canonicalized(self):
         files = parse_fileset({"files": [{"path": "Assets/Site.CSS", "content": "x"}]})
@@ -93,6 +93,12 @@ class TestSanitizePath(unittest.TestCase):
             ".hidden",
             "caf\u00e9.html",
             "x" * 300,
+            # encoded separators/traversal must not survive into a member name
+            "a%2f%2e%2e%2fb",
+            "%2e%2e%2f",
+            "a%5c..%5cb",
+            "%252e%252e%252f",
+            "50%.html",
         ):
             with self.assertRaises(FilesetError, msg=bad):
                 sanitize_path(bad)

@@ -17,6 +17,7 @@ import io
 import re
 import zipfile
 from typing import Any
+from urllib.parse import unquote
 
 # Caps, enforced before parsing and while building. A worker completion is
 # bounded upstream only by the model's max_tokens, which is far larger than a
@@ -30,8 +31,9 @@ MAX_TOTAL_PATH_BYTES = 4096
 MAX_ZIP_OUTPUT_BYTES = 2_000_000
 
 # Characters that are illegal or dangerous in a path segment: control chars,
-# the Windows-reserved set, and colon (drive/ADS syntax).
-_ILLEGAL_CHARS = re.compile(r"[\x00-\x1f\x7f<>\"|?*:]")
+# the Windows-reserved set, colon (drive/ADS syntax), and percent (an encoded
+# separator or traversal must never survive into a member name).
+_ILLEGAL_CHARS = re.compile(r"[\x00-\x1f\x7f<>\"|?*:%]")
 _WINDOWS_RESERVED = {
     "con", "prn", "aux", "nul",
     *(f"com{i}" for i in range(1, 10)),
@@ -100,7 +102,16 @@ def sanitize_path(path: str) -> str:
     case-insensitive filesystem.
     """
     raw = str(path).strip()
-    normalized = raw.replace("\\", "/")
+    # decode percent escapes to a fixed point first: `%2e%2e%2f` and
+    # `%252e%252e%252f` must be caught by the same segment rules as `../`,
+    # and any escape left after decoding is rejected as an illegal `%`
+    normalized = raw
+    for _ in range(3):
+        decoded = unquote(normalized)
+        if decoded == normalized:
+            break
+        normalized = decoded
+    normalized = normalized.replace("\\", "/")
     while normalized.startswith("./"):
         normalized = normalized[2:]
     if len(normalized) > MAX_PATH_LENGTH:
@@ -177,6 +188,8 @@ def build_zip(files: dict[str, str]) -> bytes:
     entry can be read as a symlink.
     """
     validate_fileset(files)
+    if not all(isinstance(p, str) and isinstance(c, str) for p, c in files.items()):
+        raise FilesetError("build_zip requires a dict of str paths to str contents")
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED,
                          compresslevel=_ZIP_COMPRESSLEVEL) as archive:

@@ -244,11 +244,14 @@ def _copy_for_gallery(src: Path, dest: Path) -> bool:
 
 
 def _binary_artifact_label(artifact_path: Path) -> str:
-    """Describe a binary artifact — for a zip, list its members (names only)."""
+    """Describe a binary artifact — for a zip, list its members (names only).
+
+    Names are returned raw; the caller escapes once for HTML.
+    """
     if artifact_path.suffix == ".zip":
         names = _zip_names(artifact_path)
         if names:
-            return "archive members: " + ", ".join(_esc(n) for n in names)
+            return "archive members: " + ", ".join(names)
     return f"<binary artifact: {artifact_path.name}>"
 
 

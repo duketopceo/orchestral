@@ -383,6 +383,7 @@ class Runner:
                     artifact_bytes=judge_bytes,
                     artifact_text=judge_text,
                     judge=judge,
+                    language="text" if is_multi else "html",
                 )
                 ledger.add_many(judge_costs)
                 report["judge"] = judge_result
@@ -478,6 +479,7 @@ class Runner:
         artifact_text: str | None,
         judge: ModelConfig,
         client: Any = None,
+        language: str = "html",
     ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
         """Judge an artifact, serving identical artifacts from the persistent cache.
 
@@ -491,6 +493,7 @@ class Runner:
             return judge_artifact(
                 logger=logger, step=step, task=task, artifact=artifact_text or "",
                 judge=judge, client=client, dry_run=True, image_bytes=artifact_bytes,
+                language=language,
             )
 
         payload = artifact_bytes if artifact_bytes is not None else (artifact_text or "").encode()
@@ -514,6 +517,7 @@ class Runner:
             result, costs = judge_artifact(
                 logger=logger, step=step, task=task, artifact=artifact_text or "",
                 judge=judge, client=client, dry_run=False, image_bytes=artifact_bytes,
+                language=language,
             )
             # synthetic parse-failure results are transient — don't poison the cache
             if not result.get("parse_failed"):
@@ -611,7 +615,7 @@ class Runner:
             except zipfile.BadZipFile:
                 present = {}
         if "zip_signature" in requested:
-            checks["zip_signature"] = bool(present)
+            checks["zip_signature"] = zipfile.is_zipfile(io.BytesIO(artifact))
             if not checks["zip_signature"]:
                 errors.append("Artifact is not a readable zip archive.")
         if "has_paths" in requested:

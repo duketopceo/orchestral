@@ -186,7 +186,7 @@ class TestMultiFileLivePath(unittest.TestCase):
                 ).run(_task(), _model("org/x", "orchestrator"), _model("wrk/text", "worker"))
             self.assertIn("escape.txt", str(ctx.exception))
 
-    def test_judge_sees_listing_not_contents(self):
+    def test_judge_prompt_carries_listing_not_contents(self):
         with tempfile.TemporaryDirectory() as tmp:
             client = _FakeClient(file_sets=[
                 {"files": [{"path": "index.html", "content": "UNIQUE_BODY_MARKER"}]},
@@ -199,7 +199,17 @@ class TestMultiFileLivePath(unittest.TestCase):
 
             run_dir = Path(meta.run_dir)
             events = (run_dir / "events.jsonl").read_text()
+            # the judge prompt is logged with the messages — assert on its content
             self.assertNotIn("UNIQUE_BODY_MARKER", events)
+            judge_events = [
+                json.loads(line) for line in events.splitlines()
+                if json.loads(line).get("phase") == "judge"
+            ]
+            self.assertTrue(judge_events, "no judge event recorded")
+            prompts = json.dumps(judge_events)
+            self.assertIn("index.html", prompts)
+            self.assertNotIn("UNIQUE_BODY_MARKER", prompts)
+            self.assertNotIn("```html", prompts)
             report = json.loads((run_dir / "report.json").read_text())
             self.assertNotIn("UNIQUE_BODY_MARKER", json.dumps(report))
 

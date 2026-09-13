@@ -48,8 +48,13 @@ def judge_artifact(
     client: OpenRouterClient | None,
     dry_run: bool,
     image_bytes: bytes | None = None,
+    language: str = "html",
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    """Return judge result and list of call costs."""
+    """Return judge result and list of call costs.
+
+    `language` labels the fenced artifact block — multi-file tasks pass a
+    neutral tag because their artifact section is a file listing, not HTML.
+    """
     if image_bytes is not None and len(image_bytes) > MAX_JUDGE_IMAGE_BYTES:
         result: dict[str, Any] = {"score": None, "passed": None, "reasoning": f"image too large to judge ({len(image_bytes)} bytes)"}
         logger.log(
@@ -66,7 +71,7 @@ def judge_artifact(
     artifact_section = (
         "The artifact is the attached image."
         if image_bytes is not None
-        else f"```html\n{artifact[:2000]}\n```"
+        else f"```{language}\n{artifact[:2000]}\n```"
     )
     prompt_text = JUDGE_PROMPT.format(prompt=task.prompt, artifact_section=artifact_section)
 

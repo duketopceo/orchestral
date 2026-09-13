@@ -433,6 +433,8 @@ def delegate_video(
     prompt = subtask.get("prompt") or subtask.get("description") or str(subtask)
     options = {k: task.metadata[k] for k in _VIDEO_OPTION_KEYS if k in task.metadata}
     duration_s = options.get("duration")
+    resolution = options.get("resolution")
+    generate_audio = options.get("generate_audio")
     if dry_run:
         video_bytes = TINY_MP4
         cost: dict[str, Any] = {
@@ -440,7 +442,9 @@ def delegate_video(
             "model": worker.slug,
             "input_tokens": 0,
             "output_tokens": 0,
-            "cost_usd": compute_video_cost(worker, duration_s=duration_s),
+            "cost_usd": compute_video_cost(
+                worker, duration_s=duration_s, resolution=resolution, generate_audio=generate_audio
+            ),
         }
         logger.log_llm_call(
             phase="delegate",
@@ -468,7 +472,13 @@ def delegate_video(
         k: v for k, v in (completion.get("usage") or {}).items()
         if isinstance(v, (int, float, str, bool))
     }
-    cost_usd = compute_video_cost(worker, api_cost=usage.get("cost"), duration_s=duration_s)
+    cost_usd = compute_video_cost(
+        worker,
+        api_cost=usage.get("cost"),
+        duration_s=duration_s,
+        resolution=resolution,
+        generate_audio=generate_audio,
+    )
 
     logger.log_llm_call(
         phase="delegate",

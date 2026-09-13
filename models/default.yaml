@@ -160,12 +160,17 @@ models:
     input_price_per_mtok: 0.0
     output_price_per_mtok: 0.0
     retry_limit: 1
-    price_per_video_second: 0.20  # $0.20/s no-audio ($0.40/s 4K, $0.40-0.60/s with audio)
+    price_per_video_second: 0.20  # base (no-audio) rate; option-specific below
     metadata:
       modalities: [video]
       durations: [4, 6, 8]
       resolutions: ["720p", "1080p", "4K"]
       aspect_ratios: ["16:9", "9:16"]
+      video_pricing:              # verified pricing_skus
+        "*:silent": 0.20
+        "*:audio": 0.40
+        "4K:silent": 0.40
+        "4K:audio": 0.60
 
   - slug: "google/veo-3.1-lite"
     name: "Veo 3.1 Lite"
@@ -173,12 +178,17 @@ models:
     input_price_per_mtok: 0.0
     output_price_per_mtok: 0.0
     retry_limit: 1
-    price_per_video_second: 0.03  # $0.03/s no-audio 720p ($0.05/s 1080p or with audio)
+    price_per_video_second: 0.05  # base (no-audio 1080p) rate; option-specific below
     metadata:
       modalities: [video]
       durations: [4, 6, 8]
       resolutions: ["720p", "1080p"]
       aspect_ratios: ["16:9", "9:16"]
+      video_pricing:              # verified pricing_skus
+        "720p:silent": 0.03
+        "720p:audio": 0.05
+        "1080p:silent": 0.05
+        "1080p:audio": 0.08
 
   - slug: "minimax/hailuo-3"
     name: "Hailuo 3"

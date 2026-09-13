@@ -140,21 +140,43 @@ def compute_video_cost(
     model_cfg: ModelConfig,
     api_cost: float | str | None = None,
     duration_s: float | None = None,
+    resolution: str | None = None,
+    generate_audio: bool | None = None,
     n: int = 1,
 ) -> float:
     """Cost for a video generation call.
 
     The async Videos API reports an authoritative `usage.cost` on the
-    completed job; when absent, fall back to the configured per-second
-    price times the requested duration.
+    completed job; when absent, fall back to the model's per-second rate
+    times the requested duration. The rate is option-aware where the model
+    declares `metadata.video_pricing` (resolution/audio change real prices),
+    falling back to `price_per_video_second`.
     """
     if api_cost is not None:
         return usd(Decimal(str(api_cost)) * n)
-    if duration_s and model_cfg.price_per_video_second:
-        return usd(
-            Decimal(str(duration_s)) * Decimal(str(model_cfg.price_per_video_second)) * n
-        )
+    rate = _video_rate(model_cfg, resolution, generate_audio)
+    if duration_s and rate:
+        return usd(Decimal(str(duration_s)) * Decimal(str(rate)) * n)
     return 0.0
+
+
+def _video_rate(
+    model_cfg: ModelConfig, resolution: str | None, generate_audio: bool | None
+) -> float:
+    """Per-second rate for a resolution/audio combination.
+
+    `metadata.video_pricing` maps `"<resolution>:<audio|silent>"` to a rate,
+    with `"*"` accepted for either half (e.g. `"*:audio"`, `"720p:*"`).
+    Most specific match wins; unmatched combinations use the model's base
+    `price_per_video_second`.
+    """
+    pricing = model_cfg.metadata.get("video_pricing") or {}
+    if resolution:
+        audio = "audio" if generate_audio else "silent"
+        for key in (f"{resolution}:{audio}", f"{resolution}:*", f"*:{audio}", "*"):
+            if key in pricing:
+                return float(pricing[key])
+    return model_cfg.price_per_video_second
 
 
 def usd(value: Decimal) -> float:

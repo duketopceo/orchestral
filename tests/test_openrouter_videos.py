@@ -316,6 +316,46 @@ class TestVideosEndpoint(unittest.TestCase):
         self.assertIn("169.254.169.254", str(ctx.exception))
         self.assertNotIn("169.254.169.254/job-9", str(ctx.exception))
 
+    def test_transport_error_during_poll_raises_submitted_error(self):
+        client = _client()
+        client.client.post = MagicMock(return_value=_response(202, {
+            "id": "job-11", "polling_url": "/videos/job-11", "status": "pending",
+        }))
+        client.client.get = MagicMock(side_effect=httpx.ProxyError("proxy refused"))
+
+        with _no_poll_delay(), self.assertRaises(OpenRouterVideoSubmittedError):
+            client.videos(model="vid/model", prompt="x")
+
+        self.assertEqual(client.client.post.call_count, 1)
+
+    def test_download_transport_error_raises_submitted_error(self):
+        client = _client()
+        client.client.post = MagicMock(return_value=_response(202, {
+            "id": "job-12", "polling_url": "/videos/job-12", "status": "pending",
+        }))
+        client.client.get = MagicMock(return_value=_response(200, {
+            "status": "completed",
+            "unsigned_urls": ["https://openrouter.ai/api/v1/videos/job-12/content?index=0"],
+        }, method="GET", url="https://openrouter.ai/api/v1/videos/job-12"))
+        client.client.stream = MagicMock(side_effect=httpx.ReadError("connection dropped"))
+
+        with _no_poll_delay(), self.assertRaises(OpenRouterVideoSubmittedError):
+            client.videos(model="vid/model", prompt="x")
+
+    def test_empty_download_raises_submitted_error(self):
+        client = _client()
+        client.client.post = MagicMock(return_value=_response(202, {
+            "id": "job-13", "polling_url": "/videos/job-13", "status": "pending",
+        }))
+        client.client.get = MagicMock(return_value=_response(200, {
+            "status": "completed",
+            "unsigned_urls": ["https://openrouter.ai/api/v1/videos/job-13/content?index=0"],
+        }, method="GET", url="https://openrouter.ai/api/v1/videos/job-13"))
+        client.client.stream = MagicMock(return_value=_FakeStream(b""))
+
+        with _no_poll_delay(), self.assertRaises(OpenRouterVideoSubmittedError):
+            client.videos(model="vid/model", prompt="x")
+
     def test_download_http_error_message_omits_url(self):
         client = _client()
         client.client.post = MagicMock(return_value=_response(202, {

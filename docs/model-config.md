@@ -36,7 +36,7 @@ models:
 | `max_tokens` | int | 8192 | Max output tokens per call |
 | `retry_limit` | int | 2 | Worker retry attempts; overridable per run with `--retry-limit` |
 | `price_per_image` | float | 0.0 | Fallback price when image usage reports no cost |
-| `price_per_video_second` | float | 0.0 | Fallback price per generated second; the video job's `usage.cost` wins when reported |
+| `price_per_video_second` | float | 0.0 | Base fallback price per generated second; `metadata.video_pricing` refines it per resolution/audio, and the video job's `usage.cost` wins when reported |
 | `metadata` | map | `{}` | Provider + capability keys below |
 
 ## `metadata` keys
@@ -47,6 +47,7 @@ models:
 | `base_url` | str | API base for `openai-compatible` providers |
 | `api_key_env` | str | Env var holding the API key (`OPENROUTER_API_KEY` / `OPENAI_API_KEY` defaults) |
 | `modalities` | list[str] | `text`, `image`, `video` — `grid` filters workers by task type |
+| `video_pricing` | map | Per-second fallback rates keyed `"<resolution>:<audio\|silent>"`, `"*"` allowed for either half (e.g. `"*:audio"`); unmatched combinations use `price_per_video_second` |
 | `vision` | bool | Marks a judge as able to score image artifacts |
 
 ## Notes
@@ -54,6 +55,9 @@ models:
 - **Cost accounting**: prices are per-million tokens; the runner derives
   per-token cost and falls back to `price_per_image` for image calls without
   token usage. Video calls prefer the completed job's `usage.cost` and fall
-  back to `duration × price_per_video_second`.
+  back to `duration × rate`, where the rate comes from `metadata.video_pricing`
+  for the requested resolution/audio combination, else `price_per_video_second`.
+  Video prices genuinely differ by resolution and audio, so a single base rate
+  understates premium requests.
 - **Unknown slugs** passed on the CLI get ad-hoc configs with cheap default
   pricing — put real prices in `models/*.yaml` for accurate cost reports.

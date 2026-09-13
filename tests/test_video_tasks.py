@@ -41,6 +41,45 @@ class TestVideoCost(unittest.TestCase):
         self.assertEqual(compute_video_cost(cfg, duration_s=4), 0.0)
         self.assertEqual(compute_video_cost(cfg), 0.0)
 
+    def test_option_aware_rate(self):
+        cfg = _cfg(
+            price_per_video_second=0.20,
+            metadata={"video_pricing": {"*:silent": 0.20, "*:audio": 0.40, "4K:silent": 0.40}},
+        )
+        # exact match beats wildcard; 4s duration
+        self.assertEqual(
+            compute_video_cost(cfg, duration_s=4, resolution="4K", generate_audio=False), 1.60
+        )
+        self.assertEqual(
+            compute_video_cost(cfg, duration_s=4, resolution="720p", generate_audio=True), 1.60
+        )
+        self.assertEqual(
+            compute_video_cost(cfg, duration_s=4, resolution="720p", generate_audio=False), 0.80
+        )
+
+    def test_unmatched_option_falls_back_to_base_rate(self):
+        cfg = _cfg(price_per_video_second=0.10, metadata={"video_pricing": {"4K:silent": 0.40}})
+        self.assertEqual(
+            compute_video_cost(cfg, duration_s=4, resolution="720p", generate_audio=False), 0.40
+        )
+
+    def test_api_cost_beats_option_aware_rate(self):
+        cfg = _cfg(price_per_video_second=0.10, metadata={"video_pricing": {"*:audio": 0.40}})
+        self.assertEqual(
+            compute_video_cost(cfg, api_cost=0.07, duration_s=4, resolution="720p", generate_audio=True),
+            0.07,
+        )
+
+    def test_verified_model_pricing_is_option_aware(self):
+        models = {m.slug: m for m in load_models("models")}
+        veo = models["google/veo-3.1"]
+        self.assertEqual(
+            compute_video_cost(veo, duration_s=4, resolution="4K", generate_audio=True), 2.40
+        )
+        self.assertEqual(
+            compute_video_cost(veo, duration_s=4, resolution="720p", generate_audio=False), 0.80
+        )
+
 
 class TestVideoModelConfig(unittest.TestCase):
     def test_price_per_video_second_loads_and_serializes(self):

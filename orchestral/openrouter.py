@@ -289,7 +289,10 @@ class OpenRouterClient:
                         f"video job {job_id} polling failed after "
                         f"{poll_errors} consecutive errors ({type(exc).__name__})"
                     ) from exc
-            except (httpx.HTTPStatusError, httpx.TimeoutException, httpx.NetworkError) as exc:
+            # httpx.HTTPError covers every transport/protocol/decoding failure
+            # (ProxyError, UnsupportedProtocol, RemoteProtocolError, ...) — any
+            # of them escaping here would resubmit a billable job upstream
+            except httpx.HTTPError as exc:
                 if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code in NON_RETRYABLE_STATUSES:
                     raise OpenRouterVideoSubmittedError(
                         f"video job {job_id} polling rejected with HTTP "
@@ -330,10 +333,18 @@ class OpenRouterClient:
                 timeout=VIDEO_DOWNLOAD_TIMEOUT_SECONDS,
                 kind="video",
             )
-        except OpenRouterError as exc:
+        except OpenRouterVideoSubmittedError:
+            raise
+        except Exception as exc:
+            # message carries the exception type only — httpx embeds the
+            # (possibly credentialed) URL in str(exc)
             raise OpenRouterVideoSubmittedError(
-                f"video job {job_id} download failed: {exc}"
+                f"video job {job_id} download failed ({type(exc).__name__})"
             ) from exc
+        if not video_bytes:
+            # empty media would look like "worker returned nothing" to the
+            # runner and trigger a billable resubmission
+            raise OpenRouterVideoSubmittedError(f"video job {job_id} download returned no data")
 
         return {
             "id": job_id,

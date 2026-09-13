@@ -14,6 +14,7 @@ models:
     max_tokens: 131072                      # optional; generation cap (default 8192)
     retry_limit: 2                          # optional; worker retries (default 2)
     price_per_image: 0.0                    # optional; USD per image for image tasks
+    price_per_video_second: 0.0             # optional; USD per second for video tasks
     metadata:                               # optional free-form map
       provider: openrouter                  # openrouter (default) | openai-compatible
       base_url: https://api.together.xyz/v1 # required for openai-compatible
@@ -35,6 +36,7 @@ models:
 | `max_tokens` | int | 8192 | Max output tokens per call |
 | `retry_limit` | int | 2 | Worker retry attempts; overridable per run with `--retry-limit` |
 | `price_per_image` | float | 0.0 | Fallback price when image usage reports no cost |
+| `price_per_video_second` | float | 0.0 | Base fallback price per generated second; `metadata.video_pricing` refines it per resolution/audio, and the video job's `usage.cost` wins when reported |
 | `metadata` | map | `{}` | Provider + capability keys below |
 
 ## `metadata` keys
@@ -44,13 +46,18 @@ models:
 | `provider` | str | `openrouter` (default) or `openai-compatible`; see [providers.md](providers.md) |
 | `base_url` | str | API base for `openai-compatible` providers |
 | `api_key_env` | str | Env var holding the API key (`OPENROUTER_API_KEY` / `OPENAI_API_KEY` defaults) |
-| `modalities` | list[str] | `text`, `image` — `grid` filters workers by task type |
+| `modalities` | list[str] | `text`, `image`, `video` — `grid` filters workers by task type |
+| `video_pricing` | map | Per-second fallback rates keyed `"<resolution>:<audio\|silent>"`, `"*"` allowed for either half (e.g. `"*:audio"`); unmatched combinations use `price_per_video_second` |
 | `vision` | bool | Marks a judge as able to score image artifacts |
 
 ## Notes
 
 - **Cost accounting**: prices are per-million tokens; the runner derives
   per-token cost and falls back to `price_per_image` for image calls without
-  token usage.
+  token usage. Video calls prefer the completed job's `usage.cost` and fall
+  back to `duration × rate`, where the rate comes from `metadata.video_pricing`
+  for the requested resolution/audio combination, else `price_per_video_second`.
+  Video prices genuinely differ by resolution and audio, so a single base rate
+  understates premium requests.
 - **Unknown slugs** passed on the CLI get ad-hoc configs with cheap default
   pricing — put real prices in `models/*.yaml` for accurate cost reports.

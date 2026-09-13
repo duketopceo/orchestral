@@ -11,10 +11,20 @@ from orchestral.reporter import generate_gallery
 from orchestral.storage import RunMeta
 
 
-def _run(runs_dir: Path, run_id: str, *, passes: bool = True, shot: bool = False, png_artifact: bool = False) -> RunMeta:
+def _run(
+    runs_dir: Path,
+    run_id: str,
+    *,
+    passes: bool = True,
+    shot: bool = False,
+    png_artifact: bool = False,
+    mp4_artifact: bool = False,
+) -> RunMeta:
     run_dir = runs_dir / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
-    if png_artifact:
+    if mp4_artifact:
+        (run_dir / "artifact.mp4").write_bytes(b"\x00\x00\x00\x18ftypmp42fake")
+    elif png_artifact:
         (run_dir / "artifact.png").write_bytes(b"\x89PNG\r\n\x1a\nfake")
     else:
         (run_dir / "artifact.html").write_text("<html><body><h1>demo</h1></body></html>")
@@ -67,6 +77,15 @@ class TestGallery(unittest.TestCase):
             reports.mkdir()
             page = generate_gallery([_run(base, "r1", png_artifact=True)], reports)
             self.assertIn("shots/r1-artifact.png", page)
+
+    def test_mp4_artifact_shown_as_video(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            reports = base / "reports"
+            reports.mkdir()
+            page = generate_gallery([_run(base, "r1", mp4_artifact=True)], reports)
+            self.assertIn("<video class='thumb' src='shots/r1-artifact.mp4'", page)
+            self.assertTrue((reports / "shots" / "r1-artifact.mp4").exists())
 
     def test_empty_store(self):
         with tempfile.TemporaryDirectory() as tmp:

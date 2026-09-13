@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from orchestral.config import ModelConfig, TaskSpec
-from orchestral.costs import compute_cost, compute_image_cost, token_usage_from_raw
+from orchestral.costs import compute_cost, compute_image_cost, compute_video_cost, token_usage_from_raw
 from orchestral.logger import EventLogger
 from orchestral.openrouter import OpenRouterClient
 
@@ -21,6 +21,12 @@ from orchestral.openrouter import OpenRouterClient
 TINY_PNG = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
 )
+
+# Minimal ISO-BMFF stub (ftyp + free box) used as the deterministic dry-run
+# video artifact — well-formed enough to pass mp4_signature, not playable.
+TINY_MP4 = b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom\x00\x00\x00\x08free"
+
+_VIDEO_OPTION_KEYS = ("duration", "resolution", "aspect_ratio", "generate_audio", "seed")
 
 PROMPTS_DIR = Path(__file__).resolve().parent.parent / "prompts"
 ORCHESTRATOR_DEFAULT_PROMPT = "You are an orchestrator. Produce a plan and subtasks for a worker to execute."
@@ -408,7 +414,100 @@ def delegate_image(
     }]
 
 
-def assemble_image(
+def delegate_video(
+    *,
+    logger: EventLogger,
+    step: int,
+    subtask: dict[str, Any],
+    task: TaskSpec,
+    worker: ModelConfig,
+    client: OpenRouterClient | None,
+    dry_run: bool,
+) -> tuple[dict[str, Any], bytes, list[dict[str, Any]]]:
+    """Generate one video for a subtask brief via the async Videos API.
+
+    Generation params (duration, resolution, aspect_ratio, generate_audio,
+    seed) come from `task.metadata`. Logged completion data is field-limited:
+    job id, usage, and byte counts only — never job/polling/content URLs.
+    """
+    prompt = subtask.get("prompt") or subtask.get("description") or str(subtask)
+    options = {k: task.metadata[k] for k in _VIDEO_OPTION_KEYS if k in task.metadata}
+    duration_s = options.get("duration")
+    resolution = options.get("resolution")
+    generate_audio = options.get("generate_audio")
+    if dry_run:
+        video_bytes = TINY_MP4
+        cost: dict[str, Any] = {
+            "phase": "delegate",
+            "model": worker.slug,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": compute_video_cost(
+                worker, duration_s=duration_s, resolution=resolution, generate_audio=generate_audio
+            ),
+        }
+        logger.log_llm_call(
+            phase="delegate",
+            step=step,
+            model=worker.slug,
+            role="worker",
+            messages=[{"role": "user", "content": prompt}],
+            completion={"video": "<dry-run mp4>", "bytes": len(video_bytes)},
+            reasoning=f"Generate video for subtask {subtask.get('id')} with {worker.slug}.",
+            input_tokens=0,
+            output_tokens=0,
+            cost_usd=cost["cost_usd"],
+            latency_ms=random.uniform(80, 1200),
+        )
+        return {"subtask_id": subtask.get("id"), "prompt": prompt}, video_bytes, [cost]
+
+    if client is None:
+        raise ValueError("OpenRouterClient is required for live runs")
+
+    completion = client.videos(model=worker.slug, prompt=prompt, **options)
+    video_bytes = completion["video_bytes"]
+    # whitelist scalar fields — `usage` is API-controlled data, and only
+    # cost/token scalars are meaningful for logging and accounting anyway
+    usage = {
+        k: v for k, v in (completion.get("usage") or {}).items()
+        if isinstance(v, (int, float, str, bool))
+    }
+    cost_usd = compute_video_cost(
+        worker,
+        api_cost=usage.get("cost"),
+        duration_s=duration_s,
+        resolution=resolution,
+        generate_audio=generate_audio,
+    )
+
+    logger.log_llm_call(
+        phase="delegate",
+        step=step,
+        model=worker.slug,
+        role="worker",
+        messages=[{"role": "user", "content": prompt}],
+        completion={
+            "video_bytes": len(video_bytes),
+            "usage": usage,
+            "id": completion.get("id"),
+        },
+        reasoning=f"Generate video for subtask {subtask.get('id')} with {worker.slug}.",
+        input_tokens=0,
+        output_tokens=0,
+        cost_usd=cost_usd,
+        latency_ms=completion["latency_ms"],
+    )
+    return {"subtask_id": subtask.get("id"), "prompt": prompt}, video_bytes, [{
+        "phase": "delegate",
+        "model": worker.slug,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cost_usd": cost_usd,
+        "usage": usage,
+    }]
+
+
+def assemble_media(
     *,
     logger: EventLogger,
     task: TaskSpec,
@@ -418,7 +517,7 @@ def assemble_image(
     client: OpenRouterClient | None,
     dry_run: bool,
 ) -> tuple[int, list[dict[str, Any]]]:
-    """Orchestrator picks the winning worker image by subtask index."""
+    """Orchestrator picks the winning worker artifact by subtask index."""
     content, cost = _llm_call(
         logger=logger,
         phase="assemble",
@@ -433,7 +532,7 @@ def assemble_image(
             ],
             "task_type": task.type,
         },
-        reasoning="Select the subtask index whose generated image best satisfies the task.",
+        reasoning=f"Select the subtask index whose generated {task.type} best satisfies the task.",
         client=client,
         dry_run=dry_run,
         expect_json=True,

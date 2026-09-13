@@ -3,9 +3,10 @@
 #   base_url: API base URL for openai-compatible providers
 #   api_key_env: env var holding the API key (default OPENROUTER_API_KEY /
 #                OPENAI_API_KEY by provider)
-#   modalities: ["text", "image"] — which task types the model can produce
+#   modalities: ["text", "image", "video"] — which task types the model can produce
 #   vision: true — model can judge image artifacts
-# Non-OpenRouter providers are chat-only; image tasks require OpenRouter.
+# price_per_video_second bills video tasks when the API reports no usage.cost.
+# Non-OpenRouter providers are chat-only; image and video tasks require OpenRouter.
 models:
   - slug: "~deepseek/deepseek-v4-flash-latest"
     name: "DeepSeek V4 Flash Latest"
@@ -147,6 +148,73 @@ models:
     price_per_image: 0.039
     metadata:
       modalities: [image]
+
+  # Video workers — slugs verified against GET /api/v1/videos/models.
+  # price_per_video_second is the no-audio fallback rate; the completed
+  # job's usage.cost is authoritative when the API reports it.
+  # Per-model constraints (durations/resolutions) are enforced upstream —
+  # a task whose metadata asks for an unsupported combination fails the job.
+  - slug: "google/veo-3.1"
+    name: "Veo 3.1"
+    role: worker
+    input_price_per_mtok: 0.0
+    output_price_per_mtok: 0.0
+    retry_limit: 1
+    price_per_video_second: 0.20  # base (no-audio) rate; option-specific below
+    metadata:
+      modalities: [video]
+      durations: [4, 6, 8]
+      resolutions: ["720p", "1080p", "4K"]
+      aspect_ratios: ["16:9", "9:16"]
+      video_pricing:              # verified pricing_skus
+        "*:silent": 0.20
+        "*:audio": 0.40
+        "4K:silent": 0.40
+        "4K:audio": 0.60
+
+  - slug: "google/veo-3.1-lite"
+    name: "Veo 3.1 Lite"
+    role: worker
+    input_price_per_mtok: 0.0
+    output_price_per_mtok: 0.0
+    retry_limit: 1
+    price_per_video_second: 0.05  # base (no-audio 1080p) rate; option-specific below
+    metadata:
+      modalities: [video]
+      durations: [4, 6, 8]
+      resolutions: ["720p", "1080p"]
+      aspect_ratios: ["16:9", "9:16"]
+      video_pricing:              # verified pricing_skus
+        "720p:silent": 0.03
+        "720p:audio": 0.05
+        "1080p:silent": 0.05
+        "1080p:audio": 0.08
+
+  - slug: "minimax/hailuo-3"
+    name: "Hailuo 3"
+    role: worker
+    input_price_per_mtok: 0.0
+    output_price_per_mtok: 0.0
+    retry_limit: 1
+    price_per_video_second: 0.13
+    metadata:
+      modalities: [video]
+      durations: [5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]  # no 4s — min is 5s
+      resolutions: ["2K"]
+      aspect_ratios: ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"]
+
+  - slug: "alibaba/wan-2.7"
+    name: "Wan 2.7"
+    role: worker
+    input_price_per_mtok: 0.0
+    output_price_per_mtok: 0.0
+    retry_limit: 1
+    price_per_video_second: 0.10
+    metadata:
+      modalities: [video]
+      durations: [2, 3, 4, 5, 6, 7, 8, 9, 10]
+      resolutions: ["720p", "1080p"]
+      aspect_ratios: ["16:9", "9:16", "1:1", "4:3", "3:4"]
 
   - slug: "qwen/qwen3-max"
     name: "Qwen 3 Max"

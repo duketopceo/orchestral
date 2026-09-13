@@ -44,6 +44,17 @@ def _slugs_from_arg(arg: str) -> list[str]:
     return [s.strip() for s in arg.split(",") if s.strip()]
 
 
+def _eligible_workers(pool: list[ModelConfig], task_type: str) -> list[ModelConfig]:
+    """Filter a worker pool to models that can produce the task's artifact.
+
+    Media tasks need a model declaring the modality; text tasks accept
+    multimodal or modality-free workers but not media-only ones.
+    """
+    if task_type in ("image", "video"):
+        return [m for m in pool if m.supports(task_type)]
+    return [m for m in pool if not m.metadata.get("modalities") or m.supports("text")]
+
+
 def _task_from_arg(task_id: str, tasks_dir: str = "tasks") -> Path:
     path = find_task(task_id, tasks_dir)
     if path is None:
@@ -151,12 +162,7 @@ def cmd_grid(args: argparse.Namespace) -> None:
 
     def _configured_workers() -> list[ModelConfig]:
         pool = [m for m in known.values() if m.role == "worker"]
-        if task.type == "image":
-            # only workers that can generate images
-            return [m for m in pool if m.supports("image")]
-        # image-only workers can't produce text artifacts; a multimodal worker
-        # (modalities includes text) or one with no modalities stays eligible
-        return [m for m in pool if not m.metadata.get("modalities") or m.supports("text")]
+        return _eligible_workers(pool, task.type)
 
     if args.orchestrators:
         orchestrators = [_model_from_arg(s, args.models_dir, known) for s in _slugs_from_arg(args.orchestrators)]

@@ -253,6 +253,8 @@ def _gallery_card(run: Any, shots_dir: Path) -> str:
         thumb = f"<iframe class='thumb' src='shots/{run.run_id}.html' sandbox loading='lazy'></iframe>"
     elif artifact and artifact.suffix == ".png" and _copy_for_gallery(artifact, shots_dir / f"{run.run_id}-artifact.png"):
         thumb = f"<img class='thumb' src='shots/{run.run_id}-artifact.png' loading='lazy' alt='artifact'>"
+    elif artifact and artifact.suffix == ".mp4" and _copy_for_gallery(artifact, shots_dir / f"{run.run_id}-artifact.mp4"):
+        thumb = f"<video class='thumb' src='shots/{run.run_id}-artifact.mp4' muted playsinline preload='metadata'></video>"
     else:
         thumb = "<div class='thumb'>no visual artifact</div>"
 

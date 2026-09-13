@@ -88,12 +88,14 @@ Global flags (before the subcommand): `--runs-dir`, `--tasks-dir`, `--models-dir
 
 ## Task formats
 
-Implemented task types: **HTML page generation** and **image generation**
-(OpenRouter Images API). Validation checks and the full schema are documented in
+Implemented task types: **HTML page generation**, **image generation**
+(OpenRouter Images API), and **video generation** (OpenRouter Videos API —
+submit/poll/download; `--judge` is skipped for video runs).
+Validation checks and the full schema are documented in
 [docs/task-spec.md](docs/task-spec.md); model config fields in
 [docs/model-config.md](docs/model-config.md).
 
-Planned task types: video generation, multi-file projects, API integrations.
+Planned task types: multi-file projects, API integrations.
 
 ## Structure
 

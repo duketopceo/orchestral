@@ -5,6 +5,7 @@ from __future__ import annotations
 import html as html_module
 import json
 import shutil
+import zipfile
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
@@ -76,7 +77,7 @@ def _run_card(run: Any, run_dir: Path) -> str:
         try:
             artifact = artifact_path.read_text(encoding="utf-8")
         except Exception:
-            artifact = f"<binary artifact: {artifact_path.name}>"
+            artifact = _binary_artifact_label(artifact_path)
 
     pass_label = str(meta.passes) if meta.passes is not None else "-"
 
@@ -242,6 +243,23 @@ def _copy_for_gallery(src: Path, dest: Path) -> bool:
         return False
 
 
+def _binary_artifact_label(artifact_path: Path) -> str:
+    """Describe a binary artifact — for a zip, list its members (names only)."""
+    if artifact_path.suffix == ".zip":
+        names = _zip_names(artifact_path)
+        if names:
+            return "archive members: " + ", ".join(_esc(n) for n in names)
+    return f"<binary artifact: {artifact_path.name}>"
+
+
+def _zip_names(path: Path) -> list[str]:
+    try:
+        with zipfile.ZipFile(path) as archive:
+            return sorted(i.filename for i in archive.infolist())
+    except (OSError, zipfile.BadZipFile):
+        return []
+
+
 def _gallery_card(run: Any, shots_dir: Path) -> str:
     run_dir = Path(run.run_dir)
     shot = run_dir / "screenshot.png"
@@ -255,6 +273,10 @@ def _gallery_card(run: Any, shots_dir: Path) -> str:
         thumb = f"<img class='thumb' src='shots/{run.run_id}-artifact.png' loading='lazy' alt='artifact'>"
     elif artifact and artifact.suffix == ".mp4" and _copy_for_gallery(artifact, shots_dir / f"{run.run_id}-artifact.mp4"):
         thumb = f"<video class='thumb' src='shots/{run.run_id}-artifact.mp4' muted playsinline preload='metadata'></video>"
+    elif artifact and artifact.suffix == ".zip" and _copy_for_gallery(artifact, shots_dir / f"{run.run_id}-artifact.zip"):
+        names = _zip_names(artifact)
+        listing = "<br>".join(_esc(n) for n in names) or "empty archive"
+        thumb = f"<div class='thumb'><a href='shots/{run.run_id}-artifact.zip'>{listing}</a></div>"
     else:
         thumb = "<div class='thumb'>no visual artifact</div>"
 

@@ -71,6 +71,7 @@ class TestImagesEndpoint(unittest.TestCase):
             "data": [{"url": "https://cdn.example.com/img.png"}],
         }))
         stream_resp = MagicMock()
+        stream_resp.is_redirect = False
         stream_resp.raise_for_status = MagicMock()
         stream_resp.iter_bytes = MagicMock(return_value=iter([PNG_BYTES]))
         client.client.stream = MagicMock(return_value=MagicMock(

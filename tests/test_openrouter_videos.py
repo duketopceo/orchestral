@@ -11,6 +11,8 @@ from orchestral.openrouter import (
     OpenRouterClient,
     OpenRouterError,
     OpenRouterVideoJobError,
+    OpenRouterVideoSubmittedError,
+    _is_private_host,
 )
 
 MP4_BYTES = b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 32
@@ -42,11 +44,39 @@ class _FakeStream:
     def __exit__(self, *args):
         return False
 
+    @property
+    def is_redirect(self) -> bool:
+        return False
+
     def raise_for_status(self) -> None:
         return None
 
     def iter_bytes(self):
         yield self._data
+
+
+class _FailingStream:
+    """Stream stub whose raise_for_status() fails with an HTTP error."""
+
+    def __init__(self, status: int):
+        self._status = status
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    @property
+    def is_redirect(self) -> bool:
+        return False
+
+    def raise_for_status(self) -> None:
+        request = httpx.Request("GET", "https://openrouter.ai/api/v1/videos/x/content")
+        raise httpx.HTTPStatusError(
+            f"error for url '{request.url}'", request=request,
+            response=httpx.Response(self._status, request=request),
+        )
 
 
 def _no_poll_delay():
@@ -98,6 +128,23 @@ class TestVideosEndpoint(unittest.TestCase):
         self.assertIn("Content policy violation", str(ctx.exception))
         self.assertEqual(client.client.post.call_count, 1)
 
+    def test_poll_exhaustion_raises_submitted_error(self):
+        client = _client()
+        client.client.post = MagicMock(return_value=_response(202, {
+            "id": "job-3b", "polling_url": "/videos/job-3b", "status": "pending",
+        }))
+        client.client.get = MagicMock(return_value=_response(
+            500, {"error": "boom"}, method="GET",
+            url="https://openrouter.ai/api/v1/videos/job-3b"))
+
+        with _no_poll_delay(), self.assertRaises(OpenRouterVideoSubmittedError) as ctx:
+            client.videos(model="vid/model", prompt="x")
+
+        self.assertEqual(client.client.post.call_count, 1)
+        # job id is safe to log; the poll URL is not
+        self.assertIn("job-3b", str(ctx.exception))
+        self.assertNotIn("http", str(ctx.exception))
+
     def test_poll_timeout_raises_retryable_error(self):
         client = _client()
         client.client.post = MagicMock(return_value=_response(202, {
@@ -113,6 +160,8 @@ class TestVideosEndpoint(unittest.TestCase):
             client.videos(model="vid/model", prompt="x")
 
         self.assertNotIsInstance(ctx.exception, OpenRouterVideoJobError)
+        # but still post-submission: the runner must not resubmit a paid job
+        self.assertIsInstance(ctx.exception, OpenRouterVideoSubmittedError)
 
     def test_missing_unsigned_urls_falls_back_to_content_endpoint(self):
         client = _client()
@@ -129,7 +178,27 @@ class TestVideosEndpoint(unittest.TestCase):
 
         self.assertEqual(out["video_bytes"], MP4_BYTES)
         stream_url = client.client.stream.call_args[0][1]
-        self.assertIn("/videos/job-4/content?index=0", stream_url)
+        # full equality: urljoin would drop the /api/v1 prefix
+        self.assertEqual(stream_url, "https://openrouter.ai/api/v1/videos/job-4/content?index=0")
+
+    def test_relative_polling_url_resolves_under_api_prefix(self):
+        client = _client()
+        client.client.post = MagicMock(return_value=_response(202, {
+            "id": "job-4b", "polling_url": "/videos/job-4b", "status": "pending",
+        }))
+        client.client.get = MagicMock(return_value=_response(200, {
+            "status": "completed",
+            "unsigned_urls": ["https://openrouter.ai/api/v1/videos/job-4b/content?index=0"],
+        }, method="GET", url="https://openrouter.ai/api/v1/videos/job-4b"))
+        client.client.stream = MagicMock(return_value=_FakeStream(MP4_BYTES))
+
+        with _no_poll_delay():
+            client.videos(model="vid/model", prompt="x")
+
+        self.assertEqual(
+            client.client.get.call_args[0][0],
+            "https://openrouter.ai/api/v1/videos/job-4b",
+        )
 
     def test_download_auth_only_on_api_host(self):
         client = _client()
@@ -239,10 +308,49 @@ class TestVideosEndpoint(unittest.TestCase):
         }))
         client.client.get = MagicMock()
 
-        with _no_poll_delay(), self.assertRaises(OpenRouterError):
+        with _no_poll_delay(), self.assertRaises(OpenRouterVideoSubmittedError) as ctx:
             client.videos(model="vid/model", prompt="x")
 
         client.client.get.assert_not_called()
+        # scheme://host only — never the full path/query
+        self.assertIn("169.254.169.254", str(ctx.exception))
+        self.assertNotIn("169.254.169.254/job-9", str(ctx.exception))
+
+    def test_download_http_error_message_omits_url(self):
+        client = _client()
+        client.client.post = MagicMock(return_value=_response(202, {
+            "id": "job-10", "polling_url": "/videos/job-10", "status": "pending",
+        }))
+        client.client.get = MagicMock(return_value=_response(200, {
+            "status": "completed",
+            "unsigned_urls": ["https://openrouter.ai/api/v1/videos/job-10/content?index=0&sig=SECRET"],
+        }, method="GET", url="https://openrouter.ai/api/v1/videos/job-10"))
+        client.client.stream = MagicMock(return_value=_FailingStream(403))
+
+        with _no_poll_delay(), self.assertRaises(OpenRouterVideoSubmittedError) as ctx:
+            client.videos(model="vid/model", prompt="x")
+
+        self.assertNotIn("SECRET", str(ctx.exception))
+        self.assertNotIn("sig=", str(ctx.exception))
+
+
+class TestPrivateHostCheck(unittest.TestCase):
+    def test_canonical_and_non_canonical_literals(self):
+        for host in (
+            "localhost", "localhost.", "127.0.0.1", "0.0.0.0", "10.1.2.3",
+            "192.168.1.1", "169.254.169.254", "::1",
+            "2130706433",      # decimal 127.0.0.1
+            "0x7f000001",      # hex 127.0.0.1
+            "0177.0.0.1",      # octal 127.0.0.1
+            "127.1",           # short form 127.0.0.1
+            "100.101.102.103", # CGNAT / tailnet space
+            "metadata.google.internal",
+        ):
+            self.assertTrue(_is_private_host(host), host)
+
+    def test_public_hosts_allowed(self):
+        for host in ("openrouter.ai", "cdn.example.com", "8.8.8.8"):
+            self.assertFalse(_is_private_host(host), host)
 
 
 if __name__ == "__main__":

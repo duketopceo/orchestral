@@ -10,7 +10,7 @@ from pathlib import Path
 from harness import _eligible_workers
 from orchestral.config import ModelConfig, TaskSpec, load_models
 from orchestral.costs import compute_video_cost
-from orchestral.openrouter import OpenRouterVideoJobError
+from orchestral.openrouter import OpenRouterVideoJobError, OpenRouterVideoSubmittedError
 from orchestral.planners import TINY_MP4
 from orchestral.runner import Runner
 
@@ -179,6 +179,19 @@ class TestVideoTaskRun(unittest.TestCase):
                     runs_dir=tmp, planner="raw",
                     clients={"orchestrator": client, "worker": client},
                 ).run(_task(), _cfg(slug="org/x", role="orchestrator"), worker)
+            self.assertEqual(client.video_calls, 1)
+
+    def test_post_submission_error_is_not_retried(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            err = OpenRouterVideoSubmittedError("polling failed after 4 errors")
+            client = _FakeClient(video_error=err)
+            worker = _cfg(slug="v/vid", retry_limit=3)
+            with self.assertRaises(OpenRouterVideoSubmittedError):
+                Runner(
+                    runs_dir=tmp, planner="raw",
+                    clients={"orchestrator": client, "worker": client},
+                ).run(_task(), _cfg(slug="org/x", role="orchestrator"), worker)
+            # one paid submission, never a resubmit
             self.assertEqual(client.video_calls, 1)
 
     def test_judge_skipped_for_video(self):

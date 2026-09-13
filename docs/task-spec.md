@@ -11,7 +11,7 @@ prompt: |                     # required; the task brief given to the orchestrat
 
 validation: [html]            # optional; see the check catalog below
 assets: []                    # optional; reserved for future file inputs
-metadata: {}                  # optional free-form map (unused by the harness today)
+metadata: {}                  # optional free-form map (video tasks read generation params here)
 ```
 
 ## Fields

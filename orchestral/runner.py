@@ -13,7 +13,7 @@ from orchestral.config import ModelConfig, TaskSpec
 from orchestral.costs import CostLedger
 from orchestral.judge import judge_artifact
 from orchestral.logger import EventLogger
-from orchestral.openrouter import OpenRouterVideoJobError
+from orchestral.openrouter import OpenRouterVideoSubmittedError
 from orchestral.planners import (
     assemble_ce,
     assemble_media,
@@ -226,9 +226,10 @@ class Runner:
                             reasoning=f"Worker call raised an exception on attempt {attempt + 1}.",
                             error=str(exc),
                         )
-                        # A terminal video-job failure can never succeed on
-                        # retry — resubmitting would just bill another job.
-                        if isinstance(exc, OpenRouterVideoJobError) or attempt + 1 >= attempts:
+                        # Any post-submission video failure (terminal status,
+                        # poll exhaustion, timeout, unsafe URL, download) is
+                        # unrecoverable by retry — resubmitting bills a new job.
+                        if isinstance(exc, OpenRouterVideoSubmittedError) or attempt + 1 >= attempts:
                             raise
                         continue
                     if (media_bytes if is_media else out.get("content")):

@@ -43,6 +43,18 @@ class Provider(Protocol):
         output_format: str = "png",
     ) -> dict[str, Any]: ...
 
+    def videos(
+        self,
+        *,
+        model: str,
+        prompt: str,
+        duration: float | None = None,
+        resolution: str | None = None,
+        aspect_ratio: str | None = None,
+        generate_audio: bool | None = None,
+        seed: int | None = None,
+    ) -> dict[str, Any]: ...
+
     def close(self) -> None: ...
 
 

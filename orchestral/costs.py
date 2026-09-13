@@ -138,7 +138,7 @@ def compute_image_cost(model_cfg: ModelConfig, usage: TokenUsage | None = None, 
 
 def compute_video_cost(
     model_cfg: ModelConfig,
-    api_cost: float | None = None,
+    api_cost: float | str | None = None,
     duration_s: float | None = None,
     n: int = 1,
 ) -> float:

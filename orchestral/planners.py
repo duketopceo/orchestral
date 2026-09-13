@@ -462,7 +462,12 @@ def delegate_video(
 
     completion = client.videos(model=worker.slug, prompt=prompt, **options)
     video_bytes = completion["video_bytes"]
-    usage = completion.get("usage") or {}
+    # whitelist scalar fields — `usage` is API-controlled data, and only
+    # cost/token scalars are meaningful for logging and accounting anyway
+    usage = {
+        k: v for k, v in (completion.get("usage") or {}).items()
+        if isinstance(v, (int, float, str, bool))
+    }
     cost_usd = compute_video_cost(worker, api_cost=usage.get("cost"), duration_s=duration_s)
 
     logger.log_llm_call(

@@ -27,6 +27,8 @@ grep -rniE "key|token|secret|/home/|/Users/" runs-pub/ | less
   (`https://user:pass@host`), internal hostnames (`.internal`, `.corp`, `.lan`,
   `.local`, `.home`, `.intranet`), emails, phone numbers, `/Users/…`,
   `/home/…`, `C:\Users\…` paths, and IPv4 addresses.
+- **Video runs**: `artifact.mp4`/`worker-*.mp4` copy verbatim; `events.jsonl`
+  records the prompt and job id but never the video payload or job URLs.
 - **Copies verbatim**: known binary artifacts (`.png`, `.mp4`, `.zip`, fonts,
   databases, or anything with NUL bytes).
 - **Copies only allowlisted names**: `run.json`, `events.jsonl`, `plan.json`,

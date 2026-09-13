@@ -9,9 +9,10 @@ from __future__ import annotations
 import base64
 import ipaddress
 import os
+import socket
 import time
 from typing import Any, Self
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urlparse
 
 import httpx
 
@@ -34,24 +35,32 @@ _MAX_VIDEO_BYTES = 100 * 1024 * 1024
 
 
 def _is_private_host(hostname: str) -> bool:
-    h = hostname.lower()
+    h = hostname.lower().rstrip(".")
     if h.endswith((".local", ".internal")):
         return True
-    # canonical and non-canonical IP literals (hex, decimal, octal, IPv6)
+    ip = _parse_ip_literal(h)
+    if ip is not None:
+        # is_global also rejects loopback, link-local, CGNAT (100.64/10),
+        # documentation, and benchmarking ranges — not just RFC1918
+        return not ip.is_global
+    return any(h == m or h.startswith(m) for m in _PRIVATE_HOST_MARKERS)
+
+
+def _parse_ip_literal(host: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    """Parse canonical and non-canonical IP literals without doing DNS.
+
+    `ipaddress` only accepts canonical forms; `socket.inet_aton` (pure parse,
+    no lookup) additionally catches decimal, hex, octal, and short dotted
+    IPv4 spellings that still resolve to loopback/private space.
+    """
     try:
-        ip = ipaddress.ip_address(h)
+        return ipaddress.ip_address(host)
     except ValueError:
         pass
-    else:
-        return ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_reserved
-    if h.startswith("172."):
-        try:
-            second = int(h.split(".")[1])
-            if 16 <= second <= 31:
-                return True
-        except (ValueError, IndexError):
-            pass
-    return any(h == m or h.startswith(m) for m in _PRIVATE_HOST_MARKERS)
+    try:
+        return ipaddress.ip_address(socket.inet_aton(host))
+    except (OSError, ValueError):
+        return None
 
 
 class OpenRouterClient:
@@ -84,8 +93,9 @@ class OpenRouterClient:
         provider-controlled or off-origin host.
         """
         if url is not None:
+            parsed = urlparse(url)
             api_host = urlparse(str(self.client.base_url)).hostname
-            if urlparse(url).hostname != api_host:
+            if parsed.scheme != "https" or parsed.hostname != api_host:
                 return {}
         return {
             "Authorization": f"Bearer {self.api_key}",
@@ -241,10 +251,17 @@ class OpenRouterClient:
         job_id = data.get("id")
         if not job_id:
             raise OpenRouterError("Malformed videos response: missing job id")
-        polling_url = urljoin(str(self.client.base_url), data.get("polling_url") or f"/videos/{job_id}")
-        poll_host = urlparse(polling_url).hostname or ""
-        if urlparse(polling_url).scheme != "https" or _is_private_host(poll_host):
-            raise OpenRouterError(f"Refusing to poll unsafe video job URL: {polling_url}")
+
+        # Everything below this point happens with a billable job already
+        # submitted — failures raise OpenRouterVideoSubmittedError so the
+        # runner's retry loop never resubmits a fresh paid generation.
+        polling_url = self._api_url(data.get("polling_url") or f"/videos/{job_id}")
+        parsed_poll = urlparse(polling_url)
+        if parsed_poll.scheme != "https" or _is_private_host(parsed_poll.hostname or ""):
+            raise OpenRouterVideoSubmittedError(
+                f"video job {job_id}: refusing unsafe polling URL "
+                f"{parsed_poll.scheme}://{parsed_poll.hostname}"
+            )
 
         deadline = start + VIDEO_MAX_WAIT_SECONDS
         poll_errors = 0
@@ -268,18 +285,22 @@ class OpenRouterClient:
             except (ValueError, _PollingRedirectError) as exc:
                 poll_errors += 1
                 if poll_errors > VIDEO_MAX_POLL_ERRORS:
-                    raise OpenRouterError(
+                    raise OpenRouterVideoSubmittedError(
                         f"video job {job_id} polling failed after "
-                        f"{poll_errors} consecutive errors: {exc}"
+                        f"{poll_errors} consecutive errors ({type(exc).__name__})"
                     ) from exc
             except (httpx.HTTPStatusError, httpx.TimeoutException, httpx.NetworkError) as exc:
                 if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code in NON_RETRYABLE_STATUSES:
-                    raise OpenRouterError(
-                        f"OpenRouter poll error {exc.response.status_code}: {exc.response.text}"
+                    raise OpenRouterVideoSubmittedError(
+                        f"video job {job_id} polling rejected with HTTP "
+                        f"{exc.response.status_code}"
                     ) from exc
                 poll_errors += 1
                 if poll_errors > VIDEO_MAX_POLL_ERRORS:
-                    raise OpenRouterError(f"video job {job_id} polling failed: {exc}") from exc
+                    raise OpenRouterVideoSubmittedError(
+                        f"video job {job_id} polling failed after "
+                        f"{poll_errors} consecutive errors ({type(exc).__name__})"
+                    ) from exc
             else:
                 status = data.get("status") if isinstance(data, dict) else None
                 if status in _VIDEO_TERMINAL_STATUSES:
@@ -291,20 +312,28 @@ class OpenRouterClient:
                 if status == "completed":
                     break
             if time.time() >= deadline:
-                raise OpenRouterError(
+                raise OpenRouterVideoSubmittedError(
                     f"video job {job_id} did not complete within "
                     f"{VIDEO_MAX_WAIT_SECONDS}s (last status: {status!r})"
                 )
 
-        content_urls = data.get("unsigned_urls") or []
-        url = urljoin(str(self.client.base_url), str(content_urls[0] if content_urls else f"/videos/{job_id}/content?index=0"))
-        video_bytes = self._download(
-            url,
-            max_bytes=_MAX_VIDEO_BYTES,
-            headers=self._headers(url),
-            timeout=VIDEO_DOWNLOAD_TIMEOUT_SECONDS,
-            kind="video",
-        )
+        content_urls = data.get("unsigned_urls")
+        if not isinstance(content_urls, list):
+            content_urls = []
+        ref = str(content_urls[0]) if content_urls else f"/videos/{job_id}/content?index=0"
+        url = self._api_url(ref)
+        try:
+            video_bytes = self._download(
+                url,
+                max_bytes=_MAX_VIDEO_BYTES,
+                headers=self._headers(url),
+                timeout=VIDEO_DOWNLOAD_TIMEOUT_SECONDS,
+                kind="video",
+            )
+        except OpenRouterError as exc:
+            raise OpenRouterVideoSubmittedError(
+                f"video job {job_id} download failed: {exc}"
+            ) from exc
 
         return {
             "id": job_id,
@@ -314,6 +343,17 @@ class OpenRouterClient:
             "latency_ms": (time.time() - start) * 1000,
             "raw_response": data,
         }
+
+    def _api_url(self, ref: str) -> str:
+        """Resolve an API-returned URL reference against the configured base.
+
+        Absolute URLs are used as-is. Relative refs join onto the full base
+        path — `urljoin` can't be used because it drops the `/api/v1` prefix
+        for root-relative refs like `/videos/x`.
+        """
+        if ref.startswith(("https://", "http://")):
+            return ref
+        return f"{str(self.client.base_url).rstrip('/')}/{ref.lstrip('/')}"
 
     def _download(
         self,
@@ -336,7 +376,18 @@ class OpenRouterClient:
         with self.client.stream(
             "GET", url, headers=headers or {}, follow_redirects=False, timeout=timeout
         ) as response:
-            response.raise_for_status()
+            if response.is_redirect:
+                raise OpenRouterError(
+                    f"Refusing redirected {kind} download from {parsed.scheme}://{host}"
+                )
+            try:
+                response.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                # httpx's str(exc) embeds the request URL, which for media
+                # downloads may be a credentialed CDN URL — keep it out
+                raise OpenRouterError(
+                    f"{kind.capitalize()} download failed: HTTP {exc.response.status_code}"
+                ) from exc
             chunks = []
             size = 0
             for chunk in response.iter_bytes():
@@ -365,7 +416,16 @@ class _PollingRedirectError(Exception):
     transient poll error so it never triggers a fresh billable job."""
 
 
-class OpenRouterVideoJobError(OpenRouterError):
+class OpenRouterVideoSubmittedError(OpenRouterError):
+    """A video job failed after submission — the job was already billable.
+
+    The runner's retry loop must never retry this error: each retry would
+    submit a new billable generation job. Raised for every post-submit
+    failure (poll exhaustion, timeout, unsafe URLs, download errors).
+    """
+
+
+class OpenRouterVideoJobError(OpenRouterVideoSubmittedError):
     """A video generation job reached a terminal failure status.
 
     The runner's retry loop must never retry this error: each retry would

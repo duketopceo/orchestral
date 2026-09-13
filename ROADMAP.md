@@ -34,7 +34,7 @@
 - [x] Orchestrator prompt ablation — `prompts/orchestrator-*.md` variants + `--prompt-variant`; sweep via `ablate --sweep prompt_variant=terse,detailed`
 - [x] Cost-per-quality scatter plot — inline SVG on `dashboard.html` (zero-dep instead of matplotlib)
 - [x] Historical model performance tracking — `harness.py history` + per-role tables on the dashboard
-- [ ] Video generation task type (when OpenRouter supports it reliably)
+- [x] Video generation task type (OpenRouter async Videos API; `artifact.mp4`, `mp4_signature` validation, per-second pricing; judging deferred)
 
 **Goal:** move from "look at the pages" to "rank the pairings automatically."
 

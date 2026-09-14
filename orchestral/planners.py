@@ -571,7 +571,10 @@ def delegate_multi(
     reach the event log. Only paths, sizes, and hashes are traced.
     """
     prompt = subtask.get("prompt") or subtask.get("description") or str(subtask)
-    declared = expected_paths(task.metadata) or ["index.html", "style.css"]
+    declared = expected_paths(task.metadata)
+    if not declared:
+        # code tasks default to the declared module; multi-file to a site
+        declared = [str(task.metadata.get("module") or "solution.py")] if task.type == "code" else ["index.html", "style.css"]
     if dry_run:
         files = {path: _fake_file_body(path) for path in declared}
         cost = _fake_cost(worker, {"subtask": subtask}, {"paths": sorted(files)})
@@ -847,6 +850,8 @@ def _extract_html(content: str) -> str:
 
 def _fake_file_body(path: str) -> str:
     """Deterministic dry-run file body — shaped by extension, never real code."""
+    if path.endswith(".py"):
+        return '"""orchestral dry-run stub."""\n'
     if path.endswith(".css"):
         return "body { margin: 0; font-family: system-ui; }\n"
     if path.endswith(".js"):

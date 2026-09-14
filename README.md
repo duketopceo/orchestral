@@ -125,9 +125,12 @@ Global flags (before the subcommand): `--runs-dir`, `--tasks-dir`, `--models-dir
 
 Implemented task types: **HTML page generation**, **image generation**
 (OpenRouter Images API), **video generation** (OpenRouter Videos API —
-submit/poll/download; `--judge` is skipped for video runs), and **multi-file
+submit/poll/download; `--judge` is skipped for video runs), **multi-file
 projects** (workers return a JSON file set, merged into a reproducible
-`artifact.zip`; archives are never published by `scrub`).
+`artifact.zip`; archives are never published by `scrub`), and **code tasks**
+(same file-set contract; hidden `metadata.tests` run via `python -Es -m
+unittest` in a subprocess — score = fraction of tests passed, replicates
+give pass@k).
 Validation checks and the full schema are documented in
 [docs/task-spec.md](docs/task-spec.md); model config fields in
 [docs/model-config.md](docs/model-config.md).

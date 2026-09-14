@@ -647,16 +647,9 @@ class Runner:
                     meta.failure_reason = "cancelled"
                     self.store.update_meta(meta)
             with contextlib.suppress(Exception):
-                logger.log(
-                    phase="end",
-                    step=-1,
-                    event_type="run_cancelled",
-                    model="",
-                    role="harness",
-                    input_data={},
-                    output_data={"status": "cancelled"},
-                    reasoning="Run cancelled by user.",
-                )
+                logger.lifecycle("run.cancelled", phase="end", status="cancelled")
+            with contextlib.suppress(Exception):
+                finalize_manifest(run_dir, status="cancelled", failure_reason="cancelled")
             _write_metrics(run_dir)
             return self.store.get_run(run_id) or meta or RunMeta(
                 run_id=run_id, orchestrator=orchestrator.slug, task_id=task.id,

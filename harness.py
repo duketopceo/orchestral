@@ -629,7 +629,12 @@ def cmd_dashboard(args: argparse.Namespace) -> None:
 
 
 def cmd_tui(args: argparse.Namespace) -> None:
-    run_tui(runs_dir=args.runs_dir, refresh=args.refresh)
+    run_tui(
+        runs_dir=args.runs_dir,
+        tasks_dir=args.tasks_dir,
+        models_dir=args.models_dir,
+        refresh=args.refresh,
+    )
 
 
 def cmd_shots(args: argparse.Namespace) -> None:

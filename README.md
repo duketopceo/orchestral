@@ -80,13 +80,27 @@ orchestral dashboard               # reports/dashboard.html
 | `history` | Per-model aggregates across all stored runs |
 | `report` | List/compare runs (`--pairings`, `--html`, `--sort`, `--json`) |
 | `dashboard` | Static HTML dashboard with cost-vs-quality scatter |
-| `tui` | Live terminal dashboard (`--refresh`) |
 | `shots` | Screenshot stored HTML artifacts (needs `[shots]` extra) |
+| `tui` | Interactive terminal UI — browse/inspect/launch runs (needs `[tui]` extra) |
 | `scrub` | Redact secrets/paths from `runs/` into `runs-pub/` + `manifest.json` |
 
 Shared run flags (on `run`, `grid`, `batch`, `ablate`): `--planner raw|ce-plan`,
 `--judge <slug>`, `--no-judge-cache`, `--retry-limit N`, `--prompt-variant NAME`,
+`--replicates N`, `--group NAME`, `--replicate I`, `--seed S`, `--verbose`,
 `--dry-run`, `--json`.
+
+`--replicates N` runs each cell N times under one `run_group` (auto-named when
+`--group` is absent); replicate `i` records seed `S+i-1`. `report --groups`
+aggregates cells with pass rate, score/cost mean±sd, p50/p95 latency, and
+successes-per-dollar.
+
+### TUI
+
+`pip install 'orchestral[tui]'`, then `orchestral tui`. Browse the run index,
+`/` to filter, `Enter` for the per-run detail (events, per-call index,
+metrics, report, plan), `g` for the replicate-group variance table, `n` to
+launch a run or replicate batch on a background worker, `x` to cancel it
+(runs mark `status=cancelled` between subtasks), `?` for the key map.
 
 Global flags (before the subcommand): `--runs-dir`, `--tasks-dir`, `--models-dir`.
 

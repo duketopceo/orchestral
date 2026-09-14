@@ -75,6 +75,15 @@ metadata: {}                  # optional free-form map (video tasks read generat
   containment, not a security sandbox: generated code still runs with your OS
   privileges, so only pair trusted models with this task type. Dry runs skip
   execution and compile-check `.py` files instead (`executed: false`).
+- **`constraint`** — workers produce candidate text per subtask; the
+  orchestrator picks the best (same selection flow as `image`/`video`); the
+  chosen text is stored as `artifact.txt` and checked against hard
+  constraints: size budgets, required tokens, forbidden tokens, and regex
+  patterns — all deterministic, no judge. The constraint checks live in the
+  generic validator and are composable onto any text task. Optional
+  `metadata.reference_text` is a compliant example: dry runs feed it through
+  the pipeline so `--dry-run` proves the spec is self-consistent. See
+  `tasks/constraint-product-blurb.yaml`.
 
 ## Validation checks
 
@@ -120,6 +129,16 @@ metadata: {}                  # optional free-form map (video tasks read generat
 | `expected_paths` | `metadata.module` (and any declared `expected_paths`) are present non-empty |
 | `compiles` | (dry-run only) every `.py` file compiles |
 | `tests_pass` | `python -Es -m unittest task_tests` exits 0 with ≥1 test run |
+Constraint checks — for `constraint` tasks, or composable onto any text task.
+Each fails closed when requested but its metadata key is missing:
+
+| Check | Passes when | Metadata |
+|---|---|---|
+| `within_budget` | every declared bound holds | `min_chars`, `max_chars`, `min_words`, `max_words` |
+| `has_required` | every token appears (case-insensitive) | `required: [...]` |
+| `no_forbidden` | no token appears (case-insensitive) | `forbidden: [...]` |
+| `matches_pattern` | the regex matches | `pattern` |
+| `no_pattern` | the regex does not match | `forbidden_pattern` |
 
 Unknown check names fail the run — including in a list that also contains known
 checks.

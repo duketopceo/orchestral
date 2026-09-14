@@ -1,0 +1,28 @@
+id: constraint-product-blurb
+type: constraint
+prompt: |
+  Write a marketing blurb for a budget standing desk called "UpRight Basic".
+  Hard constraints — every one is checked:
+  * Between 30 and 60 words.
+  * Must mention "UpRight Basic" and "$249".
+  * Must NOT use the words "best", "amazing", or "revolutionary", and must
+    not contain any exclamation marks.
+  * Must include at least one digit-only price like $249.
+validation:
+  - non_empty
+  - within_budget
+  - has_required
+  - no_forbidden
+  - no_pattern
+assets: []
+metadata:
+  difficulty: easy
+  min_words: 30
+  max_words: 60
+  required: ["UpRight Basic", "$249"]
+  forbidden: ["best", "amazing", "revolutionary"]
+  forbidden_pattern: "!+"
+  reference_text: >
+    The UpRight Basic is a sturdy standing desk priced at $249. It adjusts
+    smoothly, holds a full laptop-and-monitor setup, and assembles in under
+    an hour. For a home office on a budget, it covers the fundamentals well.

@@ -135,10 +135,13 @@ Implemented task types: **HTML page generation**, **image generation**
 (OpenRouter Images API), **video generation** (OpenRouter Videos API —
 submit/poll/download; `--judge` is skipped for video runs), **multi-file
 projects** (workers return a JSON file set, merged into a reproducible
-`artifact.zip`; archives are never published by `scrub`), and **code tasks**
+`artifact.zip`; archives are never published by `scrub`), **code tasks**
 (same file-set contract; hidden `metadata.tests` run via `python -Es -m
 unittest` in a subprocess — score = fraction of tests passed, replicates
-give pass@k).
+give pass@k), and **constraint tasks** (workers produce text under hard
+constraints — word/char budgets, required and forbidden tokens, regex
+patterns — the orchestrator picks the best candidate, deterministic
+validators check every constraint).
 Validation checks and the full schema are documented in
 [docs/task-spec.md](docs/task-spec.md); model config fields in
 [docs/model-config.md](docs/model-config.md).

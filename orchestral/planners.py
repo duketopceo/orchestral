@@ -716,6 +716,58 @@ def assemble_media(
     return position, [cost]
 
 
+def delegate_constraint(
+    *,
+    logger: EventLogger,
+    step: int,
+    subtask: dict[str, Any],
+    task: TaskSpec,
+    worker: ModelConfig,
+    client: OpenRouterClient | None,
+    dry_run: bool,
+    attempt: int | None = None,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Produce one candidate constrained text for a subtask.
+
+    Dry runs return `metadata.reference_text` when present — a compliant
+    example that proves the task's constraints are self-consistent — and
+    generic fake content otherwise.
+    """
+    if dry_run and task.metadata.get("reference_text"):
+        reference = str(task.metadata["reference_text"])
+        cost = _fake_cost(worker, {"subtask": subtask}, {"chars": len(reference)})
+        cost["phase"] = "delegate"
+        logger.log_llm_call(
+            phase="delegate",
+            step=step,
+            model=worker.slug,
+            role="worker",
+            messages=[{"role": "user", "content": str(subtask.get("description", ""))}],
+            completion={"chars": len(reference)},
+            reasoning=f"Write constrained text for subtask {subtask.get('id')} with {worker.slug}.",
+            input_tokens=cost["input_tokens"],
+            output_tokens=cost["output_tokens"],
+            cost_usd=cost["cost_usd"],
+            latency_ms=random.uniform(80, 1200),
+            pricing_source="none",
+            attempt=attempt,
+        )
+        return {
+            "subtask_id": subtask.get("id"),
+            "prompt": subtask.get("prompt") or subtask.get("description"),
+            "content": reference,
+        }, [cost]
+    return delegate(
+        logger=logger,
+        step=step,
+        subtask=subtask,
+        worker=worker,
+        client=client,
+        dry_run=dry_run,
+        attempt=attempt,
+    )
+
+
 def plan_ce(
     *,
     logger: EventLogger,

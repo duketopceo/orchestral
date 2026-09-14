@@ -322,6 +322,7 @@ class RunStore:
         orchestrator: str | None = None,
         worker: str | None = None,
         task_id: str | None = None,
+        run_group: str | None = None,
         order_by: str = "started_at",
         descending: bool = True,
         limit: int | None = None,
@@ -337,6 +338,9 @@ class RunStore:
         if task_id:
             query += " AND task_id = ?"
             params.append(task_id)
+        if run_group:
+            query += " AND run_group = ?"
+            params.append(run_group)
         if order_by not in _SORTABLE_COLUMNS:
             order_by = "started_at"
         query += f" ORDER BY {order_by} {'DESC' if descending else 'ASC'}"

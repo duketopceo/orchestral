@@ -9,6 +9,7 @@ import os
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import replace
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +19,7 @@ from orchestral.privacy import scrub_all
 from orchestral.providers import provider_key
 from orchestral.reporter import generate_dashboard, generate_html_report, model_history
 from orchestral.runner import Runner
+from orchestral.stats import aggregate
 from orchestral.storage import RunStore
 from orchestral.tui import run_tui
 
@@ -89,6 +91,13 @@ def _run_preamble(args: argparse.Namespace) -> tuple[RunStore, dict[str, ModelCo
     if getattr(args, "retry_limit", None) is not None and not 0 <= args.retry_limit <= 10:
         print("--retry-limit must be between 0 and 10", file=sys.stderr)
         sys.exit(1)
+    replicates = getattr(args, "replicates", None)
+    if replicates is not None and replicates < 1:
+        print("--replicates must be at least 1", file=sys.stderr)
+        sys.exit(1)
+    if replicates and replicates > 1 and getattr(args, "replicate", None) is not None:
+        print("--replicate and --replicates are mutually exclusive", file=sys.stderr)
+        sys.exit(1)
     _check_prompt_variant(args)
     store = RunStore(args.runs_dir)
     known = _model_map(args.models_dir)
@@ -137,6 +146,27 @@ def _apply_retry_limit(worker: ModelConfig, args: argparse.Namespace) -> ModelCo
     return worker
 
 
+def _resolve_replicates(args: argparse.Namespace) -> tuple[str | None, int]:
+    """Return (run_group, count). Auto-names a group when N > 1 and none
+    was given so every replicate of the invocation shares a label."""
+    n = getattr(args, "replicates", None) or 1  # preamble already rejects n < 1
+    group = getattr(args, "group", None)
+    if n > 1 and not group:
+        group = f"rep-{datetime.now(UTC):%Y%m%d-%H%M%S}"
+    return group, n
+
+
+def _rep_kwargs(args: argparse.Namespace, store: RunStore, group: str | None, i: int | None) -> dict[str, Any]:
+    """Runner kwargs for replicate `i` (None when not replicating). When
+    --seed S is set, replicate i records seed S+i-1 — varying seeds measure
+    variance; identical-seed reruns need separate invocations."""
+    kwargs = _runner_kwargs(args, store, run_group=group, replicate=i)
+    seed = getattr(args, "seed", None)
+    if seed is not None and i is not None:
+        kwargs["seed"] = seed + i - 1
+    return kwargs
+
+
 def cmd_init(args: argparse.Namespace) -> None:
     store = RunStore(args.runs_dir)
     print(f"Run store ready at {store.root}")
@@ -150,14 +180,30 @@ def cmd_run(args: argparse.Namespace) -> None:
     worker = _apply_retry_limit(replace(_model_from_arg(args.worker, args.models_dir, known), role="worker"), args)
     _check_provider_envs(args, orchestrator, worker, judge)
 
-    meta = Runner(**_runner_kwargs(args, store)).run(task, orchestrator, worker, judge)
+    group, n_reps = _resolve_replicates(args)
+    metas = [
+        Runner(**_rep_kwargs(args, store, group, i if n_reps > 1 else getattr(args, "replicate", None))).run(task, orchestrator, worker, judge)
+        for i in range(1, n_reps + 1)
+    ]
     if args.json:
-        print(json.dumps(meta.to_dict(), indent=2, default=str))
+        out: Any = [m.to_dict() for m in metas] if n_reps > 1 else metas[0].to_dict()
+        print(json.dumps(out, indent=2, default=str))
         return
-    print(f"Run {meta.run_id} {meta.status}")
-    print(f"  Directory: {meta.run_dir}")
-    print(f"  Cost: ${meta.total_cost_usd:.6f} | Tokens: {meta.total_input_tokens + meta.total_output_tokens} | Latency: {meta.latency_ms:.0f}ms")
-    print(f"  Passes: {meta.passes} | Score: {meta.score} | Failure: {meta.failure_reason or '-'}")
+    for meta in metas:
+        label = f"Run {meta.run_id} {meta.status}"
+        if n_reps > 1:
+            label += f"  [rep {meta.replicate}/{n_reps}]"
+        print(label)
+        print(f"  Directory: {meta.run_dir}")
+        print(f"  Cost: ${meta.total_cost_usd:.6f} | Tokens: {meta.total_input_tokens + meta.total_output_tokens} | Latency: {meta.latency_ms:.0f}ms")
+        print(f"  Passes: {meta.passes} | Score: {meta.score} | Failure: {meta.failure_reason or '-'}")
+    if n_reps > 1:
+        cell = aggregate(metas)[0]
+        score = f"{cell.score_mean:.2f}±{cell.score_sd:.2f}" if cell.score_mean is not None else "-"
+        print(f"\nReplicate summary ({group}, n={cell.runs})")
+        print(f"  pass rate: {cell.pass_rate:.0%} | score: {score} | cost: ${cell.cost_mean:.6f}±${cell.cost_sd:.6f}")
+        if cell.failures:
+            print(f"  failures: {cell.failures}")
 
 
 def cmd_grid(args: argparse.Namespace) -> None:
@@ -182,16 +228,19 @@ def cmd_grid(args: argparse.Namespace) -> None:
     _check_provider_envs(args, *orchestrators, *workers, judge)
     results: list[dict[str, Any]] = []
 
-    pairings = [(o, w) for o in orchestrators for w in workers]
+    group, n_reps = _resolve_replicates(args)
+    cells = [(o, w, i) for o in orchestrators for w in workers for i in range(1, n_reps + 1)]
 
-    def _one(orchestrator: ModelConfig, worker: ModelConfig) -> dict[str, Any]:
+    def _one(orchestrator: ModelConfig, worker: ModelConfig, rep: int) -> dict[str, Any]:
         # copy per pairing — ModelConfig objects from `known` are shared across threads
         orchestrator = replace(orchestrator, role="orchestrator")
         worker = _apply_retry_limit(replace(worker, role="worker"), args)
-        meta = Runner(**_runner_kwargs(args, store)).run(task, orchestrator, worker, judge)
+        kwargs = _rep_kwargs(args, store, group, rep if n_reps > 1 else getattr(args, "replicate", None))
+        meta = Runner(**kwargs).run(task, orchestrator, worker, judge)
         return {
             "orchestrator": orchestrator.slug,
             "worker": worker.slug,
+            "replicate": rep if n_reps > 1 else meta.replicate,
             "passes": meta.passes,
             "score": meta.score,
             "cost": meta.total_cost_usd,
@@ -202,28 +251,35 @@ def cmd_grid(args: argparse.Namespace) -> None:
     failures = 0
     if args.jobs > 1:
         with ThreadPoolExecutor(max_workers=args.jobs) as pool:
-            futures = {pool.submit(_one, o, w): (o.slug, w.slug) for o, w in pairings}
+            futures = {pool.submit(_one, o, w, i): (o.slug, w.slug, i) for o, w, i in cells}
             for fut in as_completed(futures):
-                o_slug, w_slug = futures[fut]
+                o_slug, w_slug, i = futures[fut]
                 try:
                     results.append(fut.result())
                 except Exception as exc:
                     failures += 1
-                    print(f"[fail] {o_slug} × {w_slug}: {exc}", file=sys.stderr)
-        results.sort(key=lambda r: (r["orchestrator"], r["worker"]))
+                    print(f"[fail] {o_slug} × {w_slug} rep {i}: {exc}", file=sys.stderr)
+        results.sort(key=lambda r: (r["orchestrator"], r["worker"], r["replicate"] or 0))
     else:
-        for o, w in pairings:
+        for o, w, i in cells:
             try:
-                results.append(_one(o, w))
+                results.append(_one(o, w, i))
             except Exception as exc:
                 failures += 1
-                print(f"[fail] {o.slug} × {w.slug}: {exc}", file=sys.stderr)
+                print(f"[fail] {o.slug} × {w.slug} rep {i}: {exc}", file=sys.stderr)
 
     print("\nGrid summary")
-    print(f"{'orchestrator':<40} {'worker':<40} {'cost':>10} {'tokens':>8} {'pass':>6} {'score':>6}")
+    rep_col = f"{'rep':>4} " if n_reps > 1 else ""
+    print(f"{'orchestrator':<40} {'worker':<40} {rep_col}{'cost':>10} {'tokens':>8} {'pass':>6} {'score':>6}")
     for r in results:
         score = f"{r['score']:.2f}" if r['score'] is not None else "-"
-        print(f"{r['orchestrator']:<40} {r['worker']:<40} ${r['cost']:.6f} {r['tokens']:>8} {r['passes']!s:>6} {score:>6}")
+        rep = f"{r['replicate']:>4} " if n_reps > 1 else ""
+        print(f"{r['orchestrator']:<40} {r['worker']:<40} {rep}${r['cost']:.6f} {r['tokens']:>8} {r['passes']!s:>6} {score:>6}")
+
+    if n_reps > 1:
+        for cell in aggregate(store.list_runs(run_group=group, task_id=task.id)):
+            score = f"{cell.score_mean:.2f}±{cell.score_sd:.2f}" if cell.score_mean is not None else "-"
+            print(f"[{group}] {cell.orchestrator} × {cell.worker}: n={cell.runs} pass={cell.pass_rate:.0%} score={score} cost=${cell.cost_mean:.6f}±${cell.cost_sd:.6f}")
 
     if args.json:
         print(json.dumps(results, indent=2, default=str))
@@ -270,12 +326,17 @@ def cmd_batch(args: argparse.Namespace) -> None:
 
     results: list[dict[str, Any]] = []
 
-    def _one(path: Path) -> dict[str, Any]:
+    group, n_reps = _resolve_replicates(args)
+    cells = [(p, i) for p in paths for i in range(1, n_reps + 1)]
+
+    def _one(path: Path, rep: int) -> dict[str, Any]:
         task = load_task(path)
-        meta = Runner(**_runner_kwargs(args, store)).run(task, orchestrator, worker, judge)
+        kwargs = _rep_kwargs(args, store, group, rep if n_reps > 1 else getattr(args, "replicate", None))
+        meta = Runner(**kwargs).run(task, orchestrator, worker, judge)
         return {
             "task_id": task.id,
             "task_path": str(path),
+            "replicate": rep if n_reps > 1 else meta.replicate,
             "passes": meta.passes,
             "score": meta.score,
             "cost": meta.total_cost_usd,
@@ -286,23 +347,31 @@ def cmd_batch(args: argparse.Namespace) -> None:
     failures = 0
     if args.jobs > 1:
         with ThreadPoolExecutor(max_workers=args.jobs) as pool:
-            futures = {pool.submit(_one, p): p for p in paths}
+            futures = {pool.submit(_one, p, i): (p, i) for p, i in cells}
             for fut in as_completed(futures):
+                p, i = futures[fut]
                 try:
                     results.append(fut.result())
                 except Exception as exc:
                     failures += 1
-                    print(f"[fail] {futures[fut]}: {exc}", file=sys.stderr)
-        results.sort(key=lambda r: r["task_id"])
+                    print(f"[fail] {p} rep {i}: {exc}", file=sys.stderr)
+        results.sort(key=lambda r: (r["task_id"], r["replicate"] or 0))
     else:
-        for path in paths:
-            results.append(_one(path))
+        for path, i in cells:
+            results.append(_one(path, i))
 
-    print(f"\nBatch summary ({len(results)} tasks)")
-    print(f"{'task_id':<30} {'cost':>10} {'tokens':>8} {'pass':>6} {'score':>6}")
+    print(f"\nBatch summary ({len(results)} runs across {len(paths)} tasks)")
+    rep_col = f"{'rep':>4} " if n_reps > 1 else ""
+    print(f"{'task_id':<30} {rep_col}{'cost':>10} {'tokens':>8} {'pass':>6} {'score':>6}")
     for r in results:
         score = f"{r['score']:.2f}" if r['score'] is not None else "-"
-        print(f"{r['task_id']:<30} ${r['cost']:.6f} {r['tokens']:>8} {r['passes']!s:>6} {score:>6}")
+        rep = f"{r['replicate']:>4} " if n_reps > 1 else ""
+        print(f"{r['task_id']:<30} {rep}${r['cost']:.6f} {r['tokens']:>8} {r['passes']!s:>6} {score:>6}")
+
+    if n_reps > 1:
+        for cell in aggregate(store.list_runs(run_group=group)):
+            score = f"{cell.score_mean:.2f}±{cell.score_sd:.2f}" if cell.score_mean is not None else "-"
+            print(f"[{group}] {cell.task_id}: n={cell.runs} pass={cell.pass_rate:.0%} score={score} cost=${cell.cost_mean:.6f}±${cell.cost_sd:.6f}")
 
     if args.json:
         print(json.dumps(results, indent=2, default=str))
@@ -345,14 +414,18 @@ def cmd_ablate(args: argparse.Namespace) -> None:
     base_worker = _model_from_arg(args.worker, args.models_dir, known)
     _check_provider_envs(args, orchestrator, base_worker, judge)
 
-    def _one(value: Any) -> dict[str, Any]:
+    group, n_reps = _resolve_replicates(args)
+
+    def _one(value: Any, rep: int) -> dict[str, Any]:
         worker = replace(base_worker, role="worker", retry_limit=value) if knob == "retry_limit" else _apply_retry_limit(replace(base_worker, role="worker"), args)
-        kwargs = _runner_kwargs(args, store, sweep={"knob": knob, "value": value})
+        kwargs = _rep_kwargs(args, store, group, rep if n_reps > 1 else getattr(args, "replicate", None))
+        kwargs["sweep"] = {"knob": knob, "value": value}
         if knob == "prompt_variant":
             kwargs["prompt_variant"] = value
         meta = Runner(**kwargs).run(task, orchestrator, worker, judge)
         return {
             "value": value,
+            "replicate": rep if n_reps > 1 else meta.replicate,
             "passes": meta.passes,
             "score": meta.score,
             "cost": meta.total_cost_usd,
@@ -361,31 +434,35 @@ def cmd_ablate(args: argparse.Namespace) -> None:
         }
 
     results: list[dict[str, Any]] = []
+    cells = [(v, i) for v in values for i in range(1, n_reps + 1)]
     failures = 0
     if args.jobs > 1:
         with ThreadPoolExecutor(max_workers=args.jobs) as pool:
-            futures = {pool.submit(_one, v): v for v in values}
+            futures = {pool.submit(_one, v, i): (v, i) for v, i in cells}
             for fut in as_completed(futures):
+                v, i = futures[fut]
                 try:
                     results.append(fut.result())
                 except Exception as exc:
                     failures += 1
-                    print(f"[fail] {knob}={futures[fut]}: {exc}", file=sys.stderr)
+                    print(f"[fail] {knob}={v} rep {i}: {exc}", file=sys.stderr)
     else:
-        for v in values:
+        for v, i in cells:
             try:
-                results.append(_one(v))
+                results.append(_one(v, i))
             except Exception as exc:
                 failures += 1
-                print(f"[fail] {knob}={v}: {exc}", file=sys.stderr)
+                print(f"[fail] {knob}={v} rep {i}: {exc}", file=sys.stderr)
     order = {v: i for i, v in enumerate(values)}
-    results.sort(key=lambda r: order[r["value"]])
+    results.sort(key=lambda r: (order[r["value"]], r["replicate"] or 0))
 
     print(f"\nAblation: {knob} on {task.id} ({orchestrator.slug} → {base_worker.slug})")
-    print(f"{knob:<16} {'cost':>10} {'tokens':>8} {'pass':>6} {'score':>6}")
+    rep_col = f"{'rep':>4} " if n_reps > 1 else ""
+    print(f"{knob:<16} {rep_col}{'cost':>10} {'tokens':>8} {'pass':>6} {'score':>6}")
     for r in results:
         score = f"{r['score']:.2f}" if r['score'] is not None else "-"
-        print(f"{r['value']!s:<16} ${r['cost']:.6f} {r['tokens']:>8} {r['passes']!s:>6} {score:>6}")
+        rep = f"{r['replicate']:>4} " if n_reps > 1 else ""
+        print(f"{r['value']!s:<16} {rep}${r['cost']:.6f} {r['tokens']:>8} {r['passes']!s:>6} {score:>6}")
 
     if args.json:
         print(json.dumps(results, indent=2, default=str))
@@ -425,6 +502,7 @@ def cmd_report(args: argparse.Namespace) -> None:
         orchestrator=args.orchestrator,
         worker=args.worker,
         task_id=args.task,
+        run_group=args.group,
         order_by=args.sort,
         descending=args.desc,
         limit=args.limit,
@@ -432,6 +510,14 @@ def cmd_report(args: argparse.Namespace) -> None:
 
     if args.pairings:
         _print_pairing_table(runs)
+        return
+
+    if args.groups:
+        cells = aggregate(runs)
+        if args.json:
+            print(json.dumps([c.to_dict() for c in cells], indent=2, default=str))
+            return
+        _print_groups_table(cells)
         return
 
     if args.json:
@@ -445,6 +531,10 @@ def cmd_report(args: argparse.Namespace) -> None:
                 "total_cost_usd": r.total_cost_usd,
                 "score": r.score,
                 "passes": r.passes,
+                "latency_ms": r.latency_ms,
+                "failure_reason": r.failure_reason,
+                "run_group": r.run_group,
+                "replicate": r.replicate,
                 "run_dir": r.run_dir,
             }
             for r in runs
@@ -492,6 +582,21 @@ def _print_pairing_table(runs: list[Any]) -> None:
     for orch, work, n, passed, avg_score, cost, tokens, qpd in rows:
         score = f"{avg_score:.2f}" if avg_score is not None else "-"
         print(f"{orch:<35} {work:<35} {n:>5} {passed:>5} {score:>9} ${cost:>10.4f} {tokens:>8} {qpd:>10.1f}")
+
+
+def _print_groups_table(cells: list[Any]) -> None:
+    """One row per (group, task, orchestrator, worker) cell with variance."""
+    if not cells:
+        print("No runs match.")
+        return
+    print(f"{'group':<18} {'task':<18} {'orchestrator':<26} {'worker':<26} {'n':>3} {'pass%':>6} {'score±sd':>12} {'cost±sd':>16} {'p50ms':>8} {'p95ms':>8} {'succ/$':>9} {'failures':<20}")
+    print("-" * 175)
+    for c in cells:
+        score = f"{c.score_mean:.2f}±{c.score_sd:.2f}" if c.score_mean is not None else "-"
+        cost = f"${c.cost_mean:.4f}±${c.cost_sd:.4f}"
+        spd = f"{c.successes_per_dollar:.0f}" if c.successes_per_dollar is not None else "-"
+        fails = ",".join(f"{k.split(':')[-1]}×{v}" for k, v in sorted(c.failures.items()))[:20]
+        print(f"{c.run_group or '-':<18} {c.task_id:<18} {c.orchestrator:<26} {c.worker:<26} {c.runs:>3} {c.pass_rate * 100:>5.0f}% {score:>12} {cost:>16} {c.latency_p50:>8.0f} {c.latency_p95:>8.0f} {spd:>9} {fails:<20}")
 
 
 def cmd_scrub(args: argparse.Namespace) -> None:
@@ -560,6 +665,7 @@ def main() -> None:
         sp.add_argument("--verbose", "-v", action="store_true", help="Echo events and debug records to stderr while running")
         sp.add_argument("--group", default=None, help="Label this run with a group name for replicate/variance analysis")
         sp.add_argument("--replicate", type=int, default=None, help="Replicate index within --group")
+        sp.add_argument("--replicates", type=int, default=1, help="Run each cell N times under one --group for variance analysis")
         sp.add_argument("--seed", type=int, default=None, help="Record a seed label on the run config")
 
     run = sub.add_parser("run", help="Run one orchestrator × worker pairing")
@@ -609,6 +715,8 @@ def main() -> None:
     report.add_argument("--sort", default="started_at", help="Column to sort by")
     report.add_argument("--desc", action="store_true", default=True, help="Sort descending")
     report.add_argument("--pairings", action="store_true", help="Aggregate by orchestrator × worker, sorted by quality per dollar")
+    report.add_argument("--groups", action="store_true", help="Aggregate by run_group × task × pairing with variance stats")
+    report.add_argument("--group", default=None, help="Only include runs from this run_group")
     report.add_argument("--limit", type=int, default=None, help="Limit number of rows")
     report.add_argument("--json", action="store_true", help="Output as JSON")
     report.set_defaults(func=cmd_report)

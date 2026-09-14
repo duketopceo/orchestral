@@ -20,6 +20,7 @@ from typing import Any
 from orchestral.apistub import check_api
 from orchestral.codeexec import (
     DEFAULT_TIMEOUT_SECONDS,
+    check_code_quality,
     materialize,
     run_unittest_suite,
     score_from_report,
@@ -1146,11 +1147,15 @@ class Runner:
         missing = [p for p in declared if not files.get(p)]
         errors = [f"Missing or empty expected files: {', '.join(missing)}."] if missing else []
         checks: dict[str, bool] = {"expected_paths": not missing}
+        quality = check_code_quality(files, task.metadata)
+        checks["quality_ok"] = not quality["violations"]
+        errors.extend(quality["violations"])
 
         report: dict[str, Any] = {
             "task_id": task.id,
             "checks": checks,
             "errors": errors,
+            "quality": quality,
             "score": None,
         }
         if missing:
@@ -1172,7 +1177,7 @@ class Runner:
                             errors.append(f"{rel}: {exc.msg}")
             checks["compiles"] = compiled
             report["executed"] = False
-            return compiled, report
+            return compiled and checks["quality_ok"], report
 
         suite = run_unittest_suite(
             files,
@@ -1184,7 +1189,7 @@ class Runner:
         if not suite.get("executed"):
             errors.append(suite.get("error", "tests did not execute"))
         report["score"] = score_from_report(suite)
-        return bool(checks["expected_paths"] and checks["tests_pass"]), report
+        return bool(all(checks.values())), report
 
     def _validate_video(self, task: TaskSpec, artifact: bytes) -> tuple[bool, dict[str, Any]]:
         requested = set(task.validation) if task.validation else {"non_empty", "mp4_signature"}

@@ -1,0 +1,61 @@
+id: code-lru-cache
+type: code
+prompt: |
+  Implement a Python module `lru.py` with a class `LRUCache`.
+
+  Contract:
+  - `LRUCache(capacity: int)` — capacity >= 1
+  - `get(key)` → value or None; a hit marks the key most-recently-used
+  - `put(key, value)` → inserts/updates; on overflow evicts the
+    least-recently-used key; a put on an existing key refreshes recency
+  - `len(cache)` reports live entries
+
+  Return a JSON object {"files": [{"path": "lru.py", "content": "..."}]}
+  with the complete module. No test file needed — the harness runs its own.
+metadata:
+  module: lru.py
+  expected_paths: [lru.py]
+  timeout_seconds: 30
+  max_code_lines: 120
+  no_unsafe: true
+  no_external_deps: true
+  tests: |
+    import unittest
+    from lru import LRUCache
+
+    class TestLRU(unittest.TestCase):
+        def test_get_put(self):
+            c = LRUCache(2)
+            c.put("a", 1)
+            self.assertEqual(c.get("a"), 1)
+            self.assertIsNone(c.get("missing"))
+
+        def test_eviction_order(self):
+            c = LRUCache(2)
+            c.put("a", 1); c.put("b", 2)
+            c.get("a")            # a becomes most-recent
+            c.put("c", 3)         # evicts b, not a
+            self.assertEqual(c.get("a"), 1)
+            self.assertIsNone(c.get("b"))
+            self.assertEqual(c.get("c"), 3)
+
+        def test_put_refresh_no_evict(self):
+            c = LRUCache(2)
+            c.put("a", 1); c.put("b", 2)
+            c.put("a", 9)         # refresh a
+            c.put("c", 3)         # evicts b
+            self.assertEqual(c.get("a"), 9)
+            self.assertIsNone(c.get("b"))
+
+        def test_capacity_one(self):
+            c = LRUCache(1)
+            c.put("x", 1); c.put("y", 2)
+            self.assertIsNone(c.get("x"))
+            self.assertEqual(c.get("y"), 2)
+            self.assertEqual(len(c), 1)
+
+        def test_len_and_overwrite(self):
+            c = LRUCache(3)
+            c.put("a", 1); c.put("a", 2)
+            self.assertEqual(len(c), 1)
+            self.assertEqual(c.get("a"), 2)

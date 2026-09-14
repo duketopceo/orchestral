@@ -25,6 +25,7 @@ from orchestral.codeexec import (
 )
 from orchestral.config import ModelConfig, TaskSpec
 from orchestral.costs import CostLedger
+from orchestral.extract import check_extraction
 from orchestral.fileset import (
     build_zip,
     expected_paths,
@@ -42,6 +43,7 @@ from orchestral.planners import (
     assemble_raw,
     delegate,
     delegate_constraint,
+    delegate_extract,
     delegate_image,
     delegate_multi,
     delegate_needle,
@@ -283,6 +285,7 @@ class Runner:
             is_constraint = task.type == "constraint"
             is_needle = task.type == "needle"
             is_sql = task.type == "sql"
+            is_extract = task.type == "extract"
             is_media = is_image or is_video
             results: list[dict[str, Any]] = []
             media_paths: list[Path | None] = []
@@ -337,6 +340,17 @@ class Runner:
                             )
                         elif is_sql:
                             out, worker_costs = delegate_sql(
+                                logger=logger,
+                                step=i + 3,
+                                subtask=sub,
+                                task=task,
+                                worker=worker,
+                                client=role_clients.get("worker"),
+                                dry_run=self.dry_run,
+                                attempt=attempt + 1,
+                            )
+                        elif is_extract:
+                            out, worker_costs = delegate_extract(
                                 logger=logger,
                                 step=i + 3,
                                 subtask=sub,
@@ -589,6 +603,30 @@ class Runner:
                 logger.lifecycle("evaluation.started", phase="validate")
                 passes, report = self._validate_sql(task, candidate_sql)
                 judge_text = candidate_sql
+            elif is_extract:
+                # Orchestrator picks the best candidate extraction; grading is
+                # deterministic per-field against metadata.expected.
+                position, assembly_costs = assemble_media(
+                    logger=logger,
+                    task=task,
+                    orchestrator=orchestrator,
+                    step=assembly_step,
+                    results=results,
+                    client=role_clients.get("orchestrator"),
+                    dry_run=self.dry_run,
+                )
+                ledger.add_many(assembly_costs)
+                chosen = results[position] if results else {}
+                artifact = str(chosen.get("content") or "")
+                (run_dir / "artifact.json").write_text(artifact, encoding="utf-8")
+                logger.lifecycle(
+                    "artifact.saved", phase="assemble",
+                    path="artifact.json", bytes=len(artifact.encode()),
+                )
+                logger.lifecycle("synthesis.completed", phase="assemble", role="orchestrator")
+                logger.lifecycle("evaluation.started", phase="validate")
+                passes, report = self._validate_extract(task, artifact)
+                judge_text = artifact
             elif is_multi:
                 # Deterministic merge + zip: no orchestrator call, and the
                 # artifact is bytes — the HTML branch below writes text.
@@ -1145,6 +1183,12 @@ class Runner:
             out["got_preview"] = report["got_preview"]
         return passes, out
 
+    def _validate_extract(self, task: TaskSpec, artifact: str) -> tuple[bool, dict[str, Any]]:
+        report = check_extraction(task.metadata, artifact)
+        report["task_id"] = task.id
+        report["artifact_length"] = len(artifact)
+        return bool(report.get("passes")), report
+
 
 PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 PNG_IEND = b"IEND\xaeB`\x82"
@@ -1181,7 +1225,7 @@ def _subtask_produced_output(
 
 
 def _artifact_ext(task_type: str) -> str:
-    return {"html": ".html", "image": ".png", "video": ".mp4", "api": ".json", "multi-file": ".zip", "code": ".zip", "sql": ".sql"}.get(task_type, ".txt")
+    return {"html": ".html", "image": ".png", "video": ".mp4", "api": ".json", "multi-file": ".zip", "code": ".zip", "sql": ".sql", "extract": ".json"}.get(task_type, ".txt")
 
 
 class _HTMLValidator(html.parser.HTMLParser):

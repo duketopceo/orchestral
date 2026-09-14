@@ -44,6 +44,7 @@ from orchestral.planners import (
     delegate_constraint,
     delegate_image,
     delegate_multi,
+    delegate_needle,
     delegate_video,
     plan_ce,
     plan_raw,
@@ -278,6 +279,7 @@ class Runner:
             # the merge+zip is identical, only validation differs
             is_multi = task.type in ("multi-file", "code")
             is_constraint = task.type == "constraint"
+            is_needle = task.type == "needle"
             is_media = is_image or is_video
             results: list[dict[str, Any]] = []
             media_paths: list[Path | None] = []
@@ -332,6 +334,17 @@ class Runner:
                             )
                         elif is_multi:
                             out, files, worker_costs = delegate_multi(
+                                logger=logger,
+                                step=i + 3,
+                                subtask=sub,
+                                task=task,
+                                worker=worker,
+                                client=role_clients.get("worker"),
+                                dry_run=self.dry_run,
+                                attempt=attempt + 1,
+                            )
+                        elif is_needle:
+                            out, worker_costs = delegate_needle(
                                 logger=logger,
                                 step=i + 3,
                                 subtask=sub,
@@ -489,6 +502,30 @@ class Runner:
                     judge_bytes = artifact_bytes
                 else:
                     passes, report = self._validate_video(task, artifact_bytes)
+            elif is_needle:
+                # Same raw-text candidate pick as constraint; validation is
+                # the constraint checks (expected token present, decoys absent).
+                position, assembly_costs = assemble_media(
+                    logger=logger,
+                    task=task,
+                    orchestrator=orchestrator,
+                    step=assembly_step,
+                    results=results,
+                    client=role_clients.get("orchestrator"),
+                    dry_run=self.dry_run,
+                )
+                ledger.add_many(assembly_costs)
+                chosen = results[position] if results else {}
+                artifact = str(chosen.get("content") or "")
+                (run_dir / "artifact.txt").write_text(artifact, encoding="utf-8")
+                logger.lifecycle(
+                    "artifact.saved", phase="assemble",
+                    path="artifact.txt", bytes=len(artifact.encode()),
+                )
+                logger.lifecycle("synthesis.completed", phase="assemble", role="orchestrator")
+                logger.lifecycle("evaluation.started", phase="validate")
+                passes, report = self._validate(task, artifact)
+                judge_text = artifact
             elif is_constraint:
                 # Orchestrator picks the best candidate; the artifact is the
                 # raw text so word budgets and pattern checks apply to worker

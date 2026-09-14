@@ -1,0 +1,38 @@
+id: sql-monthly-revenue
+type: sql
+prompt: >
+  Write a single read-only SQL query (SQLite dialect) that answers: which
+  product generated the most revenue each month? Return one row per month with
+  columns: month (YYYY-MM), product (name), revenue (total, rounded to 2
+  decimals), ordered by month ascending. Only count order_lines whose order
+  status is 'shipped'.
+  The database has tables: products(id, name), orders(id, placed_on DATE,
+  status), order_lines(order_id, product_id, qty, unit_price).
+validation: []
+assets: []
+metadata:
+  ordered: true
+  schema:
+    - "CREATE TABLE products (id INTEGER PRIMARY KEY, name TEXT NOT NULL)"
+    - "CREATE TABLE orders (id INTEGER PRIMARY KEY, placed_on DATE NOT NULL, status TEXT NOT NULL)"
+    - "CREATE TABLE order_lines (order_id INTEGER NOT NULL REFERENCES orders(id), product_id INTEGER NOT NULL REFERENCES products(id), qty INTEGER NOT NULL, unit_price REAL NOT NULL)"
+  seed:
+    - "INSERT INTO products VALUES (1, 'Kettle'), (2, 'Grinder'), (3, 'Dripper')"
+    - "INSERT INTO orders (id, placed_on, status) VALUES (1, '2025-01-03', 'shipped'), (2, '2025-01-11', 'cancelled'), (3, '2025-01-20', 'shipped'), (4, '2025-02-02', 'shipped'), (5, '2025-02-14', 'shipped'), (6, '2025-02-21', 'pending')"
+    - "INSERT INTO order_lines VALUES (1, 1, 2, 30.0), (1, 3, 1, 12.5), (2, 2, 5, 40.0), (3, 2, 1, 40.0), (3, 1, 1, 30.0), (4, 3, 4, 12.5), (5, 2, 2, 40.0), (5, 1, 1, 30.0), (6, 1, 9, 30.0)"
+  reference_sql: |
+    SELECT month, product, revenue FROM (
+      SELECT strftime('%Y-%m', o.placed_on) AS month,
+             p.name AS product,
+             ROUND(SUM(ol.qty * ol.unit_price), 2) AS revenue,
+             MAX(SUM(ol.qty * ol.unit_price)) OVER (
+               PARTITION BY strftime('%Y-%m', o.placed_on)
+             ) AS best
+      FROM order_lines ol
+      JOIN orders o ON o.id = ol.order_id
+      JOIN products p ON p.id = ol.product_id
+      WHERE o.status = 'shipped'
+      GROUP BY month, p.name
+    ) t
+    WHERE revenue = best
+    ORDER BY month ASC

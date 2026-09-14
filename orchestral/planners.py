@@ -23,6 +23,7 @@ from orchestral.fileset import (
 )
 from orchestral.logger import EventLogger
 from orchestral.openrouter import OpenRouterClient
+from orchestral.sqlexec import extract_sql
 
 # 1x1 transparent PNG used as the deterministic dry-run image artifact
 TINY_PNG = base64.b64decode(
@@ -695,7 +696,7 @@ def assemble_media(
         input_data={
             "prompt": task.prompt,
             "candidates": [
-                {"subtask_id": r.get("subtask_id"), "prompt": r.get("prompt")}
+                {"subtask_id": r.get("subtask_id"), "prompt": r.get("prompt"), "query": r.get("query")}
                 for r in results
             ],
             "task_type": task.type,
@@ -822,6 +823,64 @@ def delegate_needle(
         dry_run=dry_run,
         attempt=attempt,
     )
+
+
+
+def delegate_sql(
+    *,
+    logger: EventLogger,
+    step: int,
+    subtask: dict[str, Any],
+    task: TaskSpec,
+    worker: ModelConfig,
+    client: OpenRouterClient | None,
+    dry_run: bool,
+    attempt: int | None = None,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Produce one candidate SQL query for a subtask.
+
+    The worker output keeps the normal `content` contract; `query` carries
+    the extracted SQL so the orchestrator's pick maps to a real artifact.
+    Dry runs return the task's reference SQL — validation then executes real
+    sqlite against the fixture, so a dry run also proves the task spec works.
+    """
+    if dry_run:
+        reference = str(task.metadata.get("reference_sql") or "SELECT 1")
+        cost = _fake_cost(worker, {"subtask": subtask}, {"query": "<reference>"})
+        cost["phase"] = "delegate"
+        logger.log_llm_call(
+            phase="delegate",
+            step=step,
+            model=worker.slug,
+            role="worker",
+            messages=[{"role": "user", "content": str(subtask.get("description", ""))}],
+            completion={"query_chars": len(reference)},
+            reasoning=f"Produce a SQL query for subtask {subtask.get('id')} with {worker.slug}.",
+            input_tokens=cost["input_tokens"],
+            output_tokens=cost["output_tokens"],
+            cost_usd=cost["cost_usd"],
+            latency_ms=random.uniform(80, 1200),
+            pricing_source="none",
+            attempt=attempt,
+        )
+        return {
+            "subtask_id": subtask.get("id"),
+            "prompt": subtask.get("prompt") or subtask.get("description"),
+            "content": reference,
+            "query": reference,
+        }, [cost]
+
+    out, costs = delegate(
+        logger=logger,
+        step=step,
+        subtask=subtask,
+        worker=worker,
+        client=client,
+        dry_run=dry_run,
+        attempt=attempt,
+    )
+    out["query"] = extract_sql(out)
+    return out, costs
 
 
 def plan_ce(

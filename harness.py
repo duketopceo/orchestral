@@ -14,6 +14,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from orchestral.calibrate import agreement_metrics, collect_pairs, load_labels
 from orchestral.config import ModelConfig, find_task, load_models, load_task, load_yaml
 from orchestral.export import leaderboard_csv, run_audit_markdown, runs_csv
 from orchestral.planners import available_prompt_variants, load_prompt_variant
@@ -700,6 +701,35 @@ def cmd_prices(args: argparse.Namespace) -> None:
     if drifted:
         print(f"\n{len(drifted)} model(s) beyond {args.threshold:.0%} drift — update models/*.yaml or check for silent rerouting.")
 
+def cmd_calibrate(args: argparse.Namespace) -> None:
+    """Judge-vs-human agreement metrics from a labels file."""
+    labels = load_labels(args.labels)
+    result = collect_pairs(RunStore(args.runs_dir), labels)
+    metrics = agreement_metrics(result["pairs"])
+    out = {"coverage": result["coverage"], "metrics": metrics}
+    if args.json:
+        print(json.dumps(out, indent=2))
+        return
+    cov = result["coverage"]
+    print(f"Labeled: {cov['labeled']} | matched to runs: {cov['matched']} | unmatched: {len(cov['unmatched'])}")
+    if cov["unmatched"]:
+        print(f"  unmatched run_ids: {', '.join(cov['unmatched'][:10])}")
+    score = metrics.get("score")
+    if score:
+        print(f"\nScore agreement (n={score['n']}):")
+        print(f"  MAE {score['mae']:.3f} | Pearson {score['pearson'] if score['pearson'] is not None else 'n/a'} | "
+              f"Spearman {score['spearman'] if score['spearman'] is not None else 'n/a'}")
+        print(f"  human mean {score['human_mean']:.3f} | judge mean {score['judge_mean']:.3f}")
+    verdict = metrics.get("verdict")
+    if verdict:
+        print(f"\nVerdict agreement (n={verdict['n']}):")
+        print(f"  accuracy {verdict['accuracy']:.1%} | Cohen's kappa {verdict['kappa'] if verdict['kappa'] is not None else 'n/a'}")
+        print(f"  tp {verdict['tp']} | tn {verdict['tn']} | fp {verdict['fp']} | fn {verdict['fn']}")
+    if not score and not verdict:
+        print("\nNo overlapping pairs — label runs that have judge scores/verdicts.")
+        print("Labels file format:")
+        print("  labels:\n    - run_id: <prefix>\n      score: 0.8\n      passed: true")
+
 
 def cmd_scrub(args: argparse.Namespace) -> None:
     copied = scrub_all(Path(args.runs_dir), Path(args.scrub_dir))
@@ -866,6 +896,12 @@ def main() -> None:
     shots.add_argument("--task", default=None, help="Only capture runs for this task id")
     shots.add_argument("--all", action="store_true", help="Re-capture even when screenshots are current")
     shots.set_defaults(func=cmd_shots)
+
+    calibrate = sub.add_parser("calibrate", help="Judge-vs-human agreement metrics from a labels file")
+    calibrate.add_argument("--labels", required=True, help="YAML labels file (labels: [{run_id, score, passed}])")
+    calibrate.add_argument("--runs-dir", default="runs", help="Root directory for run data")
+    calibrate.add_argument("--json", action="store_true", help="Machine-readable output")
+    calibrate.set_defaults(func=cmd_calibrate)
 
     args = p.parse_args()
     if not hasattr(args, "func"):

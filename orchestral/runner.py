@@ -9,6 +9,7 @@ import io
 import json
 import platform
 import subprocess
+import threading
 import time
 import zipfile
 from datetime import UTC, datetime
@@ -47,6 +48,10 @@ class ValidationError(Exception):
     """Raised when a run fails structural validation."""
 
 
+class RunCancelled(Exception):
+    """Raised when the run's cancel_event is set between steps."""
+
+
 class Runner:
     def __init__(
         self,
@@ -63,6 +68,7 @@ class Runner:
         replicate: int | None = None,
         seed: int | None = None,
         verbose: bool = False,
+        cancel_event: threading.Event | None = None,
     ):
         self.dry_run = dry_run
         self.planner = planner
@@ -72,6 +78,7 @@ class Runner:
         self.replicate = replicate
         self.seed = seed
         self.verbose = verbose
+        self.cancel_event = cancel_event
         self.use_judge_cache = use_judge_cache
         self.store = store or RunStore(runs_dir)
         # role ("orchestrator"/"worker"/"judge") -> Provider, injected for tests
@@ -79,6 +86,10 @@ class Runner:
         # legacy single-client handle; tests may set this directly
         self.client: Any = None
         self._owned_clients: list[Any] = []
+
+    def _check_cancelled(self) -> None:
+        if self.cancel_event is not None and self.cancel_event.is_set():
+            raise RunCancelled("cancelled by user")
 
     def _resolve_clients(
         self,
@@ -200,6 +211,7 @@ class Runner:
         t0 = time.perf_counter()
 
         try:
+            self._check_cancelled()
             # 1. Plan
             if self.planner == "ce-plan":
                 plan, plan_costs = plan_ce(
@@ -235,6 +247,7 @@ class Runner:
             media_ext = _artifact_ext(task.type)
             subtasks = plan.get("subtasks") or plan.get("sections", {}).get("subtasks", [])
             for i, sub in enumerate(subtasks):
+                self._check_cancelled()
                 # models sometimes return a list of strings; normalize to dicts
                 if isinstance(sub, str):
                     sub = {"id": i, "description": sub}
@@ -528,6 +541,34 @@ class Runner:
             _write_metrics(run_dir)  # after run_end so the event is counted
 
             return meta
+
+        except RunCancelled:
+            # cancel is a normal outcome, not an error — mark and return
+            with contextlib.suppress(Exception):
+                meta = self.store.get_run(run_id)
+                if meta is not None:
+                    meta.status = "cancelled"
+                    meta.finished_at = datetime.now(UTC).isoformat()
+                    meta.latency_ms = (time.perf_counter() - t0) * 1000
+                    meta.failure_reason = "cancelled"
+                    self.store.update_meta(meta)
+            with contextlib.suppress(Exception):
+                logger.log(
+                    phase="end",
+                    step=-1,
+                    event_type="run_cancelled",
+                    model="",
+                    role="harness",
+                    input_data={},
+                    output_data={"status": "cancelled"},
+                    reasoning="Run cancelled by user.",
+                )
+            _write_metrics(run_dir)
+            return self.store.get_run(run_id) or meta or RunMeta(
+                run_id=run_id, orchestrator=orchestrator.slug, task_id=task.id,
+                worker=worker.slug, status="cancelled",
+                started_at="", run_dir=str(run_dir),
+            )
 
         except Exception as exc:
             cat = classify_exception(exc)

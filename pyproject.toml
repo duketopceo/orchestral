@@ -33,6 +33,9 @@ dependencies = [
 shots = [
     "playwright>=1.40",
 ]
+tui = [
+    "textual>=1.0",
+]
 dev = [
     "ruff>=0.6",
     "mypy>=1.11",

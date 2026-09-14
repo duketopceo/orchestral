@@ -34,7 +34,8 @@ python3 harness.py scrub
 
 - Do not load or reference the user's LifeOS, TELOS, skills, or private rules.
 - Do not add unrelated dependencies. Keep the stack: Python 3.11+,
-  `pyyaml`, `httpx`, `rich`.
+  `pyyaml`, `httpx`, `rich`. Optional extras only: `textual` ([tui]),
+  `playwright` ([shots]).
 - Do not commit eval artifacts or API keys.
 
 ## Storage model

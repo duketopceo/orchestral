@@ -9,7 +9,7 @@ from typing import Any, ClassVar
 
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Vertical
+from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen, Screen
 from textual.widgets import (
     Button,
@@ -25,9 +25,24 @@ from textual.widgets import (
     TabPane,
 )
 
-from orchestral.stats import aggregate
+from orchestral.export import leaderboard_csv, run_audit_markdown
+from orchestral.stats import aggregate, pairing_leaderboard
 from orchestral.storage import RunStore
-from orchestral.tui.state import fmt_cost, fmt_ms, fmt_tokens
+from orchestral.tui.state import (
+    LB_SORTS,
+    TERMINAL_PHASES,
+    event_detail,
+    event_row,
+    fmt_cost,
+    fmt_elapsed,
+    fmt_ms,
+    fmt_tokens,
+    live_totals,
+    run_phase,
+    sort_leaderboard,
+    tail_events,
+    worker_states,
+)
 
 
 def _load_detail(store: RunStore, run_id: str) -> dict[str, Any]:
@@ -49,7 +64,7 @@ def _load_detail(store: RunStore, run_id: str) -> dict[str, Any]:
                 data["events"].append(json.loads(line))
             except json.JSONDecodeError:
                 data["events"].append({"type": "malformed", "raw": line[:200]})
-    for name in ("metrics", "report", "plan", "cost"):
+    for name in ("metrics", "report", "plan", "cost", "manifest"):
         p = run_dir / f"{name}.json"
         if p.exists():
             try:
@@ -60,12 +75,16 @@ def _load_detail(store: RunStore, run_id: str) -> dict[str, Any]:
 
 
 class RunDetailScreen(Screen):
-    BINDINGS: ClassVar[list[Binding | tuple[str, str] | tuple[str, str, str]]] = [Binding("escape", "back", "Back")]
+    BINDINGS: ClassVar[list[Binding | tuple[str, str] | tuple[str, str, str]]] = [
+        Binding("escape", "back", "Back"),
+        Binding("e", "export_run", "Export"),
+    ]
 
-    def __init__(self, store: RunStore, run_id: str) -> None:
+    def __init__(self, store: RunStore, run_id: str, reports_dir: Path | None = None) -> None:
         super().__init__()
         self._store = store
         self._run_id = run_id
+        self._reports_dir = reports_dir or Path("reports")
 
     def compose(self) -> ComposeResult:
         yield Static(f"run {self._run_id} — loading…", id="detail-summary")
@@ -80,6 +99,8 @@ class RunDetailScreen(Screen):
                 yield Static("loading…", id="detail-report")
             with TabPane("Plan"):
                 yield Static("loading…", id="detail-plan")
+            with TabPane("Manifest"):
+                yield Static("loading…", id="detail-manifest")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -125,13 +146,26 @@ class RunDetailScreen(Screen):
                 (c.get("error_category") or "")[:12],
             )
 
-        for name, wid in (("metrics", "#detail-metrics"), ("report", "#detail-report"), ("plan", "#detail-plan")):
+        for name, wid in (("metrics", "#detail-metrics"), ("report", "#detail-report"), ("plan", "#detail-plan"), ("manifest", "#detail-manifest")):
             content = data["files"].get(name, f"<no {name}.json>")
             text = content if isinstance(content, str) else json.dumps(content, indent=2, default=str)
             self.query_one(wid, Static).update(text)
 
     def action_back(self) -> None:
         self.app.pop_screen()
+
+    def action_export_run(self) -> None:
+        meta = self._store.get_run(self._run_id)
+        if meta is None:
+            self.app.notify("run not found", severity="error")
+            return
+        try:
+            out = self._reports_dir / f"audit-{self._run_id}.md"
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text(run_audit_markdown(meta.run_dir), encoding="utf-8")
+            self.app.notify(f"exported {out}")
+        except Exception as exc:
+            self.app.notify(f"export failed: {exc}", severity="error")
 
 
 class GroupsScreen(Screen):
@@ -164,21 +198,270 @@ class GroupsScreen(Screen):
         self.app.pop_screen()
 
 
-HELP_TEXT = """\
-[b]orchestral tui[/b]
+class LiveRunScreen(Screen):
+    """Follow one run by tailing its events.jsonl — the observatory view.
 
+    All reads happen on a poll worker; the UI only renders what the harness
+    has already persisted. Cancel only works for runs this TUI launched —
+    the job's cancel_event is the only safe handle.
+    """
+
+    BINDINGS: ClassVar[list[Binding | tuple[str, str] | tuple[str, str, str]]] = [
+        Binding("escape", "back", "Back"),
+        Binding("c", "cancel_run", "Cancel"),
+        Binding("e", "export_run", "Export"),
+    ]
+
+    CSS = """
+    #live-info { height: auto; max-height: 8; padding: 0 1; border-bottom: solid $primary; }
+    #live-main { height: 1fr; }
+    #live-left { width: 40%; min-width: 30; border-right: solid $primary; }
+    #live-workers { height: auto; padding: 0 1; border-bottom: dashed $primary; }
+    #live-detail { height: 1fr; padding: 0 1; }
+    #live-events { height: 1fr; }
+    """
+
+    def __init__(self, store: RunStore, run_id: str, reports_dir: Path | None = None) -> None:
+        super().__init__()
+        self._store = store
+        self._run_id = run_id
+        self._reports_dir = reports_dir or Path("reports")
+        self._offset = 0
+        self._events: list[dict[str, Any]] = []
+        self._done = False
+        self._finished_at: str | None = None
+        self._meta: Any = None
+
+    def compose(self) -> ComposeResult:
+        yield Static(f"run {self._run_id} — loading…", id="live-info")
+        with Horizontal(id="live-main"):
+            with Vertical(id="live-left"):
+                yield Static("workers: —", id="live-workers")
+                yield Static("select an event to inspect", id="live-detail")
+            yield DataTable(id="live-events", cursor_type="row", zebra_stripes=True)
+        yield Footer()
+
+    def on_mount(self) -> None:
+        self.query_one("#live-events", DataTable).add_columns("time", "event", "worker", "detail")
+        self.query_one("#live-events", DataTable).focus()
+        self._poll()
+        self._timer = self.set_interval(0.75, self._poll)
+
+    def _poll(self) -> None:
+        if self._done:
+            return
+        self.app.run_worker(self._poll_work, thread=True, name="live-poll")
+
+    def _poll_work(self) -> None:
+        """File reads off the UI thread; returns data for _render."""
+        meta = self._store.get_run(self._run_id)
+        if meta is None:
+            self.app.call_from_thread(self._missing)
+            return
+        run_dir = Path(meta.run_dir)
+        new_events, new_offset = tail_events(run_dir / "events.jsonl", self._offset)
+        manifest = None
+        mp = run_dir / "manifest.json"
+        if mp.exists():
+            try:
+                manifest = json.loads(mp.read_text(encoding="utf-8", errors="replace"))
+            except json.JSONDecodeError:
+                manifest = None
+        run_json = None
+        rp = run_dir / "run.json"
+        if rp.exists():
+            try:
+                run_json = json.loads(rp.read_text(encoding="utf-8", errors="replace"))
+            except json.JSONDecodeError:
+                run_json = None
+        self.app.call_from_thread(self._apply_poll, meta, new_events, new_offset, manifest, run_json)
+
+    def _missing(self) -> None:
+        self.query_one("#live-info", Static).update(f"run {self._run_id} not found in index")
+        self._done = True
+        self._timer.stop()
+
+    def _apply_poll(
+        self,
+        meta: Any,
+        new_events: list[dict[str, Any]],
+        new_offset: int,
+        manifest: dict[str, Any] | None,
+        run_json: dict[str, Any] | None,
+    ) -> None:
+        self._meta = meta
+        self._offset = new_offset
+        self._events.extend(new_events)
+        table = self.query_one("#live-events", DataTable)
+        for ev in new_events:
+            ts, etype, wid, detail = event_row(ev)
+            table.add_row(ts, etype, wid, detail, key=str(ev.get("sequence", len(self._events))))
+        if new_events:
+            table.move_cursor(row=table.row_count - 1)
+
+        phase = run_phase(self._events)
+        cost, toks = live_totals(self._events)
+        started = (manifest or {}).get("started_at") or meta.started_at
+        self._finished_at = (run_json or {}).get("finished_at") or (manifest or {}).get("finished_at")
+        elapsed = fmt_elapsed(started, self._finished_at)
+        info = [
+            f"[b]{self._run_id}[/b]  phase {phase}  ·  {meta.task_id}",
+            f"{meta.orchestrator} → {meta.worker}",
+            f"cost {fmt_cost(cost)} · tokens {fmt_tokens(toks)} · elapsed {elapsed}",
+        ]
+        if manifest:
+            info.append(f"task hash {manifest.get('task_hash', '-')[:16]} · config {manifest.get('config_hash', '-')[:16]}")
+        self.query_one("#live-info", Static).update("\n".join(info))
+
+        states = worker_states(self._events)
+        chips = "  ".join(f"{wid} {st}" for wid, st in sorted(states.items())) or "—"
+        if phase in ("planning",):
+            chips = f"orchestrator running · {chips}"
+        elif phase in ("assembling",):
+            chips += " · synthesizer"
+        elif phase in ("evaluating",):
+            chips += " · evaluator"
+        self.query_one("#live-workers", Static).update(f"workers: {chips}")
+
+        if phase in TERMINAL_PHASES or meta.status != "running":
+            self._done = True
+            self._timer.stop()
+            self.query_one("#live-info", Static).update(
+                "\n".join(info) + f"\n[dim]run {meta.status} — Esc back, e export[/dim]"
+            )
+
+    def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
+        if event.data_table.id != "live-events" or event.cursor_row is None:
+            return
+        if event.cursor_row < len(self._events):
+            self.query_one("#live-detail", Static).update(event_detail(self._events[event.cursor_row]))
+
+    def action_back(self) -> None:
+        self.app.pop_screen()
+
+    def action_cancel_run(self) -> None:
+        jobs: list[Any] = getattr(self.app, "jobs", [])
+        job = next(
+            (j for j in jobs if j.active and self._run_id in j.run_ids),
+            None,
+        )
+        if job is None:
+            self.app.notify("only runs launched from this TUI can be cancelled", severity="warning")
+            return
+        if job.cancel():
+            self.app.notify(f"cancelling {self._run_id} — stops between subtasks")
+        else:
+            self.app.notify("run already finished", severity="warning")
+
+    def action_export_run(self) -> None:
+        if self._meta is None:
+            self.app.notify("run not loaded yet", severity="warning")
+            return
+        try:
+            out = self._reports_dir / f"audit-{self._run_id}.md"
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text(run_audit_markdown(self._meta.run_dir), encoding="utf-8")
+            self.app.notify(f"exported {out}")
+        except Exception as exc:
+            self.app.notify(f"export failed: {exc}", severity="error")
+
+
+class LeaderboardScreen(Screen):
+    """Pairing rollup — cost-per-pass primary rank, sample-size disclosure."""
+
+    BINDINGS: ClassVar[list[Binding | tuple[str, str] | tuple[str, str, str]]] = [
+        Binding("escape", "back", "Back"),
+        Binding("s", "cycle_sort", "Sort"),
+        Binding("e", "export_csv", "Export"),
+    ]
+
+    def __init__(self, store: RunStore, reports_dir: Path | None = None, min_samples: int = 10) -> None:
+        super().__init__()
+        self._store = store
+        self._reports_dir = reports_dir or Path("reports")
+        self._min_samples = min_samples
+        self._sort_i = 0
+        self._rows: list[Any] = []
+
+    def compose(self) -> ComposeResult:
+        yield Static("Leaderboard — loading…", id="lb-header")
+        yield DataTable(id="lb-table", cursor_type="row", zebra_stripes=True)
+        yield Footer()
+
+    def on_mount(self) -> None:
+        table = self.query_one("#lb-table", DataTable)
+        table.add_columns(
+            "orchestrator", "worker", "n", "tasks", "pass%", "med score",
+            "med cost", "med dur", "fail%", "$/pass", "conf",
+        )
+        self.app.run_worker(self._load, thread=True, name="leaderboard")
+
+    def _load(self) -> None:
+        rows = pairing_leaderboard(self._store.list_runs(limit=None), min_samples=self._min_samples)
+        self.app.call_from_thread(self._populate, rows)
+
+    def _populate(self, rows: list[Any]) -> None:
+        self._rows = rows
+        key = LB_SORTS[self._sort_i]
+        header = self.query_one("#lb-header", Static)
+        low = sum(1 for r in rows if r.low_sample)
+        header.update(
+            f"Pairing leaderboard — sort {key} (s cycles) · "
+            f"{len(rows)} pairings · {low} below {self._min_samples} samples "
+            "[dim](low-sample ranks are anecdote, not evidence)[/dim]"
+        )
+        table = self.query_one("#lb-table", DataTable)
+        table.clear()
+        for r in sort_leaderboard(rows, key):
+            table.add_row(
+                r.orchestrator, r.worker, str(r.runs), str(r.tasks_covered),
+                f"{(r.pass_rate or 0) * 100:.0f}%",
+                f"{r.score_median:.2f}" if r.score_median is not None else "-",
+                fmt_cost(r.cost_median),
+                fmt_ms(r.duration_median_ms),
+                f"{(r.failure_rate or 0) * 100:.0f}%",
+                fmt_cost(r.cost_per_pass),
+                "low-n" if r.low_sample else "ok",
+            )
+
+    def action_cycle_sort(self) -> None:
+        self._sort_i = (self._sort_i + 1) % len(LB_SORTS)
+        if self._rows:
+            self._populate(self._rows)
+
+    def action_export_csv(self) -> None:
+        try:
+            out = self._reports_dir / "leaderboard.csv"
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text(leaderboard_csv(sort_leaderboard(self._rows, LB_SORTS[self._sort_i])), encoding="utf-8")
+            self.app.notify(f"exported {out}")
+        except Exception as exc:
+            self.app.notify(f"export failed: {exc}", severity="error")
+
+    def action_back(self) -> None:
+        self.app.pop_screen()
+
+
+HELP_TEXT = """\
+[b]orchestral tui[/b] — experiment observatory
+
+  1              live run (tails events.jsonl for the newest running run)
+  2              run history (this table)
+  3              pairing leaderboard (s cycles sort, e exports CSV)
   j / ↓, k / ↑   move selection
-  Enter          open run detail
+  Enter          open run — live view while running, detail once finished
   /              filter runs (task, model, group, status, failure)
   g              replicate-group variance table
   n              launch a run (or replicate batch)
   x              cancel the active job
+  c              cancel the run being watched (live view)
+  e              export — audit markdown (detail/live), CSV (history/board)
   r              refresh run list
   ?              this help
   Esc            back / close
   q              quit
 
-Detail tabs: events stream, per-call index, metrics, report, plan.
+Detail tabs: events stream, per-call index, metrics, report, plan, manifest.
 Jobs run on background threads — the UI stays responsive; cancelling
 stops between subtasks and records status=cancelled.
 """

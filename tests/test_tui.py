@@ -1,5 +1,5 @@
-"""Tests for the TUI: pure domain state, runner cancellation, and
-textual pilot interaction tests."""
+"""Tests for the TUI: pure domain state, runner cancellation, live-view
+event derivation, leaderboard sorting, and textual pilot interaction tests."""
 
 from __future__ import annotations
 
@@ -15,11 +15,18 @@ from orchestral.storage import RunStore
 from orchestral.tui.state import (
     Job,
     JobStatus,
+    event_row,
     filter_runs,
     fmt_cost,
+    fmt_elapsed,
     fmt_ms,
     fmt_tokens,
+    live_totals,
     pass_label,
+    run_phase,
+    sort_leaderboard,
+    tail_events,
+    worker_states,
 )
 
 
@@ -101,6 +108,117 @@ class TestRunnerCancel(unittest.TestCase):
             self.assertEqual(meta.failure_reason, "cancelled")
             # metrics.json still written for cancelled runs
             self.assertTrue((Path(meta.run_dir) / "metrics.json").exists())
+
+
+class TestTailEvents(unittest.TestCase):
+    def test_incremental_and_partial(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "events.jsonl"
+            p.write_text('{"type": "a", "sequence": 1}\n', encoding="utf-8")
+            events, offset = tail_events(p, 0)
+            self.assertEqual([e["type"] for e in events], ["a"])
+            # appending a partial line leaves it unread
+            with p.open("a", encoding="utf-8") as fh:
+                fh.write('{"type": "b", "sequen')
+            events2, offset2 = tail_events(p, offset)
+            self.assertEqual(events2, [])
+            self.assertEqual(offset2, offset)
+            # completing the line makes it readable
+            with p.open("a", encoding="utf-8") as fh:
+                fh.write('ce": 2}\n{"type": "c", "sequence": 3}\n')
+            events3, _ = tail_events(p, offset2)
+            self.assertEqual([e["type"] for e in events3], ["b", "c"])
+
+    def test_missing_and_malformed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            events, offset = tail_events(Path(tmp) / "nope.jsonl", 0)
+            self.assertEqual((events, offset), ([], 0))
+            p = Path(tmp) / "bad.jsonl"
+            p.write_text('{"type": "ok"}\nnot json\n', encoding="utf-8")
+            events, _ = tail_events(p, 0)
+            self.assertEqual([e["type"] for e in events], ["ok", "malformed"])
+
+
+class TestEventDerivation(unittest.TestCase):
+    def _lifecycle(self):
+        return [
+            {"type": "run.created", "sequence": 1},
+            {"type": "orchestrator.started", "sequence": 2},
+            {"type": "orchestrator.completed", "sequence": 3},
+            {"type": "delegation.created", "sequence": 4, "output": {"subtasks": 2}},
+            {"type": "worker.started", "sequence": 5, "worker_id": "worker-0", "output": {"description": "inspect"}},
+            {"type": "worker.started", "sequence": 6, "worker_id": "worker-1", "output": {"description": "fix"}},
+            {"type": "worker.completed", "sequence": 7, "worker_id": "worker-0", "output": {"attempts": 1}},
+            {"type": "worker.failed", "sequence": 8, "worker_id": "worker-1", "output": {"error_category": "provider_error"}},
+            {"type": "synthesis.started", "sequence": 9},
+            {"type": "evaluation.completed", "sequence": 10, "output": {"passes": True, "score": 0.9}},
+            {"type": "run.completed", "sequence": 11, "output": {"status": "finished"}},
+        ]
+
+    def test_run_phase(self):
+        events = self._lifecycle()
+        self.assertEqual(run_phase(events[:2]), "planning")
+        self.assertEqual(run_phase(events[:8]), "delegating")
+        self.assertEqual(run_phase(events), "finished")
+        self.assertEqual(run_phase([]), "starting")
+
+    def test_worker_states(self):
+        states = worker_states(self._lifecycle())
+        self.assertEqual(states, {"worker-0": "done", "worker-1": "failed"})
+
+    def test_live_totals(self):
+        events = [
+            {"type": "llm_call", "cost": {"usd": 0.001, "input_tokens": 100, "output_tokens": 50}},
+            {"type": "llm_call", "cost": {"usd": 0.002, "input_tokens": 200, "output_tokens": 60}},
+            {"type": "worker.started"},
+        ]
+        cost, toks = live_totals(events)
+        self.assertAlmostEqual(cost, 0.003)
+        self.assertEqual(toks, 410)
+
+    def test_event_row(self):
+        ts, etype, wid, detail = event_row(
+            {"type": "worker.started", "timestamp": "2026-09-15T01:02:03Z", "worker_id": "worker-0", "output": {"description": "inspect the failing test"}}
+        )
+        self.assertEqual((ts, etype, wid), ("01:02:03", "worker.started", "worker-0"))
+        self.assertIn("inspect", detail)
+        _ts, _t, _w, detail = event_row({"type": "delegation.created", "output": {"subtasks": 3}})
+        self.assertIn("3 subtasks", detail)
+
+    def test_fmt_elapsed(self):
+        self.assertEqual(fmt_elapsed("2026-09-15T01:00:00+00:00", "2026-09-15T01:06:42+00:00"), "06:42")
+        self.assertEqual(fmt_elapsed("2026-09-15T01:00:00+00:00", "2026-09-15T02:06:42+00:00"), "1:06:42")
+        self.assertEqual(fmt_elapsed(None), "-")
+        self.assertEqual(fmt_elapsed("garbage"), "-")
+
+
+class TestLeaderboardSort(unittest.TestCase):
+    def test_sort_leaderboard(self):
+        rows = [
+            {"orchestrator": "a", "worker": "x", "cost_per_pass": 0.01, "pass_rate": 0.5, "score_median": None},
+            {"orchestrator": "b", "worker": "y", "cost_per_pass": None, "pass_rate": 0.9, "score_median": 0.8},
+            {"orchestrator": "c", "worker": "z", "cost_per_pass": 0.005, "pass_rate": 0.7, "score_median": 0.5},
+        ]
+        by_cost = [r["orchestrator"] for r in sort_leaderboard(rows, "cost_per_pass")]
+        self.assertEqual(by_cost, ["c", "a", "b"])  # None (never passed) last
+        by_pass = [r["orchestrator"] for r in sort_leaderboard(rows, "pass_rate")]
+        self.assertEqual(by_pass, ["b", "c", "a"])
+        by_score = [r["orchestrator"] for r in sort_leaderboard(rows, "score_median")]
+        self.assertEqual(by_score, ["b", "c", "a"])
+
+
+class TestOnRunCreated(unittest.TestCase):
+    def test_callback_fires_with_run_id(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            seen: list[str] = []
+            meta = Runner(
+                dry_run=True, runs_dir=tmp, store=RunStore(tmp),
+                on_run_created=seen.append,
+            ).run(
+                TaskSpec(id="t", type="html", prompt="p"),
+                _model("o/m", "orchestrator"), _model("w/m", "worker"),
+            )
+            self.assertEqual(seen, [meta.run_id])
 
 
 try:
@@ -204,6 +322,110 @@ class TestAppPilot(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(app.jobs[0].status, JobStatus.SUCCEEDED)
                 table = app.query_one("#runs-table", DataTable)
                 self.assertTrue(await self._pump(app, pilot, lambda: table.row_count == 1))
+
+    async def test_leaderboard_screen(self):
+        from textual.widgets import DataTable
+
+        from orchestral.tui.app import OrchestralApp
+        from orchestral.tui.screens import LeaderboardScreen
+
+        with tempfile.TemporaryDirectory() as tmp:
+            _seed_run(tmp)
+            reports = Path(tmp) / "reports"
+            app = OrchestralApp(Path(tmp), Path("tasks"), Path("models"), reports_dir=reports)
+            async with app.run_test() as pilot:
+                await pilot.press("3")
+                await pilot.pause()
+                self.assertIsInstance(app.screen, LeaderboardScreen)
+                table = app.screen.query_one("#lb-table", DataTable)
+                ok = await self._pump(app, pilot, lambda: table.row_count == 1)
+                self.assertTrue(ok, "leaderboard never populated")
+                await pilot.press("s")  # cycle sort
+                await pilot.pause()
+                await pilot.press("e")  # export CSV
+                await pilot.pause()
+                self.assertTrue((reports / "leaderboard.csv").exists())
+                await pilot.press("2")  # back to history
+                await pilot.pause()
+                self.assertNotIsInstance(app.screen, LeaderboardScreen)
+
+    async def test_auto_live_when_run_in_flight(self):
+        from orchestral.tui.app import OrchestralApp
+        from orchestral.tui.screens import LiveRunScreen
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = RunStore(tmp)
+            _run_id, run_dir = store.new_run("o/m", "t-task", "w/m")
+            (run_dir / "events.jsonl").write_text(
+                '{"type": "run.started", "sequence": 1, "timestamp": "2026-09-15T01:00:00+00:00"}\n'
+                '{"type": "worker.started", "sequence": 2, "worker_id": "worker-0", "output": {"description": "work"}}\n',
+                encoding="utf-8",
+            )
+            app = OrchestralApp(Path(tmp), Path("tasks"), Path("models"))
+            async with app.run_test() as pilot:
+                # a run still "running" in the index opens the live view on launch
+                ok = await self._pump(app, pilot, lambda: isinstance(app.screen, LiveRunScreen))
+                self.assertTrue(ok, "live view never opened")
+                from textual.widgets import DataTable
+                table = app.screen.query_one("#live-events", DataTable)
+                ok = await self._pump(app, pilot, lambda: table.row_count >= 2)
+                self.assertTrue(ok, "live trace never populated")
+                # appending to events.jsonl is picked up by the poll
+                with (run_dir / "events.jsonl").open("a", encoding="utf-8") as fh:
+                    fh.write('{"type": "worker.completed", "sequence": 3, "worker_id": "worker-0"}\n')
+                ok = await self._pump(app, pilot, lambda: table.row_count >= 3)
+                self.assertTrue(ok, "tail never picked up appended event")
+                # cancel: run not launched from TUI → warning, stays running
+                await pilot.press("c")
+                await pilot.pause()
+                self.assertTrue(all(not j.active for j in app.jobs))
+                await pilot.press("escape")
+                await pilot.pause()
+                self.assertNotIsInstance(app.screen, LiveRunScreen)
+
+    async def test_live_view_on_finished_run(self):
+        from orchestral.tui.app import OrchestralApp
+        from orchestral.tui.screens import LiveRunScreen, RunDetailScreen
+
+        with tempfile.TemporaryDirectory() as tmp:
+            run_id = _seed_run(tmp)
+            app = OrchestralApp(Path(tmp), Path("tasks"), Path("models"))
+            async with app.run_test() as pilot:
+                from textual.widgets import DataTable
+                table = app.query_one("#runs-table", DataTable)
+                self.assertTrue(await self._pump(app, pilot, lambda: table.row_count == 1))
+                # finished run → Enter opens detail, not live
+                await pilot.press("enter")
+                await pilot.pause()
+                self.assertIsInstance(app.screen, RunDetailScreen)
+                await pilot.press("escape")
+                await pilot.pause()
+                # direct push of the live screen on a finished run renders
+                # the archived events then stops polling
+                app.push_screen(LiveRunScreen(app.store, run_id))
+                await pilot.pause()
+                live = app.screen
+                self.assertIsInstance(live, LiveRunScreen)
+                events_table = live.query_one("#live-events", DataTable)
+                ok = await self._pump(app, pilot, lambda: live._done and events_table.row_count > 0)
+                self.assertTrue(ok, "live view never rendered archived events")
+
+    async def test_export_runs_csv(self):
+        from textual.widgets import DataTable
+
+        from orchestral.tui.app import OrchestralApp
+
+        with tempfile.TemporaryDirectory() as tmp:
+            _seed_run(tmp)
+            reports = Path(tmp) / "reports"
+            app = OrchestralApp(Path(tmp), Path("tasks"), Path("models"), reports_dir=reports)
+            async with app.run_test() as pilot:
+                table = app.query_one("#runs-table", DataTable)
+                self.assertTrue(await self._pump(app, pilot, lambda: table.row_count == 1))
+                await pilot.press("e")
+                await pilot.pause()
+                csv = (reports / "runs.csv").read_text(encoding="utf-8")
+                self.assertIn("run_id", csv.splitlines()[0])
 
 
 if __name__ == "__main__":

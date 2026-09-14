@@ -692,6 +692,7 @@ def cmd_tui(args: argparse.Namespace) -> None:
         runs_dir=args.runs_dir,
         tasks_dir=args.tasks_dir,
         models_dir=args.models_dir,
+        reports_dir=args.reports_dir,
         refresh=args.refresh,
     )
 
@@ -822,8 +823,9 @@ def main() -> None:
     dashboard.add_argument("--reports-dir", default="reports", help="Output directory for HTML reports")
     dashboard.set_defaults(func=cmd_dashboard)
 
-    tui = sub.add_parser("tui", help="Render a terminal dashboard")
+    tui = sub.add_parser("tui", help="Interactive experiment observatory (needs the [tui] extra)")
     tui.add_argument("--runs-dir", default="runs", help="Root directory for run data")
+    tui.add_argument("--reports-dir", default="reports", help="Output directory for exports")
     tui.add_argument("--refresh", action="store_true", help="Auto-refresh every 5s")
     tui.set_defaults(func=cmd_tui)
 

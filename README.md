@@ -97,11 +97,27 @@ successes-per-dollar.
 
 ### TUI
 
-`pip install 'orchestral[tui]'`, then `orchestral tui`. Browse the run index,
-`/` to filter, `Enter` for the per-run detail (events, per-call index,
-metrics, report, plan), `g` for the replicate-group variance table, `n` to
-launch a run or replicate batch on a background worker, `x` to cancel it
-(runs mark `status=cancelled` between subtasks), `?` for the key map.
+`pip install 'orchestral[tui]'`, then `orchestral tui`. The TUI is a
+read-only observatory over the harness — it tails the same `events.jsonl`
+and `runs/index.db` the CLI writes; it never re-runs benchmark logic.
+
+Views (number keys switch): `1` **Live Run** — follows the newest in-flight
+run: phase, per-worker status, event trace, running cost/tokens/elapsed;
+`2` **Run History** — the run index, `/` to filter; `3` **Leaderboard** —
+per-pairing pass rate, medians, failure rate, cost-per-pass, and a
+`low-n` marker below 10 samples (`s` cycles the sort). `Enter` opens a run —
+live view while it's `running`, otherwise the detail tabs (events, calls,
+metrics, report, plan, manifest). `n` launches a run/batch on a background
+worker; `x` cancels the job, `c` cancels the run you're watching (both
+record `status=cancelled` between subtasks). `e` exports — the filtered run
+list or leaderboard to CSV in `reports/`, a single run to a Markdown audit.
+`?` shows the full key map.
+
+Data underneath: `runs/…/{run_id}/events.jsonl` is the append-only event
+stream (schema v2 — `sequence`, `run_id`, `worker_id`, lifecycle types like
+`worker.started`), `manifest.json` the immutable run record (model IDs,
+task/prompt/config SHA-256s, git commit), `metrics.json` the aggregate
+rollup. `runs/index.db` powers the list and leaderboard queries.
 
 Global flags (before the subcommand): `--runs-dir`, `--tasks-dir`, `--models-dir`.
 

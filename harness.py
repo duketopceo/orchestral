@@ -181,29 +181,39 @@ def cmd_run(args: argparse.Namespace) -> None:
     _check_provider_envs(args, orchestrator, worker, judge)
 
     group, n_reps = _resolve_replicates(args)
-    metas = [
-        Runner(**_rep_kwargs(args, store, group, i if n_reps > 1 else getattr(args, "replicate", None))).run(task, orchestrator, worker, judge)
-        for i in range(1, n_reps + 1)
-    ]
+    metas = []
+    failures = 0
+    for i in range(1, n_reps + 1):
+        rep = i if n_reps > 1 else getattr(args, "replicate", None)
+        try:
+            metas.append(Runner(**_rep_kwargs(args, store, group, rep)).run(task, orchestrator, worker, judge))
+        except Exception as exc:
+            # Runner.record_failure persists the failed run before re-raising;
+            # keep going so one flake doesn't lose the remaining replicates
+            failures += 1
+            print(f"[fail] rep {i}: {exc}", file=sys.stderr)
     if args.json:
-        out: Any = [m.to_dict() for m in metas] if n_reps > 1 else metas[0].to_dict()
+        out: Any = [m.to_dict() for m in metas] if n_reps > 1 else (metas[0].to_dict() if metas else None)
         print(json.dumps(out, indent=2, default=str))
-        return
-    for meta in metas:
-        label = f"Run {meta.run_id} {meta.status}"
+    else:
+        for meta in metas:
+            label = f"Run {meta.run_id} {meta.status}"
+            if n_reps > 1:
+                label += f"  [rep {meta.replicate}/{n_reps}]"
+            print(label)
+            print(f"  Directory: {meta.run_dir}")
+            print(f"  Cost: ${meta.total_cost_usd:.6f} | Tokens: {meta.total_input_tokens + meta.total_output_tokens} | Latency: {meta.latency_ms:.0f}ms")
+            print(f"  Passes: {meta.passes} | Score: {meta.score} | Failure: {meta.failure_reason or '-'}")
         if n_reps > 1:
-            label += f"  [rep {meta.replicate}/{n_reps}]"
-        print(label)
-        print(f"  Directory: {meta.run_dir}")
-        print(f"  Cost: ${meta.total_cost_usd:.6f} | Tokens: {meta.total_input_tokens + meta.total_output_tokens} | Latency: {meta.latency_ms:.0f}ms")
-        print(f"  Passes: {meta.passes} | Score: {meta.score} | Failure: {meta.failure_reason or '-'}")
-    if n_reps > 1:
-        cell = aggregate(metas)[0]
-        score = f"{cell.score_mean:.2f}±{cell.score_sd:.2f}" if cell.score_mean is not None else "-"
-        print(f"\nReplicate summary ({group}, n={cell.runs})")
-        print(f"  pass rate: {cell.pass_rate:.0%} | score: {score} | cost: ${cell.cost_mean:.6f}±${cell.cost_sd:.6f}")
-        if cell.failures:
-            print(f"  failures: {cell.failures}")
+            cells = aggregate(store.list_runs(run_group=group, task_id=task.id))
+            for cell in cells:
+                score = f"{cell.score_mean:.2f}±{cell.score_sd:.2f}" if cell.score_mean is not None else "-"
+                print(f"\nReplicate summary ({cell.run_group or group}, n={cell.runs})")
+                print(f"  pass rate: {cell.pass_rate:.0%} | score: {score} | cost: ${cell.cost_mean:.6f}±${cell.cost_sd:.6f}")
+                if cell.failures:
+                    print(f"  failures: {cell.failures}")
+    if failures:
+        sys.exit(1)
 
 
 def cmd_grid(args: argparse.Namespace) -> None:

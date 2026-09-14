@@ -168,6 +168,29 @@ class TestReplicateRuns(unittest.TestCase):
             self.assertIn("landing-page-coffee", text)
             self.assertIn("±", text.replace("&plusmn;", "±"))
 
+    def test_failed_replicate_does_not_stop_rest(self):
+        """Runner.run re-raises after recording the failure; a mid-loop
+        flake must not lose the remaining replicates."""
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            real_runner = harness.Runner
+
+            class FlakyRunner(real_runner):
+                def run(self, *a, **kw):
+                    if self.replicate == 2:
+                        raise RuntimeError("boom")
+                    return super().run(*a, **kw)
+
+            args = _args(replicates=3, group="flaky", runs_dir=tmp)
+            with patch.object(harness, "Runner", FlakyRunner), \
+                    redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()), \
+                    self.assertRaises(SystemExit) as ctx:
+                harness.cmd_run(args)
+            self.assertEqual(ctx.exception.code, 1)
+            runs = RunStore(tmp).list_runs(run_group="flaky")
+            self.assertEqual(sorted(r.replicate for r in runs), [1, 3])
+
     def test_report_group_filter(self):
         with tempfile.TemporaryDirectory() as tmp:
             with redirect_stdout(io.StringIO()):

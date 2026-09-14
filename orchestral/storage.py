@@ -302,6 +302,30 @@ class RunStore:
             ).fetchall()
         return [dict(r) for r in rows]
 
+    def calls_pricing_summary(self) -> list[dict[str, Any]]:
+        """Per-(model, pricing_source) aggregates for pricing-drift analysis.
+
+        Dry-run rows are excluded — fake usage would pollute the comparison.
+        Token and cost sums are enough to recompute configured-rate estimates
+        because rates are per-model constants.
+        """
+        with self._connect() as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                """
+                SELECT model, pricing_source, COUNT(*) AS calls,
+                       SUM(input_tokens) AS input_tokens,
+                       SUM(output_tokens) AS output_tokens,
+                       SUM(cost_usd) AS cost_usd,
+                       SUM(api_cost_usd) AS api_cost_usd
+                FROM calls
+                WHERE dry_run = 0 AND model IS NOT NULL
+                GROUP BY model, pricing_source
+                ORDER BY model
+                """
+            ).fetchall()
+        return [dict(r) for r in rows]
+
     def debug_log(self, component: str, message: str, **fields: Any) -> None:
         """Append to the root-level runs/debug.jsonl for events that happen
         before a run directory exists (e.g. provider resolution failures)."""

@@ -17,6 +17,7 @@ from typing import Any
 from orchestral.config import ModelConfig, find_task, load_models, load_task, load_yaml
 from orchestral.export import leaderboard_csv, run_audit_markdown, runs_csv
 from orchestral.planners import available_prompt_variants, load_prompt_variant
+from orchestral.pricing import DEFAULT_DRIFT_THRESHOLD, pricing_drift
 from orchestral.privacy import scrub_all
 from orchestral.providers import provider_key
 from orchestral.reporter import generate_dashboard, generate_html_report, model_history
@@ -674,6 +675,32 @@ def cmd_export(args: argparse.Namespace) -> None:
         print(content, end="")
 
 
+def cmd_prices(args: argparse.Namespace) -> None:
+    """Pricing drift: provider-reported cost vs the configured rate card."""
+    store = RunStore(args.runs_dir)
+    rows = pricing_drift(
+        store.calls_pricing_summary(),
+        _model_map(args.models_dir),
+        threshold=args.threshold,
+    )
+    if args.json:
+        print(json.dumps([r.to_dict() for r in rows], indent=2, default=str))
+        return
+    if not rows:
+        print("No calls indexed yet.")
+        return
+    print(f"{'model':<38} {'calls':>5} {'api':>4} {'api $':>10} {'cfg $':>10} {'ratio':>7}  drift")
+    print("-" * 90)
+    for r in rows:
+        cfg = f"${r.configured_cost_usd:.4f}" if r.configured_cost_usd is not None else "-"
+        ratio = f"{r.ratio:.2f}x" if r.ratio is not None else "-"
+        flag = "STALE?" if r.drifted else (r.note or "ok")
+        print(f"{r.model:<38} {r.calls:>5} {r.api_calls:>4} ${r.api_cost_usd:>9.4f} {cfg:>10} {ratio:>7}  {flag}")
+    drifted = [r for r in rows if r.drifted]
+    if drifted:
+        print(f"\n{len(drifted)} model(s) beyond {args.threshold:.0%} drift — update models/*.yaml or check for silent rerouting.")
+
+
 def cmd_scrub(args: argparse.Namespace) -> None:
     copied = scrub_all(Path(args.runs_dir), Path(args.scrub_dir))
     print(f"Scrubbed {len(copied)} runs to {args.scrub_dir}")
@@ -803,6 +830,11 @@ def main() -> None:
     report.add_argument("--limit", type=int, default=None, help="Limit number of rows")
     report.add_argument("--json", action="store_true", help="Output as JSON")
     report.set_defaults(func=cmd_report)
+
+    prices = sub.add_parser("prices", help="Pricing drift check — provider-reported cost vs configured rate card")
+    prices.add_argument("--threshold", type=float, default=DEFAULT_DRIFT_THRESHOLD, help="Drift fraction that flags a model (default 0.15)")
+    prices.add_argument("--json", action="store_true", help="Emit JSON")
+    prices.set_defaults(func=cmd_prices)
 
     export = sub.add_parser("export", help="Export runs as CSV, or a single run as Markdown/JSONL")
     export.add_argument("--runs-dir", default="runs", help="Root directory for run data")

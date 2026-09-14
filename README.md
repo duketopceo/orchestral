@@ -1,5 +1,9 @@
 # orchestral
 
+<p align="center">
+  <img src="docs/assets/social.png" alt="orchestral — multi-agent eval harness" width="640" />
+</p>
+
 Eval harness for testing orchestrator→worker model pairs over OpenRouter or
 any OpenAI-compatible endpoint.
 

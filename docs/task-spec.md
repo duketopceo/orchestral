@@ -23,7 +23,7 @@ metadata: {}                  # optional free-form map (video tasks read generat
 | `prompt` | str | required | Full task brief; the orchestrator decomposes it into subtasks |
 | `validation` | list[str] | `[]` | Check names; empty means the type's default set |
 | `assets` | list[str] | `[]` | Reserved; not consumed by the runner yet |
-| `metadata` | map | `{}` | Free-form; carried into run records. `video` tasks read `duration`, `resolution`, `aspect_ratio`, `generate_audio`, `seed`; `multi-file` tasks read `expected_paths`; `code` tasks read `module`, `tests`, `timeout_seconds`, `expected_paths` |
+| `metadata` | map | `{}` | Free-form; carried into run records. `video` tasks read `duration`, `resolution`, `aspect_ratio`, `generate_audio`, `seed`; `multi-file` tasks read `expected_paths`; `code` tasks read `module`, `tests`, `timeout_seconds`, `expected_paths`, plus quality bounds `max_code_lines`, `max_functions`, `max_complexity_lite`, `no_unsafe`, `no_external_deps`, `forbidden_patterns` |
 
 ## Task types
 
@@ -76,6 +76,39 @@ metadata: {}                  # optional free-form map (video tasks read generat
   privileges, so only pair trusted models with this task type. Dry runs skip
   execution and compile-check `.py` files instead (`executed: false`).
 
+  Every run also records a `report["quality"]` block — static analysis of the
+  generated file set, measured unconditionally so pairings can be compared on
+  lean-ness and safety even when no bound is declared:
+
+  | Field | Meaning |
+  |---|---|
+  | `files` / `total_lines` / `code_lines` | file count; lines; non-blank non-comment lines |
+  | `functions` / `max_function_lines` | function count; longest function span |
+  | `complexity_lite` | lightweight branch count (AST if/for/while/except/assert/boolop/comprehension — not cyclomatic complexity) |
+  | `imports` / `external_imports` | all imported roots; those outside the stdlib |
+  | `unsafe_hits` | builtin unsafe-pattern hits (eval/exec, os.system, subprocess, pickle/marshal loads, `__import__`, ctypes, raw sockets, shell-out, hard deletes, hardcoded secrets) with file/line |
+  | `unparseable` | `.py` files that failed `ast.parse` |
+  | `violations` | declared bounds that were exceeded |
+
+  Bounds are **opt-in gates** — declared in `metadata`, each producing a
+  violation that fails the run even when tests pass:
+
+  | Metadata key | Violates when |
+  |---|---|
+  | `max_code_lines` | `code_lines` exceeds it (bloat cap) |
+  | `max_functions` | `functions` exceeds it |
+  | `max_complexity_lite` | `complexity_lite` exceeds it |
+  | `no_unsafe` | any builtin unsafe-pattern hit |
+  | `no_external_deps` | any non-stdlib import |
+  | `forbidden_patterns` | list of regexes — any hit always violates |
+
+  Caveats: regex-based unsafe detection has false positives *and* negatives;
+  a clean `unsafe_hits` is not proof of safety. `complexity_lite` and
+  `code_lines` are lean-ness proxies, not performance measurements. The
+  `code-*` task specs form a difficulty ladder (fizzbuzz → slugify →
+  lru-cache → expr-parser) so a pairing's breakpoint shows up as the first
+  task where `score` drops below 1.0 or `passes` flips false.
+
 ## Validation checks
 
 `html` tasks (default set: `html_parses`, `non_empty`, `has_title`):
@@ -118,6 +151,7 @@ metadata: {}                  # optional free-form map (video tasks read generat
 | Check | Passes when |
 |---|---|
 | `expected_paths` | `metadata.module` (and any declared `expected_paths`) are present non-empty |
+| `quality_ok` | no declared quality bound was violated |
 | `compiles` | (dry-run only) every `.py` file compiles |
 | `tests_pass` | `python -Es -m unittest task_tests` exits 0 with ≥1 test run |
 

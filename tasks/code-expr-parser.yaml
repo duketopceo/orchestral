@@ -1,0 +1,52 @@
+id: code-expr-parser
+type: code
+prompt: |
+  Implement a Python module `calc.py` with `evaluate(expr: str) -> float`.
+
+  The expression language: numbers (ints and decimals), `+ - * /`,
+  parentheses, unary minus, and standard precedence (`*`/`/` bind tighter
+  than `+`/`-`). Examples: "2+3*4" → 14, "(2+3)*4" → 20, "-3 + -2" → -5,
+  "10 / 4" → 2.5.
+
+  Do NOT use eval() or exec() — write a real parser (tokenize + recursive
+  descent or shunting-yard). Raise ValueError on malformed input.
+
+  Return a JSON object {"files": [{"path": "calc.py", "content": "..."}]}
+  with the complete module. No test file needed — the harness runs its own.
+metadata:
+  module: calc.py
+  expected_paths: [calc.py]
+  timeout_seconds: 30
+  max_code_lines: 200
+  no_unsafe: true
+  no_external_deps: true
+  forbidden_patterns:
+    - "\\beval\\s*\\("
+    - "\\bexec\\s*\\("
+  tests: |
+    import unittest
+    from calc import evaluate
+
+    class TestCalc(unittest.TestCase):
+        def test_precedence(self):
+            self.assertAlmostEqual(evaluate("2+3*4"), 14.0)
+            self.assertAlmostEqual(evaluate("(2+3)*4"), 20.0)
+
+        def test_division(self):
+            self.assertAlmostEqual(evaluate("10 / 4"), 2.5)
+            self.assertAlmostEqual(evaluate("8/2/2"), 2.0)
+
+        def test_unary_minus(self):
+            self.assertAlmostEqual(evaluate("-3 + -2"), -5.0)
+            self.assertAlmostEqual(evaluate("-(4+1)"), -5.0)
+
+        def test_whitespace_and_decimals(self):
+            self.assertAlmostEqual(evaluate("  1.5 + 2.25 "), 3.75)
+
+        def test_nested_parens(self):
+            self.assertAlmostEqual(evaluate("((2+3)*(4-1))"), 15.0)
+
+        def test_malformed_raises(self):
+            for bad in ("2 +", "(1+2", "2 ** 3", "", "abc"):
+                with self.assertRaises((ValueError, SyntaxError), msg=bad):
+                    evaluate(bad)

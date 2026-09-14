@@ -15,7 +15,12 @@ from typing import Any, Protocol, runtime_checkable
 from urllib.parse import urlparse
 
 from orchestral.config import ModelConfig
-from orchestral.openrouter import DEFAULT_BASE_URL, OpenRouterClient, _is_private_host
+from orchestral.openrouter import (
+    DEFAULT_BASE_URL,
+    OpenRouterClient,
+    ProviderConfigError,
+    _is_private_host,
+)
 
 SUPPORTED_PROVIDERS = ("openrouter", "openai-compatible")
 _DEFAULT_ENV = {"openrouter": "OPENROUTER_API_KEY", "openai-compatible": "OPENAI_API_KEY"}
@@ -70,21 +75,21 @@ def provider_key(model: ModelConfig) -> tuple[str, str, str]:
 def provider_for(model: ModelConfig) -> Provider:
     """Build a client for the model's configured provider.
 
-    Raises ValueError naming the problem (unknown provider, missing base_url,
-    or missing API-key env var) rather than failing deep in a run.
+    Raises ProviderConfigError naming the problem (unknown provider, missing
+    base_url, or missing API-key env var) rather than failing deep in a run.
     """
     provider, base_url, api_key_env = provider_key(model)
     if provider not in SUPPORTED_PROVIDERS:
-        raise ValueError(
+        raise ProviderConfigError(
             f"Unknown provider {provider!r} for model {model.slug}; "
             f"supported: {', '.join(SUPPORTED_PROVIDERS)}"
         )
     if not base_url:
-        raise ValueError(
+        raise ProviderConfigError(
             f"Model {model.slug} uses provider {provider!r} but has no metadata.base_url"
         )
     if not api_key_env:
-        raise ValueError(
+        raise ProviderConfigError(
             f"Model {model.slug} uses provider {provider!r} but has no metadata.api_key_env"
         )
     _warn_http_base_url(base_url, model.slug)

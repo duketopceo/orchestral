@@ -122,6 +122,10 @@ def _runner_kwargs(args: argparse.Namespace, store: RunStore, **extra: Any) -> d
         "runs_dir": args.runs_dir,
         "prompt_variant": getattr(args, "prompt_variant", None),
         "use_judge_cache": not getattr(args, "no_judge_cache", False),
+        "run_group": getattr(args, "group", None),
+        "replicate": getattr(args, "replicate", None),
+        "seed": getattr(args, "seed", None),
+        "verbose": getattr(args, "verbose", False),
         "store": store,
         **extra,
     }
@@ -152,8 +156,8 @@ def cmd_run(args: argparse.Namespace) -> None:
         return
     print(f"Run {meta.run_id} {meta.status}")
     print(f"  Directory: {meta.run_dir}")
-    print(f"  Cost: ${meta.total_cost_usd:.6f} | Tokens: {meta.total_input_tokens + meta.total_output_tokens}")
-    print(f"  Passes: {meta.passes} | Score: {meta.score}")
+    print(f"  Cost: ${meta.total_cost_usd:.6f} | Tokens: {meta.total_input_tokens + meta.total_output_tokens} | Latency: {meta.latency_ms:.0f}ms")
+    print(f"  Passes: {meta.passes} | Score: {meta.score} | Failure: {meta.failure_reason or '-'}")
 
 
 def cmd_grid(args: argparse.Namespace) -> None:
@@ -553,6 +557,10 @@ def main() -> None:
         sp.add_argument("--prompt-variant", default=None, help="Orchestrator prompt variant from prompts/orchestrator-<name>.md")
         sp.add_argument("--dry-run", action="store_true", help="Do not call OpenRouter; generate sample data for storage testing")
         sp.add_argument("--json", action="store_true", help="Output the summary as JSON")
+        sp.add_argument("--verbose", "-v", action="store_true", help="Echo events and debug records to stderr while running")
+        sp.add_argument("--group", default=None, help="Label this run with a group name for replicate/variance analysis")
+        sp.add_argument("--replicate", type=int, default=None, help="Replicate index within --group")
+        sp.add_argument("--seed", type=int, default=None, help="Record a seed label on the run config")
 
     run = sub.add_parser("run", help="Run one orchestrator × worker pairing")
     run.add_argument("--task", required=True, help="Task id or path")

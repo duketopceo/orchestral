@@ -7,6 +7,7 @@ config. API keys are read from the environment only — never from disk or git.
 from __future__ import annotations
 
 import base64
+import contextlib
 import ipaddress
 import os
 import socket
@@ -81,8 +82,19 @@ class OpenRouterClient:
         self.provider = provider
         self.api_key = (api_key or os.environ.get(api_key_env) or "").strip()
         if not self.api_key:
-            raise ValueError(f"{api_key_env} is not set")
+            raise ProviderConfigError(f"{api_key_env} is not set")
         self.client = httpx.Client(base_url=base_url, timeout=120.0, follow_redirects=True)
+        # Optional debug sink: callable(component, message, **fields) — the
+        # runner wires it to the run's debug.jsonl. Never send URLs, headers,
+        # or payloads here; this stream is for operational diagnostics only.
+        self.debug: Any = None
+
+    def _dbg(self, message: str, **fields: Any) -> None:
+        """Emit a debug record if a sink is wired; never raises."""
+        if self.debug is None:
+            return
+        with contextlib.suppress(Exception):
+            self.debug("openrouter", message, **fields)
 
     def _headers(self, url: str | None = None) -> dict[str, str]:
         """Auth + attribution headers for API calls.
@@ -122,12 +134,14 @@ class OpenRouterClient:
                     last_error = exc
                     break
                 delay = _retry_after_seconds(exc) or (BASE_RETRY_DELAY_SECONDS * (2 ** (attempt - 1)))
+                self._dbg("http_retry", path=path, attempt=attempt, status=exc.response.status_code, delay_s=round(delay, 3))
                 time.sleep(delay)
                 continue
             except (httpx.TimeoutException, httpx.NetworkError) as exc:
                 if attempt > MAX_RETRIES:
                     raise OpenRouterError(f"OpenRouter request failed after {MAX_RETRIES} retries: {exc}") from exc
                 delay = BASE_RETRY_DELAY_SECONDS * (2 ** (attempt - 1))
+                self._dbg("http_retry", path=path, attempt=attempt, error=type(exc).__name__, delay_s=round(delay, 3))
                 time.sleep(delay)
                 continue
             return response
@@ -147,19 +161,33 @@ class OpenRouterClient:
             "messages": messages,
             "max_tokens": max_tokens,
             "temperature": temperature,
+            # ask OpenRouter to report usage.cost so runs can compare the
+            # provider-reported charge against configured pricing (drift check)
+            "usage": {"include": True},
         })
 
         data = response.json()
         choice = data.get("choices", [{}])[0]
         content = choice.get("message", {}).get("content") or ""
         usage = data.get("usage", {})
+        latency_ms = (time.time() - start) * 1000
+        self._dbg(
+            "chat",
+            model=model,
+            latency_ms=round(latency_ms, 1),
+            prompt_tokens=usage.get("prompt_tokens"),
+            completion_tokens=usage.get("completion_tokens"),
+            finish_reason=choice.get("finish_reason"),
+        )
 
         return {
             "id": data.get("id"),
             "model": data.get("model", model),
             "content": content,
             "usage": token_usage_from_raw(usage).to_dict(),
-            "latency_ms": (time.time() - start) * 1000,
+            "api_cost_usd": usage.get("cost"),
+            "finish_reason": choice.get("finish_reason"),
+            "latency_ms": latency_ms,
             "raw_response": data,
         }
 
@@ -202,12 +230,14 @@ class OpenRouterClient:
         elif first.get("url"):
             image_bytes = self._download(first["url"])
 
+        self._dbg("images", model=model, bytes=len(image_bytes), latency_ms=round((time.time() - start) * 1000, 1))
         return {
             "id": data.get("id"),
             "model": data.get("model", model),
             "image_bytes": image_bytes,
             "output_format": output_format,
             "usage": token_usage_from_raw(data.get("usage", {})).to_dict(),
+            "api_cost_usd": data.get("usage", {}).get("cost"),
             "latency_ms": (time.time() - start) * 1000,
             "raw_response": data,
         }
@@ -251,6 +281,7 @@ class OpenRouterClient:
         job_id = data.get("id")
         if not job_id:
             raise OpenRouterError("Malformed videos response: missing job id")
+        self._dbg("video_submit", model=model, job_id=job_id)
 
         # Everything below this point happens with a billable job already
         # submitted — failures raise OpenRouterVideoSubmittedError so the
@@ -265,6 +296,7 @@ class OpenRouterClient:
 
         deadline = start + VIDEO_MAX_WAIT_SECONDS
         poll_errors = 0
+        polls = 0
         status: str | None = None
         while True:
             time.sleep(VIDEO_POLL_INTERVAL_SECONDS)
@@ -284,6 +316,7 @@ class OpenRouterClient:
                 poll_errors = 0
             except (ValueError, _PollingRedirectError) as exc:
                 poll_errors += 1
+                self._dbg("video_poll_error", job_id=job_id, error=type(exc).__name__, consecutive=poll_errors)
                 if poll_errors > VIDEO_MAX_POLL_ERRORS:
                     raise OpenRouterVideoSubmittedError(
                         f"video job {job_id} polling failed after "
@@ -299,13 +332,16 @@ class OpenRouterClient:
                         f"{exc.response.status_code}"
                     ) from exc
                 poll_errors += 1
+                self._dbg("video_poll_error", job_id=job_id, error=type(exc).__name__, consecutive=poll_errors)
                 if poll_errors > VIDEO_MAX_POLL_ERRORS:
                     raise OpenRouterVideoSubmittedError(
                         f"video job {job_id} polling failed after "
                         f"{poll_errors} consecutive errors ({type(exc).__name__})"
                     ) from exc
             else:
+                polls += 1
                 status = data.get("status") if isinstance(data, dict) else None
+                self._dbg("video_poll", job_id=job_id, status=status, poll=polls)
                 if status in _VIDEO_TERMINAL_STATUSES:
                     error = data.get("error") or {}
                     detail = error.get("message") if isinstance(error, dict) else str(error or status)
@@ -345,6 +381,7 @@ class OpenRouterClient:
             # empty media would look like "worker returned nothing" to the
             # runner and trigger a billable resubmission
             raise OpenRouterVideoSubmittedError(f"video job {job_id} download returned no data")
+        self._dbg("video_download", job_id=job_id, bytes=len(video_bytes), polls=polls)
 
         return {
             "id": job_id,
@@ -420,6 +457,11 @@ class OpenRouterClient:
 
 class OpenRouterError(Exception):
     """Raised when the OpenRouter API returns an error."""
+
+
+class ProviderConfigError(ValueError):
+    """Provider configuration is missing or invalid (env var, base_url,
+    provider name). Raised before any API call is made."""
 
 
 class _PollingRedirectError(Exception):

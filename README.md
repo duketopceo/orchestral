@@ -126,17 +126,28 @@ Each run is a folder:
 
 ```
 runs/{orchestrator}/{task}/{worker}/{run_id}/
-  run.json       # metadata, cost, score, status
+  run.json       # metadata, cost, score, status, latency, env, failure_reason
   events.jsonl   # every agent action, reasoning, tool call, latency
+  debug.jsonl    # internal diagnostics: http retries, poll loops, provider
+                 # decisions (never published by `scrub`)
+  metrics.json   # derived per-phase/role aggregates (calls, tokens, cost,
+                 # latency, error counts) written at run end
   plan.json      # orchestrator decomposition
   worker-*.json  # individual worker outputs
   artifact.*     # assembled final output (html, png, ...)
   screenshot.png # rendered capture for html artifacts (optional)
-  cost.json      # per-call cost breakdown
+  cost.json      # per-call cost breakdown with pricing_source labels
   report.json    # validation and judge results
 ```
 
-`runs/index.db` is an SQLite index for fast sorting and filtering.
+`runs/index.db` is an SQLite index for fast sorting and filtering — a `runs`
+table plus a per-call `calls` table (tokens, cost, latency, `pricing_source`,
+`error_category` per LLM call). `runs/debug.jsonl` at the root captures
+failures that happen before a run directory exists (e.g. provider config).
+
+Pass `--verbose` (`-v`) to any run command to echo events and debug records
+to stderr live. Use `--group NAME --replicate N --seed S` to label runs for
+replicate/variance analysis.
 
 ## Publishing results
 

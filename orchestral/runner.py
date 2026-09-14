@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import html.parser
 import io
 import json
+import platform
+import subprocess
+import time
 import zipfile
 from datetime import UTC, datetime
 from pathlib import Path
@@ -21,6 +25,7 @@ from orchestral.fileset import (
 )
 from orchestral.judge import judge_artifact
 from orchestral.logger import EventLogger
+from orchestral.metrics import build_metrics
 from orchestral.openrouter import OpenRouterVideoSubmittedError
 from orchestral.planners import (
     assemble_ce,
@@ -35,6 +40,7 @@ from orchestral.planners import (
 )
 from orchestral.providers import provider_for, provider_key
 from orchestral.storage import RunMeta, RunStore
+from orchestral.taxonomy import classify_exception
 
 
 class ValidationError(Exception):
@@ -53,11 +59,19 @@ class Runner:
         use_judge_cache: bool = True,
         store: RunStore | None = None,
         clients: dict[str, Any] | None = None,
+        run_group: str | None = None,
+        replicate: int | None = None,
+        seed: int | None = None,
+        verbose: bool = False,
     ):
         self.dry_run = dry_run
         self.planner = planner
         self.prompt_variant = prompt_variant
         self.sweep = sweep
+        self.run_group = run_group
+        self.replicate = replicate
+        self.seed = seed
+        self.verbose = verbose
         self.use_judge_cache = use_judge_cache
         self.store = store or RunStore(runs_dir)
         # role ("orchestrator"/"worker"/"judge") -> Provider, injected for tests
@@ -101,13 +115,26 @@ class Runner:
 
     def run(self, task: TaskSpec, orchestrator: ModelConfig, worker: ModelConfig, judge: ModelConfig | None = None) -> RunMeta:
         # Resolve providers before the run dir exists — a bad provider config
-        # fails fast instead of leaving a run stuck at "running".
-        role_clients = self._resolve_clients(orchestrator, worker, judge)
+        # fails fast instead of leaving a run stuck at "running". Pre-run
+        # failures have no run dir to log to, so they land in the store's
+        # root-level debug.jsonl instead.
+        try:
+            role_clients = self._resolve_clients(orchestrator, worker, judge)
+        except Exception as exc:
+            with contextlib.suppress(Exception):
+                self.store.debug_log(
+                    "providers", "client resolution failed",
+                    error=str(exc), error_type=type(exc).__name__,
+                    error_category=classify_exception(exc),
+                    task=task.id, orchestrator=orchestrator.slug, worker=worker.slug,
+                )
+            raise
         providers = {
             role: provider_key(model)
             for role, model in (("orchestrator", orchestrator), ("worker", worker), ("judge", judge))
             if model is not None
         }
+        env = _environment()
         run_id, run_dir = self.store.new_run(
             orchestrator.slug,
             task.id,
@@ -118,11 +145,21 @@ class Runner:
                 "prompt_variant": self.prompt_variant,
                 "sweep": self.sweep,
                 "judge": judge.slug if judge else None,
+                "run_group": self.run_group,
+                "replicate": self.replicate,
+                "seed": self.seed,
                 "orchestrator": orchestrator.to_dict(),
                 "worker": worker.to_dict(),
             },
         )
-        logger = EventLogger(run_dir)
+        logger = EventLogger(
+            run_dir, store=self.store, run_id=run_id,
+            dry_run=self.dry_run, verbose=self.verbose,
+        )
+        # wire the client's debug sink (http retries, video polls) to debug.jsonl
+        for c in role_clients.values():
+            with contextlib.suppress(AttributeError):
+                c.debug = logger.log_debug
         logger.log(
             phase="init",
             step=0,
@@ -142,12 +179,14 @@ class Runner:
                     role: {"provider": p, "base_url": u, "api_key_env": e}
                     for role, (p, u, e) in providers.items()
                 },
+                "env": env,
             },
             reasoning="Initialised run directory, SQLite index, and event log.",
         )
 
         ledger = CostLedger()
         meta: RunMeta | None = None
+        t0 = time.perf_counter()
 
         try:
             # 1. Plan
@@ -237,6 +276,7 @@ class Runner:
                         ledger.add_many(worker_costs)
                     except Exception as exc:
                         out = None
+                        cat = classify_exception(exc)
                         logger.log(
                             phase="delegate",
                             step=i + 3,
@@ -247,11 +287,21 @@ class Runner:
                             output_data={"attempt": attempt + 1, "max_attempts": attempts},
                             reasoning=f"Worker call raised an exception on attempt {attempt + 1}.",
                             error=str(exc),
+                            metadata={"error_category": cat, "subtask_id": sub.get("id", i)},
                         )
                         # Any post-submission video failure (terminal status,
                         # poll exhaustion, timeout, unsafe URL, download) is
                         # unrecoverable by retry — resubmitting bills a new job.
-                        if isinstance(exc, OpenRouterVideoSubmittedError) or attempt + 1 >= attempts:
+                        will_retry = not (
+                            isinstance(exc, OpenRouterVideoSubmittedError) or attempt + 1 >= attempts
+                        )
+                        logger.log_debug(
+                            "delegate", "worker call failed",
+                            subtask_id=sub.get("id", i), attempt=attempt + 1,
+                            error_type=type(exc).__name__, error_category=cat,
+                            will_retry=will_retry,
+                        )
+                        if not will_retry:
                             raise
                         continue
                     if _subtask_produced_output(out, media_bytes, files, is_media, is_multi):
@@ -265,6 +315,11 @@ class Runner:
                         input_data={"subtask": sub},
                         output_data={"attempt": attempt + 1, "max_attempts": attempts},
                         reasoning=f"Worker returned empty output on attempt {attempt + 1}; retrying.",
+                        metadata={"subtask_id": sub.get("id", i)},
+                    )
+                    logger.log_debug(
+                        "delegate", "empty worker output; retrying",
+                        subtask_id=sub.get("id", i), attempt=attempt + 1,
                     )
                 if out is None:
                     raise ValidationError(f"Worker {worker.slug} produced no output for subtask {sub.get('id')}")
@@ -429,7 +484,22 @@ class Runner:
             meta.total_output_tokens = total_output
             meta.passes = passes
             meta.score = report.get("score")
+            meta.latency_ms = (time.perf_counter() - t0) * 1000
+            meta.env = env
+            meta.run_group = self.run_group
+            meta.replicate = self.replicate
+            if passes is False:
+                # distinguish a judge rejection of a structurally-valid
+                # artifact from a failed structural check
+                checks = report.get("checks") or {}
+                judge_res = report.get("judge") or {}
+                meta.failure_reason = (
+                    "judge"
+                    if all(checks.values()) and judge_res.get("passed") is False
+                    else "validation"
+                )
             self.store.update_meta(meta)
+            _write_metrics(run_dir)
 
             logger.log(
                 phase="end",
@@ -445,10 +515,16 @@ class Runner:
             return meta
 
         except Exception as exc:
+            cat = classify_exception(exc)
             meta = self.store.get_run(run_id)
             if meta is not None:
                 meta.status = "failed"
                 meta.finished_at = datetime.now(UTC).isoformat()
+                meta.latency_ms = (time.perf_counter() - t0) * 1000
+                meta.env = env
+                meta.run_group = self.run_group
+                meta.replicate = self.replicate
+                meta.failure_reason = f"exception:{cat}"
                 self.store.update_meta(meta)
             logger.log(
                 phase="end",
@@ -457,10 +533,16 @@ class Runner:
                 model="",
                 role="harness",
                 input_data={},
-                output_data={"error": str(exc), "error_type": type(exc).__name__},
+                output_data={
+                    "error": str(exc),
+                    "error_type": type(exc).__name__,
+                    "error_category": cat,
+                },
                 reasoning="Run failed with an exception.",
                 error=str(exc),
+                metadata={"error_category": cat},
             )
+            _write_metrics(run_dir)
             raise
         finally:
             logger.close()
@@ -698,4 +780,44 @@ class _HTMLValidator(html.parser.HTMLParser):
         self.errors.append(message)
 
     def handle_starttag(self, tag, attrs):
+        pass
+
+
+def _environment() -> dict[str, Any]:
+    """Provenance labels for a run: what ran it, where, on which code."""
+    return {
+        "git_sha": _git_sha(),
+        "python": platform.python_version(),
+        "platform": f"{platform.system().lower()}/{platform.machine()}",
+        "orchestral_version": _orch_version(),
+    }
+
+
+def _git_sha() -> str | None:
+    try:
+        out = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True, timeout=5,
+        )
+        return out.stdout.strip() or None
+    except Exception:
+        return None
+
+
+def _orch_version() -> str:
+    try:
+        from importlib.metadata import version
+
+        return version("orchestral")
+    except Exception:
+        return "unknown"
+
+
+def _write_metrics(run_dir: Path) -> None:
+    """Derive metrics.json from the run's events.jsonl. Best-effort — a
+    metrics bug must never fail or mask a run's real outcome."""
+    try:
+        metrics = build_metrics(run_dir / "events.jsonl")
+        (run_dir / "metrics.json").write_text(json.dumps(metrics, indent=2, default=str))
+    except Exception:
         pass

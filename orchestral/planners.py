@@ -113,6 +113,7 @@ def _fake_cost(model_cfg: ModelConfig, input_data: dict[str, Any], output_data: 
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
         "cost_usd": cost_usd,
+        "pricing_source": "none",
     }
 
 
@@ -150,6 +151,7 @@ def _llm_call(
             output_tokens=cost["output_tokens"],
             cost_usd=cost["cost_usd"],
             latency_ms=random.uniform(80, 1200),
+            pricing_source="none",
         )
         return content, cost
 
@@ -162,6 +164,7 @@ def _llm_call(
     usage = token_usage_from_raw(completion["usage"])
     cost_usd, _ = compute_cost(usage, model_cfg)
     content = completion["content"]
+    api_cost = completion.get("api_cost_usd")
 
     logger.log_llm_call(
         phase=phase,
@@ -173,12 +176,15 @@ def _llm_call(
             "content": content,
             "usage": usage.to_dict(),
             "id": completion.get("id"),
+            "finish_reason": completion.get("finish_reason"),
         },
         reasoning=reasoning,
         input_tokens=usage.prompt_tokens,
         output_tokens=usage.completion_tokens,
         cost_usd=cost_usd,
         latency_ms=completion["latency_ms"],
+        pricing_source="configured",
+        api_cost_usd=api_cost if isinstance(api_cost, (int, float)) else None,
     )
 
     return content, {
@@ -187,6 +193,8 @@ def _llm_call(
         "input_tokens": usage.prompt_tokens,
         "output_tokens": usage.completion_tokens,
         "cost_usd": cost_usd,
+        "pricing_source": "configured",
+        "api_cost_usd": api_cost if isinstance(api_cost, (int, float)) else None,
         "usage": usage.to_dict(),
     }
 
@@ -370,6 +378,7 @@ def delegate_image(
             "input_tokens": 0,
             "output_tokens": 0,
             "cost_usd": compute_image_cost(worker, None, 1),
+            "pricing_source": "none",
         }
         logger.log_llm_call(
             phase="delegate",
@@ -383,6 +392,7 @@ def delegate_image(
             output_tokens=0,
             cost_usd=cost["cost_usd"],
             latency_ms=random.uniform(80, 1200),
+            pricing_source="none",
         )
         return {"subtask_id": subtask.get("id"), "prompt": prompt}, image_bytes, [cost]
 
@@ -393,6 +403,7 @@ def delegate_image(
     image_bytes = completion["image_bytes"]
     usage = token_usage_from_raw(completion["usage"])
     cost_usd = compute_image_cost(worker, usage, 1)
+    api_cost = completion.get("api_cost_usd")
 
     logger.log_llm_call(
         phase="delegate",
@@ -410,6 +421,8 @@ def delegate_image(
         output_tokens=usage.completion_tokens,
         cost_usd=cost_usd,
         latency_ms=completion["latency_ms"],
+        pricing_source="configured",
+        api_cost_usd=api_cost if isinstance(api_cost, (int, float)) else None,
     )
     return {"subtask_id": subtask.get("id"), "prompt": prompt}, image_bytes, [{
         "phase": "delegate",
@@ -417,6 +430,8 @@ def delegate_image(
         "input_tokens": usage.prompt_tokens,
         "output_tokens": usage.completion_tokens,
         "cost_usd": cost_usd,
+        "pricing_source": "configured",
+        "api_cost_usd": api_cost if isinstance(api_cost, (int, float)) else None,
         "usage": usage.to_dict(),
     }]
 
@@ -452,6 +467,7 @@ def delegate_video(
             "cost_usd": compute_video_cost(
                 worker, duration_s=duration_s, resolution=resolution, generate_audio=generate_audio
             ),
+            "pricing_source": "none",
         }
         logger.log_llm_call(
             phase="delegate",
@@ -465,6 +481,7 @@ def delegate_video(
             output_tokens=0,
             cost_usd=cost["cost_usd"],
             latency_ms=random.uniform(80, 1200),
+            pricing_source="none",
         )
         return {"subtask_id": subtask.get("id"), "prompt": prompt}, video_bytes, [cost]
 
@@ -479,13 +496,17 @@ def delegate_video(
         k: v for k, v in (completion.get("usage") or {}).items()
         if isinstance(v, (int, float, str, bool))
     }
+    api_cost = usage.get("cost")
     cost_usd = compute_video_cost(
         worker,
-        api_cost=usage.get("cost"),
+        api_cost=api_cost,
         duration_s=duration_s,
         resolution=resolution,
         generate_audio=generate_audio,
     )
+    # the async API reports an authoritative usage.cost on the completed job;
+    # anything else is a configured rate-card estimate
+    pricing_source = "api_reported" if isinstance(api_cost, (int, float)) else "configured_estimate"
 
     logger.log_llm_call(
         phase="delegate",
@@ -503,6 +524,8 @@ def delegate_video(
         output_tokens=0,
         cost_usd=cost_usd,
         latency_ms=completion["latency_ms"],
+        pricing_source=pricing_source,
+        api_cost_usd=api_cost if isinstance(api_cost, (int, float)) else None,
     )
     return {"subtask_id": subtask.get("id"), "prompt": prompt}, video_bytes, [{
         "phase": "delegate",
@@ -510,6 +533,8 @@ def delegate_video(
         "input_tokens": 0,
         "output_tokens": 0,
         "cost_usd": cost_usd,
+        "pricing_source": pricing_source,
+        "api_cost_usd": api_cost if isinstance(api_cost, (int, float)) else None,
         "usage": usage,
     }]
 
@@ -588,6 +613,7 @@ def delegate_multi(
 
     usage = token_usage_from_raw(completion["usage"])
     cost_usd, _ = compute_cost(usage, worker)
+    api_cost = completion.get("api_cost_usd")
     summary = summarize_fileset(files)
     logger.log_llm_call(
         phase="delegate",
@@ -601,12 +627,15 @@ def delegate_multi(
             "paths": summary["paths"],
             "usage": usage.to_dict(),
             "id": completion.get("id"),
+            "finish_reason": completion.get("finish_reason"),
         },
         reasoning=f"Produce a {len(files)}-file set for subtask {subtask.get('id')} with {worker.slug}.",
         input_tokens=usage.prompt_tokens,
         output_tokens=usage.completion_tokens,
         cost_usd=cost_usd,
         latency_ms=completion["latency_ms"],
+        pricing_source="configured",
+        api_cost_usd=api_cost if isinstance(api_cost, (int, float)) else None,
     )
     notes = data.get("notes") if isinstance(data, dict) else None
     return {
@@ -619,6 +648,8 @@ def delegate_multi(
         "input_tokens": usage.prompt_tokens,
         "output_tokens": usage.completion_tokens,
         "cost_usd": cost_usd,
+        "pricing_source": "configured",
+        "api_cost_usd": api_cost if isinstance(api_cost, (int, float)) else None,
         "usage": usage.to_dict(),
     }]
 

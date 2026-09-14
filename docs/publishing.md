@@ -38,7 +38,8 @@ grep -rniE "key|token|secret|/home/|/Users/" runs-pub/ | less
   databases, or anything with NUL bytes) — except archives, which are omitted
   as described above.
 - **Copies only allowlisted names**: `run.json`, `events.jsonl`, `plan.json`,
-  `cost.json`, `report.json`, `worker-*`, `artifact.*`, `screenshot.*`,
+  `cost.json`, `report.json`, `metrics.json`, `worker-*`, `artifact.*`,
+  `screenshot.*`,
   `judge*`. Random files you dropped into a run dir stay behind.
 - **Writes `manifest.json`**: one entry per run with run_id, orchestrator,
   task_id, worker, status, score, passes, cost, token totals, and the

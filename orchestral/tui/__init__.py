@@ -14,6 +14,7 @@ def run_tui(
     runs_dir: str | Path = "runs",
     tasks_dir: str | Path = "tasks",
     models_dir: str | Path = "models",
+    reports_dir: str | Path = "reports",
     refresh: bool = False,
 ) -> None:
     try:
@@ -26,5 +27,6 @@ def run_tui(
         runs_dir=Path(runs_dir),
         tasks_dir=Path(tasks_dir),
         models_dir=Path(models_dir),
+        reports_dir=Path(reports_dir),
     )
     app.run()

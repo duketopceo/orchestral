@@ -70,6 +70,7 @@ class Runner:
         seed: int | None = None,
         verbose: bool = False,
         cancel_event: threading.Event | None = None,
+        on_run_created: Any = None,
     ):
         self.dry_run = dry_run
         self.planner = planner
@@ -80,6 +81,9 @@ class Runner:
         self.seed = seed
         self.verbose = verbose
         self.cancel_event = cancel_event
+        # called with run_id as soon as the run dir exists — lets a caller
+        # (e.g. the TUI) map a job to its in-flight run before run() returns
+        self.on_run_created = on_run_created
         self.use_judge_cache = use_judge_cache
         self.store = store or RunStore(runs_dir)
         # role ("orchestrator"/"worker"/"judge") -> Provider, injected for tests
@@ -192,6 +196,8 @@ class Runner:
             seed=self.seed, run_group=self.run_group, replicate=self.replicate,
         )
         write_manifest(run_dir, manifest)
+        if self.on_run_created is not None:
+            self.on_run_created(run_id)
         logger.lifecycle("run.created", phase="init", run_id=run_id, dry_run=self.dry_run)
         logger.lifecycle(
             "task.loaded", phase="init", task_id=task.id, task_type=task.type,

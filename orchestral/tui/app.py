@@ -17,9 +17,17 @@ from textual.binding import Binding
 from textual.widgets import DataTable, Footer, Header, Input
 
 from orchestral.config import ModelConfig, TaskSpec, find_task, load_models, load_task, load_yaml
+from orchestral.export import runs_csv
 from orchestral.runner import Runner
 from orchestral.storage import RunStore
-from orchestral.tui.screens import GroupsScreen, HelpScreen, LaunchScreen, RunDetailScreen
+from orchestral.tui.screens import (
+    GroupsScreen,
+    HelpScreen,
+    LaunchScreen,
+    LeaderboardScreen,
+    LiveRunScreen,
+    RunDetailScreen,
+)
 from orchestral.tui.state import Job, JobStatus, filter_runs, fmt_cost, fmt_tokens, pass_label, status_label
 from orchestral.tui.widgets import StatusBar
 
@@ -75,21 +83,33 @@ class OrchestralApp(App):
         Binding("q", "quit", "Quit"),
         Binding("r", "refresh", "Refresh"),
         Binding("/", "filter", "Filter"),
+        Binding("1", "show_live", "Live"),
+        Binding("2", "show_history", "History"),
+        Binding("3", "show_leaderboard", "Board"),
         Binding("g", "groups", "Groups"),
         Binding("n", "new_run", "New run"),
         Binding("x", "cancel_job", "Cancel job"),
+        Binding("e", "export", "Export"),
         Binding("?", "help", "Help"),
     ]
 
-    def __init__(self, runs_dir: Path, tasks_dir: Path, models_dir: Path) -> None:
+    def __init__(
+        self,
+        runs_dir: Path,
+        tasks_dir: Path,
+        models_dir: Path,
+        reports_dir: Path | None = None,
+    ) -> None:
         super().__init__()
         self.runs_dir = runs_dir
         self.tasks_dir = tasks_dir
         self.models_dir = models_dir
+        self.reports_dir = reports_dir or Path("reports")
         self.store = RunStore(runs_dir)
         self.jobs: list[Job] = []
         self._runs: list[Any] = []
         self._query = ""
+        self._auto_live_done = False
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -153,6 +173,12 @@ class OrchestralApp(App):
         bar = self.query_one(StatusBar)
         bar.set_counts(summary.get("runs", 0), summary.get("total_cost_usd", 0.0))
         bar.set_jobs(self.jobs)
+        # observatory default: an in-flight run opens on the live view, once
+        if not self._auto_live_done:
+            self._auto_live_done = True
+            running = [r for r in runs if r.status == "running"]
+            if running and len(self.screen_stack) == 1:
+                self.push_screen(LiveRunScreen(self.store, running[-1].run_id, self.reports_dir))
 
     def _tick(self) -> None:
         """Auto-refresh while jobs are active or any run is still running."""
@@ -191,8 +217,42 @@ class OrchestralApp(App):
             self._close_filter()
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
-        if event.data_table.id == "runs-table" and event.row_key.value:
-            self.push_screen(RunDetailScreen(self.store, str(event.row_key.value)))
+        if event.data_table.id != "runs-table" or not event.row_key.value:
+            return
+        run_id = str(event.row_key.value)
+        run = next((r for r in self._runs if r.run_id == run_id), None)
+        if run is not None and run.status == "running":
+            self.push_screen(LiveRunScreen(self.store, run_id, self.reports_dir))
+        else:
+            self.push_screen(RunDetailScreen(self.store, run_id, self.reports_dir))
+
+    def action_show_live(self) -> None:
+        if isinstance(self.screen, LiveRunScreen):
+            return
+        running = [r for r in self._runs if r.status == "running"]
+        if not running:
+            self.notify("no run in flight — press n to launch one", severity="warning")
+            return
+        self.push_screen(LiveRunScreen(self.store, running[-1].run_id, self.reports_dir))
+
+    def action_show_history(self) -> None:
+        while len(self.screen_stack) > 1:
+            self.pop_screen()
+
+    def action_show_leaderboard(self) -> None:
+        if isinstance(self.screen, LeaderboardScreen):
+            return
+        self.push_screen(LeaderboardScreen(self.store, self.reports_dir))
+
+    def action_export(self) -> None:
+        """On the history view: write the currently filtered runs to CSV."""
+        try:
+            out = self.reports_dir / "runs.csv"
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text(runs_csv(filter_runs(self._runs, self._query)), encoding="utf-8")
+            self.notify(f"exported {out}")
+        except Exception as exc:
+            self.notify(f"export failed: {exc}", severity="error")
 
     def action_groups(self) -> None:
         self.push_screen(GroupsScreen(self.store))
@@ -274,8 +334,10 @@ class OrchestralApp(App):
                     replicate=i if spec["replicates"] > 1 else None,
                     seed=(spec["seed"] + i - 1) if spec.get("seed") is not None else None,
                     cancel_event=job.cancel_event,
+                    on_run_created=job.run_ids.append,
                 ).run(task, orchestrator, worker, judge)
                 job.run_ids.append(meta.run_id)
+                job.run_ids = list(dict.fromkeys(job.run_ids))
                 if meta.status == "cancelled":
                     self._job_done(job, JobStatus.CANCELLED, f"run {meta.run_id} cancelled")
                     return

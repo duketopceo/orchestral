@@ -26,6 +26,7 @@ from orchestral.fileset import (
 )
 from orchestral.judge import judge_artifact
 from orchestral.logger import EventLogger
+from orchestral.manifest import build_manifest, finalize_manifest, write_manifest
 from orchestral.metrics import build_metrics
 from orchestral.openrouter import OpenRouterVideoSubmittedError
 from orchestral.planners import (
@@ -146,6 +147,18 @@ class Runner:
             if model is not None
         }
         env = _environment()
+        run_config = {
+            "dry_run": self.dry_run,
+            "planner": self.planner,
+            "prompt_variant": self.prompt_variant,
+            "sweep": self.sweep,
+            "judge": judge.slug if judge else None,
+            "run_group": self.run_group,
+            "replicate": self.replicate,
+            "seed": self.seed,
+            "orchestrator": orchestrator.to_dict(),
+            "worker": worker.to_dict(),
+        }
         try:
             run_id, run_dir = self.store.new_run(
                 orchestrator.slug,
@@ -154,18 +167,7 @@ class Runner:
                 run_group=self.run_group,
                 replicate=self.replicate,
                 env=env,
-                config={
-                    "dry_run": self.dry_run,
-                    "planner": self.planner,
-                    "prompt_variant": self.prompt_variant,
-                    "sweep": self.sweep,
-                    "judge": judge.slug if judge else None,
-                    "run_group": self.run_group,
-                    "replicate": self.replicate,
-                    "seed": self.seed,
-                    "orchestrator": orchestrator.to_dict(),
-                    "worker": worker.to_dict(),
-                },
+                config=run_config,
             )
             logger = EventLogger(
                 run_dir, store=self.store, run_id=run_id,
@@ -182,10 +184,23 @@ class Runner:
                 with contextlib.suppress(Exception):
                     c.close()
             raise
+        manifest = build_manifest(
+            run_id=run_id, task=task, orchestrator=orchestrator,
+            worker=worker, judge=judge, providers=providers, env=env,
+            config=run_config, planner=self.planner,
+            prompt_variant=self.prompt_variant, dry_run=self.dry_run,
+            seed=self.seed, run_group=self.run_group, replicate=self.replicate,
+        )
+        write_manifest(run_dir, manifest)
+        logger.lifecycle("run.created", phase="init", run_id=run_id, dry_run=self.dry_run)
+        logger.lifecycle(
+            "task.loaded", phase="init", task_id=task.id, task_type=task.type,
+            task_hash=manifest["task_hash"],
+        )
         logger.log(
             phase="init",
             step=0,
-            event_type="run_start",
+            event_type="run.started",
             model="",
             role="harness",
             input_data={
@@ -213,6 +228,7 @@ class Runner:
         try:
             self._check_cancelled()
             # 1. Plan
+            logger.lifecycle("orchestrator.started", phase="plan", role="orchestrator")
             if self.planner == "ce-plan":
                 plan, plan_costs = plan_ce(
                     logger=logger,
@@ -235,6 +251,11 @@ class Runner:
                 )
             (run_dir / "plan.json").write_text(json.dumps(plan, indent=2, default=str))
             ledger.add_many(plan_costs)
+            logger.lifecycle(
+                "orchestrator.completed", phase="plan", role="orchestrator",
+                planner=self.planner,
+                cost_usd=sum(float(c.get("usd", 0.0)) for c in plan_costs if isinstance(c, dict)),
+            )
 
             # 2. Delegate each subtask to the worker
             is_image = task.type == "image"
@@ -246,6 +267,11 @@ class Runner:
             file_sets: list[tuple[int, dict[str, str]]] = []
             media_ext = _artifact_ext(task.type)
             subtasks = plan.get("subtasks") or plan.get("sections", {}).get("subtasks", [])
+            logger.lifecycle(
+                "delegation.created", phase="delegate",
+                subtasks=len(subtasks),
+                subtask_ids=[(s.get("id") if isinstance(s, dict) else i) for i, s in enumerate(subtasks)],
+            )
             for i, sub in enumerate(subtasks):
                 self._check_cancelled()
                 # models sometimes return a list of strings; normalize to dicts
@@ -253,10 +279,16 @@ class Runner:
                     sub = {"id": i, "description": sub}
                 elif not isinstance(sub, dict):
                     sub = {"id": i, "description": str(sub)}
+                wid = f"worker-{i}"
                 out: dict[str, Any] | None = None
                 media_bytes: bytes = b""
                 files: dict[str, str] = {}
                 attempts = max(1, worker.retry_limit + 1)
+                logger.lifecycle(
+                    "worker.started", phase="delegate", role="worker",
+                    worker_id=wid, subtask_id=sub.get("id", i),
+                    description=str(sub.get("description", ""))[:200],
+                )
                 for attempt in range(attempts):
                     try:
                         if is_image:
@@ -312,6 +344,7 @@ class Runner:
                             event_type="worker_error",
                             model=worker.slug,
                             role="worker",
+                            worker_id=wid,
                             input_data={"subtask": sub},
                             output_data={"attempt": attempt + 1, "max_attempts": attempts},
                             reasoning=f"Worker call raised an exception on attempt {attempt + 1}.",
@@ -331,7 +364,17 @@ class Runner:
                             will_retry=will_retry,
                         )
                         if not will_retry:
+                            logger.lifecycle(
+                                "worker.failed", phase="delegate", role="worker",
+                                worker_id=wid, subtask_id=sub.get("id", i),
+                                attempts=attempt + 1, error_category=cat,
+                            )
                             raise
+                        logger.lifecycle(
+                            "worker.progress", phase="delegate", role="worker",
+                            worker_id=wid, subtask_id=sub.get("id", i),
+                            attempt=attempt + 1, reason="error_retry",
+                        )
                         continue
                     if _subtask_produced_output(out, media_bytes, files, is_media, is_multi):
                         break
@@ -343,18 +386,34 @@ class Runner:
                             event_type="worker_retry",
                             model=worker.slug,
                             role="worker",
+                            worker_id=wid,
                             input_data={"subtask": sub},
                             output_data={"attempt": attempt + 1, "max_attempts": attempts},
                             reasoning=f"Worker returned empty output on attempt {attempt + 1}; retrying.",
                             metadata={"subtask_id": sub.get("id", i)},
+                        )
+                        logger.lifecycle(
+                            "worker.progress", phase="delegate", role="worker",
+                            worker_id=wid, subtask_id=sub.get("id", i),
+                            attempt=attempt + 1, reason="empty_output_retry",
                         )
                         logger.log_debug(
                             "delegate", "empty worker output; retrying",
                             subtask_id=sub.get("id", i), attempt=attempt + 1,
                         )
                 if out is None:
+                    logger.lifecycle(
+                        "worker.failed", phase="delegate", role="worker",
+                        worker_id=wid, subtask_id=sub.get("id", i),
+                        attempts=attempts, error_category="empty_output",
+                    )
                     raise ValidationError(f"Worker {worker.slug} produced no output for subtask {sub.get('id')}")
                 out["attempts"] = attempt + 1
+                logger.lifecycle(
+                    "worker.completed", phase="delegate", role="worker",
+                    worker_id=wid, subtask_id=sub.get("id", i),
+                    attempts=attempt + 1,
+                )
                 results.append(out)
                 (run_dir / f"worker-{i}.json").write_text(json.dumps(out, indent=2, default=str))
                 if is_multi:
@@ -368,6 +427,7 @@ class Runner:
 
             # 3. Assemble final artifact
             assembly_step = 3 + len(subtasks)
+            logger.lifecycle("synthesis.started", phase="assemble", role="orchestrator")
             judge_bytes: bytes | None = None
             judge_text: str | None = None
             if is_media:
@@ -390,6 +450,12 @@ class Runner:
                     selected = next((p for p in media_paths if p is not None), None)
                 artifact_bytes = selected.read_bytes() if selected else b""
                 (run_dir / f"artifact{media_ext}").write_bytes(artifact_bytes)
+                logger.lifecycle(
+                    "artifact.saved", phase="assemble",
+                    path=f"artifact{media_ext}", bytes=len(artifact_bytes),
+                )
+                logger.lifecycle("synthesis.completed", phase="assemble", role="orchestrator")
+                logger.lifecycle("evaluation.started", phase="validate")
                 if is_image:
                     passes, report = self._validate_image(task, artifact_bytes)
                     judge_bytes = artifact_bytes
@@ -403,6 +469,12 @@ class Runner:
                     raise ValidationError("No files were produced for the multi-file task")
                 artifact_bytes = build_zip(merged)
                 (run_dir / "artifact.zip").write_bytes(artifact_bytes)
+                logger.lifecycle(
+                    "artifact.saved", phase="assemble",
+                    path="artifact.zip", bytes=len(artifact_bytes),
+                )
+                logger.lifecycle("synthesis.completed", phase="assemble", role="orchestrator")
+                logger.lifecycle("evaluation.started", phase="validate")
                 passes, report = self._validate_multi(task, artifact_bytes)
                 report["files"] = sorted(merged)
                 report["merge_conflicts"] = conflicts
@@ -433,6 +505,12 @@ class Runner:
                 ext = _artifact_ext(task.type)
                 (run_dir / f"artifact{ext}").write_text(artifact)
                 ledger.add_many(assembly_costs)
+                logger.lifecycle(
+                    "artifact.saved", phase="assemble",
+                    path=f"artifact{ext}", bytes=len(artifact.encode()),
+                )
+                logger.lifecycle("synthesis.completed", phase="assemble", role="orchestrator")
+                logger.lifecycle("evaluation.started", phase="validate")
                 passes, report = self._validate(task, artifact)
                 judge_text = artifact
 
@@ -478,6 +556,11 @@ class Runner:
                 if judge_result.get("passed") is not None:
                     passes = passes and judge_result["passed"]
 
+            logger.lifecycle(
+                "evaluation.completed", phase="validate", role="judge" if judge else "harness",
+                passes=passes, score=report.get("score"),
+                checks=report.get("checks") or {},
+            )
             (run_dir / "report.json").write_text(json.dumps(report, indent=2, default=str))
 
             # 5. Screenshot for HTML artifacts (optional, degrades cleanly)
@@ -505,6 +588,11 @@ class Runner:
             total_input = ledger.total_input_tokens()
             total_output = ledger.total_output_tokens()
             (run_dir / "cost.json").write_text(json.dumps(ledger.to_breakdown(), indent=2, default=str))
+            logger.lifecycle(
+                "usage.recorded", phase="end",
+                total_cost_usd=total_cost, input_tokens=total_input,
+                output_tokens=total_output,
+            )
 
             meta = self.store.get_run(run_id)
             assert meta is not None
@@ -531,14 +619,20 @@ class Runner:
             logger.log(
                 phase="end",
                 step=assembly_step + 4,
-                event_type="run_end",
+                event_type="run.completed",
                 model="",
                 role="harness",
                 input_data={"total_cost": total_cost, "total_tokens": total_input + total_output},
                 output_data={"status": "finished", "passes": passes, "score": meta.score},
                 reasoning=f"Run finished. Cost ${total_cost:.4f}, tokens {total_input + total_output}, passes={passes}.",
             )
-            _write_metrics(run_dir)  # after run_end so the event is counted
+            with contextlib.suppress(Exception):
+                finalize_manifest(
+                    run_dir, status="passed" if passes else "failed",
+                    passes=passes, score=meta.score,
+                    failure_reason=meta.failure_reason,
+                )
+            _write_metrics(run_dir)  # after run.completed so the event is counted
 
             return meta
 
@@ -553,16 +647,9 @@ class Runner:
                     meta.failure_reason = "cancelled"
                     self.store.update_meta(meta)
             with contextlib.suppress(Exception):
-                logger.log(
-                    phase="end",
-                    step=-1,
-                    event_type="run_cancelled",
-                    model="",
-                    role="harness",
-                    input_data={},
-                    output_data={"status": "cancelled"},
-                    reasoning="Run cancelled by user.",
-                )
+                logger.lifecycle("run.cancelled", phase="end", status="cancelled")
+            with contextlib.suppress(Exception):
+                finalize_manifest(run_dir, status="cancelled", failure_reason="cancelled")
             _write_metrics(run_dir)
             return self.store.get_run(run_id) or meta or RunMeta(
                 run_id=run_id, orchestrator=orchestrator.slug, task_id=task.id,
@@ -586,7 +673,7 @@ class Runner:
                 logger.log(
                     phase="end",
                     step=-1,
-                    event_type="run_failed",
+                    event_type="run.failed",
                     model="",
                     role="harness",
                     input_data={},
@@ -599,6 +686,8 @@ class Runner:
                     error=str(exc),
                     metadata={"error_category": cat},
                 )
+            with contextlib.suppress(Exception):
+                finalize_manifest(run_dir, status="failed", failure_reason=f"exception:{cat}")
             _write_metrics(run_dir)
             raise
         finally:

@@ -138,3 +138,102 @@ def aggregate(runs: Iterable[RunMeta], *, by_group: bool = True) -> list[CellAgg
         ))
     out.sort(key=lambda c: (c.run_group, c.task_id, c.orchestrator, c.worker))
     return out
+
+
+# Below this a pairing needs repeated evidence before a ranking means
+# anything — one lucky run is anecdote, not a benchmark result.
+MIN_LEADERBOARD_SAMPLES = 10
+
+
+@dataclass
+class PairingAggregate:
+    """Leaderboard row: one (orchestrator, worker) pairing across all runs."""
+
+    orchestrator: str
+    worker: str
+    runs: int = 0
+    finished: int = 0
+    passed: int = 0
+    tasks_covered: int = 0
+    pass_rate: float | None = None
+    score_median: float | None = None
+    score_mean: float | None = None
+    cost_median: float = 0.0
+    cost_total: float = 0.0
+    duration_median_ms: float = 0.0
+    failure_rate: float | None = None
+    cost_per_pass: float | None = None
+    failures: dict[str, int] = field(default_factory=dict)
+    low_sample: bool = True
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "orchestrator": self.orchestrator,
+            "worker": self.worker,
+            "runs": self.runs,
+            "finished": self.finished,
+            "passed": self.passed,
+            "tasks_covered": self.tasks_covered,
+            "pass_rate": self.pass_rate,
+            "score_median": self.score_median,
+            "score_mean": self.score_mean,
+            "cost_median": self.cost_median,
+            "cost_total": self.cost_total,
+            "duration_median_ms": self.duration_median_ms,
+            "failure_rate": self.failure_rate,
+            "cost_per_pass": self.cost_per_pass,
+            "failures": self.failures,
+            "low_sample": self.low_sample,
+        }
+
+
+def pairing_leaderboard(
+    runs: Iterable[RunMeta], *, min_samples: int = MIN_LEADERBOARD_SAMPLES
+) -> list[PairingAggregate]:
+    """Aggregate runs into leaderboard rows keyed on (orchestrator, worker).
+
+    Medians over finished runs only — unfinished runs distort cost/latency
+    downward. `low_sample` marks pairings under `min_samples` so a caller can
+    refuse to crown a "best" on anecdotal evidence.
+    """
+    cells: dict[tuple[str, str], list[RunMeta]] = {}
+    for r in runs:
+        cells.setdefault((r.orchestrator, r.worker), []).append(r)
+
+    out: list[PairingAggregate] = []
+    for (orch, worker), cell in cells.items():
+        n = len(cell)
+        finished = [r for r in cell if r.status == "finished"]
+        passed = sum(1 for r in cell if r.passes)
+        scored = [r.score for r in finished if r.score is not None]
+        costs = [r.total_cost_usd for r in finished]
+        latencies = [r.latency_ms for r in finished if r.latency_ms]
+        cost_total = sum(r.total_cost_usd for r in cell)
+        failures: dict[str, int] = {}
+        for r in cell:
+            if r.failure_reason:
+                failures[r.failure_reason] = failures.get(r.failure_reason, 0) + 1
+        failed_n = sum(1 for r in cell if not r.passes)
+        out.append(PairingAggregate(
+            orchestrator=orch,
+            worker=worker,
+            runs=n,
+            finished=len(finished),
+            passed=passed,
+            tasks_covered=len({r.task_id for r in cell}),
+            pass_rate=passed / n if n else None,
+            score_median=statistics.median(scored) if scored else None,
+            score_mean=mean(scored) if scored else None,
+            cost_median=statistics.median(costs) if costs else 0.0,
+            cost_total=cost_total,
+            duration_median_ms=statistics.median(latencies) if latencies else 0.0,
+            failure_rate=failed_n / n if n else None,
+            cost_per_pass=cost_total / passed if passed else None,
+            failures=failures,
+            low_sample=n < min_samples,
+        ))
+    out.sort(key=lambda p: (
+        p.cost_per_pass is None, p.cost_per_pass or 0.0,
+        -(p.pass_rate or 0.0), p.orchestrator, p.worker,
+    ))
+    return out

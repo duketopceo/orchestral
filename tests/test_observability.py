@@ -155,7 +155,7 @@ class TestCallsTable(unittest.TestCase):
                 error="boom", metadata={"error_category": "timeout"},
             )
             # non-call events are not indexed
-            logger.log(phase="init", step=0, event_type="run_start", model="",
+            logger.log(phase="init", step=0, event_type="run.started", model="",
                        role="harness", input_data={}, output_data={})
             logger.close()
 
@@ -293,11 +293,12 @@ class TestRunnerObservability(unittest.TestCase):
             self.assertEqual(len(calls), 3)
             self.assertTrue(all(c["pricing_source"] == "configured" for c in calls))
 
-            # run.json + run_start carry the labels
+            # run.json + run.started carry the labels
             run_json = json.loads((run_dir / "run.json").read_text())
             self.assertEqual(run_json["config"]["seed"], 42)
-            first = json.loads((run_dir / "events.jsonl").read_text().splitlines()[0])
-            self.assertIn("env", first["output"])
+            events = [json.loads(line) for line in (run_dir / "events.jsonl").read_text().splitlines()]
+            started = next(e for e in events if e["type"] == "run.started")
+            self.assertIn("env", started["output"])
 
     def test_failed_run_classified(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -317,13 +318,13 @@ class TestRunnerObservability(unittest.TestCase):
             self.assertEqual(runs[0].status, "failed")
             self.assertEqual(runs[0].failure_reason, "exception:timeout")
             run_dir = Path(runs[0].run_dir)
-            # metrics.json still written on failure; the run_failed event is
+            # metrics.json still written on failure; the run.failed event is
             # the last line so it lands in the aggregate
             self.assertTrue((run_dir / "metrics.json").exists())
             metrics = json.loads((run_dir / "metrics.json").read_text())
             self.assertGreaterEqual(metrics["events"], 2)
             last = json.loads((run_dir / "events.jsonl").read_text().splitlines()[-1])
-            self.assertEqual(last["type"], "run_failed")
+            self.assertEqual(last["type"], "run.failed")
             self.assertEqual(last["metadata"]["error_category"], "timeout")
 
 
@@ -336,7 +337,7 @@ class TestScrub(unittest.TestCase):
             run_dir = runs_dir / "o" / "t" / "w" / "r1"
             run_dir.mkdir(parents=True)
             (run_dir / "run.json").write_text(json.dumps({"run_id": "r1", "status": "finished"}))
-            (run_dir / "events.jsonl").write_text('{"type": "run_start"}\n')
+            (run_dir / "events.jsonl").write_text('{"type": "run.started"}\n')
             (run_dir / "metrics.json").write_text('{"events": 1}')
             (run_dir / "debug.jsonl").write_text('{"component": "openrouter"}\n')
             (run_dir / "raw").mkdir()

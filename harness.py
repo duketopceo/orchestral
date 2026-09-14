@@ -15,12 +15,13 @@ from pathlib import Path
 from typing import Any
 
 from orchestral.config import ModelConfig, find_task, load_models, load_task, load_yaml
+from orchestral.export import leaderboard_csv, run_audit_markdown, runs_csv
 from orchestral.planners import available_prompt_variants, load_prompt_variant
 from orchestral.privacy import scrub_all
 from orchestral.providers import provider_key
 from orchestral.reporter import generate_dashboard, generate_html_report, model_history
 from orchestral.runner import Runner
-from orchestral.stats import aggregate
+from orchestral.stats import aggregate, pairing_leaderboard
 from orchestral.storage import RunStore
 from orchestral.tui import run_tui
 
@@ -524,6 +525,15 @@ def cmd_report(args: argparse.Namespace) -> None:
         limit=args.limit,
     )
 
+    if getattr(args, "leaderboard", False):
+        min_samples = getattr(args, "min_samples", 10)
+        rows = pairing_leaderboard(runs, min_samples=min_samples)
+        if args.json:
+            print(json.dumps([r.to_dict() for r in rows], indent=2, default=str))
+            return
+        _print_leaderboard(rows, min_samples)
+        return
+
     if args.pairings:
         _print_pairing_table(runs)
         return
@@ -600,6 +610,26 @@ def _print_pairing_table(runs: list[Any]) -> None:
         print(f"{orch:<35} {work:<35} {n:>5} {passed:>5} {score:>9} ${cost:>10.4f} {tokens:>8} {qpd:>10.1f}")
 
 
+def _print_leaderboard(rows: list[Any], min_samples: int) -> None:
+    """Pairing leaderboard — one row per (orchestrator, worker)."""
+    if not rows:
+        print("No runs match.")
+        return
+    print(f"{'orchestrator':<30} {'worker':<30} {'n':>3} {'tasks':>5} {'pass%':>6} {'med score':>9} {'med cost':>9} {'med ms':>8} {'fail%':>6} {'$/pass':>9}")
+    print("-" * 120)
+    for p in rows:
+        flag = "" if not p.low_sample else " *"
+        score = f"{p.score_median:.2f}" if p.score_median is not None else "-"
+        cpp = f"${p.cost_per_pass:.4f}" if p.cost_per_pass is not None else "-"
+        print(
+            f"{p.orchestrator:<30} {p.worker:<30} {p.runs:>3}{flag} {p.tasks_covered:>5} "
+            f"{(p.pass_rate or 0) * 100:>5.0f}% {score:>9} ${p.cost_median:>8.4f} "
+            f"{p.duration_median_ms:>8.0f} {(p.failure_rate or 0) * 100:>5.0f}% {cpp:>9}"
+        )
+    if any(p.low_sample for p in rows):
+        print(f"\n* fewer than {min_samples} runs — treat the ranking as anecdotal, not evidence.")
+
+
 def _print_groups_table(cells: list[Any]) -> None:
     """One row per (group, task, orchestrator, worker) cell with variance."""
     if not cells:
@@ -613,6 +643,35 @@ def _print_groups_table(cells: list[Any]) -> None:
         spd = f"{c.successes_per_dollar:.0f}" if c.successes_per_dollar is not None else "-"
         fails = ",".join(f"{k.split(':')[-1]}×{v}" for k, v in sorted(c.failures.items()))[:20]
         print(f"{c.run_group or '-':<18} {c.task_id:<18} {c.orchestrator:<26} {c.worker:<26} {c.runs:>3} {c.pass_rate * 100:>5.0f}% {score:>12} {cost:>16} {c.latency_p50:>8.0f} {c.latency_p95:>8.0f} {spd:>9} {fails:<20}")
+
+
+def cmd_export(args: argparse.Namespace) -> None:
+    """Export run data: CSV for analysis, Markdown for human audit."""
+    store = RunStore(args.runs_dir)
+    out_path = Path(args.out) if args.out else None
+
+    if args.run:
+        meta = store.get_run(args.run)
+        if meta is None:
+            print(f"No run found with id {args.run}", file=sys.stderr)
+            sys.exit(1)
+        if args.format == "jsonl":
+            src = Path(meta.run_dir) / "events.jsonl"
+            content = src.read_text(encoding="utf-8") if src.exists() else ""
+        else:
+            content = run_audit_markdown(meta.run_dir)
+    elif args.leaderboard:
+        rows = pairing_leaderboard(store.list_runs(limit=None), min_samples=args.min_samples)
+        content = leaderboard_csv(rows)
+    else:
+        content = runs_csv(store.list_runs(limit=None))
+
+    if out_path:
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(content, encoding="utf-8")
+        print(f"Exported to {out_path}")
+    else:
+        print(content, end="")
 
 
 def cmd_scrub(args: argparse.Namespace) -> None:
@@ -736,11 +795,22 @@ def main() -> None:
     report.add_argument("--sort", default="started_at", help="Column to sort by")
     report.add_argument("--desc", action="store_true", default=True, help="Sort descending")
     report.add_argument("--pairings", action="store_true", help="Aggregate by orchestrator × worker, sorted by quality per dollar")
+    report.add_argument("--leaderboard", action="store_true", help="Pairing leaderboard: pass rate, medians, cost per pass, failure rate")
+    report.add_argument("--min-samples", type=int, default=10, help="Leaderboard sample-size floor for the low-evidence flag")
     report.add_argument("--groups", action="store_true", help="Aggregate by run_group × task × pairing with variance stats")
     report.add_argument("--group", default=None, help="Only include runs from this run_group")
     report.add_argument("--limit", type=int, default=None, help="Limit number of rows")
     report.add_argument("--json", action="store_true", help="Output as JSON")
     report.set_defaults(func=cmd_report)
+
+    export = sub.add_parser("export", help="Export runs as CSV, or a single run as Markdown/JSONL")
+    export.add_argument("--runs-dir", default="runs", help="Root directory for run data")
+    export.add_argument("--format", choices=["csv", "md", "jsonl"], default="csv", help="Export format")
+    export.add_argument("--run", default=None, help="Export a single run id (md audit or jsonl events)")
+    export.add_argument("--leaderboard", action="store_true", help="Export pairing leaderboard as CSV")
+    export.add_argument("--min-samples", type=int, default=10, help="Leaderboard low-evidence floor")
+    export.add_argument("--out", default=None, help="Write to this file instead of stdout")
+    export.set_defaults(func=cmd_export)
 
     scrub = sub.add_parser("scrub", help="Redact sensitive data from all runs for sharing")
     scrub.add_argument("--runs-dir", default="runs", help="Source runs directory")

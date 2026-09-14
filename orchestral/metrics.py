@@ -14,12 +14,18 @@ from typing import Any
 METRICS_SCHEMA_VERSION = "1"
 
 
+def _num(value: Any) -> float:
+    return value if isinstance(value, (int, float)) else 0.0
+
+
 def build_metrics(events_path: Path) -> dict[str, Any]:
     """Aggregate a run's events.jsonl into per-phase/role metrics.
 
     Returns a dict with per-(phase, role) call aggregates, error counts by
-    category, retry counts, and the event total. Missing/unclean fields are
-    tolerated so a truncated stream still yields a partial summary.
+    category (worker_error events only — the run-level category lives on
+    runs.failure_reason, so counting run_failed would double-count), retry
+    counts, and the event total. Malformed lines and odd field types are
+    skipped per-event so one bad record can't void the whole summary.
     """
     by_key: dict[tuple[str, str], dict[str, Any]] = {}
     error_counts: dict[str, int] = {}
@@ -32,10 +38,13 @@ def build_metrics(events_path: Path) -> dict[str, Any]:
             ev = json.loads(line)
         except json.JSONDecodeError:
             continue
+        if not isinstance(ev, dict):
+            continue
         n_events += 1
         etype = ev.get("type")
-        cat = (ev.get("metadata") or {}).get("error_category")
-        if cat:
+        meta = ev.get("metadata")
+        cat = meta.get("error_category") if isinstance(meta, dict) else None
+        if cat and etype == "worker_error":
             error_counts[cat] = error_counts.get(cat, 0) + 1
         if etype == "worker_retry":
             retries += 1
@@ -47,13 +56,14 @@ def build_metrics(events_path: Path) -> dict[str, Any]:
             {"calls": 0, "input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0, "latencies": []},
         )
         s["calls"] += 1
-        cost = ev.get("cost") or {}
-        s["input_tokens"] += cost.get("input_tokens") or 0
-        s["output_tokens"] += cost.get("output_tokens") or 0
-        s["cost_usd"] += cost.get("usd") or 0.0
-        s["latencies"].append(ev.get("latency_ms") or 0.0)
-        src = cost.get("pricing_source") or "unlabeled"
-        pricing_sources[src] = pricing_sources.get(src, 0) + 1
+        cost = ev.get("cost")
+        if isinstance(cost, dict):
+            s["input_tokens"] += cost.get("input_tokens") or 0
+            s["output_tokens"] += cost.get("output_tokens") or 0
+            s["cost_usd"] += _num(cost.get("usd"))
+            src = cost.get("pricing_source") or "unlabeled"
+            pricing_sources[src] = pricing_sources.get(src, 0) + 1
+        s["latencies"].append(_num(ev.get("latency_ms")))
 
     phases: dict[str, Any] = {}
     for (phase, role), s in sorted(by_key.items()):

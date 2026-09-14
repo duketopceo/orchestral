@@ -83,6 +83,7 @@ def judge_artifact(
             "input_tokens": 300,
             "output_tokens": 80,
             "cost_usd": 0.00005,
+            "pricing_source": "none",
             "usage": None,
         }
         logger.log_llm_call(
@@ -97,6 +98,7 @@ def judge_artifact(
             output_tokens=cost["output_tokens"],
             cost_usd=cost["cost_usd"],
             latency_ms=random.uniform(80, 1200),
+            pricing_source="none",
         )
         return result, [cost]
 
@@ -127,6 +129,7 @@ def judge_artifact(
     content = completion["content"]
     usage = token_usage_from_raw(completion["usage"])
     cost_usd, _ = compute_cost(usage, judge)
+    api_cost = completion.get("api_cost_usd")
 
     try:
         result = _extract_json(content)
@@ -163,6 +166,8 @@ def judge_artifact(
         output_tokens=usage.completion_tokens,
         cost_usd=cost_usd,
         latency_ms=completion["latency_ms"],
+        pricing_source="configured",
+        api_cost_usd=api_cost if isinstance(api_cost, (int, float)) else None,
     )
 
     return result, [{
@@ -171,6 +176,8 @@ def judge_artifact(
         "input_tokens": usage.prompt_tokens,
         "output_tokens": usage.completion_tokens,
         "cost_usd": cost_usd,
+        "pricing_source": "configured",
+        "api_cost_usd": api_cost if isinstance(api_cost, (int, float)) else None,
         "usage": usage.to_dict(),
     }]
 

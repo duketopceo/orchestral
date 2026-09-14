@@ -14,6 +14,7 @@ re-parse JSONL.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import sys
 import uuid
@@ -118,7 +119,8 @@ class EventLogger:
                 dry_run=self._dry_run,
             )
         except Exception as exc:  # pragma: no cover - defensive
-            self.log_debug("logger", "calls-table insert failed", error=str(exc))
+            with contextlib.suppress(Exception):
+                self.log_debug("logger", "calls-table insert failed", error=str(exc))
 
     def _echo_event(self, event: dict[str, Any]) -> None:
         cost = event.get("cost") or {}
@@ -169,6 +171,7 @@ class EventLogger:
         error: str | None = None,
         pricing_source: str | None = None,
         api_cost_usd: float | None = None,
+        attempt: int | None = None,
     ) -> dict[str, Any]:
         """Convenience wrapper for an OpenRouter LLM call."""
         cost: dict[str, Any] = {
@@ -179,6 +182,7 @@ class EventLogger:
         }
         if api_cost_usd is not None:
             cost["api_cost_usd"] = api_cost_usd
+        out: dict[str, Any] = {**completion, "attempt": attempt} if attempt is not None else completion
         return self.log(
             phase=phase,
             step=step,
@@ -186,7 +190,7 @@ class EventLogger:
             model=model,
             role=role,
             input_data={"messages": messages},
-            output_data=completion,
+            output_data=out,
             reasoning=reasoning,
             cost=cost,
             latency_ms=latency_ms,

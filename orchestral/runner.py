@@ -135,31 +135,42 @@ class Runner:
             if model is not None
         }
         env = _environment()
-        run_id, run_dir = self.store.new_run(
-            orchestrator.slug,
-            task.id,
-            worker.slug,
-            config={
-                "dry_run": self.dry_run,
-                "planner": self.planner,
-                "prompt_variant": self.prompt_variant,
-                "sweep": self.sweep,
-                "judge": judge.slug if judge else None,
-                "run_group": self.run_group,
-                "replicate": self.replicate,
-                "seed": self.seed,
-                "orchestrator": orchestrator.to_dict(),
-                "worker": worker.to_dict(),
-            },
-        )
-        logger = EventLogger(
-            run_dir, store=self.store, run_id=run_id,
-            dry_run=self.dry_run, verbose=self.verbose,
-        )
-        # wire the client's debug sink (http retries, video polls) to debug.jsonl
-        for c in role_clients.values():
-            with contextlib.suppress(AttributeError):
-                c.debug = logger.log_debug
+        try:
+            run_id, run_dir = self.store.new_run(
+                orchestrator.slug,
+                task.id,
+                worker.slug,
+                run_group=self.run_group,
+                replicate=self.replicate,
+                env=env,
+                config={
+                    "dry_run": self.dry_run,
+                    "planner": self.planner,
+                    "prompt_variant": self.prompt_variant,
+                    "sweep": self.sweep,
+                    "judge": judge.slug if judge else None,
+                    "run_group": self.run_group,
+                    "replicate": self.replicate,
+                    "seed": self.seed,
+                    "orchestrator": orchestrator.to_dict(),
+                    "worker": worker.to_dict(),
+                },
+            )
+            logger = EventLogger(
+                run_dir, store=self.store, run_id=run_id,
+                dry_run=self.dry_run, verbose=self.verbose,
+            )
+            # wire the client's debug sink (http retries, video polls) to debug.jsonl
+            for c in role_clients.values():
+                with contextlib.suppress(AttributeError):
+                    c.debug = logger.log_debug
+        except Exception:
+            # resolved clients are live httpx.Clients — don't leak them when
+            # run-dir/logger construction fails before the main try/finally
+            for c in self._owned_clients:
+                with contextlib.suppress(Exception):
+                    c.close()
+            raise
         logger.log(
             phase="init",
             step=0,
@@ -243,6 +254,7 @@ class Runner:
                                 worker=worker,
                                 client=role_clients.get("worker"),
                                 dry_run=self.dry_run,
+                                attempt=attempt + 1,
                             )
                         elif is_video:
                             out, media_bytes, worker_costs = delegate_video(
@@ -253,6 +265,8 @@ class Runner:
                                 worker=worker,
                                 client=role_clients.get("worker"),
                                 dry_run=self.dry_run,
+                                attempt=attempt + 1,
+                                seed=self.seed,
                             )
                         elif is_multi:
                             out, files, worker_costs = delegate_multi(
@@ -263,6 +277,7 @@ class Runner:
                                 worker=worker,
                                 client=role_clients.get("worker"),
                                 dry_run=self.dry_run,
+                                attempt=attempt + 1,
                             )
                         else:
                             out, worker_costs = delegate(
@@ -272,6 +287,7 @@ class Runner:
                                 worker=worker,
                                 client=role_clients.get("worker"),
                                 dry_run=self.dry_run,
+                                attempt=attempt + 1,
                             )
                         ledger.add_many(worker_costs)
                     except Exception as exc:
@@ -306,21 +322,23 @@ class Runner:
                         continue
                     if _subtask_produced_output(out, media_bytes, files, is_media, is_multi):
                         break
-                    logger.log(
-                        phase="delegate",
-                        step=i + 3,
-                        event_type="worker_retry",
-                        model=worker.slug,
-                        role="worker",
-                        input_data={"subtask": sub},
-                        output_data={"attempt": attempt + 1, "max_attempts": attempts},
-                        reasoning=f"Worker returned empty output on attempt {attempt + 1}; retrying.",
-                        metadata={"subtask_id": sub.get("id", i)},
-                    )
-                    logger.log_debug(
-                        "delegate", "empty worker output; retrying",
-                        subtask_id=sub.get("id", i), attempt=attempt + 1,
-                    )
+                    if attempt + 1 < attempts:
+                        # a retry will actually follow — log it as such
+                        logger.log(
+                            phase="delegate",
+                            step=i + 3,
+                            event_type="worker_retry",
+                            model=worker.slug,
+                            role="worker",
+                            input_data={"subtask": sub},
+                            output_data={"attempt": attempt + 1, "max_attempts": attempts},
+                            reasoning=f"Worker returned empty output on attempt {attempt + 1}; retrying.",
+                            metadata={"subtask_id": sub.get("id", i)},
+                        )
+                        logger.log_debug(
+                            "delegate", "empty worker output; retrying",
+                            subtask_id=sub.get("id", i), attempt=attempt + 1,
+                        )
                 if out is None:
                     raise ValidationError(f"Worker {worker.slug} produced no output for subtask {sub.get('id')}")
                 out["attempts"] = attempt + 1
@@ -485,9 +503,6 @@ class Runner:
             meta.passes = passes
             meta.score = report.get("score")
             meta.latency_ms = (time.perf_counter() - t0) * 1000
-            meta.env = env
-            meta.run_group = self.run_group
-            meta.replicate = self.replicate
             if passes is False:
                 # distinguish a judge rejection of a structurally-valid
                 # artifact from a failed structural check
@@ -499,7 +514,6 @@ class Runner:
                     else "validation"
                 )
             self.store.update_meta(meta)
-            _write_metrics(run_dir)
 
             logger.log(
                 phase="end",
@@ -511,37 +525,39 @@ class Runner:
                 output_data={"status": "finished", "passes": passes, "score": meta.score},
                 reasoning=f"Run finished. Cost ${total_cost:.4f}, tokens {total_input + total_output}, passes={passes}.",
             )
+            _write_metrics(run_dir)  # after run_end so the event is counted
 
             return meta
 
         except Exception as exc:
             cat = classify_exception(exc)
-            meta = self.store.get_run(run_id)
-            if meta is not None:
-                meta.status = "failed"
-                meta.finished_at = datetime.now(UTC).isoformat()
-                meta.latency_ms = (time.perf_counter() - t0) * 1000
-                meta.env = env
-                meta.run_group = self.run_group
-                meta.replicate = self.replicate
-                meta.failure_reason = f"exception:{cat}"
-                self.store.update_meta(meta)
-            logger.log(
-                phase="end",
-                step=-1,
-                event_type="run_failed",
-                model="",
-                role="harness",
-                input_data={},
-                output_data={
-                    "error": str(exc),
-                    "error_type": type(exc).__name__,
-                    "error_category": cat,
-                },
-                reasoning="Run failed with an exception.",
-                error=str(exc),
-                metadata={"error_category": cat},
-            )
+            # bookkeeping must never mask the real exception — a locked index
+            # or dead log handle inside the handler would otherwise replace it
+            with contextlib.suppress(Exception):
+                meta = self.store.get_run(run_id)
+                if meta is not None:
+                    meta.status = "failed"
+                    meta.finished_at = datetime.now(UTC).isoformat()
+                    meta.latency_ms = (time.perf_counter() - t0) * 1000
+                    meta.failure_reason = f"exception:{cat}"
+                    self.store.update_meta(meta)
+            with contextlib.suppress(Exception):
+                logger.log(
+                    phase="end",
+                    step=-1,
+                    event_type="run_failed",
+                    model="",
+                    role="harness",
+                    input_data={},
+                    output_data={
+                        "error": str(exc),
+                        "error_type": type(exc).__name__,
+                        "error_category": cat,
+                    },
+                    reasoning="Run failed with an exception.",
+                    error=str(exc),
+                    metadata={"error_category": cat},
+                )
             _write_metrics(run_dir)
             raise
         finally:

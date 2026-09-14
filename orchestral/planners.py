@@ -132,6 +132,7 @@ def _llm_call(
     max_tokens: int = 4096,
     temperature: float = 0.4,
     system_override: str | None = None,
+    attempt: int | None = None,
 ) -> tuple[str, dict[str, Any]]:
     if dry_run:
         # deterministic fake output so the harness still exercises the path
@@ -152,6 +153,7 @@ def _llm_call(
             cost_usd=cost["cost_usd"],
             latency_ms=random.uniform(80, 1200),
             pricing_source="none",
+            attempt=attempt,
         )
         return content, cost
 
@@ -185,6 +187,7 @@ def _llm_call(
         latency_ms=completion["latency_ms"],
         pricing_source="configured",
         api_cost_usd=api_cost if isinstance(api_cost, (int, float)) else None,
+        attempt=attempt,
     )
 
     return content, {
@@ -336,6 +339,7 @@ def delegate(
     worker: ModelConfig,
     client: OpenRouterClient | None,
     dry_run: bool,
+    attempt: int | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     content, cost = _llm_call(
         logger=logger,
@@ -348,6 +352,7 @@ def delegate(
         client=client,
         dry_run=dry_run,
         expect_json=True,
+        attempt=attempt,
     )
     try:
         output = _extract_json(content)
@@ -367,6 +372,7 @@ def delegate_image(
     worker: ModelConfig,
     client: OpenRouterClient | None,
     dry_run: bool,
+    attempt: int | None = None,
 ) -> tuple[dict[str, Any], bytes, list[dict[str, Any]]]:
     """Generate one image for a subtask brief via the Images API."""
     prompt = subtask.get("prompt") or subtask.get("description") or str(subtask)
@@ -393,6 +399,7 @@ def delegate_image(
             cost_usd=cost["cost_usd"],
             latency_ms=random.uniform(80, 1200),
             pricing_source="none",
+            attempt=attempt,
         )
         return {"subtask_id": subtask.get("id"), "prompt": prompt}, image_bytes, [cost]
 
@@ -423,6 +430,7 @@ def delegate_image(
         latency_ms=completion["latency_ms"],
         pricing_source="configured",
         api_cost_usd=api_cost if isinstance(api_cost, (int, float)) else None,
+        attempt=attempt,
     )
     return {"subtask_id": subtask.get("id"), "prompt": prompt}, image_bytes, [{
         "phase": "delegate",
@@ -445,6 +453,8 @@ def delegate_video(
     worker: ModelConfig,
     client: OpenRouterClient | None,
     dry_run: bool,
+    attempt: int | None = None,
+    seed: int | None = None,
 ) -> tuple[dict[str, Any], bytes, list[dict[str, Any]]]:
     """Generate one video for a subtask brief via the async Videos API.
 
@@ -454,6 +464,8 @@ def delegate_video(
     """
     prompt = subtask.get("prompt") or subtask.get("description") or str(subtask)
     options = {k: task.metadata[k] for k in _VIDEO_OPTION_KEYS if k in task.metadata}
+    if "seed" not in options and seed is not None:
+        options["seed"] = seed
     duration_s = options.get("duration")
     resolution = options.get("resolution")
     generate_audio = options.get("generate_audio")
@@ -482,6 +494,7 @@ def delegate_video(
             cost_usd=cost["cost_usd"],
             latency_ms=random.uniform(80, 1200),
             pricing_source="none",
+            attempt=attempt,
         )
         return {"subtask_id": subtask.get("id"), "prompt": prompt}, video_bytes, [cost]
 
@@ -526,6 +539,7 @@ def delegate_video(
         latency_ms=completion["latency_ms"],
         pricing_source=pricing_source,
         api_cost_usd=api_cost if isinstance(api_cost, (int, float)) else None,
+        attempt=attempt,
     )
     return {"subtask_id": subtask.get("id"), "prompt": prompt}, video_bytes, [{
         "phase": "delegate",
@@ -548,6 +562,7 @@ def delegate_multi(
     worker: ModelConfig,
     client: OpenRouterClient | None,
     dry_run: bool,
+    attempt: int | None = None,
 ) -> tuple[dict[str, Any], dict[str, str], list[dict[str, Any]]]:
     """Produce one file set for a subtask brief.
 
@@ -578,6 +593,8 @@ def delegate_multi(
             output_tokens=cost["output_tokens"],
             cost_usd=cost["cost_usd"],
             latency_ms=random.uniform(80, 1200),
+            pricing_source="none",
+            attempt=attempt,
         )
         return {
             "subtask_id": subtask.get("id"),
@@ -636,6 +653,7 @@ def delegate_multi(
         latency_ms=completion["latency_ms"],
         pricing_source="configured",
         api_cost_usd=api_cost if isinstance(api_cost, (int, float)) else None,
+        attempt=attempt,
     )
     notes = data.get("notes") if isinstance(data, dict) else None
     return {

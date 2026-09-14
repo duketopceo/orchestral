@@ -78,7 +78,6 @@ class RunStore:
         with self._connect() as conn:
             # WAL so parallel runners can write the index concurrently
             conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("PRAGMA busy_timeout=10000")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS runs (
@@ -106,10 +105,16 @@ class RunStore:
             )
             # Migrate pre-v2 indexes: columns are appended at the END so
             # positional reads in _row_to_meta stay valid for both schemas.
+            # The check-then-ALTER can race a second process doing the same
+            # upgrade, so a duplicate-column error is treated as already-done.
             cols = {r[1] for r in conn.execute("PRAGMA table_info(runs)")}
             for name, decl in _RUN_COLUMNS_V2:
                 if name not in cols:
-                    conn.execute(f"ALTER TABLE runs ADD COLUMN {name} {decl}")
+                    try:
+                        conn.execute(f"ALTER TABLE runs ADD COLUMN {name} {decl}")
+                    except sqlite3.OperationalError as exc:
+                        if "duplicate column" not in str(exc).lower():
+                            raise
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS calls (
@@ -157,6 +162,10 @@ class RunStore:
         task_id: str,
         worker: str,
         config: dict[str, Any] | None = None,
+        *,
+        run_group: str | None = None,
+        replicate: int | None = None,
+        env: dict[str, Any] | None = None,
     ) -> tuple[str, Path]:
         """Create a new run directory and index entry."""
         run_id = uuid.uuid4().hex[:12]
@@ -179,6 +188,9 @@ class RunStore:
             started_at=now,
             run_dir=str(run_dir),
             config=config or {},
+            run_group=run_group,
+            replicate=replicate,
+            env=env or {},
         )
         self._write_meta_file(run_dir, meta)
         self.index_meta(meta)
@@ -372,7 +384,7 @@ class RunStore:
         }
 
 
-_SORTABLE_COLUMNS = {"run_id", "started_at", "finished_at", "status", "orchestrator", "worker", "task_id", "total_cost_usd", "score"}
+_SORTABLE_COLUMNS = {"run_id", "started_at", "finished_at", "status", "orchestrator", "worker", "task_id", "total_cost_usd", "score", "latency_ms", "failure_reason", "run_group", "replicate"}
 
 # (name, SQL decl) — appended at the end of `runs` for both fresh CREATEs and
 # ALTER migrations so positional row reads stay valid.

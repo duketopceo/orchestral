@@ -63,6 +63,28 @@ class TestTaxonomy(unittest.TestCase):
     def test_every_category_reachable(self):
         self.assertGreaterEqual(len(set(CATEGORIES)), 10)
 
+    def test_wrapped_httpx_via_cause_chain(self):
+        """OpenRouterError re-raises httpx failures with `from` — the real
+        cause is on __cause__, and classification must follow it."""
+        from orchestral.openrouter import OpenRouterError
+
+        try:
+            raise self._status_error(429)
+        except httpx.HTTPStatusError as inner:
+            wrapped = OpenRouterError("OpenRouter request failed after retries")
+            wrapped.__cause__ = inner
+        self.assertEqual(classify_exception(wrapped), "rate_limit")
+
+        try:
+            raise httpx.ReadTimeout("slow")
+        except httpx.ReadTimeout as inner2:
+            wrapped2 = OpenRouterError("request failed")
+            wrapped2.__cause__ = inner2
+        self.assertEqual(classify_exception(wrapped2), "timeout")
+
+        # OpenRouterError with no httpx cause is still an API failure
+        self.assertEqual(classify_exception(OpenRouterError("bad response")), "provider_error")
+
 
 def _model(slug: str, role: str) -> ModelConfig:
     return ModelConfig(
@@ -208,11 +230,26 @@ class TestMetrics(unittest.TestCase):
             self.assertEqual(m["phases"]["delegate"]["worker"]["calls"], 2)
             self.assertEqual(m["phases"]["delegate"]["worker"]["latency_ms"]["max"], 150.0)
             self.assertEqual(m["phases"]["plan"]["orchestrator"]["cost_usd"], 0.01)
-            self.assertEqual(m["error_counts"]["timeout"], 1)
-            self.assertEqual(m["error_counts"]["empty_output"], 1)
+            # error_counts counts worker_error events only — run_failed is the
+            # run-level label (runs.failure_reason), counting it doubles up
+            self.assertEqual(m["error_counts"], {"timeout": 1})
             self.assertEqual(m["retries"], 1)
             self.assertEqual(m["pricing_sources"]["configured"], 1)
             self.assertEqual(m["pricing_sources"]["unlabeled"], 2)
+
+    def test_tolerates_odd_field_types(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "events.jsonl"
+            p.write_text("\n".join([
+                json.dumps({"type": "llm_call", "metadata": "oops", "cost": "oops", "latency_ms": "x"}),
+                "not json",
+                json.dumps(["a", "list"]),
+                json.dumps({"type": "llm_call", "phase": "plan", "role": "orchestrator",
+                            "cost": {"usd": 0.5}, "latency_ms": 10.0}),
+            ]))
+            m = build_metrics(p)
+            self.assertEqual(m["events"], 2)  # unparseable + non-dict lines skipped
+            self.assertEqual(m["phases"]["plan"]["orchestrator"]["cost_usd"], 0.5)
 
 
 class TestRunnerObservability(unittest.TestCase):
@@ -280,10 +317,14 @@ class TestRunnerObservability(unittest.TestCase):
             self.assertEqual(runs[0].status, "failed")
             self.assertEqual(runs[0].failure_reason, "exception:timeout")
             run_dir = Path(runs[0].run_dir)
-            # metrics.json still written on failure
+            # metrics.json still written on failure; the run_failed event is
+            # the last line so it lands in the aggregate
             self.assertTrue((run_dir / "metrics.json").exists())
             metrics = json.loads((run_dir / "metrics.json").read_text())
-            self.assertEqual(metrics["error_counts"]["timeout"], 1)
+            self.assertGreaterEqual(metrics["events"], 2)
+            last = json.loads((run_dir / "events.jsonl").read_text().splitlines()[-1])
+            self.assertEqual(last["type"], "run_failed")
+            self.assertEqual(last["metadata"]["error_category"], "timeout")
 
 
 class TestScrub(unittest.TestCase):

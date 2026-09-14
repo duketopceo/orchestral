@@ -129,7 +129,12 @@ class OpenRouterClient:
                 response.raise_for_status()
             except httpx.HTTPStatusError as exc:
                 if exc.response.status_code in NON_RETRYABLE_STATUSES:
-                    raise OpenRouterError(f"OpenRouter error {exc.response.status_code}: {exc.response.text}") from exc
+                    # response.text is provider-controlled; cap it before it
+                    # lands in events.jsonl / calls.error / published output
+                    raise OpenRouterError(
+                        f"OpenRouter error {exc.response.status_code}: "
+                        f"{exc.response.text[:300]}"
+                    ) from exc
                 if attempt > MAX_RETRIES:
                     last_error = exc
                     break

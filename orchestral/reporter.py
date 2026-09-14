@@ -176,12 +176,56 @@ def _run_card(run: Any, run_dir: Path) -> str:
 """
 
 
+def _groups_table_html(runs: list[Any]) -> str:
+    """Replicate-group variance table; empty when no run carries a group."""
+    from orchestral.stats import aggregate
+
+    cells = [c for c in aggregate(runs) if c.run_group]
+    if not cells:
+        return ""
+    rows = ""
+    for c in cells:
+        score = f"{c.score_mean:.2f} &plusmn; {c.score_sd:.2f}" if c.score_mean is not None else "-"
+        cost = f"${c.cost_mean:.4f} &plusmn; ${c.cost_sd:.4f}"
+        spd = f"{c.successes_per_dollar:.0f}" if c.successes_per_dollar is not None else "-"
+        fails = ", ".join(f"{_esc(k.split(':')[-1])}&times;{v}" for k, v in sorted(c.failures.items()))
+        pass_pct = f"{c.pass_rate * 100:.0f}%" if c.pass_rate is not None else "-"
+        rows += (
+            f"<tr>"
+            f"<td>{_esc(c.run_group)}</td>"
+            f"<td>{_esc(c.task_id)}</td>"
+            f"<td>{_esc(c.orchestrator)}</td>"
+            f"<td>{_esc(c.worker)}</td>"
+            f"<td>{c.runs}</td>"
+            f"<td>{pass_pct}</td>"
+            f"<td>{score}</td>"
+            f"<td>{cost}</td>"
+            f"<td>{c.latency_p50:.0f} / {c.latency_p95:.0f}</td>"
+            f"<td>{spd}</td>"
+            f"<td>{fails or '-'}</td>"
+            f"</tr>"
+        )
+    return f"""
+  <h2>Replicate groups</h2>
+  <table>
+    <tr>
+      <th>group</th><th>task</th><th>orchestrator</th><th>worker</th>
+      <th>n</th><th>pass%</th><th>score &plusmn; sd</th><th>cost &plusmn; sd</th>
+      <th>p50 / p95 ms</th><th>succ/$</th><th>failures</th>
+    </tr>
+    {rows}
+  </table>
+"""
+
+
 def _index_html(runs: list[Any]) -> str:
     rows = ""
     for r in runs:
         pass_cls = "pass" if r.passes else "fail" if r.passes is False else ""
         pass_label = str(r.passes) if r.passes is not None else "-"
         score = f"{r.score:.2f}" if r.score is not None else "-"
+        group_cell = _esc(r.run_group) if r.run_group else "-"
+        rep_cell = str(r.replicate) if r.replicate is not None else "-"
         rows += (
             f"<tr>"
             f"<td><a href='{r.run_id}.html'>{r.run_id}</a></td>"
@@ -189,6 +233,8 @@ def _index_html(runs: list[Any]) -> str:
             f"<td>{_esc(r.orchestrator)}</td>"
             f"<td>{_esc(r.task_id)}</td>"
             f"<td>{_esc(r.worker)}</td>"
+            f"<td>{group_cell}</td>"
+            f"<td>{rep_cell}</td>"
             f"<td>${r.total_cost_usd:.6f}</td>"
             f"<td>{score}</td>"
             f"<td><span class='tag {pass_cls}'>{pass_label}</span></td>"
@@ -206,10 +252,11 @@ def _index_html(runs: list[Any]) -> str:
 <body>
   <h1>orchestral runs</h1>
   <p>Click a run to drill into events, plan, cost, and artifact. <a href="gallery.html">Visual gallery</a> &middot; <a href="dashboard.html">Dashboard</a></p>
+  {_groups_table_html(runs)}
   <table>
     <tr>
       <th>run_id</th><th>started</th><th>orchestrator</th><th>task</th><th>worker</th>
-      <th>cost</th><th>score</th><th>pass</th>
+      <th>group</th><th>rep</th><th>cost</th><th>score</th><th>pass</th>
     </tr>
     {rows}
   </table>

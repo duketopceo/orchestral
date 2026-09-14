@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 import sys
+import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -152,7 +153,8 @@ def _resolve_replicates(args: argparse.Namespace) -> tuple[str | None, int]:
     n = getattr(args, "replicates", None) or 1  # preamble already rejects n < 1
     group = getattr(args, "group", None)
     if n > 1 and not group:
-        group = f"rep-{datetime.now(UTC):%Y%m%d-%H%M%S}"
+        # uuid suffix: two invocations in the same second must not merge cells
+        group = f"rep-{datetime.now(UTC):%Y%m%d-%H%M%S}-{uuid.uuid4().hex[:6]}"
     return group, n
 
 
@@ -368,7 +370,11 @@ def cmd_batch(args: argparse.Namespace) -> None:
         results.sort(key=lambda r: (r["task_id"], r["replicate"] or 0))
     else:
         for path, i in cells:
-            results.append(_one(path, i))
+            try:
+                results.append(_one(path, i))
+            except Exception as exc:
+                failures += 1
+                print(f"[fail] {path} rep {i}: {exc}", file=sys.stderr)
 
     print(f"\nBatch summary ({len(results)} runs across {len(paths)} tasks)")
     rep_col = f"{'rep':>4} " if n_reps > 1 else ""

@@ -338,7 +338,7 @@ class RunStore:
         if task_id:
             query += " AND task_id = ?"
             params.append(task_id)
-        if run_group:
+        if run_group is not None:
             query += " AND run_group = ?"
             params.append(run_group)
         if order_by not in _SORTABLE_COLUMNS:

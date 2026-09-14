@@ -139,6 +139,16 @@ class RunStore:
                 """
             )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_calls_run ON calls(run_id)")
+            # calls v2: worker_id + sequence so live views can order calls and
+            # group them per worker without re-parsing events.jsonl
+            call_cols = {r[1] for r in conn.execute("PRAGMA table_info(calls)")}
+            for name, decl in _CALL_COLUMNS_V2:
+                if name not in call_cols:
+                    try:
+                        conn.execute(f"ALTER TABLE calls ADD COLUMN {name} {decl}")
+                    except sqlite3.OperationalError as exc:
+                        if "duplicate column" not in str(exc).lower():
+                            raise
             for column in ("orchestrator", "worker", "task_id", "status", "total_cost_usd", "score"):
                 conn.execute(
                     f"CREATE INDEX IF NOT EXISTS idx_{column} ON runs({column})"
@@ -253,36 +263,35 @@ class RunStore:
         error_category: str | None = None,
         error: str | None = None,
         dry_run: bool = False,
+        worker_id: str | None = None,
+        sequence: int | None = None,
     ) -> None:
         """Index one call-level event (llm_call or worker_error)."""
         with self._connect() as conn:
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(calls)")}
+            names = [
+                "run_id", "phase", "step", "role", "model", "input_tokens",
+                "output_tokens", "cost_usd", "api_cost_usd", "pricing_source",
+                "latency_ms", "attempt", "error_category", "error", "dry_run",
+                "created_at",
+            ]
+            values: list[Any] = [
+                run_id, phase, step, role, model, input_tokens,
+                output_tokens, cost_usd, api_cost_usd, pricing_source,
+                latency_ms, attempt, error_category,
+                (error or "")[:500] or None, int(dry_run),
+                datetime.now(UTC).isoformat(),
+            ]
+            if "worker_id" in cols:
+                names.append("worker_id")
+                values.append(worker_id)
+            if "sequence" in cols:
+                names.append("sequence")
+                values.append(sequence)
             conn.execute(
-                """
-                INSERT INTO calls (
-                    run_id, phase, step, role, model, input_tokens,
-                    output_tokens, cost_usd, api_cost_usd, pricing_source,
-                    latency_ms, attempt, error_category, error, dry_run,
-                    created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    run_id,
-                    phase,
-                    step,
-                    role,
-                    model,
-                    input_tokens,
-                    output_tokens,
-                    cost_usd,
-                    api_cost_usd,
-                    pricing_source,
-                    latency_ms,
-                    attempt,
-                    error_category,
-                    (error or "")[:500] or None,
-                    int(dry_run),
-                    datetime.now(UTC).isoformat(),
-                ),
+                f"INSERT INTO calls ({', '.join(names)}) "
+                f"VALUES ({', '.join('?' for _ in names)})",
+                values,
             )
 
     def calls_for_run(self, run_id: str) -> list[dict[str, Any]]:
@@ -398,6 +407,11 @@ _RUN_COLUMNS_V2 = (
     ("env", "TEXT"),
     ("run_group", "TEXT"),
     ("replicate", "INTEGER"),
+)
+
+_CALL_COLUMNS_V2 = (
+    ("worker_id", "TEXT"),
+    ("sequence", "INTEGER"),
 )
 
 

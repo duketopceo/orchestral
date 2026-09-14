@@ -78,7 +78,8 @@ orchestral dashboard               # reports/dashboard.html
 | `batch` | One pairing across many tasks (`--batch-dir` or `--batch-tasks`, `--jobs`) |
 | `ablate` | Sweep one knob for a pairing (`--sweep retry_limit=0,1,2` or `prompt_variant=terse,detailed`) |
 | `history` | Per-model aggregates across all stored runs |
-| `report` | List/compare runs (`--pairings`, `--html`, `--sort`, `--json`) |
+| `report` | List/compare runs (`--pairings`, `--leaderboard`, `--groups`, `--html`, `--sort`, `--json`) |
+| `export` | CSV run/leaderboard export, Markdown run audit, JSONL trace (`--format`, `--run`, `--out`) |
 | `dashboard` | Static HTML dashboard with cost-vs-quality scatter |
 | `shots` | Screenshot stored HTML artifacts (needs `[shots]` extra) |
 | `tui` | Interactive terminal UI — browse/inspect/launch runs (needs `[tui]` extra) |
@@ -141,7 +142,10 @@ Each run is a folder:
 ```
 runs/{orchestrator}/{task}/{worker}/{run_id}/
   run.json       # metadata, cost, score, status, latency, env, failure_reason
-  events.jsonl   # every agent action, reasoning, tool call, latency
+  manifest.json  # immutable run identity: exact model IDs, task/config/prompt
+                 # content hashes, git commit, harness version, retry policy
+  events.jsonl   # sequenced lifecycle + call events (schema v2), reasoning,
+                 # tool calls, latency — the stream a live view tails
   debug.jsonl    # internal diagnostics: http retries, poll loops, provider
                  # decisions (never published by `scrub`)
   metrics.json   # derived per-phase/role aggregates (calls, tokens, cost,

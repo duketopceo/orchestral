@@ -22,10 +22,24 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Self
 
-EVENT_SCHEMA_VERSION = "1"
+EVENT_SCHEMA_VERSION = "2"
 
 # Event types worth indexing per-call in the `calls` table.
 _CALL_EVENT_TYPES = ("llm_call", "worker_error")
+
+# Lifecycle vocabulary (see docs/tui-observability-design.md). Detail events
+# like llm_call/worker_error coexist — these mark phase transitions so a live
+# view can render progress without understanding call payloads.
+LIFECYCLE_EVENTS = frozenset({
+    "run.created", "task.loaded", "run.started",
+    "orchestrator.started", "orchestrator.completed",
+    "delegation.created",
+    "worker.started", "worker.progress", "worker.completed", "worker.failed",
+    "synthesis.started", "synthesis.completed",
+    "evaluation.started", "evaluation.completed",
+    "usage.recorded", "artifact.saved",
+    "run.completed", "run.failed", "run.cancelled",
+})
 
 
 class EventLogger:
@@ -50,6 +64,7 @@ class EventLogger:
         self._run_id = run_id
         self._dry_run = dry_run
         self._verbose = verbose
+        self._seq = 0
 
     def log(
         self,
@@ -65,17 +80,22 @@ class EventLogger:
         cost: dict[str, Any] | None = None,
         latency_ms: float = 0.0,
         error: str | None = None,
+        worker_id: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Append a single structured event and return it."""
+        self._seq += 1
         event: dict[str, Any] = {
             "event_id": uuid.uuid4().hex[:16],
             "schema_version": EVENT_SCHEMA_VERSION,
+            "run_id": self._run_id,
+            "sequence": self._seq,
             "timestamp": datetime.now(UTC).isoformat(),
             "phase": phase,
             "step": step,
             "type": event_type,
             "role": role,
+            "worker_id": worker_id,
             "model": model,
             "input": input_data,
             "output": output_data,
@@ -92,6 +112,35 @@ class EventLogger:
         if self._store is not None and self._run_id and event_type in _CALL_EVENT_TYPES:
             self._index_call(event)
         return event
+
+    def lifecycle(
+        self,
+        event_type: str,
+        *,
+        phase: str = "",
+        role: str = "harness",
+        worker_id: str | None = None,
+        step: int = -1,
+        **payload: Any,
+    ) -> dict[str, Any]:
+        """Emit a phase-transition event from the lifecycle vocabulary.
+
+        Payload keys land in `output` so consumers read one place. These are
+        coarse markers for live views — call detail still goes through
+        `log`/`log_llm_call`.
+        """
+        if event_type not in LIFECYCLE_EVENTS:
+            raise ValueError(f"Not a lifecycle event type: {event_type}")
+        return self.log(
+            phase=phase or "lifecycle",
+            step=step,
+            event_type=event_type,
+            model="",
+            role=role,
+            worker_id=worker_id,
+            input_data={},
+            output_data=payload,
+        )
 
     def _index_call(self, event: dict[str, Any]) -> None:
         """Mirror a call-level event into the `calls` table.
@@ -117,6 +166,8 @@ class EventLogger:
                 error_category=(event.get("metadata") or {}).get("error_category"),
                 error=event.get("error"),
                 dry_run=self._dry_run,
+                worker_id=event.get("worker_id"),
+                sequence=event.get("sequence"),
             )
         except Exception as exc:  # pragma: no cover - defensive
             with contextlib.suppress(Exception):

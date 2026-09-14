@@ -60,6 +60,7 @@ ALLOWED_NAMES = {
     "plan.json",
     "cost.json",
     "report.json",
+    "metrics.json",
 }
 ALLOWED_PREFIXES = ("worker-", "artifact.", "screenshot.", "judge")
 
@@ -76,6 +77,18 @@ BINARY_EXTS = {
 # generated file could carry a secret straight into runs-pub/. They are
 # omitted by default and the omission is recorded in the manifest.
 ARCHIVE_EXTS = {".zip", ".gz", ".tar"}
+
+# Filenames that are omitted from published output even though they are
+# text-scrubbable: debug.jsonl is internal diagnostics (transport retries,
+# poll internals, provider details) whose value is local, and raw/ dirs are
+# never traversed (only files are iterated). Omissions are manifested.
+OMIT_NAMES = {"debug.jsonl"}
+
+# Per-file omission reasons for the manifest; archives get the generic reason.
+_OMISSION_REASONS = {
+    "debug.jsonl": "internal diagnostics — not part of the published record",
+    "raw/": "unredacted raw provider payloads",
+}
 
 
 def _is_binary(path: Path) -> bool:
@@ -153,6 +166,12 @@ def _scrub_dir(src: Path, dst: Path) -> tuple[Path, list[str]]:
     """
     omitted: list[str] = []
     for f in src.iterdir():
+        if f.is_file() and f.name in OMIT_NAMES:
+            omitted.append(f.name)
+            continue
+        if f.is_dir() and f.name == "raw":
+            omitted.append(f.name + "/")
+            continue
         if f.is_file() and _is_allowed(f.name):
             if f.suffix.lower() in ARCHIVE_EXTS:
                 omitted.append(f.name)
@@ -202,7 +221,8 @@ def scrub_all(runs_dir: Path = Path("runs"), out_dir: Path = Path("runs-pub")) -
         entry = _manifest_entry(run_json, runs_dir, out_dir)
         if omitted:
             entry["scrub_omissions"] = [
-                {"file": name, "reason": "archive contents cannot be redacted"}
+                {"file": name, "reason": _OMISSION_REASONS.get(
+                    name, "contents cannot be redacted")}
                 for name in sorted(omitted)
             ]
             warned.add(str(rel))
@@ -210,9 +230,9 @@ def scrub_all(runs_dir: Path = Path("runs"), out_dir: Path = Path("runs-pub")) -
         copied.append(dst)
     if warned:
         print(
-            "warning: omitted archives from "
-            f"{len(warned)} run(s) ({', '.join(sorted(warned))}): their contents "
-            "cannot be redacted, so they are never published. Multi-file run data "
+            "warning: omitted files from "
+            f"{len(warned)} run(s) ({', '.join(sorted(warned))}): archives cannot "
+            "be redacted and debug output is internal-only. Multi-file run data "
             "needs inner-file redaction before it can ship.",
             file=sys.stderr,
         )

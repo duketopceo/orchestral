@@ -47,6 +47,11 @@ class RunMeta:
     passes: bool | None = None
     run_dir: str = ""
     config: dict[str, Any] = field(default_factory=dict)
+    latency_ms: float = 0.0
+    failure_reason: str | None = None
+    env: dict[str, Any] = field(default_factory=dict)
+    run_group: str | None = None
+    replicate: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -73,7 +78,6 @@ class RunStore:
         with self._connect() as conn:
             # WAL so parallel runners can write the index concurrently
             conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("PRAGMA busy_timeout=10000")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS runs (
@@ -90,10 +94,51 @@ class RunStore:
                     score REAL,
                     passes INTEGER,
                     run_dir TEXT,
-                    config TEXT
+                    config TEXT,
+                    latency_ms REAL,
+                    failure_reason TEXT,
+                    env TEXT,
+                    run_group TEXT,
+                    replicate INTEGER
                 )
                 """
             )
+            # Migrate pre-v2 indexes: columns are appended at the END so
+            # positional reads in _row_to_meta stay valid for both schemas.
+            # The check-then-ALTER can race a second process doing the same
+            # upgrade, so a duplicate-column error is treated as already-done.
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(runs)")}
+            for name, decl in _RUN_COLUMNS_V2:
+                if name not in cols:
+                    try:
+                        conn.execute(f"ALTER TABLE runs ADD COLUMN {name} {decl}")
+                    except sqlite3.OperationalError as exc:
+                        if "duplicate column" not in str(exc).lower():
+                            raise
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS calls (
+                    call_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    run_id TEXT,
+                    phase TEXT,
+                    step INTEGER,
+                    role TEXT,
+                    model TEXT,
+                    input_tokens INTEGER,
+                    output_tokens INTEGER,
+                    cost_usd REAL,
+                    api_cost_usd REAL,
+                    pricing_source TEXT,
+                    latency_ms REAL,
+                    attempt INTEGER,
+                    error_category TEXT,
+                    error TEXT,
+                    dry_run INTEGER,
+                    created_at TEXT
+                )
+                """
+            )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_calls_run ON calls(run_id)")
             for column in ("orchestrator", "worker", "task_id", "status", "total_cost_usd", "score"):
                 conn.execute(
                     f"CREATE INDEX IF NOT EXISTS idx_{column} ON runs({column})"
@@ -117,6 +162,10 @@ class RunStore:
         task_id: str,
         worker: str,
         config: dict[str, Any] | None = None,
+        *,
+        run_group: str | None = None,
+        replicate: int | None = None,
+        env: dict[str, Any] | None = None,
     ) -> tuple[str, Path]:
         """Create a new run directory and index entry."""
         run_id = uuid.uuid4().hex[:12]
@@ -139,6 +188,9 @@ class RunStore:
             started_at=now,
             run_dir=str(run_dir),
             config=config or {},
+            run_group=run_group,
+            replicate=replicate,
+            env=env or {},
         )
         self._write_meta_file(run_dir, meta)
         self.index_meta(meta)
@@ -151,8 +203,14 @@ class RunStore:
         with self._connect() as conn:
             conn.execute(
                 """
-                INSERT OR REPLACE INTO runs
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT OR REPLACE INTO runs (
+                    run_id, orchestrator, task_id, worker, status,
+                    started_at, finished_at, total_cost_usd,
+                    total_input_tokens, total_output_tokens, score, passes,
+                    run_dir, config, latency_ms, failure_reason, env,
+                    run_group, replicate
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     meta.run_id,
@@ -169,8 +227,84 @@ class RunStore:
                     int(meta.passes) if meta.passes is not None else None,
                     meta.run_dir,
                     json.dumps(meta.config, default=str),
+                    meta.latency_ms,
+                    meta.failure_reason,
+                    json.dumps(meta.env, default=str),
+                    meta.run_group,
+                    meta.replicate,
                 ),
             )
+
+    def record_call(
+        self,
+        *,
+        run_id: str,
+        phase: str | None,
+        step: int | None,
+        role: str | None,
+        model: str | None,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        cost_usd: float = 0.0,
+        api_cost_usd: float | None = None,
+        pricing_source: str | None = None,
+        latency_ms: float = 0.0,
+        attempt: int | None = None,
+        error_category: str | None = None,
+        error: str | None = None,
+        dry_run: bool = False,
+    ) -> None:
+        """Index one call-level event (llm_call or worker_error)."""
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO calls (
+                    run_id, phase, step, role, model, input_tokens,
+                    output_tokens, cost_usd, api_cost_usd, pricing_source,
+                    latency_ms, attempt, error_category, error, dry_run,
+                    created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    run_id,
+                    phase,
+                    step,
+                    role,
+                    model,
+                    input_tokens,
+                    output_tokens,
+                    cost_usd,
+                    api_cost_usd,
+                    pricing_source,
+                    latency_ms,
+                    attempt,
+                    error_category,
+                    (error or "")[:500] or None,
+                    int(dry_run),
+                    datetime.now(UTC).isoformat(),
+                ),
+            )
+
+    def calls_for_run(self, run_id: str) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT * FROM calls WHERE run_id = ? ORDER BY call_id", (run_id,)
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def debug_log(self, component: str, message: str, **fields: Any) -> None:
+        """Append to the root-level runs/debug.jsonl for events that happen
+        before a run directory exists (e.g. provider resolution failures)."""
+        path = self.root / "debug.jsonl"
+        record = {
+            "timestamp": datetime.now(UTC).isoformat(),
+            "component": component,
+            "message": message,
+            "fields": fields,
+        }
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record, default=str) + "\n")
 
     def get_run(self, run_id: str) -> RunMeta | None:
         with self._connect() as conn:
@@ -250,7 +384,17 @@ class RunStore:
         }
 
 
-_SORTABLE_COLUMNS = {"run_id", "started_at", "finished_at", "status", "orchestrator", "worker", "task_id", "total_cost_usd", "score"}
+_SORTABLE_COLUMNS = {"run_id", "started_at", "finished_at", "status", "orchestrator", "worker", "task_id", "total_cost_usd", "score", "latency_ms", "failure_reason", "run_group", "replicate"}
+
+# (name, SQL decl) — appended at the end of `runs` for both fresh CREATEs and
+# ALTER migrations so positional row reads stay valid.
+_RUN_COLUMNS_V2 = (
+    ("latency_ms", "REAL"),
+    ("failure_reason", "TEXT"),
+    ("env", "TEXT"),
+    ("run_group", "TEXT"),
+    ("replicate", "INTEGER"),
+)
 
 
 def _safe_name(name: str) -> str:
@@ -263,6 +407,8 @@ def _safe_name(name: str) -> str:
 
 def _row_to_meta(row: sqlite3.Row) -> RunMeta:
     config = json.loads(row[13]) if row[13] else {}
+    # rows 14+ exist on v2 indexes; tolerate narrower rows from unmigrated DBs
+    env = json.loads(row[16]) if len(row) > 16 and row[16] else {}
     return RunMeta(
         run_id=row[0],
         orchestrator=row[1],
@@ -278,4 +424,9 @@ def _row_to_meta(row: sqlite3.Row) -> RunMeta:
         passes=bool(row[11]) if row[11] is not None else None,
         run_dir=row[12],
         config=config,
+        latency_ms=row[14] if len(row) > 14 and row[14] is not None else 0.0,
+        failure_reason=row[15] if len(row) > 15 else None,
+        env=env,
+        run_group=row[17] if len(row) > 17 else None,
+        replicate=row[18] if len(row) > 18 else None,
     )

@@ -41,6 +41,11 @@ class CostRecord:
     output_tokens: int
     cost_usd: float
     usage: dict[str, int] | None = None
+    # where cost_usd came from: "api_reported" (provider usage.cost),
+    # "configured" (token pricing), "configured_estimate" (rate-card
+    # fallback), or "none" (dry-run fake)
+    pricing_source: str | None = None
+    api_cost_usd: float | None = None
 
 
 class CostLedger:
@@ -58,6 +63,8 @@ class CostLedger:
                 output_tokens=record.get("output_tokens", 0),
                 cost_usd=record.get("cost_usd", 0.0),
                 usage=record.get("usage"),
+                pricing_source=record.get("pricing_source"),
+                api_cost_usd=record.get("api_cost_usd"),
             )
         self.records.append(record)
 
@@ -82,6 +89,8 @@ class CostLedger:
                 "input_tokens": r.input_tokens,
                 "output_tokens": r.output_tokens,
                 "cost_usd": r.cost_usd,
+                "pricing_source": r.pricing_source,
+                "api_cost_usd": r.api_cost_usd,
                 "usage": r.usage,
             }
             for r in self.records

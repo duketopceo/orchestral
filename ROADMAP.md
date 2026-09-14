@@ -45,6 +45,21 @@
 
 **Goal:** cover the delegation shapes a single artifact can't express.
 
+## v1.2 — Measurement & observability
+
+- [x] Observability v2 — `debug.jsonl` channel, `calls` index table, `metrics.json`, `failure_reason`/`error_category` taxonomy, `pricing_source`/`api_cost_usd` labels, env/replicate labels, `--verbose`
+- [ ] N runs per pairing — replicate variance + error bars in reports
+- [ ] Pricing drift check — provider-reported `usage.cost` vs configured prices
+- [ ] Executable code task type — worker writes module + tests, run in a subprocess (pass@k)
+- [ ] SQL/analytics task — `sqlite3` execution validator
+- [ ] Structured extraction task — deterministic JSON-schema validation
+- [ ] Constraint tasks — negative constraints / size budgets, deterministic checks
+- [ ] Long-context needle task
+- [ ] Judge calibration — human-labeled set, judge/human agreement metrics
+- [ ] Local web GUI — `harness.py serve` over the run index
+
+**Goal:** rankings you can trust, on tasks that measure delegation.
+
 ## v1.0 — Shared tool
 
 - [x] Publish as open-source repo with proper docs

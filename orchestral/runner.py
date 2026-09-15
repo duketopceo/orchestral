@@ -8,6 +8,7 @@ import html.parser
 import io
 import json
 import platform
+import re
 import subprocess
 import threading
 import time
@@ -40,6 +41,7 @@ from orchestral.planners import (
     assemble_media,
     assemble_raw,
     delegate,
+    delegate_constraint,
     delegate_image,
     delegate_multi,
     delegate_video,
@@ -275,6 +277,7 @@ class Runner:
             # code tasks share the fileset protocol: workers return files,
             # the merge+zip is identical, only validation differs
             is_multi = task.type in ("multi-file", "code")
+            is_constraint = task.type == "constraint"
             is_media = is_image or is_video
             results: list[dict[str, Any]] = []
             media_paths: list[Path | None] = []
@@ -329,6 +332,17 @@ class Runner:
                             )
                         elif is_multi:
                             out, files, worker_costs = delegate_multi(
+                                logger=logger,
+                                step=i + 3,
+                                subtask=sub,
+                                task=task,
+                                worker=worker,
+                                client=role_clients.get("worker"),
+                                dry_run=self.dry_run,
+                                attempt=attempt + 1,
+                            )
+                        elif is_constraint:
+                            out, worker_costs = delegate_constraint(
                                 logger=logger,
                                 step=i + 3,
                                 subtask=sub,
@@ -475,6 +489,31 @@ class Runner:
                     judge_bytes = artifact_bytes
                 else:
                     passes, report = self._validate_video(task, artifact_bytes)
+            elif is_constraint:
+                # Orchestrator picks the best candidate; the artifact is the
+                # raw text so word budgets and pattern checks apply to worker
+                # output, not HTML scaffolding.
+                position, assembly_costs = assemble_media(
+                    logger=logger,
+                    task=task,
+                    orchestrator=orchestrator,
+                    step=assembly_step,
+                    results=results,
+                    client=role_clients.get("orchestrator"),
+                    dry_run=self.dry_run,
+                )
+                ledger.add_many(assembly_costs)
+                chosen = results[position] if results else {}
+                artifact = str(chosen.get("content") or "")
+                (run_dir / "artifact.txt").write_text(artifact, encoding="utf-8")
+                logger.lifecycle(
+                    "artifact.saved", phase="assemble",
+                    path="artifact.txt", bytes=len(artifact.encode()),
+                )
+                logger.lifecycle("synthesis.completed", phase="assemble", role="orchestrator")
+                logger.lifecycle("evaluation.started", phase="validate")
+                passes, report = self._validate(task, artifact)
+                judge_text = artifact
             elif is_multi:
                 # Deterministic merge + zip: no orchestrator call, and the
                 # artifact is bytes — the HTML branch below writes text.
@@ -819,6 +858,71 @@ class Runner:
             )
             if not checks["no_placeholder"]:
                 errors.append("Artifact contains placeholder text.")
+
+        # Metadata-driven constraint checks — used by `constraint` tasks and
+        # composable onto any text-producing task. Each fails closed when the
+        # check is requested but its metadata key is missing.
+        if "within_budget" in requested:
+            bounds = {
+                "min_chars": len(artifact),
+                "max_chars": len(artifact),
+                "min_words": len(artifact.split()),
+                "max_words": len(artifact.split()),
+            }
+            declared = {k: task.metadata.get(k) for k in bounds if task.metadata.get(k) is not None}
+            checks["within_budget"] = bool(declared)
+            if not declared:
+                errors.append("within_budget requested but no min/max chars/words in metadata.")
+            for key, actual in bounds.items():
+                limit = declared.get(key)
+                if limit is None:
+                    continue
+                violated = actual < int(limit) if key.startswith("min") else actual > int(limit)
+                if violated:
+                    checks["within_budget"] = False
+                    errors.append(f"{key} violated: {actual} vs limit {limit}.")
+        if "has_required" in requested:
+            required = task.metadata.get("required") or []
+            missing_req = [t for t in required if str(t).lower() not in lowered]
+            checks["has_required"] = bool(required) and not missing_req
+            if not required:
+                errors.append("has_required requested but metadata.required is empty.")
+            elif missing_req:
+                errors.append(f"Missing required token(s): {', '.join(map(str, missing_req))}.")
+        if "no_forbidden" in requested:
+            forbidden = task.metadata.get("forbidden") or []
+            hits = [t for t in forbidden if str(t).lower() in lowered]
+            checks["no_forbidden"] = bool(forbidden) and not hits
+            if not forbidden:
+                errors.append("no_forbidden requested but metadata.forbidden is empty.")
+            elif hits:
+                errors.append(f"Forbidden token(s) present: {', '.join(map(str, hits))}.")
+        if "matches_pattern" in requested:
+            pattern = task.metadata.get("pattern")
+            if not pattern:
+                checks["matches_pattern"] = False
+                errors.append("matches_pattern requested but metadata.pattern is empty.")
+            else:
+                try:
+                    checks["matches_pattern"] = re.search(str(pattern), artifact, re.DOTALL) is not None
+                    if not checks["matches_pattern"]:
+                        errors.append(f"Artifact does not match pattern {pattern!r}.")
+                except re.error as exc:
+                    checks["matches_pattern"] = False
+                    errors.append(f"metadata.pattern is not a valid regex: {exc}.")
+        if "no_pattern" in requested:
+            pattern = task.metadata.get("forbidden_pattern")
+            if not pattern:
+                checks["no_pattern"] = False
+                errors.append("no_pattern requested but metadata.forbidden_pattern is empty.")
+            else:
+                try:
+                    checks["no_pattern"] = re.search(str(pattern), artifact, re.DOTALL) is None
+                    if not checks["no_pattern"]:
+                        errors.append(f"Artifact matches forbidden pattern {pattern!r}.")
+                except re.error as exc:
+                    checks["no_pattern"] = False
+                    errors.append(f"metadata.forbidden_pattern is not a valid regex: {exc}.")
 
         return _validation_report(task, checks, errors, len(artifact))
 

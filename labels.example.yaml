@@ -1,0 +1,11 @@
+# Human labels for judge calibration — `harness.py calibrate --labels <file>`.
+# Label runs the judge scored: copy run_ids from `harness.py report`, review
+# the artifacts (each run dir has artifact.* and report.json), then fill in
+# your verdict. Both `score` and `passed` are optional; each is only counted
+# when both you and the judge supplied it.
+labels:
+  - run_id: a1b2c3d4      # unique prefix of a run id
+    score: 0.8            # your score in [0, 1]
+    passed: true          # your verdict
+  - run_id: e5f6a7b8
+    passed: false

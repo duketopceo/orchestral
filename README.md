@@ -85,6 +85,7 @@ orchestral dashboard               # reports/dashboard.html
 | `shots` | Screenshot stored HTML artifacts (needs `[shots]` extra) |
 | `tui` | Interactive terminal UI — browse/inspect/launch runs (needs `[tui]` extra) |
 | `scrub` | Redact secrets/paths from `runs/` into `runs-pub/` + `manifest.json` |
+| `calibrate` | Judge-vs-human agreement from a labels file (`--labels`, `--json`) |
 
 Shared run flags (on `run`, `grid`, `batch`, `ablate`): `--planner raw|ce-plan`,
 `--judge <slug>`, `--no-judge-cache`, `--retry-limit N`, `--prompt-variant NAME`,
@@ -95,6 +96,12 @@ Shared run flags (on `run`, `grid`, `batch`, `ablate`): `--planner raw|ce-plan`,
 `--group` is absent); replicate `i` records seed `S+i-1`. `report --groups`
 aggregates cells with pass rate, score/cost mean±sd, p50/p95 latency, and
 successes-per-dollar.
+
+`calibrate --labels labels.yaml` measures how much to trust `--judge`: the
+labels file is `labels: [{run_id, score, passed}]` over runs the judge
+scored, and the report is score agreement (MAE, Pearson, Spearman) plus
+verdict agreement (accuracy, Cohen's kappa, confusion counts). See
+`labels.example.yaml`.
 
 ### TUI
 

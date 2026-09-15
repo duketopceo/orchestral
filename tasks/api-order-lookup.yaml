@@ -1,0 +1,28 @@
+id: api-order-lookup
+type: api
+prompt: |
+  You are integrating with a small orders API (base URL is provided by the
+  harness; do not include a host). Write a JSON request plan — a list of
+  call objects {method, path, json?, params?} — that:
+
+  1. GETs /health to confirm the service is up.
+  2. GETs /users/42 to look up the customer.
+  3. POSTs /orders with a JSON body {"user_id": 42, "sku": "MUG-11", "qty": 2}
+     to place the order.
+  4. GETs /orders with params {"user_id": 42} to confirm it was placed.
+
+  Return ONLY the JSON list — no prose, no host prefix.
+validation: []
+assets: []
+metadata:
+  strict: true
+  stub:
+    - {method: GET, path: /health, status: 200, json: {ok: true}}
+    - {method: GET, path: /users/42, status: 200, json: {id: 42, name: "Ada"}}
+    - {method: POST, path: /orders, status: 201, json: {order_id: 9001}}
+    - {method: GET, path: /orders, status: 200, json: [{order_id: 9001, user_id: 42}]}
+  calls:
+    - {method: GET, path: /health}
+    - {method: GET, path: /users/42}
+    - {method: POST, path: /orders, json: {user_id: 42, sku: "MUG-11", qty: 2}}
+    - {method: GET, path: /orders, params: {user_id: 42}}

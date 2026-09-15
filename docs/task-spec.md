@@ -138,6 +138,30 @@ metadata: {}                  # optional free-form map (video tasks read generat
   requires every `required` field present, all type/enum checks green, and
   `score >= pass_threshold`. Unparseable artifacts score null. See
   `tasks/extract-invoice.yaml`.
+- **`api`** — workers produce a JSON *request plan* per subtask (a list of
+  `{method, path, json?, params?}` calls); the orchestrator picks the best;
+  the harness starts a real loopback `http.server` stubbed from
+  `metadata.stub`, replays the chosen plan over real HTTP, and the stub
+  records what actually arrived. The plan is stored as `artifact.json`.
+
+  ```yaml
+  metadata:
+    strict: true           # unexpected calls fail the run (default true)
+    stub:                  # canned routes the local server answers
+      - {method: GET, path: /users/42, status: 200, json: {id: 42}}
+    calls:                 # the expected request sequence — defines truth
+      - {method: GET, path: /users/42}
+      - {method: POST, path: /orders, json: {user_id: 42}}
+      - {method: GET, path: /orders, params: {user_id: 42}}
+  ```
+
+  Matching is per-call: method + path always, `json` body and query `params`
+  when declared. Score is the fraction of expected calls that arrived
+  correctly; `passes` requires every expected call and — under `strict` —
+  no unexpected ones. The stub binds 127.0.0.1 on an ephemeral port and is
+  shut down before validation returns; nothing leaves the loopback
+  interface. `validation:` entries are unused. See
+  `tasks/api-order-lookup.yaml`.
 
 ## Validation checks
 

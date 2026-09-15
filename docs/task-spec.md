@@ -5,7 +5,7 @@ is a single task.
 
 ```yaml
 id: landing-page-coffee       # required; used in paths, filters, judge cache keys
-type: html                    # required; "html", "image", "video", "multi-file" are implemented
+type: html                    # required; "html", "image", "video", "multi-file", "code" are implemented
 prompt: |                     # required; the task brief given to the orchestrator
   Build a landing page for a coffee subscription service.
 
@@ -19,11 +19,11 @@ metadata: {}                  # optional free-form map (video tasks read generat
 | Field | Type | Default | Notes |
 |---|---|---|---|
 | `id` | str | required | Unique across `tasks/`; becomes a path component (`runs/{orch}/{task}/{worker}/{run_id}/`) |
-| `type` | str | required | `html`, `image`, `video`, `multi-file` implemented; `api` is reserved/planned |
+| `type` | str | required | `html`, `image`, `video`, `multi-file`, `code` implemented; `api` is reserved/planned |
 | `prompt` | str | required | Full task brief; the orchestrator decomposes it into subtasks |
 | `validation` | list[str] | `[]` | Check names; empty means the type's default set |
 | `assets` | list[str] | `[]` | Reserved; not consumed by the runner yet |
-| `metadata` | map | `{}` | Free-form; carried into run records. `video` tasks read `duration`, `resolution`, `aspect_ratio`, `generate_audio`, `seed`; `multi-file` tasks read `expected_paths` |
+| `metadata` | map | `{}` | Free-form; carried into run records. `video` tasks read `duration`, `resolution`, `aspect_ratio`, `generate_audio`, `seed`; `multi-file` tasks read `expected_paths`; `code` tasks read `module`, `tests`, `timeout_seconds`, `expected_paths` |
 
 ## Task types
 
@@ -61,6 +61,20 @@ metadata: {}                  # optional free-form map (video tasks read generat
   identically. File *contents* stay inside the archive: run traces record
   paths, sizes, and hashes only. Declare the files the task must produce in
   `metadata.expected_paths` for the `has_paths` check.
+- **`code`** — same file-set contract as `multi-file` (workers return
+  `{"files": [...]}`, merged into `artifact.zip`), but validation executes
+  hidden tests: the file set plus the task's `metadata.tests` (a unittest
+  source string, never sent to workers) are materialized into a temp dir and
+  run via `python -Es -m unittest` in a subprocess. `metadata.module` names
+  the required file (default `solution.py`; also the `expected_paths`
+  default). `metadata.timeout_seconds` caps execution (default 30). `passes`
+  requires every expected file present *and* the suite green; `score` is the
+  fraction of tests passed (0.0 when the suite crashes, errors on import, or
+  times out — `None` only when the suite never ran). Replicates give pass@k.
+  The subprocess runs `-Es` with a stripped environment in a fresh temp dir —
+  containment, not a security sandbox: generated code still runs with your OS
+  privileges, so only pair trusted models with this task type. Dry runs skip
+  execution and compile-check `.py` files instead (`executed: false`).
 
 ## Validation checks
 
@@ -98,6 +112,14 @@ metadata: {}                  # optional free-form map (video tasks read generat
 | `non_empty` | the artifact has bytes |
 | `zip_signature` | the archive opens as a zip |
 | `has_paths` | every path in `metadata.expected_paths` is present as a non-empty regular file |
+
+`code` tasks ignore `validation:` — the check is execution:
+
+| Check | Passes when |
+|---|---|
+| `expected_paths` | `metadata.module` (and any declared `expected_paths`) are present non-empty |
+| `compiles` | (dry-run only) every `.py` file compiles |
+| `tests_pass` | `python -Es -m unittest task_tests` exits 0 with ≥1 test run |
 
 Unknown check names fail the run — including in a list that also contains known
 checks.

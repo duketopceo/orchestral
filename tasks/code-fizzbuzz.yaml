@@ -1,0 +1,41 @@
+id: code-fizzbuzz
+type: code
+prompt: |
+  Implement a Python module `fizzbuzz.py` with a single function
+  `fizzbuzz(n: int) -> str | int`.
+
+  Rules:
+  - multiples of 3 and 5 → "FizzBuzz"
+  - multiples of 3 → "Fizz"
+  - multiples of 5 → "Buzz"
+  - anything else → n (the int, not a string)
+
+  Return a JSON object {"files": [{"path": "fizzbuzz.py", "content": "..."}]}
+  with the complete module. No test file needed — the harness runs its own.
+metadata:
+  module: fizzbuzz.py
+  expected_paths: [fizzbuzz.py]
+  timeout_seconds: 30
+  tests: |
+    import unittest
+    from fizzbuzz import fizzbuzz
+
+    class TestFizzBuzz(unittest.TestCase):
+        def test_plain_number(self):
+            self.assertEqual(fizzbuzz(1), 1)
+            self.assertIsInstance(fizzbuzz(1), int)
+
+        def test_fizz(self):
+            self.assertEqual(fizzbuzz(3), "Fizz")
+            self.assertEqual(fizzbuzz(9), "Fizz")
+
+        def test_buzz(self):
+            self.assertEqual(fizzbuzz(5), "Buzz")
+            self.assertEqual(fizzbuzz(20), "Buzz")
+
+        def test_fizzbuzz(self):
+            self.assertEqual(fizzbuzz(15), "FizzBuzz")
+            self.assertEqual(fizzbuzz(45), "FizzBuzz")
+
+        def test_zero(self):
+            self.assertEqual(fizzbuzz(0), "FizzBuzz")

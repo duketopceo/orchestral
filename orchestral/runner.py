@@ -16,6 +16,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from orchestral.codeexec import (
+    DEFAULT_TIMEOUT_SECONDS,
+    materialize,
+    run_unittest_suite,
+    score_from_report,
+)
 from orchestral.config import ModelConfig, TaskSpec
 from orchestral.costs import CostLedger
 from orchestral.fileset import (
@@ -266,7 +272,9 @@ class Runner:
             # 2. Delegate each subtask to the worker
             is_image = task.type == "image"
             is_video = task.type == "video"
-            is_multi = task.type == "multi-file"
+            # code tasks share the fileset protocol: workers return files,
+            # the merge+zip is identical, only validation differs
+            is_multi = task.type in ("multi-file", "code")
             is_media = is_image or is_video
             results: list[dict[str, Any]] = []
             media_paths: list[Path | None] = []
@@ -481,7 +489,10 @@ class Runner:
                 )
                 logger.lifecycle("synthesis.completed", phase="assemble", role="orchestrator")
                 logger.lifecycle("evaluation.started", phase="validate")
-                passes, report = self._validate_multi(task, artifact_bytes)
+                if task.type == "code":
+                    passes, report = self._validate_code(task, merged)
+                else:
+                    passes, report = self._validate_multi(task, artifact_bytes)
                 report["files"] = sorted(merged)
                 report["merge_conflicts"] = conflicts
                 # the judge sees a content-free listing — file bodies never
@@ -867,6 +878,59 @@ class Runner:
         passes, report = _validation_report(task, checks, errors, len(artifact))
         return passes and not unknown, report
 
+    def _validate_code(self, task: TaskSpec, files: dict[str, str]) -> tuple[bool, dict[str, Any]]:
+        """Run the task's hidden unittest source against the merged file set.
+
+        Expected files must exist; live runs execute the suite in a
+        subprocess (see codeexec for containment notes). Dry runs only
+        compile-check the Python files — no model code ever ran, so the
+        report says `executed: false`.
+        """
+        module = str(task.metadata.get("module") or "solution.py")
+        declared = expected_paths(task.metadata) or [module]
+        missing = [p for p in declared if not files.get(p)]
+        errors = [f"Missing or empty expected files: {', '.join(missing)}."] if missing else []
+        checks: dict[str, bool] = {"expected_paths": not missing}
+
+        report: dict[str, Any] = {
+            "task_id": task.id,
+            "checks": checks,
+            "errors": errors,
+            "score": None,
+        }
+        if missing:
+            return False, report
+
+        if self.dry_run:
+            import py_compile
+            import tempfile
+
+            compiled = True
+            with tempfile.TemporaryDirectory(prefix="orchestral-code-") as tmp:
+                materialize(files, Path(tmp))
+                for rel in files:
+                    if rel.endswith(".py"):
+                        try:
+                            py_compile.compile(str(Path(tmp) / rel), doraise=True)
+                        except py_compile.PyCompileError as exc:
+                            compiled = False
+                            errors.append(f"{rel}: {exc.msg}")
+            checks["compiles"] = compiled
+            report["executed"] = False
+            return compiled, report
+
+        suite = run_unittest_suite(
+            files,
+            str(task.metadata.get("tests") or ""),
+            timeout_seconds=float(task.metadata.get("timeout_seconds", DEFAULT_TIMEOUT_SECONDS)),
+        )
+        report["execution"] = suite
+        checks["tests_pass"] = bool(suite.get("ok"))
+        if not suite.get("executed"):
+            errors.append(suite.get("error", "tests did not execute"))
+        report["score"] = score_from_report(suite)
+        return bool(checks["expected_paths"] and checks["tests_pass"]), report
+
     def _validate_video(self, task: TaskSpec, artifact: bytes) -> tuple[bool, dict[str, Any]]:
         requested = set(task.validation) if task.validation else {"non_empty", "mp4_signature"}
         checks: dict[str, bool] = {}
@@ -920,7 +984,7 @@ def _subtask_produced_output(
 
 
 def _artifact_ext(task_type: str) -> str:
-    return {"html": ".html", "image": ".png", "video": ".mp4", "api": ".json", "multi-file": ".zip"}.get(task_type, ".txt")
+    return {"html": ".html", "image": ".png", "video": ".mp4", "api": ".json", "multi-file": ".zip", "code": ".zip"}.get(task_type, ".txt")
 
 
 class _HTMLValidator(html.parser.HTMLParser):

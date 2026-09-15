@@ -55,7 +55,7 @@ class ModelConfig:
 @dataclass
 class TaskSpec:
     id: str
-    type: str  # html | image | video | api | multi-file | code | constraint | needle
+    type: str  # html | image | video | api | multi-file | code | constraint | needle | sql
     prompt: str
     validation: list[str] = field(default_factory=list)
     assets: list[str] = field(default_factory=list)

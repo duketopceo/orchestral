@@ -93,6 +93,31 @@ metadata: {}                  # optional free-form map (video tasks read generat
   the model actually found it, not whether it can recite the options.
   `metadata.expected_answer` feeds the dry-run path. See
   `tasks/needle-deploy-token.yaml`.
+- **`sql`** — workers produce candidate SQL queries; the orchestrator picks
+  one (same candidate-selection flow as `image`/`video`); the harness executes
+  the chosen query **read-only** against a fixture SQLite database built from
+  `metadata.schema` + `metadata.seed` and compares its result to
+  `metadata.reference_sql`. The selected query is stored as `artifact.sql`.
+
+  ```yaml
+  metadata:
+    ordered: true          # row order must match; default is multiset compare
+    schema: [...]          # CREATE TABLE statements (list or one string)
+    seed: [...]            # INSERT statements (list or one string)
+    reference_sql: |       # the expected answer — defines truth
+      SELECT ...
+  ```
+
+  Score is `1.0` when the candidate's rows match the reference's, `0.0` when
+  the query runs but returns wrong rows or fails (including write attempts —
+  the connection is `mode=ro`), and null when the task spec itself is broken
+  or the worker produced no SQL. A progress-handler step cap aborts runaway
+  queries. This is deterministic validation, not a sandbox: candidate SQL
+  executes on this machine, so only run sql tasks against workers you trust
+  not to produce hostile queries (read-only mode blocks writes, but queries
+  can still burn CPU until the step cap trips). `validation:` entries are
+  unused — the check set is fixed (`executed`, `matches_reference`). See
+  `tasks/sql-monthly-revenue.yaml`.
 
 ## Validation checks
 

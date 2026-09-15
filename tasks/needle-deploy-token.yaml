@@ -1,0 +1,422 @@
+id: needle-deploy-token
+type: needle
+prompt: 'The subtask payload contains `document`: a 200-line deploy log. Find the
+  release_token of the deploy that actually completed (status ''deploy complete'',
+  region eu-west) — NOT the drafted rollbacks. Answer with only the token, nothing
+  else.'
+validation:
+- non_empty
+- has_required
+- no_forbidden
+assets: []
+metadata:
+  difficulty: medium
+  document: '2025-03-05T12:41:03Z auth DEBUG request handled id=22337 ms=377
+
+    2025-03-19T01:58:32Z billing INFO request handled id=21265 ms=447
+
+    2025-03-14T02:15:05Z worker-7 WARN request handled id=17747 ms=582
+
+    2025-03-04T07:40:40Z worker-7 INFO request handled id=85642 ms=602
+
+    2025-03-13T01:14:02Z worker-7 INFO request handled id=47959 ms=432
+
+    2025-03-05T17:07:36Z search DEBUG request handled id=99391 ms=188
+
+    2025-03-04T18:36:40Z billing INFO request handled id=22770 ms=563
+
+    2025-03-23T02:36:03Z worker-7 INFO request handled id=75066 ms=699
+
+    2025-03-18T13:49:20Z gateway DEBUG request handled id=69399 ms=373
+
+    2025-03-10T07:50:11Z billing INFO request handled id=85290 ms=310
+
+    2025-03-17T15:56:21Z gateway INFO request handled id=89817 ms=77
+
+    2025-03-04T16:26:10Z search INFO request handled id=74089 ms=434
+
+    2025-03-02T21:04:48Z worker-7 DEBUG request handled id=51123 ms=351
+
+    2025-03-23T11:38:31Z worker-7 WARN request handled id=19012 ms=98
+
+    2025-03-09T15:44:42Z auth INFO request handled id=50580 ms=665
+
+    2025-03-19T21:52:28Z search WARN request handled id=97641 ms=358
+
+    2025-03-01T14:22:10Z worker-7 INFO request handled id=74709 ms=63
+
+    2025-03-07T09:08:47Z billing WARN request handled id=61242 ms=511
+
+    2025-03-03T05:28:25Z worker-7 INFO request handled id=27947 ms=443
+
+    2025-03-28T17:17:45Z gateway INFO request handled id=99485 ms=392
+
+    2025-03-08T04:05:11Z billing INFO request handled id=96313 ms=241
+
+    2025-03-01T15:53:37Z billing INFO request handled id=46953 ms=7
+
+    2025-03-05T13:34:23Z worker-7 DEBUG request handled id=51761 ms=131
+
+    2025-03-23T16:39:41Z auth WARN request handled id=99204 ms=575
+
+    2025-03-13T12:25:25Z auth WARN request handled id=93137 ms=413
+
+    2025-03-02T06:04:13Z gateway INFO request handled id=24408 ms=351
+
+    2025-03-20T01:06:00Z worker-7 INFO request handled id=80335 ms=106
+
+    2025-03-12T19:01:04Z billing DEBUG request handled id=59313 ms=155
+
+    2025-03-21T08:22:38Z search WARN request handled id=26101 ms=121
+
+    2025-03-28T15:29:30Z gateway INFO request handled id=21257 ms=150
+
+    2025-03-04T23:21:47Z search WARN rollback scheduled: release_token=OMEGA-9981
+    region=us-east (draft, not applied)
+
+    2025-03-27T22:10:33Z auth INFO request handled id=79239 ms=373
+
+    2025-03-05T22:34:58Z auth DEBUG request handled id=49071 ms=661
+
+    2025-03-28T02:44:54Z search DEBUG request handled id=58064 ms=174
+
+    2025-03-12T07:34:34Z worker-7 INFO request handled id=93419 ms=231
+
+    2025-03-20T06:51:15Z gateway INFO request handled id=36203 ms=533
+
+    2025-03-16T11:46:01Z auth INFO request handled id=71897 ms=268
+
+    2025-03-07T22:38:22Z gateway INFO request handled id=57793 ms=85
+
+    2025-03-08T03:14:30Z billing INFO request handled id=36787 ms=497
+
+    2025-03-20T19:53:00Z gateway INFO request handled id=94296 ms=89
+
+    2025-03-27T21:07:58Z gateway INFO request handled id=72656 ms=185
+
+    2025-03-14T20:21:05Z gateway WARN request handled id=62610 ms=764
+
+    2025-03-03T23:10:10Z billing INFO request handled id=29811 ms=607
+
+    2025-03-15T20:09:39Z worker-7 WARN request handled id=96149 ms=361
+
+    2025-03-05T17:35:08Z auth INFO request handled id=95154 ms=108
+
+    2025-03-17T23:59:08Z gateway INFO request handled id=37661 ms=31
+
+    2025-03-09T06:18:32Z billing DEBUG request handled id=52728 ms=268
+
+    2025-03-18T13:53:08Z auth INFO request handled id=70052 ms=681
+
+    2025-03-19T16:26:52Z worker-7 INFO request handled id=79707 ms=158
+
+    2025-03-17T16:01:55Z gateway INFO request handled id=89764 ms=7
+
+    2025-03-25T04:11:09Z gateway DEBUG request handled id=25772 ms=572
+
+    2025-03-02T10:43:33Z worker-7 DEBUG request handled id=73240 ms=798
+
+    2025-03-04T17:03:15Z billing INFO request handled id=15531 ms=793
+
+    2025-03-04T16:28:35Z auth INFO request handled id=68097 ms=336
+
+    2025-03-20T16:38:32Z billing INFO request handled id=69289 ms=523
+
+    2025-03-18T15:32:15Z worker-7 INFO request handled id=83336 ms=210
+
+    2025-03-27T14:08:26Z auth WARN request handled id=67949 ms=326
+
+    2025-03-03T21:15:27Z auth INFO request handled id=97749 ms=313
+
+    2025-03-26T03:57:49Z billing INFO request handled id=28740 ms=262
+
+    2025-03-05T14:14:47Z auth WARN request handled id=73866 ms=169
+
+    2025-03-22T07:10:45Z gateway DEBUG request handled id=62928 ms=350
+
+    2025-03-14T06:22:20Z auth INFO request handled id=12553 ms=349
+
+    2025-03-18T14:28:45Z auth WARN request handled id=53450 ms=532
+
+    2025-03-20T09:32:04Z auth INFO request handled id=23733 ms=89
+
+    2025-03-09T08:02:57Z billing INFO request handled id=26981 ms=435
+
+    2025-03-28T21:52:16Z gateway INFO request handled id=80333 ms=530
+
+    2025-03-19T15:44:20Z auth INFO request handled id=17540 ms=707
+
+    2025-03-06T13:57:04Z search INFO request handled id=93157 ms=93
+
+    2025-03-26T08:05:38Z billing INFO request handled id=44662 ms=127
+
+    2025-03-15T00:21:35Z gateway INFO request handled id=91487 ms=135
+
+    2025-03-02T16:45:15Z auth INFO request handled id=44327 ms=54
+
+    2025-03-06T06:59:19Z search DEBUG request handled id=36983 ms=299
+
+    2025-03-15T16:43:11Z search INFO request handled id=12380 ms=259
+
+    2025-03-02T00:01:46Z worker-7 DEBUG request handled id=34832 ms=529
+
+    2025-03-16T07:59:28Z auth WARN request handled id=96050 ms=509
+
+    2025-03-18T12:32:19Z billing INFO request handled id=54918 ms=206
+
+    2025-03-27T22:46:40Z billing WARN request handled id=55554 ms=58
+
+    2025-03-27T04:00:04Z search WARN request handled id=31397 ms=59
+
+    2025-03-03T21:53:24Z worker-7 INFO request handled id=88483 ms=251
+
+    2025-03-23T09:02:29Z billing INFO request handled id=45263 ms=459
+
+    2025-03-01T08:23:21Z worker-7 INFO request handled id=42040 ms=38
+
+    2025-03-10T06:22:11Z auth INFO request handled id=60020 ms=88
+
+    2025-03-16T08:32:41Z billing INFO request handled id=76156 ms=797
+
+    2025-03-01T02:16:52Z auth INFO request handled id=62364 ms=603
+
+    2025-03-02T12:01:19Z search INFO request handled id=21073 ms=602
+
+    2025-03-17T04:42:57Z worker-7 WARN request handled id=52747 ms=740
+
+    2025-03-16T04:18:46Z worker-7 INFO request handled id=15739 ms=735
+
+    2025-03-17T20:27:46Z worker-7 INFO request handled id=78649 ms=773
+
+    2025-03-17T18:53:52Z auth DEBUG request handled id=99508 ms=712
+
+    2025-03-21T07:05:01Z auth INFO request handled id=93508 ms=372
+
+    2025-03-04T12:53:28Z worker-7 INFO rollback scheduled: release_token=DELTA-2210
+    region=us-east (draft, not applied)
+
+    2025-03-21T00:40:34Z billing WARN request handled id=44575 ms=6
+
+    2025-03-15T02:47:59Z worker-7 DEBUG request handled id=22051 ms=678
+
+    2025-03-17T02:47:47Z gateway INFO request handled id=19758 ms=274
+
+    2025-03-08T23:48:13Z billing WARN request handled id=74742 ms=394
+
+    2025-03-03T15:58:43Z search INFO request handled id=90868 ms=650
+
+    2025-03-21T06:04:38Z billing INFO request handled id=43284 ms=670
+
+    2025-03-24T22:19:39Z worker-7 INFO request handled id=11634 ms=496
+
+    2025-03-02T15:17:43Z auth INFO request handled id=98566 ms=504
+
+    2025-03-10T22:33:18Z gateway WARN request handled id=71124 ms=788
+
+    2025-03-04T17:12:19Z auth WARN request handled id=12294 ms=299
+
+    2025-03-15T02:52:32Z gateway INFO request handled id=60704 ms=217
+
+    2025-03-07T02:37:05Z billing DEBUG request handled id=44315 ms=371
+
+    2025-03-05T19:52:40Z worker-7 INFO request handled id=24768 ms=723
+
+    2025-03-12T07:31:57Z gateway WARN request handled id=13255 ms=165
+
+    2025-03-01T15:43:28Z gateway INFO request handled id=28442 ms=429
+
+    2025-03-12T12:20:07Z search INFO request handled id=52539 ms=771
+
+    2025-03-11T12:07:59Z billing INFO request handled id=47988 ms=262
+
+    2025-03-12T02:25:24Z worker-7 INFO request handled id=57278 ms=441
+
+    2025-03-25T08:54:03Z search INFO request handled id=16765 ms=680
+
+    2025-03-10T20:59:09Z billing INFO request handled id=67178 ms=526
+
+    2025-03-11T06:49:23Z gateway INFO request handled id=92692 ms=412
+
+    2025-03-18T17:13:46Z auth INFO request handled id=63855 ms=464
+
+    2025-03-20T04:41:55Z search WARN request handled id=16419 ms=566
+
+    2025-03-05T05:30:26Z search INFO request handled id=49029 ms=264
+
+    2025-03-24T23:41:16Z gateway INFO request handled id=49431 ms=497
+
+    2025-03-18T21:25:07Z billing INFO request handled id=19852 ms=215
+
+    2025-03-17T15:35:14Z gateway INFO request handled id=68977 ms=440
+
+    2025-03-05T17:12:15Z auth INFO request handled id=54820 ms=572
+
+    2025-03-03T10:15:23Z search DEBUG request handled id=36495 ms=23
+
+    2025-03-24T13:24:26Z worker-7 INFO request handled id=59396 ms=279
+
+    2025-03-11T01:31:17Z worker-7 INFO request handled id=26498 ms=706
+
+    2025-03-17T16:40:50Z billing INFO request handled id=45523 ms=257
+
+    2025-03-13T12:41:28Z gateway INFO request handled id=12858 ms=133
+
+    2025-03-02T13:45:48Z gateway DEBUG request handled id=74202 ms=3
+
+    2025-03-03T12:59:59Z worker-7 WARN request handled id=68844 ms=257
+
+    2025-03-26T03:14:09Z billing DEBUG request handled id=99400 ms=114
+
+    2025-03-27T23:44:41Z gateway INFO request handled id=82286 ms=798
+
+    2025-03-02T00:50:08Z billing DEBUG request handled id=14927 ms=663
+
+    2025-03-23T09:08:40Z search DEBUG request handled id=93399 ms=450
+
+    2025-03-23T03:06:04Z search DEBUG request handled id=86400 ms=199
+
+    2025-03-13T08:14:50Z worker-7 INFO request handled id=11371 ms=553
+
+    2025-03-10T14:17:20Z billing WARN request handled id=78980 ms=243
+
+    2025-03-18T07:01:26Z search INFO request handled id=12855 ms=201
+
+    2025-03-16T21:41:26Z auth INFO request handled id=39863 ms=686
+
+    2025-03-14T11:14:31Z auth INFO request handled id=65123 ms=374
+
+    2025-03-22T12:12:00Z search DEBUG request handled id=18838 ms=213
+
+    2025-03-16T06:19:49Z billing INFO request handled id=70963 ms=229
+
+    2025-03-09T09:06:39Z gateway DEBUG request handled id=34551 ms=231
+
+    2025-03-16T13:58:42Z auth DEBUG request handled id=29186 ms=405
+
+    2025-03-02T06:01:38Z billing WARN request handled id=16794 ms=729
+
+    2025-03-02T05:25:28Z search INFO request handled id=20402 ms=172
+
+    2025-03-11T06:11:41Z worker-7 WARN request handled id=14180 ms=322
+
+    2025-03-22T23:24:53Z search INFO request handled id=67990 ms=176
+
+    2025-03-04T00:05:17Z auth INFO request handled id=65074 ms=129
+
+    2025-03-18T06:24:22Z search WARN request handled id=21502 ms=53
+
+    2025-03-23T15:12:23Z worker-7 WARN request handled id=35300 ms=334
+
+    2025-03-12T23:57:30Z auth WARN request handled id=42507 ms=643
+
+    2025-03-25T12:02:24Z auth WARN request handled id=18202 ms=66
+
+    2025-03-09T06:47:04Z worker-7 INFO request handled id=57575 ms=281
+
+    2025-03-11T19:02:16Z search INFO deploy complete: release_token=FALCON-4417 region=eu-west
+
+    2025-03-10T00:46:48Z worker-7 INFO request handled id=13179 ms=242
+
+    2025-03-04T15:45:29Z gateway INFO request handled id=66352 ms=508
+
+    2025-03-05T15:11:00Z search INFO request handled id=89594 ms=244
+
+    2025-03-11T10:29:23Z worker-7 INFO request handled id=77093 ms=205
+
+    2025-03-13T05:15:26Z auth INFO request handled id=73136 ms=568
+
+    2025-03-18T10:10:27Z auth INFO request handled id=44719 ms=642
+
+    2025-03-03T06:06:26Z gateway WARN request handled id=32700 ms=242
+
+    2025-03-05T13:29:39Z billing DEBUG request handled id=97087 ms=780
+
+    2025-03-04T09:18:17Z worker-7 INFO request handled id=58886 ms=263
+
+    2025-03-24T08:12:28Z billing INFO request handled id=42157 ms=244
+
+    2025-03-05T09:56:58Z worker-7 INFO request handled id=52773 ms=69
+
+    2025-03-13T08:15:32Z worker-7 INFO request handled id=95149 ms=105
+
+    2025-03-21T14:02:06Z auth WARN request handled id=40292 ms=462
+
+    2025-03-12T01:56:18Z billing INFO request handled id=16604 ms=197
+
+    2025-03-20T18:12:59Z auth INFO request handled id=77196 ms=185
+
+    2025-03-15T19:16:49Z auth INFO request handled id=93552 ms=613
+
+    2025-03-23T19:22:13Z auth INFO request handled id=54566 ms=147
+
+    2025-03-02T06:16:02Z worker-7 INFO request handled id=11491 ms=338
+
+    2025-03-14T21:23:11Z worker-7 INFO request handled id=20215 ms=211
+
+    2025-03-02T15:35:30Z auth WARN rollback scheduled: release_token=ALPHA-7734 region=us-east
+    (draft, not applied)
+
+    2025-03-04T12:42:35Z billing DEBUG request handled id=21947 ms=671
+
+    2025-03-06T12:44:17Z gateway INFO request handled id=97531 ms=317
+
+    2025-03-14T01:19:47Z worker-7 INFO request handled id=64274 ms=429
+
+    2025-03-01T11:41:12Z gateway WARN request handled id=36695 ms=9
+
+    2025-03-14T05:27:07Z auth WARN request handled id=85732 ms=376
+
+    2025-03-15T05:08:00Z auth DEBUG request handled id=28677 ms=659
+
+    2025-03-26T12:05:36Z worker-7 INFO request handled id=76120 ms=178
+
+    2025-03-05T11:18:10Z worker-7 INFO request handled id=18794 ms=114
+
+    2025-03-13T15:48:51Z billing INFO request handled id=26600 ms=47
+
+    2025-03-16T10:03:38Z gateway INFO request handled id=91309 ms=707
+
+    2025-03-27T05:40:50Z billing DEBUG request handled id=63016 ms=632
+
+    2025-03-28T06:53:30Z billing DEBUG request handled id=38591 ms=45
+
+    2025-03-13T16:10:24Z search INFO request handled id=29590 ms=255
+
+    2025-03-24T06:02:56Z worker-7 INFO request handled id=97542 ms=334
+
+    2025-03-04T12:38:29Z worker-7 INFO request handled id=95069 ms=433
+
+    2025-03-10T18:15:27Z gateway INFO request handled id=68561 ms=518
+
+    2025-03-15T05:01:00Z worker-7 WARN request handled id=70984 ms=243
+
+    2025-03-15T19:49:52Z gateway INFO request handled id=72025 ms=412
+
+    2025-03-04T02:08:22Z gateway INFO request handled id=22021 ms=455
+
+    2025-03-17T16:42:02Z auth INFO request handled id=20779 ms=754
+
+    2025-03-11T23:32:05Z auth DEBUG request handled id=59527 ms=671
+
+    2025-03-26T04:01:54Z auth DEBUG request handled id=24363 ms=201
+
+    2025-03-05T15:18:51Z billing INFO request handled id=18587 ms=362
+
+    2025-03-20T08:10:20Z worker-7 INFO request handled id=69821 ms=150
+
+    2025-03-09T16:58:30Z billing DEBUG request handled id=44454 ms=633
+
+    2025-03-17T07:20:23Z auth INFO request handled id=33867 ms=416
+
+    2025-03-06T20:59:17Z search WARN request handled id=32117 ms=273
+
+    2025-03-04T16:03:40Z search WARN request handled id=82768 ms=536
+
+    2025-03-19T22:56:57Z auth INFO request handled id=80215 ms=647'
+  required:
+  - FALCON-4417
+  forbidden:
+  - ALPHA-7734
+  - DELTA-2210
+  - OMEGA-9981
+  expected_answer: FALCON-4417

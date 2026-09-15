@@ -84,6 +84,15 @@ metadata: {}                  # optional free-form map (video tasks read generat
   `metadata.reference_text` is a compliant example: dry runs feed it through
   the pipeline so `--dry-run` proves the spec is self-consistent. See
   `tasks/constraint-product-blurb.yaml`.
+- **`needle`** — long-context retrieval: `metadata.document` (the haystack)
+  rides inside each subtask payload, workers return candidate answers, the
+  orchestrator picks one, and `artifact.txt` is checked with the constraint
+  checks — `has_required` for `metadata.required` (the true needle) and
+  `no_forbidden` for `metadata.forbidden` (decoys). An answer that names the
+  right token but also mentions a decoy fails — the checks measure whether
+  the model actually found it, not whether it can recite the options.
+  `metadata.expected_answer` feeds the dry-run path. See
+  `tasks/needle-deploy-token.yaml`.
 
 ## Validation checks
 

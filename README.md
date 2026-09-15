@@ -80,6 +80,7 @@ orchestral dashboard               # reports/dashboard.html
 | `history` | Per-model aggregates across all stored runs |
 | `report` | List/compare runs (`--pairings`, `--leaderboard`, `--groups`, `--html`, `--sort`, `--json`) |
 | `export` | CSV run/leaderboard export, Markdown run audit, JSONL trace (`--format`, `--run`, `--out`) |
+| `prices` | Pricing drift check — provider-reported `api_cost_usd` vs configured rates (`--threshold`, `--json`) |
 | `dashboard` | Static HTML dashboard with cost-vs-quality scatter |
 | `shots` | Screenshot stored HTML artifacts (needs `[shots]` extra) |
 | `tui` | Interactive terminal UI — browse/inspect/launch runs (needs `[tui]` extra) |

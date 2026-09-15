@@ -883,6 +883,67 @@ def delegate_sql(
     return out, costs
 
 
+
+def delegate_extract(
+    *,
+    logger: EventLogger,
+    step: int,
+    subtask: dict[str, Any],
+    task: TaskSpec,
+    worker: ModelConfig,
+    client: OpenRouterClient | None,
+    dry_run: bool,
+    attempt: int | None = None,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Produce one candidate extraction for a subtask.
+
+    `content` is the extracted JSON (text or fenced). Dry runs return
+    `metadata.expected` so validation exercises the real grading path and
+    proves the task spec is self-consistent.
+    """
+    if dry_run:
+        reference = json.dumps(task.metadata.get("expected") or {})
+        cost = _fake_cost(worker, {"subtask": subtask}, {"json_chars": len(reference)})
+        cost["phase"] = "delegate"
+        logger.log_llm_call(
+            phase="delegate",
+            step=step,
+            model=worker.slug,
+            role="worker",
+            messages=[{"role": "user", "content": str(subtask.get("description", ""))}],
+            completion={"json_chars": len(reference)},
+            reasoning=f"Extract structured data for subtask {subtask.get('id')} with {worker.slug}.",
+            input_tokens=cost["input_tokens"],
+            output_tokens=cost["output_tokens"],
+            cost_usd=cost["cost_usd"],
+            latency_ms=random.uniform(80, 1200),
+            pricing_source="none",
+            attempt=attempt,
+        )
+        return {
+            "subtask_id": subtask.get("id"),
+            "prompt": subtask.get("prompt") or subtask.get("description"),
+            "content": reference,
+        }, [cost]
+
+    out, costs = delegate(
+        logger=logger,
+        step=step,
+        subtask=subtask,
+        worker=worker,
+        client=client,
+        dry_run=dry_run,
+        attempt=attempt,
+    )
+    if "content" not in out:
+        # delegate() JSON-parses worker output — a worker that returns the
+        # extraction object directly lands in `out` itself, not under content
+        out["content"] = json.dumps(
+            {k: v for k, v in out.items() if k not in ("subtask_id", "prompt")}
+        )
+    return out, costs
+
+
 def plan_ce(
     *,
     logger: EventLogger,

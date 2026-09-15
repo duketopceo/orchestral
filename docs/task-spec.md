@@ -118,6 +118,26 @@ metadata: {}                  # optional free-form map (video tasks read generat
   can still burn CPU until the step cap trips). `validation:` entries are
   unused — the check set is fixed (`executed`, `matches_reference`). See
   `tasks/sql-monthly-revenue.yaml`.
+- **`extract`** — workers extract a JSON object per subtask; the orchestrator
+  picks the best candidate (same selection flow as `image`/`video`); the
+  chosen extraction is stored as `artifact.json` and graded deterministically.
+  The contract lives in `metadata`:
+
+  ```yaml
+  metadata:
+    fields:               # schema-lite: presence, type, enum
+      name: {type: str, required: true}
+      tier: {type: str, enum: [gold, silver, bronze]}
+    expected:             # deep-equality graded keys — defines truth
+      name: "Ada"
+    pass_threshold: 1.0   # min score to pass; required+type checks always apply
+  ```
+
+  Score is the fraction of `expected` keys that match (partial credit);
+  with no `expected`, score is 1.0 when all `fields` checks pass. `passes`
+  requires every `required` field present, all type/enum checks green, and
+  `score >= pass_threshold`. Unparseable artifacts score null. See
+  `tasks/extract-invoice.yaml`.
 
 ## Validation checks
 

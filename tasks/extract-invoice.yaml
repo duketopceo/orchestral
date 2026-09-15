@@ -1,0 +1,32 @@
+id: extract-invoice
+type: extract
+prompt: |
+  Extract structured data from this invoice text. Return ONLY a JSON object
+  with keys: invoice_id (str), vendor (str), total (number), currency (str),
+  due_date (str, ISO YYYY-MM-DD), line_items (int — the count of line items).
+
+  --- invoice ---
+  INVOICE #INV-2025-0417
+  From: Acme Paper Co.
+  Bill to: Northwind Traders
+  Issued: March 2, 2025 — payment due 2025-04-01
+  Items: Copy paper A4 (x40 @ $5.50), Toner cartridge (x2 @ $89.00),
+         Staples box (x5 @ $3.20)
+  Total due: USD 424.00
+validation: []
+assets: []
+metadata:
+  fields:
+    invoice_id: {type: str, required: true}
+    vendor: {type: str, required: true}
+    total: {type: number, required: true}
+    currency: {type: str, required: true, enum: ["USD", "EUR", "GBP"]}
+    due_date: {type: str, required: true}
+    line_items: {type: int, required: true}
+  expected:
+    invoice_id: "INV-2025-0417"
+    vendor: "Acme Paper Co."
+    total: 424.0
+    currency: "USD"
+    due_date: "2025-04-01"
+    line_items: 3

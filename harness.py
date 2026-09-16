@@ -15,7 +15,14 @@ from pathlib import Path
 from typing import Any
 
 from orchestral.calibrate import agreement_metrics, collect_pairs, load_labels
-from orchestral.config import ModelConfig, find_task, load_models, load_task, load_yaml
+from orchestral.config import (
+    ConfigError,
+    ModelConfig,
+    find_task,
+    load_models,
+    load_task,
+    load_yaml,
+)
 from orchestral.export import leaderboard_csv, run_audit_markdown, runs_csv
 from orchestral.planners import available_prompt_variants, load_prompt_variant
 from orchestral.pricing import DEFAULT_DRIFT_THRESHOLD, pricing_drift
@@ -924,7 +931,12 @@ def main() -> None:
     if not hasattr(args, "func"):
         p.print_help()
         return
-    args.func(args)
+    try:
+        args.func(args)
+    except ConfigError as exc:
+        sys.exit(f"error: {exc}")
+    except FileNotFoundError as exc:
+        sys.exit(f"error: {exc}")
 
 
 if __name__ == "__main__":

@@ -29,7 +29,7 @@ models:
 |---|---|---|---|
 | `slug` | str | required | Model identifier sent to the provider API; prefix `~` to disable |
 | `name` | str | required | Human-readable name for reports |
-| `role` | str | required | `orchestrator`, `worker`, or `reference` |
+| `role` | str | required | `orchestrator`, `worker`, or `reference`. Judges need no role — `--judge <slug>` assigns `judge` at run time |
 | `input_price_per_mtok` | float | required | USD per million input tokens |
 | `output_price_per_mtok` | float | required | USD per million output tokens |
 | `context` | int | 128000 | Context window size |

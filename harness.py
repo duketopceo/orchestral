@@ -754,6 +754,18 @@ def cmd_tui(args: argparse.Namespace) -> None:
     )
 
 
+def cmd_serve(args: argparse.Namespace) -> None:
+    from orchestral.web import run_server
+
+    run_server(
+        runs_dir=args.runs_dir,
+        tasks_dir=args.tasks_dir,
+        models_dir=args.models_dir,
+        port=args.port,
+        open_browser=args.open,
+    )
+
+
 def cmd_shots(args: argparse.Namespace) -> None:
     from orchestral.shots import ScreenshotUnavailable, browser_session, capture_run
 
@@ -902,6 +914,11 @@ def main() -> None:
     calibrate.add_argument("--runs-dir", default="runs", help="Root directory for run data")
     calibrate.add_argument("--json", action="store_true", help="Machine-readable output")
     calibrate.set_defaults(func=cmd_calibrate)
+
+    serve = sub.add_parser("serve", help="Local web observatory — browse, launch, and cancel runs in a browser (localhost only)")
+    serve.add_argument("--port", type=int, default=8787, help="Port to bind on 127.0.0.1 (default 8787)")
+    serve.add_argument("--open", action="store_true", help="Open the observatory in a browser")
+    serve.set_defaults(func=cmd_serve)
 
     args = p.parse_args()
     if not hasattr(args, "func"):

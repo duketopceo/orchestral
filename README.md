@@ -84,6 +84,7 @@ orchestral dashboard               # reports/dashboard.html
 | `dashboard` | Static HTML dashboard with cost-vs-quality scatter |
 | `shots` | Screenshot stored HTML artifacts (needs `[shots]` extra) |
 | `tui` | Interactive terminal UI — browse/inspect/launch runs (needs `[tui]` extra) |
+| `serve` | Local web observatory — same views in a browser, launch/cancel runs (localhost only) |
 | `scrub` | Redact secrets/paths from `runs/` into `runs-pub/` + `manifest.json` |
 | `calibrate` | Judge-vs-human agreement from a labels file (`--labels`, `--json`) |
 
@@ -126,6 +127,18 @@ stream (schema v2 — `sequence`, `run_id`, `worker_id`, lifecycle types like
 `worker.started`), `manifest.json` the immutable run record (model IDs,
 task/prompt/config SHA-256s, git commit), `metrics.json` the aggregate
 rollup. `runs/index.db` powers the list and leaderboard queries.
+
+### Web GUI
+
+`orchestral serve --port 8787` (add `--open` to launch a browser) serves
+the same observatory over HTTP on `127.0.0.1` — stdlib only, no extra
+dependencies. Pages: an overview with the live-run banner, leaderboard,
+and recent runs; `/runs` history with filtering; `/run/<id>` detail with
+the same inspection tabs; `/run/<id>/live` tailing `events.jsonl` (~1s
+polling); `/leaderboard`; and `/new`, a form that launches runs
+(including `--dry-run` equivalents) on background threads. Cancel buttons
+stop runs this `serve` process started — same mechanism and same limit
+as the TUI.
 
 Global flags (before the subcommand): `--runs-dir`, `--tasks-dir`, `--models-dir`.
 

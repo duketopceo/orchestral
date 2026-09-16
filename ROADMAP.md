@@ -48,15 +48,15 @@
 ## v1.2 — Measurement & observability
 
 - [x] Observability v2 — `debug.jsonl` channel, `calls` index table, `metrics.json`, `failure_reason`/`error_category` taxonomy, `pricing_source`/`api_cost_usd` labels, env/replicate labels, `--verbose`
-- [ ] N runs per pairing — replicate variance + error bars in reports
-- [ ] Pricing drift check — provider-reported `usage.cost` vs configured prices
-- [ ] Executable code task type — worker writes module + tests, run in a subprocess (pass@k)
-- [ ] SQL/analytics task — `sqlite3` execution validator
-- [ ] Structured extraction task — deterministic JSON-schema validation
-- [ ] Constraint tasks — negative constraints / size budgets, deterministic checks
-- [ ] Long-context needle task
-- [ ] Judge calibration — human-labeled set, judge/human agreement metrics
-- [ ] Local web GUI — `harness.py serve` over the run index
+- [x] N runs per pairing — replicate variance + error bars in reports
+- [x] Pricing drift check — provider-reported `usage.cost` vs configured prices
+- [x] Executable code task type — worker writes module + tests, run in a subprocess (pass@k)
+- [x] SQL/analytics task — `sqlite3` execution validator
+- [x] Structured extraction task — deterministic JSON-schema validation
+- [x] Constraint tasks — negative constraints / size budgets, deterministic checks
+- [x] Long-context needle task
+- [ ] Judge calibration — `calibrate` command ships the metrics; a real human-labeled set is still needed
+- [x] Local web GUI — `harness.py serve` over the run index
 
 **Goal:** rankings you can trust, on tasks that measure delegation.
 

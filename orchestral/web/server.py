@@ -146,7 +146,7 @@ def make_handler(obs: Observatory) -> type[BaseHTTPRequestHandler]:
                 state.task_choices(obs.tasks_dir),
                 state.model_choices(obs.models_dir, "orchestrator"),
                 state.model_choices(obs.models_dir, "worker"),
-                state.model_choices(obs.models_dir, "judge"),
+                state.model_choices(obs.models_dir, None),
                 error,
             )
 

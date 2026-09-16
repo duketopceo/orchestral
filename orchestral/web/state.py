@@ -238,8 +238,10 @@ def task_choices(tasks_dir: Path) -> list[str]:
     return ids
 
 
-def model_choices(models_dir: Path, role: str) -> list[str]:
+def model_choices(models_dir: Path, role: str | None) -> list[str]:
+    """Model slugs for the launch form; role=None lists all — the judge field
+    offers every model, same as the TUI (any model can judge)."""
     try:
-        return sorted(m.slug for m in load_models(models_dir) if m.role == role)
+        return sorted(m.slug for m in load_models(models_dir) if role is None or m.role == role)
     except Exception:
         return []

@@ -52,6 +52,15 @@ models:
     max_tokens: 8192
     retry_limit: 2
 
+  - slug: "google/gemma-4-31b-it"
+    name: "Gemma 4 31B"
+    role: worker
+    input_price_per_mtok: 0.10
+    output_price_per_mtok: 0.34
+    context: 262144
+    max_tokens: 8192
+    retry_limit: 2
+
   - slug: "qwen/qwen3-coder-flash"
     name: "Qwen 3 Coder Flash"
     role: worker

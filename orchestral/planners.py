@@ -42,6 +42,10 @@ PROMPTS_DIR = Path(__file__).resolve().parent.parent / "prompts"
 ORCHESTRATOR_DEFAULT_PROMPT = "You are an orchestrator. Produce a plan and subtasks for a worker to execute."
 
 
+class PlanError(ValueError):
+    """Orchestrator returned a non-object plan — malformed model output."""
+
+
 def available_prompt_variants(prompts_dir: Path | str = PROMPTS_DIR) -> list[str]:
     """Prompt-variant names available as prompts/orchestrator-<name>.md."""
     root = Path(prompts_dir)
@@ -302,6 +306,10 @@ def plan_raw(
         system_override=load_prompt_variant(prompt_variant) if prompt_variant else None,
     )
     plan = _extract_json(content)
+    if not isinstance(plan, dict):
+        # e.g. the model answered the task directly with a JSON list —
+        # malformed orchestrator output, not an infra error
+        raise PlanError(f"orchestrator plan must be a JSON object, got {type(plan).__name__}")
     plan["task_id"] = task.id
     plan["orchestrator"] = orchestrator.slug
     plan["planner"] = "raw"
@@ -1034,6 +1042,8 @@ def plan_ce(
         system_override=load_prompt_variant(prompt_variant) if prompt_variant else None,
     )
     plan = _extract_json(content)
+    if not isinstance(plan, dict):
+        raise PlanError(f"orchestrator plan must be a JSON object, got {type(plan).__name__}")
     plan["task_id"] = task.id
     plan["orchestrator"] = orchestrator.slug
     plan["planner"] = "ce-plan"

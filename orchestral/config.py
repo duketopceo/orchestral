@@ -55,11 +55,23 @@ class ModelConfig:
 @dataclass
 class TaskSpec:
     id: str
-    type: str  # html | image | video | api | multi-file | code | constraint | needle | sql | extract
+    type: str  # one of TASK_TYPES — enforced by load_task
     prompt: str
     validation: list[str] = field(default_factory=list)
     assets: list[str] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
+
+
+# Implemented task types — dispatch lives in runner.py; load_task fails fast
+# on anything else so a typo can't produce a silently-passing run.
+TASK_TYPES = frozenset({
+    "html", "image", "video", "multi-file", "code",
+    "constraint", "needle", "sql", "extract", "api",
+})
+
+
+class ConfigError(ValueError):
+    """User-facing config problem — the message is meant to print bare."""
 
 
 def load_yaml(path: Path | str) -> Any:
@@ -74,23 +86,50 @@ def load_models(path: Path | str = "models") -> list[ModelConfig]:
     if not root.exists():
         return configs
     for f in sorted(root.glob("*.yaml")):
-        data = load_yaml(f)
+        try:
+            data = load_yaml(f)
+        except Exception as exc:
+            raise ConfigError(f"cannot parse model config {f}: {exc}") from exc
+        if not isinstance(data, dict):
+            raise ConfigError(f"model config {f} must be a YAML mapping")
         for item in data.get("models", []):
+            if not isinstance(item, dict):
+                raise ConfigError(f"model config {f}: each entry must be a mapping")
             if str(item.get("slug", "")).startswith("~"):
                 continue  # ~ prefix marks a disabled entry
-            configs.append(ModelConfig(**item))
+            try:
+                configs.append(ModelConfig(**item))
+            except TypeError as exc:
+                raise ConfigError(f"model config {f}: {exc}") from exc
     return configs
 
 
 def load_task(path: Path | str) -> TaskSpec:
-    data = load_yaml(path)
-    return TaskSpec(**data)
+    try:
+        data = load_yaml(path)
+    except Exception as exc:
+        raise ConfigError(f"cannot parse task spec {path}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ConfigError(f"task spec {path} must be a YAML mapping")
+    try:
+        task = TaskSpec(**data)
+    except TypeError as exc:
+        raise ConfigError(f"task spec {path}: {exc}") from exc
+    if task.type not in TASK_TYPES:
+        raise ConfigError(
+            f"task spec {path}: unknown type '{task.type}' "
+            f"— expected one of {', '.join(sorted(TASK_TYPES))}"
+        )
+    return task
 
 
 def find_task(task_id: str, root: Path | str = "tasks") -> Path | None:
     root = Path(root)
     for f in sorted(root.rglob("*.yaml")):
-        data = load_yaml(f)
-        if data.get("id") == task_id:
+        try:
+            data = load_yaml(f)
+        except Exception as exc:
+            raise ConfigError(f"cannot parse task spec {f}: {exc}") from exc
+        if isinstance(data, dict) and data.get("id") == task_id:
             return f
     return None

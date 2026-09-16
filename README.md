@@ -105,9 +105,9 @@ verdict agreement (accuracy, Cohen's kappa, confusion counts). See
 
 ### TUI
 
-`pip install 'orchestral[tui]'`, then `orchestral tui`. The TUI is a
-read-only observatory over the harness — it tails the same `events.jsonl`
-and `runs/index.db` the CLI writes; it never re-runs benchmark logic.
+`pip install 'orchestral[tui]'`, then `orchestral tui`. The TUI is a thin
+observatory over the harness — it tails the same `events.jsonl` and
+`runs/index.db` the CLI writes; it never re-runs benchmark logic.
 
 Views (number keys switch): `1` **Live Run** — follows the newest in-flight
 run: phase, per-worker status, event trace, running cost/tokens/elapsed;
@@ -145,8 +145,6 @@ validators check every constraint), and **long-context needle** tasks (`metadata
 Validation checks and the full schema are documented in
 [docs/task-spec.md](docs/task-spec.md); model config fields in
 [docs/model-config.md](docs/model-config.md).
-
-Planned task types: API integrations.
 
 ## Structure
 

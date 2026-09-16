@@ -5,7 +5,7 @@ is a single task.
 
 ```yaml
 id: landing-page-coffee       # required; used in paths, filters, judge cache keys
-type: html                    # required; "html", "image", "video", "multi-file", "code" are implemented
+type: html                    # required; see the type list below — all types in this doc are implemented
 prompt: |                     # required; the task brief given to the orchestrator
   Build a landing page for a coffee subscription service.
 
@@ -19,7 +19,7 @@ metadata: {}                  # optional free-form map (video tasks read generat
 | Field | Type | Default | Notes |
 |---|---|---|---|
 | `id` | str | required | Unique across `tasks/`; becomes a path component (`runs/{orch}/{task}/{worker}/{run_id}/`) |
-| `type` | str | required | `html`, `image`, `video`, `multi-file`, `code` implemented; `api` is reserved/planned |
+| `type` | str | required | `html`, `image`, `video`, `multi-file`, `code`, `constraint`, `needle`, `sql`, `extract`, `api` — all implemented; see per-type sections below |
 | `prompt` | str | required | Full task brief; the orchestrator decomposes it into subtasks |
 | `validation` | list[str] | `[]` | Check names; empty means the type's default set |
 | `assets` | list[str] | `[]` | Reserved; not consumed by the runner yet |

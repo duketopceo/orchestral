@@ -19,7 +19,7 @@ metadata: {}                  # optional free-form map (video tasks read generat
 | Field | Type | Default | Notes |
 |---|---|---|---|
 | `id` | str | required | Unique across `tasks/`; becomes a path component (`runs/{orch}/{task}/{worker}/{run_id}/`) |
-| `type` | str | required | `html`, `image`, `video`, `multi-file`, `code`, `constraint`, `needle`, `sql`, `extract`, `api` — all implemented; see per-type sections below |
+| `type` | str | required | `html`, `image`, `video`, `multi-file`, `code`, `bugfix`, `terminal`, `constraint`, `needle`, `sql`, `extract`, `api` — all implemented; see per-type sections below |
 | `prompt` | str | required | Full task brief; the orchestrator decomposes it into subtasks |
 | `validation` | list[str] | `[]` | Check names; empty means the type's default set |
 | `assets` | list[str] | `[]` | Reserved; not consumed by the runner yet |
@@ -93,6 +93,38 @@ metadata: {}                  # optional free-form map (video tasks read generat
   the model actually found it, not whether it can recite the options.
   `metadata.expected_answer` feeds the dry-run path. See
   `tasks/needle-deploy-token.yaml`.
+- **`bugfix`** — `code`'s repair sibling: same file-set contract, same hidden
+  `metadata.tests` execution, but `metadata.files` ships the *broken* repo —
+  injected into every worker subtask as `broken_files` so the worker repairs
+  instead of generating from scratch. The task prompt describes the defect;
+  workers return the complete corrected file set. `metadata.module`,
+  `expected_paths`, quality bounds, and the subprocess containment notes all
+  carry over from `code`. See `tasks/bugfix-lru-evict.yaml`.
+- **`terminal`** — Terminal-Bench-flavored shell plans: workers produce a
+  JSON command plan (`[{"run": "sed -i 's/a/b/' f"}, ...]`); the orchestrator
+  picks the best (same candidate flow as `api`); the harness seeds a tmpdir
+  from `metadata.fs`, replays the plan in a **virtual shell** (no real
+  subprocess — `cat ls pwd cd grep mkdir touch cp mv rm echo> echo>>
+  sed -i s/x/y/`), and grades the resulting filesystem against
+  `metadata.expect.files`:
+
+  ```yaml
+  metadata:
+    fs:                       # seed files: {path: content}
+      app.ini: "debug = true\n"
+    commands:                 # reference plan — feeds the dry-run path
+      - run: "sed -i 's/true/false/' app.ini"
+    expect:
+      files:
+        app.ini: {contains: "debug = false"}   # contains | equals | matches | absent
+      max_commands: 8                          # optional efficiency gate
+  ```
+
+  Paths are confined to the tmpdir — absolute paths are remapped inside the
+  sandbox and `..` escapes are command errors. Score is the fraction of
+  `expect.files` rules satisfied; `passes` requires all of them, zero command
+  errors, and `commands <= max_commands` when declared. See
+  `tasks/terminal-config-fix.yaml`.
 - **`sql`** — workers produce candidate SQL queries; the orchestrator picks
   one (same candidate-selection flow as `image`/`video`); the harness executes
   the chosen query **read-only** against a fixture SQLite database built from

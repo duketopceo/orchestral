@@ -584,8 +584,8 @@ def delegate_multi(
     prompt = subtask.get("prompt") or subtask.get("description") or str(subtask)
     declared = expected_paths(task.metadata)
     if not declared:
-        # code tasks default to the declared module; multi-file to a site
-        declared = [str(task.metadata.get("module") or "solution.py")] if task.type == "code" else ["index.html", "style.css"]
+        # code/bugfix tasks default to the declared module; multi-file to a site
+        declared = [str(task.metadata.get("module") or "solution.py")] if task.type in ("code", "bugfix") else ["index.html", "style.css"]
     if dry_run:
         files = {path: _fake_file_body(path) for path in declared}
         cost = _fake_cost(worker, {"subtask": subtask}, {"paths": sorted(files)})
@@ -619,12 +619,19 @@ def delegate_multi(
     if client is None:
         raise ValueError("OpenRouterClient is required for live runs")
 
+    # bugfix subtasks carry the broken repo in metadata.files so the worker
+    # repairs instead of generating from scratch
+    if task.type == "bugfix":
+        subtask = {**subtask, "broken_files": task.metadata.get("files") or {}}
     messages = _build_messages(
         "worker",
         {
             "subtask": subtask,
             "task_type": task.type,
             "instructions": (
+                "Repair the files in broken_files. Return a JSON object "
+                "{\"files\": [{\"path\": ..., \"content\": ...}]} with the complete corrected file set."
+                if task.type == "bugfix" else
                 "Return a JSON object {\"files\": [{\"path\": ..., \"content\": ...}]} "
                 "containing every file this subtask must produce."
             ),
@@ -1013,6 +1020,66 @@ def delegate_api(
     elif parse_plan(str(out["content"])) is None:
         # delegate() str()-ifies parsed JSON lists into Python reprs —
         # literal_eval recovers the original so the plan stays valid JSON
+        with contextlib.suppress(ValueError, SyntaxError):
+            out["content"] = json.dumps(ast.literal_eval(str(out["content"])))
+    return out, costs
+
+
+def delegate_terminal(
+    *,
+    logger: EventLogger,
+    step: int,
+    subtask: dict[str, Any],
+    task: TaskSpec,
+    worker: ModelConfig,
+    client: OpenRouterClient | None,
+    dry_run: bool,
+    attempt: int | None = None,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Produce one candidate shell-command plan for a subtask.
+
+    `content` is a JSON list of {"run": "..."} commands replayed in the
+    virtual shell at validation. Dry runs return `metadata.commands` so the
+    task spec's reference plan proves itself against `metadata.expect`.
+    """
+    if dry_run:
+        reference = json.dumps(task.metadata.get("commands") or [])
+        cost = _fake_cost(worker, {"subtask": subtask}, {"json_chars": len(reference)})
+        cost["phase"] = "delegate"
+        logger.log_llm_call(
+            phase="delegate",
+            step=step,
+            model=worker.slug,
+            role="worker",
+            messages=[{"role": "user", "content": str(subtask.get("description", ""))}],
+            completion={"json_chars": len(reference)},
+            reasoning=f"Write a shell command plan for subtask {subtask.get('id')} with {worker.slug}.",
+            input_tokens=cost["input_tokens"],
+            output_tokens=cost["output_tokens"],
+            cost_usd=cost["cost_usd"],
+            latency_ms=random.uniform(80, 1200),
+            pricing_source="none",
+            attempt=attempt,
+        )
+        return {
+            "subtask_id": subtask.get("id"),
+            "prompt": subtask.get("prompt") or subtask.get("description"),
+            "content": reference,
+        }, [cost]
+
+    out, costs = delegate(
+        logger=logger,
+        step=step,
+        subtask=subtask,
+        worker=worker,
+        client=client,
+        dry_run=dry_run,
+        attempt=attempt,
+    )
+    if "content" not in out:
+        plan = {k: v for k, v in out.items() if k not in ("subtask_id", "prompt")}
+        out["content"] = json.dumps(plan.get("commands", list(plan.values()) if len(plan) == 1 else plan))
+    elif parse_plan(str(out["content"])) is None:
         with contextlib.suppress(ValueError, SyntaxError):
             out["content"] = json.dumps(ast.literal_eval(str(out["content"])))
     return out, costs

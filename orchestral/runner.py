@@ -51,6 +51,7 @@ from orchestral.planners import (
     delegate_multi,
     delegate_needle,
     delegate_sql,
+    delegate_terminal,
     delegate_video,
     plan_ce,
     plan_raw,
@@ -59,6 +60,7 @@ from orchestral.providers import provider_for, provider_key
 from orchestral.sqlexec import run_sql_check
 from orchestral.storage import RunMeta, RunStore
 from orchestral.taxonomy import classify_exception
+from orchestral.terminal import check_terminal
 
 
 class ValidationError(Exception):
@@ -284,12 +286,13 @@ class Runner:
             is_video = task.type == "video"
             # code tasks share the fileset protocol: workers return files,
             # the merge+zip is identical, only validation differs
-            is_multi = task.type in ("multi-file", "code")
+            is_multi = task.type in ("multi-file", "code", "bugfix")
             is_constraint = task.type == "constraint"
             is_needle = task.type == "needle"
             is_sql = task.type == "sql"
             is_extract = task.type == "extract"
             is_api = task.type == "api"
+            is_terminal = task.type == "terminal"
             is_media = is_image or is_video
             results: list[dict[str, Any]] = []
             media_paths: list[Path | None] = []
@@ -366,6 +369,17 @@ class Runner:
                             )
                         elif is_api:
                             out, worker_costs = delegate_api(
+                                logger=logger,
+                                step=i + 3,
+                                subtask=sub,
+                                task=task,
+                                worker=worker,
+                                client=role_clients.get("worker"),
+                                dry_run=self.dry_run,
+                                attempt=attempt + 1,
+                            )
+                        elif is_terminal:
+                            out, worker_costs = delegate_terminal(
                                 logger=logger,
                                 step=i + 3,
                                 subtask=sub,
@@ -666,6 +680,30 @@ class Runner:
                 logger.lifecycle("evaluation.started", phase="validate")
                 passes, report = self._validate_api(task, plan_text)
                 judge_text = plan_text
+            elif is_terminal:
+                # Orchestrator picks the best command plan; validation replays
+                # it in the virtual shell and grades the resulting filesystem.
+                position, assembly_costs = assemble_media(
+                    logger=logger,
+                    task=task,
+                    orchestrator=orchestrator,
+                    step=assembly_step,
+                    results=results,
+                    client=role_clients.get("orchestrator"),
+                    dry_run=self.dry_run,
+                )
+                ledger.add_many(assembly_costs)
+                chosen = results[position] if results else {}
+                plan_text = str(chosen.get("content") or "")
+                (run_dir / "artifact.json").write_text(plan_text, encoding="utf-8")
+                logger.lifecycle(
+                    "artifact.saved", phase="assemble",
+                    path="artifact.json", bytes=len(plan_text.encode()),
+                )
+                logger.lifecycle("synthesis.completed", phase="assemble", role="orchestrator")
+                logger.lifecycle("evaluation.started", phase="validate")
+                passes, report = self._validate_terminal(task, plan_text)
+                judge_text = plan_text
             elif is_multi:
                 # Deterministic merge + zip: no orchestrator call, and the
                 # artifact is bytes — the HTML branch below writes text.
@@ -680,7 +718,7 @@ class Runner:
                 )
                 logger.lifecycle("synthesis.completed", phase="assemble", role="orchestrator")
                 logger.lifecycle("evaluation.started", phase="validate")
-                if task.type == "code":
+                if task.type in ("code", "bugfix"):
                     passes, report = self._validate_code(task, merged)
                 else:
                     passes, report = self._validate_multi(task, artifact_bytes)
@@ -1238,6 +1276,12 @@ class Runner:
         report["artifact_length"] = len(plan_text)
         return bool(report.get("passes")), report
 
+    def _validate_terminal(self, task: TaskSpec, plan_text: str) -> tuple[bool, dict[str, Any]]:
+        report = check_terminal(task.metadata, plan_text)
+        report["task_id"] = task.id
+        report["artifact_length"] = len(plan_text)
+        return bool(report.get("passes")), report
+
 
 PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 PNG_IEND = b"IEND\xaeB`\x82"
@@ -1274,7 +1318,7 @@ def _subtask_produced_output(
 
 
 def _artifact_ext(task_type: str) -> str:
-    return {"html": ".html", "image": ".png", "video": ".mp4", "api": ".json", "multi-file": ".zip", "code": ".zip", "sql": ".sql", "extract": ".json"}.get(task_type, ".txt")
+    return {"html": ".html", "image": ".png", "video": ".mp4", "api": ".json", "terminal": ".json", "multi-file": ".zip", "code": ".zip", "bugfix": ".zip", "sql": ".sql", "extract": ".json"}.get(task_type, ".txt")
 
 
 class _HTMLValidator(html.parser.HTMLParser):

@@ -27,7 +27,7 @@ from orchestral.export import leaderboard_csv, run_audit_markdown, runs_csv
 from orchestral.planners import available_prompt_variants, load_prompt_variant
 from orchestral.pricing import DEFAULT_DRIFT_THRESHOLD, pricing_drift
 from orchestral.privacy import scrub_all
-from orchestral.providers import provider_key
+from orchestral.providers import provider_for, provider_key
 from orchestral.reporter import generate_dashboard, generate_html_report, model_history
 from orchestral.runner import Runner
 from orchestral.stats import aggregate, pairing_leaderboard
@@ -738,6 +738,35 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
         print("  labels:\n    - run_id: <prefix>\n      score: 0.8\n      passed: true")
 
 
+def cmd_review(args: argparse.Namespace) -> None:
+    """Frontier-model audit of archived run evidence."""
+    from orchestral.review import run_review_batch
+
+    model = _model_from_arg(args.model, args.models_dir)
+    client = None if args.dry_run else provider_for(model)
+    try:
+        result = run_review_batch(
+            RunStore(args.runs_dir), model, client,
+            run_group=args.group, task_id=args.task,
+            orchestrator=args.orchestrator, worker=args.worker,
+            limit=args.limit, dry_run=args.dry_run, force=args.force,
+            reports_dir=Path(args.reports_dir), tasks_dir=Path(args.tasks_dir),
+        )
+    finally:
+        if client is not None:
+            client.close()
+    if args.json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+    syn = result["corpus"]["synthesis"]
+    print(f"reviewed {result['reviewed']} runs ({result['skipped']} already reviewed) — ${result['cost_usd']:.4f}")
+    print(f"quality: {result['corpus']['stats']['run_quality']}")
+    for iss in syn.get("systemic_issues") or []:
+        print(f"  [{iss.get('severity')}] {iss.get('issue')} ({iss.get('run_count')} runs) — {iss.get('fix')}")
+    print(f"\nverdict: {syn.get('verdict', '')}")
+    print("full report: reports/review-*.md | per-run: <run_dir>/review.json")
+
+
 def cmd_scrub(args: argparse.Namespace) -> None:
     copied = scrub_all(Path(args.runs_dir), Path(args.scrub_dir))
     print(f"Scrubbed {len(copied)} runs to {args.scrub_dir}")
@@ -921,6 +950,19 @@ def main() -> None:
     calibrate.add_argument("--runs-dir", default="runs", help="Root directory for run data")
     calibrate.add_argument("--json", action="store_true", help="Machine-readable output")
     calibrate.set_defaults(func=cmd_calibrate)
+
+    review = sub.add_parser("review", help="Frontier-model audit of archived run evidence (writes review.json per run + reports/review-*.md)")
+    review.add_argument("--model", default="x-ai/grok-4-fast", help="Reviewer model slug (default: x-ai/grok-4-fast — cheap reasoning tier)")
+    review.add_argument("--group", default=None, help="Only review runs in this run_group")
+    review.add_argument("--task", default=None, help="Only review runs for this task")
+    review.add_argument("--orchestrator", default=None)
+    review.add_argument("--worker", default=None)
+    review.add_argument("--limit", type=int, default=None, help="Cap the number of runs reviewed")
+    review.add_argument("--force", action="store_true", help="Re-review runs that already have review.json")
+    review.add_argument("--dry-run", action="store_true", help="Write stub reviews without calling the provider")
+    review.add_argument("--reports-dir", default="reports", help="Output directory for the corpus report")
+    review.add_argument("--json", action="store_true", help="Emit the full result as JSON")
+    review.set_defaults(func=cmd_review)
 
     serve = sub.add_parser("serve", help="Local web observatory — browse, launch, and cancel runs in a browser (localhost only)")
     serve.add_argument("--port", type=int, default=8787, help="Port to bind on 127.0.0.1 (default 8787)")

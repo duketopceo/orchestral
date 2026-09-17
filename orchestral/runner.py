@@ -315,6 +315,11 @@ class Runner:
                 elif not isinstance(sub, dict):
                     sub = {"id": i, "description": str(sub)}
                 wid = f"worker-{i}"
+                # the canonical brief always reaches the worker — an
+                # orchestrator's thin description shouldn't leave the worker
+                # guessing the spec (review: workers hallucinated the task)
+                sub = {**sub}
+                sub.setdefault("task_prompt", task.prompt)
                 if is_pipeline and results:
                     # each subtask sees the outputs of every prior subtask —
                     # the chain is the test: does context actually propagate

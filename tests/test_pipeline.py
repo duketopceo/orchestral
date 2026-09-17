@@ -74,6 +74,11 @@ class TestPipeline(unittest.TestCase):
                 client.worker_subtasks[1]["prior_outputs"],
                 [{"subtask_id": 0, "content": "output-0"}],
             )
+            # the canonical brief reaches every worker regardless of how
+            # thin the orchestrator's subtask description is
+            self.assertEqual(
+                client.worker_subtasks[0]["task_prompt"], "Chain the subtasks."
+            )
             artifact = Path(meta.run_dir) / "artifact.txt"
             self.assertEqual(artifact.read_text(), "output-1")
             self.assertFalse(meta.passes)  # "final" not in "output-1"
@@ -98,6 +103,36 @@ class TestPipeline(unittest.TestCase):
                 runs_dir=Path(tmp), planner="raw",
                 clients={"orchestrator": client, "worker": client},
             ).run(_task(), _model("org/x", "orchestrator"), _model("wrk/x", "worker"))
+            self.assertTrue(meta.passes)
+
+    def test_descriptive_keys_normalize_to_content(self):
+        """{"blurb": "..."} from a worker must surface as content, not
+        an empty artifact — the review's dominant empty-artifact bug."""
+        with tempfile.TemporaryDirectory() as tmp:
+            client = _FakeClient()
+            orig_chat = client.chat
+
+            def chat(model, messages, max_tokens=4096, temperature=0.4):
+                data = json.loads(messages[-1]["content"])
+                if "subtask" in data:
+                    client.worker_subtasks.append(data["subtask"])
+                    sid = data["subtask"].get("id")
+                    if sid == 1:
+                        return {"content": json.dumps({"blurb": "the final answer"}),
+                                "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+                                "latency_ms": 1, "id": "fake"}
+                    return {"content": json.dumps({"content": "step zero"}),
+                            "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+                            "latency_ms": 1, "id": "fake"}
+                return orig_chat(model, messages, max_tokens, temperature)
+
+            client.chat = chat
+            meta = Runner(
+                runs_dir=Path(tmp), planner="raw",
+                clients={"orchestrator": client, "worker": client},
+            ).run(_task(), _model("org/x", "orchestrator"), _model("wrk/x", "worker"))
+            artifact = Path(meta.run_dir) / "artifact.txt"
+            self.assertEqual(artifact.read_text(), "the final answer")
             self.assertTrue(meta.passes)
 
     def test_dry_run_uses_reference(self):

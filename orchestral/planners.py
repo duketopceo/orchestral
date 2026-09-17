@@ -372,6 +372,16 @@ def delegate(
     except Exception:
         output = {"content": content}
     output.setdefault("subtask_id", subtask.get("id"))
+    if "content" not in output:
+        # workers answer with descriptive keys — {"release_token": ...},
+        # {"blurb": ...} — which would otherwise surface as an empty artifact
+        payload = {
+            k: v for k, v in output.items() if k not in ("subtask_id", "prompt")
+        }
+        if len(payload) == 1 and isinstance(next(iter(payload.values())), str):
+            output["content"] = next(iter(payload.values()))
+        elif payload:
+            output["content"] = json.dumps(payload, ensure_ascii=False)
     return output, [cost]
 
 

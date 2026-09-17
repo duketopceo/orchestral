@@ -130,10 +130,10 @@ def build_run_digest(run_dir: Path, meta: RunMeta, tasks_dir: Path = Path("tasks
             digest["calls"] = json.loads(cost_path.read_text())
     workers = sorted(run_dir.glob("worker-*.json"))
     if workers:
-        digest["workers"] = [
-            dict(json.loads(w.read_text()[: _BOUNDS["worker"]]))
-            for w in workers[:8]
-        ]
+        digest["workers"] = []
+        for w in workers[:8]:
+            with contextlib.suppress(Exception):
+                digest["workers"].append(json.loads(w.read_text()))
     events_path = run_dir / "events.jsonl"
     if events_path.exists():
         counts: dict[str, int] = {}

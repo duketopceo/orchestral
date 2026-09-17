@@ -50,6 +50,7 @@ from orchestral.planners import (
     delegate_image,
     delegate_multi,
     delegate_needle,
+    delegate_patch,
     delegate_sql,
     delegate_terminal,
     delegate_video,
@@ -293,6 +294,8 @@ class Runner:
             is_extract = task.type == "extract"
             is_api = task.type == "api"
             is_terminal = task.type == "terminal"
+            is_patch = task.type == "swe-patch"
+            is_pipeline = task.type == "pipeline"
             is_media = is_image or is_video
             results: list[dict[str, Any]] = []
             media_paths: list[Path | None] = []
@@ -312,6 +315,13 @@ class Runner:
                 elif not isinstance(sub, dict):
                     sub = {"id": i, "description": str(sub)}
                 wid = f"worker-{i}"
+                if is_pipeline and results:
+                    # each subtask sees the outputs of every prior subtask —
+                    # the chain is the test: does context actually propagate
+                    sub = {**sub, "prior_outputs": [
+                        {"subtask_id": r.get("subtask_id"), "content": r.get("content")}
+                        for r in results
+                    ]}
                 out: dict[str, Any] | None = None
                 media_bytes: bytes = b""
                 files: dict[str, str] = {}
@@ -380,6 +390,17 @@ class Runner:
                             )
                         elif is_terminal:
                             out, worker_costs = delegate_terminal(
+                                logger=logger,
+                                step=i + 3,
+                                subtask=sub,
+                                task=task,
+                                worker=worker,
+                                client=role_clients.get("worker"),
+                                dry_run=self.dry_run,
+                                attempt=attempt + 1,
+                            )
+                        elif is_patch:
+                            out, worker_costs = delegate_patch(
                                 logger=logger,
                                 step=i + 3,
                                 subtask=sub,
@@ -704,6 +725,48 @@ class Runner:
                 logger.lifecycle("evaluation.started", phase="validate")
                 passes, report = self._validate_terminal(task, plan_text)
                 judge_text = plan_text
+            elif is_patch:
+                # Orchestrator picks the best candidate diff; validation
+                # applies it to metadata.files and runs the hidden tests.
+                position, assembly_costs = assemble_media(
+                    logger=logger,
+                    task=task,
+                    orchestrator=orchestrator,
+                    step=assembly_step,
+                    results=results,
+                    client=role_clients.get("orchestrator"),
+                    dry_run=self.dry_run,
+                )
+                ledger.add_many(assembly_costs)
+                chosen = results[position] if results else {}
+                patch_text = str(chosen.get("content") or "")
+                (run_dir / "artifact.diff").write_text(patch_text, encoding="utf-8")
+                logger.lifecycle(
+                    "artifact.saved", phase="assemble",
+                    path="artifact.diff", bytes=len(patch_text.encode()),
+                )
+                logger.lifecycle("synthesis.completed", phase="assemble", role="orchestrator")
+                logger.lifecycle("evaluation.started", phase="validate")
+                passes, report = self._validate_patch(task, patch_text)
+                judge_text = patch_text
+            elif is_pipeline:
+                # The chain's final output IS the artifact — orchestration
+                # value was in the plan; assembly adds no synthesis call.
+                if self.dry_run and task.metadata.get("reference_text"):
+                    artifact = str(task.metadata["reference_text"])
+                elif results:
+                    artifact = str(results[-1].get("content") or "")
+                else:
+                    raise ValidationError("No worker output produced for the pipeline task")
+                (run_dir / "artifact.txt").write_text(artifact, encoding="utf-8")
+                logger.lifecycle(
+                    "artifact.saved", phase="assemble",
+                    path="artifact.txt", bytes=len(artifact.encode()),
+                )
+                logger.lifecycle("synthesis.completed", phase="assemble", role="orchestrator")
+                logger.lifecycle("evaluation.started", phase="validate")
+                passes, report = self._validate(task, artifact)
+                judge_text = artifact
             elif is_multi:
                 # Deterministic merge + zip: no orchestrator call, and the
                 # artifact is bytes — the HTML branch below writes text.
@@ -1282,6 +1345,58 @@ class Runner:
         report["artifact_length"] = len(plan_text)
         return bool(report.get("passes")), report
 
+    def _validate_patch(self, task: TaskSpec, patch_text: str) -> tuple[bool, dict[str, Any]]:
+        """Apply the worker's diff to metadata.files; run the hidden tests.
+
+        `applies` is its own gate — a diff that doesn't apply fails before
+        tests run, so patch-craft is measured independently of correctness.
+        """
+        from orchestral.patch import PatchError, apply_unified_diff, extract_patch
+
+        repo = {str(k): str(v) for k, v in (task.metadata.get("files") or {}).items()}
+        checks: dict[str, bool] = {}
+        errors: list[str] = []
+        report: dict[str, Any] = {
+            "task_id": task.id,
+            "artifact_length": len(patch_text),
+            "checks": checks,
+            "errors": errors,
+            "score": None,
+        }
+        diff = extract_patch(patch_text)
+        checks["extracted"] = diff is not None
+        if diff is None:
+            errors.append("artifact does not contain a unified diff")
+            return False, report
+        try:
+            patched = apply_unified_diff(repo, diff)
+            checks["applies"] = True
+        except PatchError as exc:
+            checks["applies"] = False
+            errors.append(f"patch does not apply: {exc}")
+            return False, report
+
+        quality = check_code_quality(patched, task.metadata)
+        checks["quality_ok"] = not quality["violations"]
+        errors.extend(quality["violations"])
+        report["quality"] = quality
+        report["files"] = sorted(patched)
+
+        if self.dry_run:
+            report["executed"] = False
+            return checks["applies"] and checks["quality_ok"], report
+        suite = run_unittest_suite(
+            patched,
+            str(task.metadata.get("tests") or ""),
+            timeout_seconds=float(task.metadata.get("timeout_seconds", DEFAULT_TIMEOUT_SECONDS)),
+        )
+        report["execution"] = suite
+        checks["tests_pass"] = bool(suite.get("ok"))
+        if not suite.get("executed"):
+            errors.append(suite.get("error", "tests did not execute"))
+        report["score"] = score_from_report(suite)
+        return bool(all(checks.values())), report
+
 
 PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 PNG_IEND = b"IEND\xaeB`\x82"
@@ -1318,7 +1433,7 @@ def _subtask_produced_output(
 
 
 def _artifact_ext(task_type: str) -> str:
-    return {"html": ".html", "image": ".png", "video": ".mp4", "api": ".json", "terminal": ".json", "multi-file": ".zip", "code": ".zip", "bugfix": ".zip", "sql": ".sql", "extract": ".json"}.get(task_type, ".txt")
+    return {"html": ".html", "image": ".png", "video": ".mp4", "api": ".json", "terminal": ".json", "swe-patch": ".diff", "multi-file": ".zip", "code": ".zip", "bugfix": ".zip", "sql": ".sql", "extract": ".json"}.get(task_type, ".txt")
 
 
 class _HTMLValidator(html.parser.HTMLParser):

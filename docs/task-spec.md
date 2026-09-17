@@ -19,7 +19,7 @@ metadata: {}                  # optional free-form map (video tasks read generat
 | Field | Type | Default | Notes |
 |---|---|---|---|
 | `id` | str | required | Unique across `tasks/`; becomes a path component (`runs/{orch}/{task}/{worker}/{run_id}/`) |
-| `type` | str | required | `html`, `image`, `video`, `multi-file`, `code`, `bugfix`, `terminal`, `constraint`, `needle`, `sql`, `extract`, `api` — all implemented; see per-type sections below |
+| `type` | str | required | `html`, `image`, `video`, `multi-file`, `code`, `bugfix`, `terminal`, `swe-patch`, `pipeline`, `constraint`, `needle`, `sql`, `extract`, `api` — all implemented; see per-type sections below |
 | `prompt` | str | required | Full task brief; the orchestrator decomposes it into subtasks |
 | `validation` | list[str] | `[]` | Check names; empty means the type's default set |
 | `assets` | list[str] | `[]` | Reserved; not consumed by the runner yet |
@@ -125,6 +125,25 @@ metadata: {}                  # optional free-form map (video tasks read generat
   `expect.files` rules satisfied; `passes` requires all of them, zero command
   errors, and `commands <= max_commands` when declared. See
   `tasks/terminal-config-fix.yaml`.
+- **`swe-patch`** — SWE-bench-style diff repair: `metadata.files` ships the
+  repo fixture (`repo_files` in worker subtasks); workers return
+  `{"patch": "<unified diff>"}`; the harness extracts the diff, applies it
+  with a pure-Python applier (no `patch` binary), runs code-quality checks,
+  then the hidden `metadata.tests` suite against the patched tree. Each gate
+  is reported separately (`extracted`, `applies`, `quality_ok`,
+  `tests_pass`) so patch-format failures are scored before correctness —
+  a model that can't emit a clean diff fails at `applies`, not at tests.
+  `metadata.patch` is the reference diff for dry runs. Artifact:
+  `artifact.diff`. See `tasks/swe-patch-rename-key.yaml`.
+- **`pipeline`** — sequential subtask chains: each worker subtask receives
+  `prior_outputs` — the `{"subtask_id", "content"}` outputs of every earlier
+  subtask — so information must propagate through the chain rather than
+  fanning out in parallel. The *last* subtask's output is the artifact (no
+  orchestrator synthesis call; orchestration value is in the plan).
+  Validation is the generic check list — `has_required`/`max_words`/
+  `forbidden`/`matches` metadata composes as usual. `metadata.reference_text`
+  is the compliant example for dry runs. See
+  `tasks/pipeline-sales-summary.yaml`.
 - **`sql`** — workers produce candidate SQL queries; the orchestrator picks
   one (same candidate-selection flow as `image`/`video`); the harness executes
   the chosen query **read-only** against a fixture SQLite database built from

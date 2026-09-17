@@ -1085,6 +1085,69 @@ def delegate_terminal(
     return out, costs
 
 
+def delegate_patch(
+    *,
+    logger: EventLogger,
+    step: int,
+    subtask: dict[str, Any],
+    task: TaskSpec,
+    worker: ModelConfig,
+    client: OpenRouterClient | None,
+    dry_run: bool,
+    attempt: int | None = None,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Produce one candidate unified diff for a subtask.
+
+    The worker sees `repo_files` (metadata.files) and must return a patch —
+    {"patch": "<unified diff>"} or raw diff text. Dry runs return
+    `metadata.patch` so the spec's reference diff proves itself against the
+    hidden tests.
+    """
+    if dry_run:
+        reference = str(task.metadata.get("patch") or "")
+        cost = _fake_cost(worker, {"subtask": subtask}, {"patch_chars": len(reference)})
+        cost["phase"] = "delegate"
+        logger.log_llm_call(
+            phase="delegate",
+            step=step,
+            model=worker.slug,
+            role="worker",
+            messages=[{"role": "user", "content": str(subtask.get("description", ""))}],
+            completion={"patch_chars": len(reference)},
+            reasoning=f"Write a unified diff for subtask {subtask.get('id')} with {worker.slug}.",
+            input_tokens=cost["input_tokens"],
+            output_tokens=cost["output_tokens"],
+            cost_usd=cost["cost_usd"],
+            latency_ms=random.uniform(80, 1200),
+            pricing_source="none",
+            attempt=attempt,
+        )
+        return {
+            "subtask_id": subtask.get("id"),
+            "prompt": subtask.get("prompt") or subtask.get("description"),
+            "content": reference,
+        }, [cost]
+
+    enriched = {**subtask, "repo_files": task.metadata.get("files") or {},
+                "output_contract": "Return a JSON object {\"patch\": \"<unified diff>\"} — "
+                                   "the diff must apply cleanly to repo_files."}
+    out, costs = delegate(
+        logger=logger,
+        step=step,
+        subtask=enriched,
+        worker=worker,
+        client=client,
+        dry_run=dry_run,
+        attempt=attempt,
+    )
+    if "content" not in out:
+        # {"patch": "..."} JSON output, or a bare dict holding the diff
+        out["content"] = str(out.get("patch") or json.dumps(
+            {k: v for k, v in out.items() if k not in ("subtask_id", "prompt")}
+        ))
+    return out, costs
+
+
 def plan_ce(
     *,
     logger: EventLogger,

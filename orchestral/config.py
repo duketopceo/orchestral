@@ -67,7 +67,7 @@ class TaskSpec:
 TASK_TYPES = frozenset({
     "html", "image", "video", "multi-file", "code",
     "constraint", "needle", "sql", "extract", "api",
-    "bugfix", "terminal",
+    "bugfix", "terminal", "swe-patch", "pipeline",
 })
 
 

@@ -952,7 +952,7 @@ def main() -> None:
     calibrate.set_defaults(func=cmd_calibrate)
 
     review = sub.add_parser("review", help="Frontier-model audit of archived run evidence (writes review.json per run + reports/review-*.md)")
-    review.add_argument("--model", default="x-ai/grok-4-fast", help="Reviewer model slug (default: x-ai/grok-4-fast — cheap reasoning tier)")
+    review.add_argument("--model", default="x-ai/grok-4.3", help="Reviewer model slug (default: x-ai/grok-4.3 — reasoning tier)")
     review.add_argument("--group", default=None, help="Only review runs in this run_group")
     review.add_argument("--task", default=None, help="Only review runs for this task")
     review.add_argument("--orchestrator", default=None)

@@ -99,7 +99,7 @@ Shared run flags (on `run`, `grid`, `batch`, `ablate`): `--planner raw|ce-plan`,
 aggregates cells with pass rate, score/cost mean±sd, p50/p95 latency, and
 successes-per-dollar.
 
-`review --model x-ai/grok-4-fast` audits archived runs with a strong reviewer
+`review --model x-ai/grok-4.3` audits archived runs with a strong reviewer
 model: each run gets a bounded evidence digest (meta, plan, report, cost
 ledger, event/error summary, task spec) and a structured verdict —
 `run_quality` (clean/suspect/invalid), findings that must cite digest

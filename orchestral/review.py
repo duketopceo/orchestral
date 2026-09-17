@@ -241,7 +241,15 @@ def run_review_batch(
                 reviews.append({"run_id": meta.run_id, "task_id": meta.task_id, **json.loads(out_path.read_text())})
             continue
         digest = build_run_digest(run_dir, meta, tasks_dir)
-        review, cost = review_run(digest, model, client, dry_run)
+        try:
+            review, cost = review_run(digest, model, client, dry_run)
+        except Exception as exc:
+            review, cost = {
+                "run_quality": "suspect",
+                "verdict": "Review call failed — evidence unaudited.",
+                "findings": [],
+                "review_error": str(exc)[:300],
+            }, {"cost_usd": 0.0}
         total_cost += cost["cost_usd"]
         record = {
             "reviewer": model.slug,

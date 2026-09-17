@@ -253,12 +253,12 @@ models:
     metadata:
       vision: true
 
-  - slug: "x-ai/grok-4-fast"
-    name: "Grok 4 Fast"
+  - slug: "x-ai/grok-4.3"
+    name: "Grok 4.3"
     role: reference
-    input_price_per_mtok: 0.20
-    output_price_per_mtok: 0.50
-    context: 2000000
+    input_price_per_mtok: 1.25
+    output_price_per_mtok: 2.50
+    context: 1000000
     max_tokens: 30720
     metadata:
       reasoning: true

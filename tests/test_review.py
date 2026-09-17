@@ -45,7 +45,7 @@ class TestReview(unittest.TestCase):
         (self.root / "tasks" / "t-task.yaml").write_text("id: t-task\ntype: html\nprompt: p\nvalidation:\n  - non_empty\n")
         self.runs = self.root / "runs"
         self.reports = self.root / "reports"
-        self.reviewer = _model("x-ai/grok-4-fast", "reference")
+        self.reviewer = _model("x-ai/grok-4.3", "reference")
 
     def test_digest_has_run_task_plan_report(self):
         run_id = _seed_run(str(self.runs))
@@ -85,7 +85,7 @@ class TestReview(unittest.TestCase):
         self.assertEqual(result["cost_usd"], 0.0)
         for meta in RunStore(self.runs).list_runs():
             rec = json.loads((Path(meta.run_dir) / "review.json").read_text())
-            self.assertEqual(rec["reviewer"], "x-ai/grok-4-fast")
+            self.assertEqual(rec["reviewer"], "x-ai/grok-4.3")
             self.assertEqual(rec["run_quality"], "clean")
         self.assertTrue(list(self.reports.glob("review-*.md")))
 
@@ -115,6 +115,22 @@ class TestReview(unittest.TestCase):
         rec = json.loads(next(Path(meta.run_dir) for meta in RunStore(self.runs).list_runs()).joinpath("review.json").read_text())
         self.assertEqual(rec["run_quality"], "suspect")
         self.assertEqual(rec["findings"][0]["kind"], "prompt")
+
+    def test_reviewer_api_error_records_instead_of_crashing(self):
+        _seed_run(str(self.runs))
+
+        class DeadClient:
+            def chat(self, **kw):
+                raise RuntimeError("provider 404")
+
+        result = run_review_batch(
+            RunStore(self.runs), self.reviewer, DeadClient(),
+            reports_dir=self.reports, tasks_dir=self.root / "tasks",
+        )
+        rec = result["reviews"][0]
+        self.assertEqual(rec["run_quality"], "suspect")
+        self.assertIn("provider 404", rec["review_error"])
+        self.assertEqual(result["cost_usd"], 0.0)
 
     def test_unparseable_reviewer_output_marks_suspect(self):
         _seed_run(str(self.runs))

@@ -73,6 +73,7 @@ orchestral dashboard               # reports/dashboard.html
 | Command | What it does |
 |---|---|
 | `init` | Create the runs directory and SQLite index |
+| `validate` | Parse all task/model specs and check per-type metadata contracts (exit 1 on problems) |
 | `run` | One orchestrator × worker pairing on one task |
 | `grid` | Every orchestrator × worker pairing on one task (`--orchestrators`, `--workers`, `--jobs`) |
 | `batch` | One pairing across many tasks (`--batch-dir` or `--batch-tasks`, `--jobs`) |

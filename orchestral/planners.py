@@ -723,7 +723,13 @@ def assemble_media(
         input_data={
             "prompt": task.prompt,
             "candidates": [
-                {"subtask_id": r.get("subtask_id"), "prompt": r.get("prompt"), "query": r.get("query")}
+                {
+                    "subtask_id": r.get("subtask_id"),
+                    "prompt": r.get("prompt"),
+                    "query": r.get("query"),
+                    # bounded preview — without it the orchestrator picks blind
+                    "content": str(r.get("content") or "")[:500],
+                }
                 for r in results
             ],
             "task_type": task.type,

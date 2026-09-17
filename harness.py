@@ -185,6 +185,61 @@ def cmd_init(args: argparse.Namespace) -> None:
     print(f"Index at {store.db}")
 
 
+# metadata keys each task type cannot function without — checked by `validate`
+_REQUIRED_META: dict[str, tuple[str, ...]] = {
+    "api": ("stub", "calls"),
+    "sql": ("schema", "reference_sql"),
+    "needle": ("document", "expected_answer"),
+    "extract": ("expected", "fields"),
+    "terminal": ("fs", "expect"),
+    "swe-patch": ("files", "tests"),
+    "bugfix": ("files", "tests"),
+    "code": ("module", "tests"),
+    "multi-file": ("expected_paths",),
+}
+# validation names that read a metadata key — requesting the check without
+# the metadata silently no-ops or errors at run time
+_VALIDATION_META = {
+    "has_required": "required",
+    "no_forbidden": "forbidden",
+    "matches_pattern": "pattern",
+    "within_budget": ("min_chars", "max_chars", "min_words", "max_words"),
+}
+
+
+def cmd_validate(args: argparse.Namespace) -> None:
+    """Parse every spec and check per-type contracts — catches the silent
+    failures that otherwise only surface mid-run (missing metadata, a
+    validation name with no backing key, unparseable YAML)."""
+    failures = 0
+    for path in sorted(Path(args.tasks_dir).rglob("*.yaml")):
+        try:
+            task = load_task(path)
+        except Exception as exc:
+            failures += 1
+            print(f"  FAIL {path.name}: {exc}")
+            continue
+        missing = [k for k in _REQUIRED_META.get(task.type, ()) if k not in task.metadata]
+        for check in task.validation:
+            want = _VALIDATION_META.get(check)
+            if isinstance(want, str):
+                want = (want,)
+            if want and not any(task.metadata.get(k) for k in want):
+                missing.append(f"{want[0]} (required by validation '{check}')")
+        if missing:
+            failures += 1
+            print(f"  FAIL {path.name}: missing metadata {', '.join(missing)}")
+        else:
+            print(f"  ok   {path.name} ({task.type})")
+    try:
+        load_models(args.models_dir)
+    except Exception as exc:
+        failures += 1
+        print(f"  FAIL {args.models_dir}: {exc}")
+    print(f"{failures} spec problem(s)" if failures else "All specs valid")
+    sys.exit(1 if failures else 0)
+
+
 def cmd_run(args: argparse.Namespace) -> None:
     store, known, judge = _run_preamble(args)
     task = load_task(_task_from_arg(args.task, args.tasks_dir))
@@ -839,6 +894,11 @@ def main() -> None:
 
     init = sub.add_parser("init", help="Create the runs directory and SQLite index")
     init.set_defaults(func=cmd_init)
+
+    validate = sub.add_parser("validate", help="Parse all task specs and model configs; check per-type metadata contracts")
+    validate.add_argument("--tasks-dir", default="tasks")
+    validate.add_argument("--models-dir", default="models")
+    validate.set_defaults(func=cmd_validate)
 
     def _add_run_flags(sp: argparse.ArgumentParser) -> None:
         sp.add_argument("--planner", default="raw", choices=["raw", "ce-plan"], help="Orchestrator planning strategy: raw or ce-plan")

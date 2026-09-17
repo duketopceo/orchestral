@@ -68,6 +68,19 @@ class ValidationError(Exception):
     """Raised when a run fails structural validation."""
 
 
+# task types whose assembly is "orchestrator picks the best candidate":
+# type -> (artifact filename, result key to read, validator method name)
+_CANDIDATE_TASKS: dict[str, tuple[str, str, str]] = {
+    "needle": ("artifact.txt", "content", "_validate"),
+    "constraint": ("artifact.txt", "content", "_validate"),
+    "sql": ("artifact.sql", "query", "_validate_sql"),
+    "extract": ("artifact.json", "content", "_validate_extract"),
+    "api": ("artifact.json", "content", "_validate_api"),
+    "terminal": ("artifact.json", "content", "_validate_terminal"),
+    "swe-patch": ("artifact.diff", "content", "_validate_patch"),
+}
+
+
 class RunCancelled(Exception):
     """Raised when the run's cancel_event is set between steps."""
 
@@ -302,6 +315,18 @@ class Runner:
             file_sets: list[tuple[int, dict[str, str]]] = []
             media_ext = _artifact_ext(task.type)
             subtasks = plan.get("subtasks") or plan.get("sections", {}).get("subtasks", [])
+            if not isinstance(subtasks, list):
+                raise ValidationError(
+                    f"Plan subtasks must be a list, got {type(subtasks).__name__}"
+                )
+            # cost-control gate: an orchestrator that over-decomposes burns a
+            # worker call per subtask — exceeding the budget is a recorded
+            # failure, not a silent truncation
+            max_subtasks = int(task.metadata.get("max_subtasks") or 20)
+            if len(subtasks) > max_subtasks:
+                raise ValidationError(
+                    f"Plan produced {len(subtasks)} subtasks, over max_subtasks {max_subtasks}"
+                )
             logger.lifecycle(
                 "delegation.created", phase="delegate",
                 subtasks=len(subtasks),
@@ -585,9 +610,10 @@ class Runner:
                     judge_bytes = artifact_bytes
                 else:
                     passes, report = self._validate_video(task, artifact_bytes)
-            elif is_needle:
-                # Same raw-text candidate pick as constraint; validation is
-                # the constraint checks (expected token present, decoys absent).
+            elif task.type in _CANDIDATE_TASKS:
+                # Orchestrator picks the winning worker output; the chosen
+                # payload becomes the artifact and the type's validator runs.
+                artifact_name, key, validate_name = _CANDIDATE_TASKS[task.type]
                 position, assembly_costs = assemble_media(
                     logger=logger,
                     task=task,
@@ -599,161 +625,16 @@ class Runner:
                 )
                 ledger.add_many(assembly_costs)
                 chosen = results[position] if results else {}
-                artifact = str(chosen.get("content") or "")
-                (run_dir / "artifact.txt").write_text(artifact, encoding="utf-8")
+                artifact = str(chosen.get(key) or chosen.get("content") or "")
+                (run_dir / artifact_name).write_text(artifact, encoding="utf-8")
                 logger.lifecycle(
                     "artifact.saved", phase="assemble",
-                    path="artifact.txt", bytes=len(artifact.encode()),
+                    path=artifact_name, bytes=len(artifact.encode()),
                 )
                 logger.lifecycle("synthesis.completed", phase="assemble", role="orchestrator")
                 logger.lifecycle("evaluation.started", phase="validate")
-                passes, report = self._validate(task, artifact)
+                passes, report = getattr(self, validate_name)(task, artifact)
                 judge_text = artifact
-            elif is_constraint:
-                # Orchestrator picks the best candidate; the artifact is the
-                # raw text so word budgets and pattern checks apply to worker
-                # output, not HTML scaffolding.
-                position, assembly_costs = assemble_media(
-                    logger=logger,
-                    task=task,
-                    orchestrator=orchestrator,
-                    step=assembly_step,
-                    results=results,
-                    client=role_clients.get("orchestrator"),
-                    dry_run=self.dry_run,
-                )
-                ledger.add_many(assembly_costs)
-                chosen = results[position] if results else {}
-                artifact = str(chosen.get("content") or "")
-                (run_dir / "artifact.txt").write_text(artifact, encoding="utf-8")
-                logger.lifecycle(
-                    "artifact.saved", phase="assemble",
-                    path="artifact.txt", bytes=len(artifact.encode()),
-                )
-                logger.lifecycle("synthesis.completed", phase="assemble", role="orchestrator")
-                logger.lifecycle("evaluation.started", phase="validate")
-                passes, report = self._validate(task, artifact)
-                judge_text = artifact
-            elif is_sql:
-                # Orchestrator picks the candidate query; validation runs it
-                # read-only against the task fixture's reference result.
-                position, assembly_costs = assemble_media(
-                    logger=logger,
-                    task=task,
-                    orchestrator=orchestrator,
-                    step=assembly_step,
-                    results=results,
-                    client=role_clients.get("orchestrator"),
-                    dry_run=self.dry_run,
-                )
-                ledger.add_many(assembly_costs)
-                chosen = results[position] if results else {}
-                candidate_sql = str(chosen.get("query") or "")
-                (run_dir / "artifact.sql").write_text(candidate_sql, encoding="utf-8")
-                logger.lifecycle(
-                    "artifact.saved", phase="assemble",
-                    path="artifact.sql", bytes=len(candidate_sql.encode()),
-                )
-                logger.lifecycle("synthesis.completed", phase="assemble", role="orchestrator")
-                logger.lifecycle("evaluation.started", phase="validate")
-                passes, report = self._validate_sql(task, candidate_sql)
-                judge_text = candidate_sql
-            elif is_extract:
-                # Orchestrator picks the best candidate extraction; grading is
-                # deterministic per-field against metadata.expected.
-                position, assembly_costs = assemble_media(
-                    logger=logger,
-                    task=task,
-                    orchestrator=orchestrator,
-                    step=assembly_step,
-                    results=results,
-                    client=role_clients.get("orchestrator"),
-                    dry_run=self.dry_run,
-                )
-                ledger.add_many(assembly_costs)
-                chosen = results[position] if results else {}
-                artifact = str(chosen.get("content") or "")
-                (run_dir / "artifact.json").write_text(artifact, encoding="utf-8")
-                logger.lifecycle(
-                    "artifact.saved", phase="assemble",
-                    path="artifact.json", bytes=len(artifact.encode()),
-                )
-                logger.lifecycle("synthesis.completed", phase="assemble", role="orchestrator")
-                logger.lifecycle("evaluation.started", phase="validate")
-                passes, report = self._validate_extract(task, artifact)
-                judge_text = artifact
-            elif is_api:
-                # Orchestrator picks the best candidate plan; validation
-                # replays it over real loopback HTTP against the task's stub.
-                position, assembly_costs = assemble_media(
-                    logger=logger,
-                    task=task,
-                    orchestrator=orchestrator,
-                    step=assembly_step,
-                    results=results,
-                    client=role_clients.get("orchestrator"),
-                    dry_run=self.dry_run,
-                )
-                ledger.add_many(assembly_costs)
-                chosen = results[position] if results else {}
-                plan_text = str(chosen.get("content") or "")
-                (run_dir / "artifact.json").write_text(plan_text, encoding="utf-8")
-                logger.lifecycle(
-                    "artifact.saved", phase="assemble",
-                    path="artifact.json", bytes=len(plan_text.encode()),
-                )
-                logger.lifecycle("synthesis.completed", phase="assemble", role="orchestrator")
-                logger.lifecycle("evaluation.started", phase="validate")
-                passes, report = self._validate_api(task, plan_text)
-                judge_text = plan_text
-            elif is_terminal:
-                # Orchestrator picks the best command plan; validation replays
-                # it in the virtual shell and grades the resulting filesystem.
-                position, assembly_costs = assemble_media(
-                    logger=logger,
-                    task=task,
-                    orchestrator=orchestrator,
-                    step=assembly_step,
-                    results=results,
-                    client=role_clients.get("orchestrator"),
-                    dry_run=self.dry_run,
-                )
-                ledger.add_many(assembly_costs)
-                chosen = results[position] if results else {}
-                plan_text = str(chosen.get("content") or "")
-                (run_dir / "artifact.json").write_text(plan_text, encoding="utf-8")
-                logger.lifecycle(
-                    "artifact.saved", phase="assemble",
-                    path="artifact.json", bytes=len(plan_text.encode()),
-                )
-                logger.lifecycle("synthesis.completed", phase="assemble", role="orchestrator")
-                logger.lifecycle("evaluation.started", phase="validate")
-                passes, report = self._validate_terminal(task, plan_text)
-                judge_text = plan_text
-            elif is_patch:
-                # Orchestrator picks the best candidate diff; validation
-                # applies it to metadata.files and runs the hidden tests.
-                position, assembly_costs = assemble_media(
-                    logger=logger,
-                    task=task,
-                    orchestrator=orchestrator,
-                    step=assembly_step,
-                    results=results,
-                    client=role_clients.get("orchestrator"),
-                    dry_run=self.dry_run,
-                )
-                ledger.add_many(assembly_costs)
-                chosen = results[position] if results else {}
-                patch_text = str(chosen.get("content") or "")
-                (run_dir / "artifact.diff").write_text(patch_text, encoding="utf-8")
-                logger.lifecycle(
-                    "artifact.saved", phase="assemble",
-                    path="artifact.diff", bytes=len(patch_text.encode()),
-                )
-                logger.lifecycle("synthesis.completed", phase="assemble", role="orchestrator")
-                logger.lifecycle("evaluation.started", phase="validate")
-                passes, report = self._validate_patch(task, patch_text)
-                judge_text = patch_text
             elif is_pipeline:
                 # The chain's final output IS the artifact — orchestration
                 # value was in the plan; assembly adds no synthesis call.
@@ -762,7 +643,7 @@ class Runner:
                 elif results:
                     artifact = str(results[-1].get("content") or "")
                 else:
-                    raise ValidationError("No worker output produced for the pipeline task")
+                    raise ValidationError("No output produced for the pipeline task")
                 (run_dir / "artifact.txt").write_text(artifact, encoding="utf-8")
                 logger.lifecycle(
                     "artifact.saved", phase="assemble",
@@ -853,22 +734,39 @@ class Runner:
                         output_data={},
                         reasoning="Judge model has no `vision: true` metadata; image judging may fail at the API.",
                     )
-                judge_result, judge_costs = self._judge_with_cache(
-                    logger=logger,
-                    step=assembly_step + 3,
-                    task=task,
-                    client=role_clients.get("judge"),
-                    artifact_bytes=judge_bytes,
-                    artifact_text=judge_text,
-                    judge=judge,
-                    language="text" if is_multi else "html",
-                )
-                ledger.add_many(judge_costs)
-                report["judge"] = judge_result
-                if judge_result.get("score") is not None:
-                    report["score"] = judge_result["score"]
-                if judge_result.get("passed") is not None:
-                    passes = passes and judge_result["passed"]
+                try:
+                    judge_result, judge_costs = self._judge_with_cache(
+                        logger=logger,
+                        step=assembly_step + 3,
+                        task=task,
+                        client=role_clients.get("judge"),
+                        artifact_bytes=judge_bytes,
+                        artifact_text=judge_text,
+                        judge=judge,
+                        language="text" if is_multi else "html",
+                    )
+                except Exception as exc:
+                    # the judge is advisory — its failure must not convert a
+                    # mechanically-verified run into a `failed` record
+                    logger.log(
+                        phase="judge",
+                        step=assembly_step + 3,
+                        event_type="judge_error",
+                        model=judge.slug,
+                        role="judge",
+                        input_data={"task": task.id},
+                        output_data={},
+                        error=str(exc),
+                        reasoning="Judge call failed; keeping the mechanical verdict.",
+                    )
+                    report["judge_error"] = str(exc)
+                else:
+                    ledger.add_many(judge_costs)
+                    report["judge"] = judge_result
+                    if judge_result.get("score") is not None:
+                        report["score"] = judge_result["score"]
+                    if judge_result.get("passed") is not None:
+                        passes = passes and judge_result["passed"]
 
             logger.lifecycle(
                 "evaluation.completed", phase="validate", role="judge" if judge else "harness",
@@ -882,10 +780,11 @@ class Runner:
                 artifact_path = run_dir / "artifact.html"
                 if artifact_path.exists():
                     try:
-                        from orchestral.shots import ScreenshotUnavailable, capture_html
+                        from orchestral.shots import capture_html
 
                         capture_html(artifact_path, run_dir / "screenshot.png")
-                    except ScreenshotUnavailable as exc:
+                    except Exception as exc:
+                        # observability garnish, never a run outcome
                         logger.log(
                             phase="shots",
                             step=assembly_step + 5,
@@ -894,7 +793,7 @@ class Runner:
                             role="harness",
                             input_data={"artifact": str(artifact_path)},
                             output_data={"reason": str(exc)},
-                            reasoning="Playwright or browser binaries unavailable; screenshot skipped.",
+                            reasoning="Screenshot capture failed or unavailable; skipped.",
                         )
 
             # 6. Final accounting

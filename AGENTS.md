@@ -53,6 +53,7 @@ Before committing, run:
 ```bash
 python3 -m compileall orchestral harness.py
 python3 harness.py init
+python3 harness.py validate
 python3 harness.py run --task landing-page-coffee --orchestrator deepseek/deepseek-v4-flash-0731 --worker z-ai/glm-5.3-flash --dry-run
 python3 harness.py report --html
 ```

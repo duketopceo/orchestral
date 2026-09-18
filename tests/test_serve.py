@@ -156,8 +156,26 @@ class TestPureLayer(unittest.TestCase):
             self.assertEqual(gcard["suite"], "v3")
             self.assertEqual(gcard["runs"], 1)
             self.assertEqual(len(gcard["pairings"]), 1)
+            self.assertIn("verdict_line", gcard)
+            self.assertIn("pass_ci", gcard)
+            self.assertEqual(gcard["judged"], 0)
+            self.assertIn("verdict_line", card)
             self.assertIsNone(state.card_payload(store, "run", "ghost"))
             self.assertIsNone(state.card_payload(store, "group", "ghost"))
+
+    def test_wilson_interval_and_verdict_lines(self):
+        # known binomial: 1/4 pass → wide honest interval
+        lo, hi = state._wilson(1, 4)
+        self.assertLess(lo, 0.25)
+        self.assertGreater(hi, 0.25)
+        self.assertIsNone(state._wilson(0, 0))
+        v = state._verdict_line
+        self.assertEqual(v(True, True, "finished"), "passes both axes — structure and semantics")
+        self.assertEqual(v(True, False, "finished"), "well-formed but semantically rejected")
+        self.assertEqual(v(False, True, "finished"), "mechanical reject, semantic rescue — inspect")
+        self.assertEqual(v(False, False, "finished"), "rejected on both axes")
+        self.assertEqual(v(True, None, "finished"), "mechanical pass — unjudged")
+        self.assertIn("no verdict", v(None, None, "running"))
 
     def test_escaping_in_error_pages(self):
         # model/path strings reach the browser through render.py's error

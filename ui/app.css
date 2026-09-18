@@ -464,6 +464,29 @@ td .cell-delta { font-family: var(--mono); }
 .xc-flag.not { color: var(--fail); background: var(--fail-dim); border: 1px solid rgba(248,113,113,.4); }
 .xc-flag.unflagged { color: var(--text-3); border: 1px dashed var(--line-bright); }
 
+.xc-vline {
+  margin-top: 18px;
+  font: 500 17px var(--sans);
+  color: var(--text);
+  letter-spacing: .01em;
+}
+.xc-reason {
+  margin-top: 8px;
+  font: 12px/1.6 var(--mono);
+  color: var(--text-3);
+  max-width: 780px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.xc-ci {
+  margin-top: 4px;
+  font: 10px var(--mono);
+  color: var(--text-3);
+  letter-spacing: .04em;
+}
+
 .xc-hero { margin-top: auto; display: flex; align-items: flex-end; gap: 64px; }
 .xc-big { display: flex; flex-direction: column; gap: 6px; }
 .xc-big .v { font: 700 88px/1 var(--mono); letter-spacing: -.04em; font-variant-numeric: tabular-nums; }

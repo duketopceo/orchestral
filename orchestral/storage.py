@@ -443,6 +443,19 @@ class RunStore:
             ).fetchone()
         return json.loads(row[0]) if row else None
 
+    def judge_slugs(self, task_ids: set[str]) -> list[str]:
+        """Distinct judge models seen in the cache for these tasks — provenance
+        fallback for runs judged before report.json recorded judge.model."""
+        if not task_ids:
+            return []
+        marks = ",".join("?" for _ in task_ids)
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"SELECT DISTINCT judge_slug FROM judge_cache WHERE task_id IN ({marks})",
+                sorted(task_ids),
+            ).fetchall()
+        return [r[0] for r in rows]
+
     def put_judge_result(self, task_id: str, judge_slug: str, artifact_sha256: str, result: dict[str, Any]) -> None:
         with self._connect() as conn:
             conn.execute(

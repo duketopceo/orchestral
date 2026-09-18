@@ -388,6 +388,35 @@ def groups_payload(store: RunStore) -> list[dict[str, Any]]:
     return out
 
 
+def _wilson(passes: int, n: int) -> list[float] | None:
+    """Wilson 95% interval on a binomial pass rate — the honest uncertainty
+    a share card owes its audience when n is small."""
+    if n <= 0:
+        return None
+    z, p = 1.96, passes / n
+    denom = 1 + z * z / n
+    center = (p + z * z / (2 * n)) / denom
+    margin = z * ((p * (1 - p) / n + z * z / (4 * n * n)) ** 0.5) / denom
+    return [round(max(0.0, center - margin), 3), round(min(1.0, center + margin), 3)]
+
+
+def _verdict_line(mech_pass: bool | None, judge_passed: bool | None,
+                  status: str | None) -> str:
+    """One-line verdict in plain words — the card's subtitle hook."""
+    if status != "finished":
+        return f"run {status or 'unknown'} — no verdict yet"
+    if judge_passed is None:
+        return ("mechanical pass — unjudged" if mech_pass
+                else "mechanical fail — unjudged")
+    if mech_pass and judge_passed:
+        return "passes both axes — structure and semantics"
+    if mech_pass:
+        return "well-formed but semantically rejected"
+    if judge_passed:
+        return "mechanical reject, semantic rescue — inspect"
+    return "rejected on both axes"
+
+
 def card_payload(store: RunStore, kind: str, target: str) -> dict[str, Any] | None:
     """Share-card data — the engineered summary an X post needs: flagship
     numbers, both verdict axes, the annotation flag, and caveat inputs
@@ -400,12 +429,57 @@ def card_payload(store: RunStore, kind: str, target: str) -> dict[str, Any] | No
         g = next((x for x in groups_payload(store) if x["group"] == target), None)
         if g is None:
             return None
-        cells = aggregate(store.list_runs(run_group=target))
+        metas = store.list_runs(run_group=target)
+        cells = aggregate(metas)
         pairings = sorted({(c.orchestrator, c.worker) for c in cells})
+        # judge aggregates — read each finished run's report for the
+        # semantic axis; unjudged runs contribute nothing, honestly
+        judge_scores: list[float] = []
+        judge_nouls: list[float] = []
+        judge_models: set[str] = set()
+        judge_passed_n = 0
+        for m in metas:
+            if m.status != "finished":
+                continue
+            j = (read_json(Path(m.run_dir) / "report.json") or {}).get("judge") or {}
+            if not j or (j.get("score") is None and j.get("noul") is None):
+                continue
+            if j.get("score") is not None:
+                judge_scores.append(float(j["score"]))
+            if j.get("noul") is not None:
+                judge_nouls.append(float(j["noul"]))
+            if j.get("model"):
+                judge_models.add(j["model"])
+            if j.get("passed"):
+                judge_passed_n += 1
+        judged_n = len(judge_scores) or len(judge_nouls)
+        jp_rate = judge_passed_n / judged_n if judged_n else None
+        ci = _wilson(g["passed"], g["finished"])
+        if not judge_models and judged_n:
+            judge_models = set(store.judge_slugs({m.task_id for m in metas}))
+        if judged_n and jp_rate is not None and g["pass_rate"] is not None:
+            mech_pct, jp_pct = round(g["pass_rate"] * 100), round(jp_rate * 100)
+            if g["pass_rate"] - jp_rate > 0.15:
+                line = f"{mech_pct}% pass structure, {jp_pct}% survive semantic review"
+            elif jp_rate - g["pass_rate"] > 0.05:
+                line = f"{mech_pct}% clear the full gate — judge alone approves {jp_pct}%"
+            else:
+                line = "mechanical and judge axes agree"
+        elif judged_n:
+            line = f"{judged_n} runs judged — semantic axis active"
+        else:
+            line = "mechanical grading only — nothing judged yet"
         return {
             "kind": "group", "target": target, "suite": SUITE_VERSION,
             "runs": g["runs"], "finished": g["finished"], "passed": g["passed"],
             "pass_rate": g["pass_rate"], "score_median": g["score_median"],
+            "pass_ci": ci, "verdict_line": line,
+            "judged": judged_n, "judge_pass_rate": jp_rate,
+            "judge_score_mean": (round(sum(judge_scores) / len(judge_scores), 3)
+                                 if judge_scores else None),
+            "judge_noul_mean": (round(sum(judge_nouls) / len(judge_nouls), 3)
+                                if judge_nouls else None),
+            "judge_models": sorted(judge_models),
             "cost_usd": g["cost_usd"], "tasks": g["tasks"],
             "pairings": [{"orchestrator": o, "worker": w} for o, w in pairings],
             "latest": g["latest"],
@@ -428,6 +502,11 @@ def card_payload(store: RunStore, kind: str, target: str) -> dict[str, Any] | No
             "started_at": meta.started_at,
             "judge_engine": judge.get("engine"), "judge_noul": judge.get("noul"),
             "judge_passed": judge.get("passed"),
+            "judge_model": judge.get("model"),
+            "judge_reasoning": (judge.get("reasoning") or "")[:280],
+            "verdict_line": _verdict_line(
+                bool(meta.passes),
+                judge.get("passed") if judge else None, meta.status),
             "flag": ann.get("flag", ""), "note": ann.get("note", ""),
         }
     return None

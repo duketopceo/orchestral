@@ -116,6 +116,7 @@ def _judge_via_decisions(
         "noul": noul,
         "confidence": quality.get("confidence"),
         "engine": "decisions",
+        "model": judge.slug,
     }
     cost: dict[str, Any] = {
         "phase": "judge",
@@ -269,6 +270,8 @@ def judge_artifact(
     result["passed"] = bool(result.get("passed", False))
     if "reasoning" not in result:
         result["reasoning"] = ""
+    result["model"] = judge.slug
+    result["engine"] = "chat"
 
     logger.log_llm_call(
         phase="judge",

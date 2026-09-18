@@ -615,14 +615,20 @@ async function viewCard(params) {
   const flagTxt = flag === "interesting" ? "★ interesting" : flag === "not" ? "∅ not interesting" : "unflagged";
 
   let hero, title, sub, kvs, barPct = 0, caveat;
+  const vline = d.verdict_line ? `<div class="xc-vline">${esc(d.verdict_line)}</div>` : "";
   if (kind === "group") {
     const pairTxt = (d.pairings || []).slice(0, 3)
       .map(p => `${slug(p.orchestrator)}→${slug(p.worker)}`).join("  ·  ");
     title = esc(d.target);
     sub = `${(d.pairings || []).length} pairing${d.pairings.length === 1 ? "" : "s"} · ${esc(pairTxt)}${d.pairings.length > 3 ? " …" : ""}`;
+    const ci = d.pass_ci ? `<span class="xc-ci">95% CI ${Math.round(d.pass_ci[0] * 100)}–${Math.round(d.pass_ci[1] * 100)}%</span>` : "";
+    const judgeVal = d.judge_noul_mean != null ? Number(d.judge_noul_mean).toFixed(2)
+      : d.judge_pass_rate != null ? fmtPct(d.judge_pass_rate)
+      : fmtScore(d.score_median);
+    const judgeLbl = d.judged ? `judge · ${d.judged} judged` : "judge · unjudged";
     hero = `
-      <div class="xc-big mech"><span class="v">${fmtPct(d.pass_rate)}</span><span class="l">mechanical pass</span></div>
-      <div class="xc-big judge"><span class="v">${fmtScore(d.score_median)}</span><span class="l">judge median</span></div>`;
+      <div class="xc-big mech"><span class="v">${fmtPct(d.pass_rate)}</span><span class="l">mechanical pass</span>${ci}</div>
+      <div class="xc-big judge"><span class="v">${judgeVal}</span><span class="l">${judgeLbl}</span></div>`;
     barPct = (d.pass_rate || 0) * 100;
     const rest = d.runs - d.finished;
     kvs = [
@@ -631,14 +637,15 @@ async function viewCard(params) {
       ["cost", fmtMoney(d.cost_usd)],
       ["latest", fmtWhen(d.latest)],
     ];
-    caveat = `mechanical = execution truth · judge = advisory semantic axis · suite ${esc(d.suite)}`;
+    const jm = (d.judge_models || []).map(m => slug(m)).join(", ");
+    caveat = `mechanical = execution truth · judge = ${jm ? `${esc(jm)} · ` : ""}advisory semantic axis · suite ${esc(d.suite)}`;
   } else {
     title = esc(d.task_id);
     sub = `${esc(slug(d.orchestrator))} <span class="arrow">→</span> ${esc(slug(d.worker))}${d.run_group ? ` · ${esc(d.run_group)}` : ""}`;
     const verdict = d.status === "finished" ? (d.passes ? "PASS" : "FAIL") : String(d.status || "—").toUpperCase();
     hero = `
       <div class="xc-big ${d.passes ? "mech" : "miss"}"><span class="v">${verdict}</span><span class="l">mechanical</span></div>
-      <div class="xc-big judge"><span class="v">${d.judge_noul != null ? Number(d.judge_noul).toFixed(2) : fmtScore(d.score)}</span><span class="l">judge ${d.judge_engine === "decisions" ? "noul" : "score"}</span></div>`;
+      <div class="xc-big judge"><span class="v">${d.judge_noul != null ? Number(d.judge_noul).toFixed(2) : fmtScore(d.score)}</span><span class="l">judge ${d.judge_engine === "decisions" ? "noul" : "score"}${d.judge_model ? ` · ${esc(slug(d.judge_model))}` : ""}</span></div>`;
     barPct = d.passes ? 100 : 0;
     kvs = [
       ["cost", fmtMoney(d.cost_usd)],
@@ -646,7 +653,7 @@ async function viewCard(params) {
       ["failure", d.failure_reason || "—"],
       ["when", fmtWhen(d.started_at)],
     ];
-    caveat = `mechanical = execution truth · judge ${d.judge_engine === "decisions" ? "= jev decisions engine (calibrated noul)" : "= advisory semantic axis"} · suite ${esc(d.suite)}`;
+    caveat = `mechanical = execution truth · judge ${d.judge_engine === "decisions" ? "= jev decisions engine (calibrated noul)" : "= advisory semantic axis"}${d.judge_model ? ` · ${esc(d.judge_model)}` : ""} · suite ${esc(d.suite)}`;
   }
 
   $view.innerHTML = `
@@ -666,6 +673,8 @@ async function viewCard(params) {
           <div><div class="xc-title">${title}</div><div class="xc-sub">${sub}</div></div>
           <span class="xc-flag ${flagCls}">${flagTxt}</span>
         </div>
+        ${vline}
+        ${kind === "run" && d.judge_reasoning ? `<div class="xc-reason">${esc(d.judge_reasoning)}</div>` : ""}
         <div class="xc-hero">${hero}
           <div class="xc-side">${kvs.map(([k, v]) => `<div class="xc-kv"><span class="k">${esc(k)}</span><span class="v">${esc(v)}</span></div>`).join("")}</div>
         </div>

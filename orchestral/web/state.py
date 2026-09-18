@@ -660,6 +660,8 @@ def card_payload(
         judged_n = len(judge_scores) or len(judge_nouls)
         jp_rate = judge_passed_n / judged_n if judged_n else None
         ci = _wilson(g["passed"], g["finished"])
+        failed_n = sum(1 for m in metas if m.status == "failed")
+        running_n = sum(1 for m in metas if m.status == "running")
         if not judge_models and judged_n:
             judge_models = set(store.judge_slugs({m.task_id for m in metas}))
         if judged_n and jp_rate is not None and g["pass_rate"] is not None:
@@ -677,6 +679,7 @@ def card_payload(
         return {
             "kind": "group", "target": target, "suite": SUITE_VERSION,
             "runs": g["runs"], "finished": g["finished"], "passed": g["passed"],
+            "failed": failed_n, "running": running_n,
             "pass_rate": g["pass_rate"], "score_median": g["score_median"],
             "pass_ci": ci, "verdict_line": line,
             "judged": judged_n, "judge_pass_rate": jp_rate,
@@ -697,6 +700,15 @@ def card_payload(
             return None
         report = read_json(Path(meta.run_dir) / "report.json") or {}
         judge = report.get("judge") or {}
+        plan = read_json(Path(meta.run_dir) / "plan.json") or {}
+        plan_summary = str(plan.get("plan") or "").strip() if isinstance(plan, dict) else ""
+        judge_reason = str(judge.get("reasoning") or "").strip()
+        if judge_reason:
+            description, description_by = judge_reason, "judge"
+        elif plan_summary:
+            description, description_by = plan_summary, "orchestrator"
+        else:
+            description, description_by = "", ""
         return {
             "kind": "run", "target": target, "suite": SUITE_VERSION,
             "task_id": meta.task_id, "orchestrator": meta.orchestrator,
@@ -709,7 +721,11 @@ def card_payload(
             "judge_engine": judge.get("engine"), "judge_noul": judge.get("noul"),
             "judge_passed": judge.get("passed"),
             "judge_model": judge.get("model"),
-            "judge_reasoning": (judge.get("reasoning") or "")[:280],
+            "judge_reasoning": judge_reason[:280],
+            "description": description[:600],
+            "description_by": description_by,
+            "description_model": (judge.get("model") if description_by == "judge"
+                                  else meta.orchestrator) if description else "",
             "verdict_line": _verdict_line(
                 bool(meta.passes),
                 judge.get("passed") if judge else None, meta.status),

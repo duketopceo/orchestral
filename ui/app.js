@@ -692,9 +692,11 @@ async function viewCard(params) {
       <div class="xc-big mech"><span class="v">${fmtPct(d.pass_rate)}</span><span class="l">mechanical pass</span>${ci}</div>
       <div class="xc-big judge"><span class="v">${judgeVal}</span><span class="l">${judgeLbl}</span></div>`;
     barPct = (d.pass_rate || 0) * 100;
-    const rest = d.runs - d.finished;
+    const restBits = [];
+    if (d.failed) restBits.push(`${d.failed} failed`);
+    if (d.running) restBits.push(`${d.running} running`);
     kvs = [
-      ["runs", `${d.finished}/${d.runs}${rest ? ` (+${rest} running)` : ""}`],
+      ["runs", `${d.finished}/${d.runs}${restBits.length ? ` (+${restBits.join(", ")})` : ""}`],
       ["tasks", d.tasks],
       ["cost", fmtMoney(d.cost_usd)],
       ["latest", fmtWhen(d.latest)],
@@ -757,12 +759,12 @@ async function viewCard(params) {
           <span class="xc-flag ${flagCls}">${flagTxt}</span>
         </div>
         ${vline}
-        ${kind === "run" && d.judge_reasoning ? `<div class="xc-reason">${esc(d.judge_reasoning)}</div>` : ""}
+        ${kind === "run" && d.description ? `<div class="xc-desc">${esc(d.description)} <span class="xc-by">— ${esc(d.description_by)}${d.description_model ? ` · ${esc(slug(d.description_model))}` : ""}</span></div>` : ""}
         <div class="xc-hero">${hero}
           <div class="xc-side">${kvs.map(([k, v]) => `<div class="xc-kv"><span class="k">${esc(k)}</span><span class="v">${esc(v)}</span></div>`).join("")}</div>
         </div>
         <div class="xc-bar"><i class="b-pass" style="width:${barPct}%"></i><i class="b-fail" style="width:${kind === "group" ? ((d.finished - d.passed) / Math.max(d.runs, 1)) * 100 : (d.passes ? 0 : 100)}%"></i><i class="b-rest" style="width:${kind === "group" ? (1 - d.finished / Math.max(d.runs, 1)) * 100 : 0}%"></i></div>
-        ${d.explainer ? `<div class="xc-expl">${esc(d.explainer)}</div>` : ""}
+        ${d.explainer && kind !== "run" ? `<div class="xc-expl">${esc(d.explainer)}</div>` : ""}
         <div class="xc-footer">
           <span class="xc-caveat">${caveat}</span>
           <span>${new Date().toISOString().slice(0, 10)}</span>

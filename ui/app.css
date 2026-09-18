@@ -480,6 +480,22 @@ td .cell-delta { font-family: var(--mono); }
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
+.xc-desc {
+  margin-top: 14px;
+  font: 13.5px/1.55 var(--sans);
+  color: var(--text-2);
+  max-width: 880px;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.xc-by {
+  font: 11px var(--mono);
+  color: var(--text-3);
+  letter-spacing: .02em;
+  white-space: nowrap;
+}
 .xc-ci {
   margin-top: 4px;
   font: 10px var(--mono);

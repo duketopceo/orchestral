@@ -1,15 +1,21 @@
 """http.server app for the web observatory.
 
 All reads go through ``web.state`` (RunStore + run-dir files); all writes
-are two POST routes that delegate to ``JobRegistry``. GET never mutates.
+are POST routes that delegate to ``JobRegistry``. GET never mutates.
 The handler holds no state of its own — per-request work is small, so the
 stdlib ThreadingHTTPServer is sufficient.
+
+The UI is a static single-page app in ``ui/`` (hash-routed, no build step):
+``GET /`` and any unknown non-API path serve ``app.html``; ``/static/*``
+serves the app's assets. ``/api/*`` is the JSON surface the SPA polls.
 """
 
 from __future__ import annotations
 
 import json
+import mimetypes
 import time
+import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -17,6 +23,24 @@ from urllib.parse import parse_qs, urlparse
 
 from orchestral.storage import RunStore
 from orchestral.web import render, state
+
+# Static SPA assets live in <repo>/ui — server.py is orchestral/web/server.py.
+UI_DIR = Path(__file__).resolve().parents[2] / "ui"
+
+_ARTIFACT_TYPES = {
+    "html": "text/html; charset=utf-8",
+    "css": "text/css; charset=utf-8",
+    "js": "text/javascript; charset=utf-8",
+    "json": "application/json",
+    "svg": "image/svg+xml",
+    "png": "image/png",
+    "jpg": "image/jpeg",
+    "jpeg": "image/jpeg",
+    "webp": "image/webp",
+    "gif": "image/gif",
+    "md": "text/markdown; charset=utf-8",
+    "txt": "text/plain; charset=utf-8",
+}
 
 
 class Observatory:
@@ -33,6 +57,13 @@ class Observatory:
         if meta is None:
             return None
         return Path(meta.run_dir)
+
+
+def _safe_member(name: str) -> str | None:
+    """Reject zip members that would escape the archive (../, absolute)."""
+    if not name or name.startswith("/") or ".." in Path(name).parts:
+        return None
+    return name
 
 
 def make_handler(obs: Observatory) -> type[BaseHTTPRequestHandler]:
@@ -63,7 +94,29 @@ def make_handler(obs: Observatory) -> type[BaseHTTPRequestHandler]:
             self.end_headers()
 
         def _not_found(self, what: str) -> None:
-            self._send(render.render_not_found(what), 404)
+            if what.startswith("/api/"):
+                self._json({"error": f"not found: {what}"}, 404)
+            else:
+                self._send(render.render_not_found(what), 404)
+
+        def _spa(self) -> None:
+            """The single-page app shell — hash routing means every page
+            path lands here and the client decides what to render."""
+            app = UI_DIR / "app.html"
+            if app.exists():
+                self._send(app.read_bytes())
+            else:
+                self._send(render.render_bad_request("ui/app.html missing"), 500)
+
+        def _static(self, path: str) -> None:
+            name = path.removeprefix("/static/")
+            if ".." in Path(name).parts or name.startswith("/"):
+                return self._not_found(path)
+            f = UI_DIR / name
+            if not f.is_file():
+                return self._not_found(path)
+            ctype = mimetypes.guess_type(name)[0] or "application/octet-stream"
+            self._send(f.read_bytes(), 200, ctype)
 
         # -- GET ----------------------------------------------------------
 
@@ -73,82 +126,120 @@ def make_handler(obs: Observatory) -> type[BaseHTTPRequestHandler]:
             try:
                 self._route_get(path, qs)
             except Exception as exc:  # never leak a stacktrace to the browser
-                self._send(render.render_bad_request(f"internal error: {exc}"), 500)
+                if path.startswith("/api/"):
+                    self._json({"error": str(exc)[:200]}, 500)
+                else:
+                    self._send(render.render_bad_request(f"internal error: {exc}"), 500)
 
         def _route_get(self, path: str, qs: dict[str, list[str]]) -> None:
-            if path == "/":
-                self._send(render.render_overview(state.overview_payload(obs.store, obs.registry)))
-            elif path == "/runs":
-                query = (qs.get("q") or [""])[0]
-                rows = [r.to_dict() for r in state.history_rows(obs.store, query)]
-                self._send(render.render_history(rows, query))
-            elif path == "/leaderboard":
-                sort = (qs.get("sort") or ["cost_per_pass"])[0]
-                self._send(render.render_leaderboard(state.leaderboard_rows(obs.store, sort), sort))
-            elif path == "/new":
-                self._send(self._new_form())
-            elif path == "/api/overview":
+            if path.startswith("/api/"):
+                self._api_get(path, qs)
+            elif path.startswith("/static/"):
+                self._static(path)
+            elif path == "/":
+                self._spa()
+            elif path in ("/runs", "/leaderboard", "/compare", "/new"):
+                # legacy bookmarks → hash equivalents (hash isn't sent to
+                # the server, so the SPA itself must own the target path)
+                self._redirect(f"/#{path}")
+            elif path.startswith("/run/"):
+                parts = path.strip("/").split("/")
+                if len(parts) >= 2 and obs.store.get_run(parts[1]) is not None:
+                    self._redirect(f"/#/run/{parts[1]}")
+                else:
+                    self._not_found(path)
+            else:
+                self._not_found(path)
+
+        @staticmethod
+        def _q1(qs: dict[str, list[str]], key: str, default: str | None = None) -> str | None:
+            vals = qs.get(key)
+            return vals[0] if vals else default
+
+        def _api_get(self, path: str, qs: dict[str, list[str]]) -> None:
+            if path == "/api/overview":
                 self._json(state.overview_payload(obs.store, obs.registry))
+            elif path == "/api/runs":
+                self._json(state.runs_payload(
+                    obs.store,
+                    group=self._q1(qs, "group"),
+                    task=self._q1(qs, "task"),
+                    status=self._q1(qs, "status"),
+                    q=self._q1(qs, "q", "") or "",
+                ))
+            elif path == "/api/groups":
+                self._json(state.groups_payload(obs.store))
+            elif path == "/api/compare":
+                a, b = self._q1(qs, "a", "") or "", self._q1(qs, "b", "") or ""
+                if not a or not b:
+                    return self._json({"error": "compare needs ?a=<group>&b=<group>"}, 400)
+                self._json(state.compare_payload(obs.store, a, b))
+            elif path == "/api/leaderboard":
+                self._json(state.leaderboard_rows(obs.store, self._q1(qs, "sort", "cost_per_pass") or "cost_per_pass"))
+            elif path == "/api/tasks":
+                self._json(state.task_choices(obs.tasks_dir))
+            elif path == "/api/models":
+                self._json(state.model_choices(obs.models_dir, self._q1(qs, "role")))
             elif path.startswith("/api/run/"):
                 self._api_run(path, qs)
-            elif path.startswith("/run/"):
-                self._run_get(path, qs)
             else:
-                self._not_found(path)
-
-        def _run_get(self, path: str, qs: dict[str, list[str]]) -> None:
-            parts = path.strip("/").split("/")  # run/<id>[/<sub>]
-            if len(parts) < 2:
-                return self._not_found(path)
-            run_id = parts[1]
-            run_dir = obs.run_dir(run_id)
-            meta = obs.store.get_run(run_id)
-            if len(parts) == 3 and parts[2] == "live":
-                if run_dir is None:
-                    return self._not_found(f"run {run_id}")
-                payload = state.live_payload(
-                    run_dir, 0, started_at=meta.started_at if meta else None, meta=meta
-                )
-                job = obs.registry.job_for_run(run_id)
-                self._send(render.render_live(
-                    run_id, payload, cancellable=bool(job and job.active),
-                ))
-            elif len(parts) == 2:
-                if run_dir is None:
-                    return self._not_found(f"run {run_id}")
-                tab = (qs.get("tab") or ["events"])[0]
-                self._send(render.render_detail(
-                    run_id, meta, obs.store.calls_for_run(run_id),
-                    state.run_sections(run_dir), tab,
-                ))
-            else:
-                self._not_found(path)
+                self._json({"error": f"not found: {path}"}, 404)
 
         def _api_run(self, path: str, qs: dict[str, list[str]]) -> None:
-            parts = path.strip("/").split("/")  # api/run/<id>/live
-            if len(parts) != 4 or parts[3] != "live":
-                return self._not_found(path)
+            parts = path.strip("/").split("/")  # api/run/<id>[/<sub>[/<member>]]
+            if len(parts) < 3:
+                return self._json({"error": f"not found: {path}"}, 404)
             run_id = parts[2]
             run_dir = obs.run_dir(run_id)
             if run_dir is None:
                 return self._json({"error": f"unknown run {run_id}"}, 404)
             meta = obs.store.get_run(run_id)
-            try:
-                after = int((qs.get("after") or ["0"])[0])
-            except ValueError:
-                after = 0
-            self._json(state.live_payload(
-                run_dir, after, started_at=meta.started_at if meta else None, meta=meta,
-            ))
 
-        def _new_form(self, error: str = "") -> str:
-            return render.render_new(
-                state.task_choices(obs.tasks_dir),
-                state.model_choices(obs.models_dir, "orchestrator"),
-                state.model_choices(obs.models_dir, "worker"),
-                state.model_choices(obs.models_dir, None),
-                error,
-            )
+            if len(parts) == 3:
+                payload = state.run_detail_payload(obs.store, run_id)
+                if payload is None:
+                    return self._json({"error": f"unknown run {run_id}"}, 404)
+                payload["cancellable"] = bool(
+                    (j := obs.registry.job_for_run(run_id)) and j.active
+                )
+                return self._json(payload)
+            if parts[3] == "live":
+                try:
+                    after = int((qs.get("after") or ["0"])[0])
+                except ValueError:
+                    after = 0
+                payload = state.live_payload(
+                    run_dir, after, started_at=meta.started_at if meta else None, meta=meta,
+                )
+                job = obs.registry.job_for_run(run_id)
+                payload["cancellable"] = bool(job and job.active)
+                return self._json(payload)
+            if parts[3] == "artifact":
+                member = "/".join(parts[4:]) if len(parts) > 4 else None
+                return self._artifact(run_dir, member)
+            self._json({"error": f"not found: {path}"}, 404)
+
+        def _artifact(self, run_dir: Path, member: str | None) -> None:
+            """Serve artifact bytes. Top-level file by extension; a member
+            path reads that file out of artifact.zip. Model output is treated
+            as display content — the SPA sandboxes it in an iframe."""
+            artifacts = sorted(run_dir.glob("artifact.*"))
+            if not artifacts:
+                return self._json({"error": "no artifact"}, 404)
+            p = artifacts[0]
+            if member is not None:
+                safe = _safe_member(member)
+                if safe is None or p.suffix != ".zip":
+                    return self._json({"error": "bad member"}, 400)
+                try:
+                    with zipfile.ZipFile(p) as zf:
+                        body = zf.read(safe)
+                except (KeyError, zipfile.BadZipFile):
+                    return self._json({"error": f"no member {safe}"}, 404)
+                ctype = _ARTIFACT_TYPES.get(safe.rsplit(".", 1)[-1].lower(), "text/plain; charset=utf-8")
+                return self._send(body, 200, ctype)
+            ctype = _ARTIFACT_TYPES.get(p.suffix.lstrip(".").lower(), "application/octet-stream")
+            self._send(p.read_bytes(), 200, ctype)
 
         # -- POST ---------------------------------------------------------
 
@@ -157,7 +248,7 @@ def make_handler(obs: Observatory) -> type[BaseHTTPRequestHandler]:
             try:
                 self._route_post(url.path)
             except Exception as exc:
-                self._send(render.render_bad_request(f"internal error: {exc}"), 500)
+                self._json({"error": str(exc)[:200]}, 500)
 
         def _form(self) -> dict[str, str]:
             length = int(self.headers.get("Content-Length") or 0)
@@ -165,18 +256,18 @@ def make_handler(obs: Observatory) -> type[BaseHTTPRequestHandler]:
             return {k: v[0] for k, v in parse_qs(raw.decode("utf-8", errors="replace")).items()}
 
         def _route_post(self, path: str) -> None:
-            if path == "/run":
-                self._post_run()
-                return
             parts = path.strip("/").split("/")
-            if len(parts) == 3 and parts[0] == "run" and parts[2] == "cancel":
-                run_id = parts[1]
-                obs.registry.cancel_run(run_id)
-                self._redirect(f"/run/{run_id}/live")
-                return
-            self._not_found(path)
+            if path in ("/run", "/api/run"):
+                return self._post_run(json_out=path.startswith("/api/"))
+            if len(parts) == 3 and parts[2] == "cancel" and parts[0] == "run":
+                obs.registry.cancel_run(parts[1])
+                return self._redirect(f"/#/run/{parts[1]}")
+            if len(parts) == 4 and parts[3] == "cancel" and parts[0] == "api" and parts[1] == "run":
+                cancelled = obs.registry.cancel_run(parts[2])
+                return self._json({"cancelled": cancelled})
+            self._json({"error": f"not found: {path}"}, 404)
 
-        def _post_run(self) -> None:
+        def _post_run(self, json_out: bool) -> None:
             form = self._form()
             spec = {
                 "task": form.get("task", ""),
@@ -189,19 +280,22 @@ def make_handler(obs: Observatory) -> type[BaseHTTPRequestHandler]:
             }
             unknown = set(form) - state.LAUNCH_FIELDS
             if unknown:
-                return self._send(self._new_form(f"unknown fields: {sorted(unknown)}"), 400)
+                return self._json({"error": f"unknown fields: {sorted(unknown)}"}, 400)
             try:
                 job = obs.registry.launch(spec)
             except ValueError as exc:
-                return self._send(self._new_form(str(exc)), 400)
-            # The run dir exists once on_run_created fires; poll briefly so the
-            # redirect can land on the live view instead of a bare 303 to /.
+                return self._json({"error": str(exc)}, 400)
+            # The run dir exists once on_run_created fires; poll briefly so
+            # the response can point at the live view instead of nothing.
             run_id = self._wait_run_id(job)
-            self._redirect(f"/run/{run_id}/live" if run_id else "/")
+            if json_out:
+                self._json({"run_id": run_id, "label": job.label, "status": str(job.status)})
+            else:
+                self._redirect(f"/#/run/{run_id}" if run_id else "/")
 
         @staticmethod
         def _wait_run_id(job: state.Job, timeout: float = 5.0) -> str | None:
-            """Brief wait for on_run_created so the redirect can target /live."""
+            """Brief wait for on_run_created so the response can name a run."""
             deadline = time.monotonic() + timeout
             while time.monotonic() < deadline:
                 if job.run_ids:

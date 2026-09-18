@@ -116,14 +116,11 @@ class TestPureLayer(unittest.TestCase):
             self.assertEqual(len(hist), 1)
             self.assertEqual(state.history_rows(store, "nomatch"), [])
 
-    def test_escaping_in_rendered_pages(self):
+    def test_escaping_in_error_pages(self):
+        # model/path strings reach the browser through render.py's error
+        # pages — they must escape, same contract the SPA's esc() upholds
         evil = "<script>alert(1)</script>"
-        meta = {
-            "run_id": evil, "task_id": evil, "orchestrator": "o", "worker": "w",
-            "status": "finished", "passes": True, "score": 1.0,
-            "total_cost_usd": 0.01, "started_at": "t",
-        }
-        html = render.render_history([meta])
+        html = render.render_not_found(evil)
         self.assertIn("&lt;script&gt;", html)
         self.assertNotIn("<script>alert", html)
 
@@ -244,7 +241,11 @@ class TestHttpRoutes(unittest.TestCase):
         self.assertEqual(code, 200)
 
     def test_live_page_and_poll(self):
-        code, body = self._get(f"/run/{self.rid}/live")
+        # legacy /live URL redirects to the SPA hash route; the polling
+        # contract lives in app.js + /api/run/<id>/live
+        code, _ = self._get(f"/run/{self.rid}/live")
+        self.assertEqual(code, 200)
+        code, body = self._get("/static/app.js")
         self.assertEqual(code, 200)
         self.assertIn("/api/run/", body)
         code, body = self._get(f"/api/run/{self.rid}/live?after=0")
@@ -252,6 +253,21 @@ class TestHttpRoutes(unittest.TestCase):
         payload = json.loads(body)
         self.assertGreater(payload["next"], 0)
         self.assertIn("phase", payload)
+
+    def test_spa_shell_and_api_surface(self):
+        code, body = self._get("/")
+        self.assertEqual(code, 200)
+        self.assertIn('src="/static/app.js"', body)
+        for path in ("/api/overview", "/api/groups", "/api/tasks",
+                     "/api/models", "/api/leaderboard", "/api/runs"):
+            code, body = self._get(path)
+            self.assertEqual(code, 200, path)
+            json.loads(body)  # every API route returns parseable JSON
+        code, body = self._get(f"/api/run/{self.rid}")
+        self.assertEqual(code, 200)
+        payload = json.loads(body)
+        self.assertIn("timeline", payload)
+        self.assertIn("artifact", payload)
 
     def test_unknown_routes_404(self):
         for path in ("/nope", "/run/nope", "/api/run/nope/live"):
@@ -264,8 +280,8 @@ class TestHttpRoutes(unittest.TestCase):
             "task=t-task&orchestrator=o/model&worker=w/model&replicates=1&dry_run=1",
         )
         self.assertEqual(code, 303)
-        self.assertTrue(location.startswith("/run/"), location)
-        run_id = location.split("/")[2]
+        self.assertTrue(location.startswith("/#/run/"), location)
+        run_id = location.split("/")[3]
         job = self.obs.registry.job_for_run(run_id)
         self.assertIsNotNone(job)
         self.assertTrue(_wait(lambda: job.status == JobStatus.SUCCEEDED))

@@ -19,7 +19,7 @@ from typing import Any
 
 from orchestral.config import ModelConfig, find_task, load_models, load_task, load_yaml
 from orchestral.runner import Runner
-from orchestral.stats import pairing_leaderboard
+from orchestral.stats import aggregate, pairing_leaderboard
 from orchestral.storage import RunStore
 from orchestral.tui.state import (
     Job,
@@ -205,9 +205,14 @@ def leaderboard_rows(store: RunStore, sort: str = "cost_per_pass") -> list[dict[
 
 
 def overview_payload(store: RunStore, registry: JobRegistry) -> dict[str, Any]:
-    """Mission-control data: live jobs, leaderboard top rows, recent runs."""
+    """Mission-control data: live jobs, leaderboard top rows, recent runs,
+    group summaries, and the failure taxonomy — the SPA's landing view."""
     runs = store.list_runs(limit=None)
     lb = pairing_leaderboard(runs)
+    taxonomy: dict[str, int] = {}
+    for r in runs:
+        if r.failure_reason:
+            taxonomy[r.failure_reason] = taxonomy.get(r.failure_reason, 0) + 1
     return {
         "jobs": [
             {
@@ -218,6 +223,8 @@ def overview_payload(store: RunStore, registry: JobRegistry) -> dict[str, Any]:
         ],
         "leaderboard": [r.to_dict() for r in lb[:10]],
         "recent": [r.to_dict() for r in runs[:10]],
+        "groups": groups_payload(store)[:8],
+        "taxonomy": dict(sorted(taxonomy.items(), key=lambda kv: -kv[1])),
     }
 
 
@@ -245,3 +252,180 @@ def model_choices(models_dir: Path, role: str | None) -> list[str]:
         return sorted(m.slug for m in load_models(models_dir) if role is None or m.role == role)
     except Exception:
         return []
+
+
+# ---------------------------------------------------------------------------
+# SPA API payloads — the rebuilt observatory reads everything through these.
+
+
+def runs_payload(
+    store: RunStore,
+    group: str | None = None,
+    task: str | None = None,
+    status: str | None = None,
+    q: str = "",
+) -> list[dict[str, Any]]:
+    """Run rows for the filterable table. `status` accepts a lifecycle status
+    or `passed`/`failed` (verdict filters)."""
+    rows = store.list_runs(run_group=group, task_id=task, limit=None)
+    if q:
+        rows = filter_runs(rows, q)
+    if status == "passed":
+        rows = [r for r in rows if r.status == "finished" and r.passes]
+    elif status == "failed":
+        rows = [r for r in rows if r.status == "failed" or (r.status == "finished" and not r.passes)]
+    elif status:
+        rows = [r for r in rows if r.status == status]
+    return [r.to_dict() for r in rows]
+
+
+_TIMELINE_PHASE_ORDER = ("plan", "delegate", "assemble", "validate", "judge", "review")
+
+
+def timeline_payload(run_dir: Path) -> list[dict[str, Any]]:
+    """The evidence chain: one node per pipeline phase with cost, latency,
+    event count, and error count — derived from events.jsonl so a finished
+    run and a live one render the same way."""
+    run_dir = Path(run_dir)
+    events, _ = tail_events(run_dir / "events.jsonl", 0)
+    phases: dict[str, dict[str, Any]] = {}
+    for ev in events:
+        ph = ev.get("phase") or "other"
+        node = phases.setdefault(ph, {
+            "phase": ph, "events": 0, "cost_usd": 0.0, "latency_ms": 0.0,
+            "errors": 0, "first": None, "last": None,
+        })
+        node["events"] += 1
+        cost = ev.get("cost") or {}
+        node["cost_usd"] += cost.get("usd") or 0.0
+        node["latency_ms"] += ev.get("latency_ms") or 0.0
+        if ev.get("error"):
+            node["errors"] += 1
+        ts = ev.get("timestamp")
+        if node["first"] is None:
+            node["first"] = ts
+        node["last"] = ts
+    ordered = [phases[p] for p in _TIMELINE_PHASE_ORDER if p in phases]
+    ordered += [v for k, v in phases.items() if k not in _TIMELINE_PHASE_ORDER]
+    return ordered
+
+
+def artifact_info(run_dir: Path) -> dict[str, Any] | None:
+    """Metadata for the stored artifact — the SPA decides how to preview it.
+    Zip members come as a listing (never bodies — same rule as the judge)."""
+    import zipfile
+
+    run_dir = Path(run_dir)
+    artifacts = sorted(run_dir.glob("artifact.*"))
+    if not artifacts:
+        return None
+    p = artifacts[0]
+    ext = p.suffix.lstrip(".").lower()
+    info: dict[str, Any] = {"name": p.name, "ext": ext, "bytes": p.stat().st_size}
+    if ext == "zip":
+        try:
+            with zipfile.ZipFile(p) as zf:
+                info["members"] = [
+                    {"name": i.filename, "bytes": i.file_size} for i in zf.infolist()
+                ]
+        except Exception as exc:
+            info["error"] = str(exc)
+    return info
+
+
+def run_detail_payload(store: RunStore, run_id: str) -> dict[str, Any] | None:
+    """Everything the run detail view needs in one fetch."""
+    meta = store.get_run(run_id)
+    if meta is None:
+        return None
+    run_dir = Path(meta.run_dir)
+    plan_path = run_dir / "plan.md"
+    return {
+        "meta": meta.to_dict(),
+        "calls": store.calls_for_run(run_id),
+        "report": read_json(run_dir / "report.json"),
+        "review": read_json(run_dir / "review.json"),
+        "manifest": read_json(run_dir / "manifest.json"),
+        "plan": plan_path.read_text(encoding="utf-8", errors="replace") if plan_path.exists() else None,
+        "timeline": timeline_payload(run_dir),
+        "artifact": artifact_info(run_dir),
+    }
+
+
+def groups_payload(store: RunStore) -> list[dict[str, Any]]:
+    """One summary row per run_group — the unit comparisons happen on."""
+    groups: dict[str, dict[str, Any]] = {}
+    for r in store.list_runs(limit=None):
+        g = groups.setdefault(r.run_group or "(ungrouped)", {
+            "group": r.run_group or "(ungrouped)",
+            "runs": 0, "finished": 0, "passed": 0, "cost_usd": 0.0,
+            "scores": [], "tasks": set(), "pairings": set(),
+            "latest": None,
+        })
+        g["runs"] += 1
+        if r.status == "finished":
+            g["finished"] += 1
+            g["passed"] += 1 if r.passes else 0
+        g["cost_usd"] += r.total_cost_usd or 0.0
+        if r.score is not None:
+            g["scores"].append(r.score)
+        g["tasks"].add(r.task_id)
+        g["pairings"].add((r.orchestrator, r.worker))
+        if g["latest"] is None or (r.started_at or "") > (g["latest"] or ""):
+            g["latest"] = r.started_at
+    out = []
+    for g in groups.values():
+        scores = sorted(g.pop("scores"))
+        n = len(scores)
+        out.append({
+            **g,
+            "tasks": len(g["tasks"]),
+            "pairings": len(g["pairings"]),
+            "pass_rate": (g["passed"] / g["finished"]) if g["finished"] else None,
+            "score_median": scores[n // 2] if n else None,
+        })
+    out.sort(key=lambda x: x["latest"] or "", reverse=True)
+    return out
+
+
+def compare_payload(store: RunStore, group_a: str, group_b: str) -> dict[str, Any]:
+    """Cell-by-cell group delta — the same join `report --compare` prints,
+    plus a pairing matrix the SPA renders as a grid."""
+    def cells(group: str) -> dict[tuple[str, str, str], Any]:
+        return {
+            (c.task_id, c.orchestrator, c.worker): c
+            for c in aggregate(store.list_runs(run_group=group))
+        }
+
+    cells_a, cells_b = cells(group_a), cells(group_b)
+    keys = sorted(set(cells_a) | set(cells_b))
+    rows: list[dict[str, Any]] = []
+    for task_id, orch, worker in keys:
+        a, b = cells_a.get((task_id, orch, worker)), cells_b.get((task_id, orch, worker))
+        pa = a.pass_rate if a else None
+        pb = b.pass_rate if b else None
+        if pa is None or pb is None:
+            verdict = "one-sided"
+        elif pb > pa:
+            verdict = "improved"
+        elif pb < pa:
+            verdict = "regressed"
+        else:
+            verdict = "stable"
+        rows.append({
+            "task_id": task_id, "orchestrator": orch, "worker": worker,
+            "n_a": a.runs if a else 0, "pass_a": pa, "cost_a": a.cost_total if a else None,
+            "n_b": b.runs if b else 0, "pass_b": pb, "cost_b": b.cost_total if b else None,
+            "verdict": verdict,
+            "failures_a": a.failures if a else {},
+            "failures_b": b.failures if b else {},
+        })
+    verdicts: dict[str, int] = {}
+    for r in rows:
+        verdicts[r["verdict"]] = verdicts.get(r["verdict"], 0) + 1
+    return {
+        "group_a": group_a, "group_b": group_b, "cells": rows,
+        "verdicts": verdicts,
+        "cost_a": sum(r["cost_a"] or 0 for r in rows),
+        "cost_b": sum(r["cost_b"] or 0 for r in rows),
+    }

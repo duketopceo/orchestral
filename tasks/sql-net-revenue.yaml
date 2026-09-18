@@ -1,0 +1,39 @@
+id: sql-net-revenue
+type: sql
+prompt: >
+  Write a single read-only SQL query (SQLite dialect) that returns net revenue
+  per product: the sum of shipped order-line totals minus all refunds against
+  those lines. A line may have multiple refund rows — each line's total must be
+  counted exactly once regardless of how many refunds it has. Only order_lines
+  whose order status is 'shipped' count. Return columns: product (name),
+  net_revenue (rounded to 2 decimals), one row per product, ordered by product
+  name ascending.
+  The database has tables: products(id, name), orders(id, status),
+  order_lines(id, order_id, product_id, qty, unit_price),
+  refunds(id, order_line_id, amount).
+validation: []
+assets: []
+metadata:
+  ordered: true
+  schema:
+    - "CREATE TABLE products (id INTEGER PRIMARY KEY, name TEXT NOT NULL)"
+    - "CREATE TABLE orders (id INTEGER PRIMARY KEY, status TEXT NOT NULL)"
+    - "CREATE TABLE order_lines (id INTEGER PRIMARY KEY, order_id INTEGER NOT NULL, product_id INTEGER NOT NULL, qty INTEGER NOT NULL, unit_price REAL NOT NULL)"
+    - "CREATE TABLE refunds (id INTEGER PRIMARY KEY, order_line_id INTEGER NOT NULL, amount REAL NOT NULL)"
+  seed:
+    - "INSERT INTO products VALUES (1, 'Widget'), (2, 'Gadget')"
+    - "INSERT INTO orders VALUES (1, 'shipped'), (2, 'shipped'), (3, 'cancelled')"
+    - "INSERT INTO order_lines VALUES (1, 1, 1, 2, 30.0), (2, 1, 2, 1, 40.0), (3, 2, 1, 1, 30.0), (4, 3, 2, 3, 40.0)"
+    - "INSERT INTO refunds VALUES (1, 1, 10.0), (2, 1, 5.0), (3, 3, 8.0)"
+  reference_sql: |
+    SELECT p.name AS product,
+           ROUND(SUM(ol.qty * ol.unit_price - COALESCE(rf.refunded, 0)), 2) AS net_revenue
+    FROM order_lines ol
+    JOIN orders o ON o.id = ol.order_id
+    JOIN products p ON p.id = ol.product_id
+    LEFT JOIN (SELECT order_line_id, SUM(amount) AS refunded
+               FROM refunds GROUP BY order_line_id) rf
+      ON rf.order_line_id = ol.id
+    WHERE o.status = 'shipped'
+    GROUP BY p.name
+    ORDER BY p.name

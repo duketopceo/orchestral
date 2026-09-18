@@ -478,6 +478,37 @@ class RunStore:
             "worker_counts": dict(workers),
         }
 
+    def spend_today(self) -> float:
+        """Recorded cost of all runs started today (UTC) — the spend-guard meter."""
+        today = datetime.now(UTC).date().isoformat()
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT COALESCE(SUM(total_cost_usd), 0) FROM runs WHERE started_at >= ?",
+                (today,),
+            ).fetchone()
+        return float(row[0] or 0.0)
+
+    def mean_run_cost(self, *, orchestrator: str | None = None,
+                      worker: str | None = None) -> float | None:
+        """Mean cost per finished run, optionally scoped to a pairing.
+
+        Used to estimate grid cost before launching. Returns None when no
+        finished runs match (caller falls back to the global mean or a
+        conservative default)."""
+        where = "status = 'finished'"
+        params: list[Any] = []
+        if orchestrator:
+            where += " AND orchestrator = ?"
+            params.append(orchestrator)
+        if worker:
+            where += " AND worker = ?"
+            params.append(worker)
+        with self._connect() as conn:
+            row = conn.execute(
+                f"SELECT AVG(total_cost_usd) FROM runs WHERE {where}", params,
+            ).fetchone()
+        return float(row[0]) if row and row[0] is not None else None
+
 
 _SORTABLE_COLUMNS = {"run_id", "started_at", "finished_at", "status", "orchestrator", "worker", "task_id", "total_cost_usd", "score", "latency_ms", "failure_reason", "run_group", "replicate"}
 

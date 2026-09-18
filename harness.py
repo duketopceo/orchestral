@@ -32,7 +32,7 @@ from orchestral.privacy import scrub_all
 from orchestral.providers import provider_for, provider_key
 from orchestral.reporter import generate_dashboard, generate_html_report, model_history
 from orchestral.runner import Runner
-from orchestral.stats import aggregate, pairing_leaderboard
+from orchestral.stats import MIN_LEADERBOARD_SAMPLES, aggregate, pairing_leaderboard
 from orchestral.storage import RunStore
 from orchestral.tui import run_tui
 
@@ -113,8 +113,47 @@ def _run_preamble(args: argparse.Namespace) -> tuple[RunStore, dict[str, ModelCo
         sys.exit(1)
     _check_prompt_variant(args)
     store = RunStore(args.runs_dir)
+    _budget_check(args, store, 1)
     known = _model_map(args.models_dir)
     return store, known, _judge_from_arg(args, known)
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, "") or default)
+    except ValueError:
+        return default
+
+
+def _budget_check(args: argparse.Namespace, store: RunStore, n_runs: int) -> None:
+    """Spend guard. Two independent brakes on top of the provider-side key cap:
+
+    --daily-cap aborts once today's recorded spend reaches the cap;
+    --max-cost aborts when this invocation's launch count × historical mean
+    cost would exceed the estimate limit. Both default on; set 0 to disable.
+    In-flight spend is only metered once runs index, so the cap is a
+    guardrail, not a realtime limiter."""
+    if getattr(args, "dry_run", False):
+        return
+    daily_cap = getattr(args, "daily_cap", 0) or 0
+    max_cost = getattr(args, "max_cost", 0) or 0
+    if daily_cap <= 0 and max_cost <= 0:
+        return
+    spent = store.spend_today()
+    if daily_cap > 0 and spent >= daily_cap:
+        print(f"Daily cap reached: ${spent:.2f} spent today >= ${daily_cap:.2f} cap. "
+              "Raise --daily-cap or wait for UTC midnight.", file=sys.stderr)
+        sys.exit(1)
+    mean = store.mean_run_cost()
+    estimate = n_runs * (mean if mean is not None else 0.01)
+    if max_cost > 0 and estimate > max_cost:
+        print(f"Estimated ${estimate:.2f} for {n_runs} launches exceeds --max-cost "
+              f"${max_cost:.2f}. Raise it or shrink the matrix.", file=sys.stderr)
+        sys.exit(1)
+    if daily_cap > 0 and spent + estimate > daily_cap:
+        print(f"Estimated ${estimate:.2f} would push today past the ${daily_cap:.2f} "
+              f"daily cap (already spent ${spent:.2f}).", file=sys.stderr)
+        sys.exit(1)
 
 
 def _check_provider_envs(args: argparse.Namespace, *models: ModelConfig | None) -> None:
@@ -338,6 +377,7 @@ def cmd_grid(args: argparse.Namespace) -> None:
 
     group, n_reps = _resolve_replicates(args)
     cells = [(o, w, i) for o in orchestrators for w in workers for i in range(1, n_reps + 1)]
+    _budget_check(args, store, len(cells))
 
     def _one(orchestrator: ModelConfig, worker: ModelConfig, rep: int) -> dict[str, Any]:
         # copy per pairing — ModelConfig objects from `known` are shared across threads
@@ -436,6 +476,7 @@ def cmd_batch(args: argparse.Namespace) -> None:
 
     group, n_reps = _resolve_replicates(args)
     cells = [(p, i) for p in paths for i in range(1, n_reps + 1)]
+    _budget_check(args, store, len(cells))
 
     def _one(path: Path, rep: int) -> dict[str, Any]:
         task = load_task(path)
@@ -624,7 +665,7 @@ def cmd_report(args: argparse.Namespace) -> None:
     )
 
     if getattr(args, "leaderboard", False):
-        min_samples = getattr(args, "min_samples", 10)
+        min_samples = getattr(args, "min_samples", None) or MIN_LEADERBOARD_SAMPLES
         rows = pairing_leaderboard(runs, min_samples=min_samples)
         if args.json:
             print(json.dumps([r.to_dict() for r in rows], indent=2, default=str))
@@ -1146,6 +1187,10 @@ def main() -> None:
         sp.add_argument("--replicate", type=int, default=None, help="Replicate index within --group")
         sp.add_argument("--replicates", type=int, default=1, help="Run each cell N times under one --group for variance analysis")
         sp.add_argument("--seed", type=int, default=None, help="Record a seed label on the run config")
+        sp.add_argument("--daily-cap", type=float, default=_env_float("ORCHESTRAL_DAILY_CAP", 5.0),
+                        help="Abort launches once today's recorded spend reaches this USD (0=off, env ORCHESTRAL_DAILY_CAP, default 5)")
+        sp.add_argument("--max-cost", type=float, default=_env_float("ORCHESTRAL_MAX_GRID_COST", 10.0),
+                        help="Abort when launch count × historical mean run cost exceeds this USD (0=off, env ORCHESTRAL_MAX_GRID_COST, default 10)")
 
     run = sub.add_parser("run", help="Run one orchestrator × worker pairing")
     run.add_argument("--task", required=True, help="Task id or path")
@@ -1195,7 +1240,7 @@ def main() -> None:
     report.add_argument("--desc", action="store_true", default=True, help="Sort descending")
     report.add_argument("--pairings", action="store_true", help="Aggregate by orchestrator × worker, sorted by quality per dollar")
     report.add_argument("--leaderboard", action="store_true", help="Pairing leaderboard: pass rate, medians, cost per pass, failure rate")
-    report.add_argument("--min-samples", type=int, default=10, help="Leaderboard sample-size floor for the low-evidence flag")
+    report.add_argument("--min-samples", type=int, default=MIN_LEADERBOARD_SAMPLES, help="Leaderboard sample-size floor for the low-evidence flag")
     report.add_argument("--groups", action="store_true", help="Aggregate by run_group × task × pairing with variance stats")
     report.add_argument("--group", default=None, help="Only include runs from this run_group")
     report.add_argument("--compare", default=None, metavar="A,B", help="Compare two run groups cell-by-cell (pass-rate delta per task × pairing)")
@@ -1213,7 +1258,7 @@ def main() -> None:
     export.add_argument("--format", choices=["csv", "md", "jsonl"], default="csv", help="Export format")
     export.add_argument("--run", default=None, help="Export a single run id (md audit or jsonl events)")
     export.add_argument("--leaderboard", action="store_true", help="Export pairing leaderboard as CSV")
-    export.add_argument("--min-samples", type=int, default=10, help="Leaderboard low-evidence floor")
+    export.add_argument("--min-samples", type=int, default=MIN_LEADERBOARD_SAMPLES, help="Leaderboard low-evidence floor")
     export.add_argument("--out", default=None, help="Write to this file instead of stdout")
     export.set_defaults(func=cmd_export)
 

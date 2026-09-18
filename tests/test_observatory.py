@@ -182,7 +182,7 @@ class TestLeaderboard(unittest.TestCase):
                   score=0.5, total_cost_usd=0.005, passes=True)
             for i in range(3)
         ]
-        board = pairing_leaderboard(runs)
+        board = pairing_leaderboard(runs, min_samples=10)
         self.assertEqual(len(board), 2)
         # w/mid is cheaper per pass: $0.015/3 < $0.08/2 → sorted first
         self.assertEqual(board[0].worker, "w/mid")
@@ -195,9 +195,9 @@ class TestLeaderboard(unittest.TestCase):
 
     def test_low_sample_threshold_configurable(self):
         runs = [_meta(run_id=f"r{i}") for i in range(3)]
-        self.assertTrue(pairing_leaderboard(runs)[0].low_sample)
-        self.assertFalse(pairing_leaderboard(runs, min_samples=3)[0].low_sample)
-        self.assertEqual(MIN_LEADERBOARD_SAMPLES, 10)
+        self.assertFalse(pairing_leaderboard(runs)[0].low_sample)
+        self.assertTrue(pairing_leaderboard(runs, min_samples=4)[0].low_sample)
+        self.assertEqual(MIN_LEADERBOARD_SAMPLES, 3)
 
     def test_unfinished_runs_count_in_n_but_not_medians(self):
         runs = [

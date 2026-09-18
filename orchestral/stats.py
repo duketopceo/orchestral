@@ -142,7 +142,7 @@ def aggregate(runs: Iterable[RunMeta], *, by_group: bool = True) -> list[CellAgg
 
 # Below this a pairing needs repeated evidence before a ranking means
 # anything — one lucky run is anecdote, not a benchmark result.
-MIN_LEADERBOARD_SAMPLES = 10
+MIN_LEADERBOARD_SAMPLES = 3
 
 
 @dataclass

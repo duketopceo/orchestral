@@ -32,6 +32,7 @@ from orchestral.fileset import (
     build_zip,
     expected_paths,
     manifest_listing,
+    member_requirements,
     merge_filesets,
 )
 from orchestral.judge import judge_artifact
@@ -697,6 +698,10 @@ class Runner:
                         client=role_clients.get("orchestrator"),
                         dry_run=self.dry_run,
                     )
+                if self.dry_run:
+                    required = [str(t) for t in (task.metadata.get("required") or [])]
+                    if required:
+                        artifact += "\n" + " ".join(required)
                 ext = _artifact_ext(task.type)
                 (run_dir / f"artifact{ext}").write_text(artifact)
                 ledger.add_many(assembly_costs)
@@ -1109,22 +1114,22 @@ class Runner:
             checks["non_empty"] = bool(artifact)
             if not checks["non_empty"]:
                 errors.append("Artifact is empty.")
-        present: dict[str, int] = {}
-        if "zip_signature" in requested or "has_paths" in requested:
+
+        archive: zipfile.ZipFile | None = None
+        if requested & {"zip_signature", "has_paths", "member_required"}:
             try:
-                with zipfile.ZipFile(io.BytesIO(artifact)) as archive:
-                    present = {
-                        info.filename: info.file_size
-                        for info in archive.infolist()
-                        if not info.filename.endswith("/")
-                    }
+                archive = zipfile.ZipFile(io.BytesIO(artifact))
             except zipfile.BadZipFile:
-                present = {}
+                archive = None
         if "zip_signature" in requested:
-            checks["zip_signature"] = zipfile.is_zipfile(io.BytesIO(artifact))
+            checks["zip_signature"] = archive is not None
             if not checks["zip_signature"]:
                 errors.append("Artifact is not a readable zip archive.")
         if "has_paths" in requested:
+            present = (
+                {info.filename: info.file_size for info in archive.infolist() if not info.filename.endswith("/")}
+                if archive is not None else {}
+            )
             declared = expected_paths(task.metadata)
             missing = [p for p in declared if present.get(p, 0) <= 0]
             checks["has_paths"] = bool(declared) and not missing
@@ -1133,38 +1138,37 @@ class Runner:
             elif missing:
                 errors.append(f"Missing or empty expected files: {', '.join(missing)}.")
         if "member_required" in requested:
-            member_req = task.metadata.get("member_required")
-            if not isinstance(member_req, dict) or not member_req:
+            member_req = member_requirements(task.metadata)
+            if not member_req:
                 checks["member_required"] = False
                 errors.append("member_required requested but metadata.member_required is empty.")
+            elif archive is None:
+                checks["member_required"] = False
+                errors.append("Artifact is not a readable zip archive.")
             else:
                 member_missing: list[str] = []
                 token_missing: list[str] = []
-                decode_failed = False
-                try:
-                    with zipfile.ZipFile(io.BytesIO(artifact)) as archive:
-                        for member, tokens in member_req.items():
-                            try:
-                                raw = archive.read(member, pwd=None)
-                            except KeyError:
-                                member_missing.append(member)
-                                continue
-                            try:
-                                text = raw[:102400].decode("utf-8", errors="strict").lower()
-                            except UnicodeDecodeError:
-                                errors.append(f"Member {member} is not decodable text.")
-                                decode_failed = True
-                                continue
-                            absent = [t for t in tokens if str(t).lower() not in text]
-                            if absent:
-                                token_missing.append(f"{member}: {', '.join(map(str, absent))}")
-                except zipfile.BadZipFile:
-                    errors.append("Artifact is not a readable zip archive.")
-                checks["member_required"] = not (member_missing or token_missing or decode_failed)
+                for member, tokens in member_req.items():
+                    try:
+                        raw = archive.read(member)
+                    except KeyError:
+                        member_missing.append(member)
+                        continue
+                    try:
+                        text = raw.decode("utf-8").lower()
+                    except UnicodeDecodeError:
+                        member_missing.append(f"{member} (not decodable text)")
+                        continue
+                    absent = [t for t in tokens if t.lower() not in text]
+                    if absent:
+                        token_missing.append(f"{member}: {', '.join(absent)}")
+                checks["member_required"] = not (member_missing or token_missing)
                 if member_missing:
                     errors.append(f"Members listed in member_required absent: {', '.join(member_missing)}.")
                 if token_missing:
                     errors.append(f"Required content missing in members: {'; '.join(token_missing)}.")
+        if archive is not None:
+            archive.close()
 
         unknown = sorted(requested - known)
         if unknown:

@@ -311,6 +311,35 @@ class TestMultiFileValidation(unittest.TestCase):
         )
         self.assertFalse(passes)
 
+    def test_member_required_fails_on_non_zip_without_zip_signature(self):
+        # a spec asking only for member_required must still fail closed on a
+        # non-zip artifact — the check may not pass silently
+        passes, report = self._check(
+            ["non_empty", "member_required"],
+            b"not-a-zip",
+            {"member_required": {"index.html": ["x"]}},
+        )
+        self.assertFalse(passes)
+        self.assertFalse(report["checks"]["member_required"])
+
+    def test_member_required_bare_string_is_one_token(self):
+        # {"index.html": "coffee"} must mean one token, not per-character
+        passes, _ = self._check(
+            ["non_empty", "zip_signature", "member_required"],
+            self._zip({"index.html": "<h1>hello</h1>"}),
+            {"member_required": {"index.html": "coffee"}},
+        )
+        self.assertFalse(passes)
+
+    def test_member_required_member_names_are_sanitized(self):
+        # "./Index.HTML" canonicalizes like expected_paths does
+        passes, _ = self._check(
+            ["non_empty", "zip_signature", "member_required"],
+            self._zip({"index.html": "coffee"}),
+            {"member_required": {"./index.html": ["coffee"]}},
+        )
+        self.assertTrue(passes)
+
 
 if __name__ == "__main__":
     unittest.main()

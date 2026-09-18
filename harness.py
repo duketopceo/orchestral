@@ -581,6 +581,9 @@ def cmd_report(args: argparse.Namespace) -> None:
         return
 
     store = RunStore(args.runs_dir)
+    if getattr(args, "compare", None):
+        _print_group_delta(store, args.compare, json_out=args.json)
+        return
     runs = store.list_runs(
         orchestrator=args.orchestrator,
         worker=args.worker,
@@ -610,10 +613,6 @@ def cmd_report(args: argparse.Namespace) -> None:
             print(json.dumps([c.to_dict() for c in cells], indent=2, default=str))
             return
         _print_groups_table(cells)
-        return
-
-    if getattr(args, "compare", None):
-        _print_group_delta(store, args.compare, args)
         return
 
     if args.json:
@@ -715,20 +714,24 @@ def _print_groups_table(cells: list[Any]) -> None:
         print(f"{c.run_group or '-':<18} {c.task_id:<18} {c.orchestrator:<26} {c.worker:<26} {c.runs:>3} {c.pass_rate * 100:>5.0f}% {score:>12} {cost:>16} {c.latency_p50:>8.0f} {c.latency_p95:>8.0f} {spd:>9} {fails:<20}")
 
 
-def _print_group_delta(store: RunStore, spec: str, args: argparse.Namespace) -> None:
+def _print_group_delta(store: RunStore, spec: str, *, json_out: bool = False) -> None:
     """Compare two run groups cell-by-cell — the v1→v2 evidence question.
 
     Cells join on (task, orchestrator, worker); each side keeps its own n so
     drift in grid shape is visible rather than silently interpolated."""
-    try:
-        group_a, group_b = (s.strip() for s in spec.split(",", 1))
-    except ValueError:
-        print("--compare takes two comma-separated run_group names")
+    names = _slugs_from_arg(spec)
+    if len(names) != 2:
+        print("--compare takes exactly two comma-separated run_group names")
         return
-    cells_a = { (c.task_id, c.orchestrator, c.worker): c
-                for c in aggregate(store.list_runs(run_group=group_a)) }
-    cells_b = { (c.task_id, c.orchestrator, c.worker): c
-                for c in aggregate(store.list_runs(run_group=group_b)) }
+    group_a, group_b = names
+
+    def cells(group: str) -> dict[tuple[str, str, str], Any]:
+        return {
+            (c.task_id, c.orchestrator, c.worker): c
+            for c in aggregate(store.list_runs(run_group=group))
+        }
+
+    cells_a, cells_b = cells(group_a), cells(group_b)
     keys = sorted(set(cells_a) | set(cells_b))
     if not keys:
         print(f"No runs in either group ({group_a}, {group_b}).")
@@ -753,7 +756,7 @@ def _print_group_delta(store: RunStore, spec: str, args: argparse.Namespace) -> 
             "verdict": verdict,
             "failures_a": a.failures if a else {}, "failures_b": b.failures if b else {},
         })
-    if args.json:
+    if json_out:
         print(json.dumps({"group_a": group_a, "group_b": group_b, "cells": rows}, indent=2, default=str))
         return
     print(f"Delta {group_a} -> {group_b}  (cells joined on task x orchestrator x worker)")
@@ -763,7 +766,7 @@ def _print_group_delta(store: RunStore, spec: str, args: argparse.Namespace) -> 
         n = f"{r['n_a']}/{r['n_b']}"
         pass_a = f"{r['pass_a'] * 100:.0f}%" if r['pass_a'] is not None else "-"
         pass_b = f"{r['pass_b'] * 100:.0f}%" if r['pass_b'] is not None else "-"
-        delta = "-" if r['pass_a'] is None or r['pass_b'] is None else f"{(r['pass_b'] - r['pass_a']) * 100:+.0f}pp"
+        delta = "-" if r["verdict"] == "one-sided" else f"{(r['pass_b'] - r['pass_a']) * 100:+.0f}pp"
         print(f"{r['task_id']:<22} {r['orchestrator']:<24} {r['worker']:<24} {n:>7} {pass_a:>5}->{pass_b:<5} {delta:>7} {r['verdict']:<10}")
     counts = Counter(r["verdict"] for r in rows)
     total_a = sum(r["cost_a"] or 0 for r in rows)

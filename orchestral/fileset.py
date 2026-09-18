@@ -243,6 +243,29 @@ def expected_paths(task_metadata: dict[str, Any]) -> list[str]:
     return [sanitize_path(p) for p in declared if isinstance(p, str) and p.strip()]
 
 
+def member_requirements(task_metadata: dict[str, Any]) -> dict[str, list[str]]:
+    """Sanitized `metadata.member_required` for validation and dry runs.
+
+    Member names go through `sanitize_path` so they match the canonical form
+    `has_paths`/`expected_paths` use; token values normalize to list[str] so a
+    bare string is one token, not an iterable of characters."""
+    declared = task_metadata.get("member_required")
+    if not isinstance(declared, dict):
+        return {}
+    out: dict[str, list[str]] = {}
+    for member, tokens in declared.items():
+        if not isinstance(member, str) or not member.strip():
+            continue
+        if isinstance(tokens, str):
+            tokens = [tokens]
+        if not isinstance(tokens, list):
+            continue
+        clean = [str(t) for t in tokens if str(t).strip()]
+        if clean:
+            out[sanitize_path(member)] = clean
+    return out
+
+
 def _entry_pairs(data: Any) -> list[tuple[Any, Any]]:
     """Normalize the accepted file-set shapes into (path, content) pairs."""
     if isinstance(data, dict):

@@ -20,6 +20,7 @@ from orchestral.fileset import (
     FilesetError,
     check_response_size,
     expected_paths,
+    member_requirements,
     parse_fileset,
     summarize_fileset,
 )
@@ -598,10 +599,9 @@ def delegate_multi(
         declared = [str(task.metadata.get("module") or "solution.py")] if task.type in ("code", "bugfix") else ["index.html", "style.css"]
     if dry_run:
         files = {path: _fake_file_body(path) for path in declared}
-        member_req = task.metadata.get("member_required") or {}
-        for member, tokens in member_req.items():
-            if member in files and isinstance(tokens, list):
-                files[member] += "\n".join(str(t) for t in tokens) + "\n"
+        for member, tokens in member_requirements(task.metadata).items():
+            if member in files:
+                files[member] += "\n".join(tokens) + "\n"
         cost = _fake_cost(worker, {"subtask": subtask}, {"paths": sorted(files)})
         cost["phase"] = "delegate"
         summary = summarize_fileset(files)

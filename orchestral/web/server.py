@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import mimetypes
+import os
 import time
 import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -57,6 +58,19 @@ class Observatory:
         if meta is None:
             return None
         return Path(meta.run_dir)
+
+
+def _provider_ready(slug: str) -> bool:
+    """True when the slug's provider is configured and its API-key env var is
+    set — lets POST /api/thread degrade to templates instead of 500ing."""
+    from orchestral.config import ModelConfig
+    from orchestral.providers import provider_key
+
+    _, base_url, env = provider_key(ModelConfig(
+        slug=slug, name=slug, role="writer",
+        input_price_per_mtok=0.0, output_price_per_mtok=0.0,
+    ))
+    return bool(base_url and env and os.environ.get(env))
 
 
 def _safe_member(name: str) -> str | None:
@@ -179,10 +193,18 @@ def make_handler(obs: Observatory) -> type[BaseHTTPRequestHandler]:
             elif path == "/api/card":
                 kind = self._q1(qs, "kind", "group") or "group"
                 target = self._q1(qs, "target", "") or ""
-                payload = state.card_payload(obs.store, kind, target)
+                payload = state.card_payload(
+                    obs.store, kind, target,
+                    group=self._q1(qs, "group"), tasks_dir=obs.tasks_dir,
+                )
                 if payload is None:
                     return self._json({"error": f"no {kind} '{target}'"}, 404)
                 self._json(payload)
+            elif path == "/api/pairings":
+                self._json(state.pairings_payload(
+                    obs.store, tasks_dir=obs.tasks_dir,
+                    group=self._q1(qs, "group"),
+                ))
             elif path == "/api/leaderboard":
                 self._json(state.leaderboard_rows(obs.store, self._q1(qs, "sort", "cost_per_pass") or "cost_per_pass"))
             elif path == "/api/tasks":
@@ -283,7 +305,43 @@ def make_handler(obs: Observatory) -> type[BaseHTTPRequestHandler]:
                     ))
                 except ValueError as exc:
                     return self._json({"error": str(exc)}, 400)
+            if path == "/api/thread":
+                return self._post_thread()
             self._json({"error": f"not found: {path}"}, 404)
+
+        def _post_thread(self) -> None:
+            """Draft X follow-up posts for a card. Uses the writer model when
+            configured; falls back to honest templates so the button never
+            dead-ends on a missing key."""
+            from orchestral.config import ModelConfig
+            from orchestral.judge import draft_thread
+            from orchestral.providers import provider_for
+
+            form = self._form()
+            kind = form.get("kind", "group")
+            target = form.get("target", "")
+            card = state.card_payload(
+                obs.store, kind, target,
+                group=form.get("group") or None, tasks_dir=obs.tasks_dir,
+            )
+            if card is None:
+                return self._json({"error": f"no {kind} '{target}'"}, 404)
+            try:
+                n = max(1, min(4, int(form.get("n", "3"))))
+            except ValueError:
+                n = 3
+            writer = form.get("model") or ""
+            client = model = None
+            if writer and _provider_ready(writer):
+                model = ModelConfig(slug=writer, name=writer, role="writer",
+                                    input_price_per_mtok=0.0, output_price_per_mtok=0.0)
+                client = provider_for(model)
+            try:
+                out = draft_thread(card=card, client=client, model=model, n=n)
+            finally:
+                if client is not None:
+                    client.close()
+            return self._json(out)
 
         def _post_run(self, json_out: bool) -> None:
             form = self._form()

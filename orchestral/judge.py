@@ -518,6 +518,127 @@ def audit_claims(
         return list(ex.map(audit_one, claims))
 
 
+_THREAD_PROMPT = """You write X (Twitter) follow-up posts about an AI evaluation result.
+
+The main post already went out with a result card image. Write {n} follow-up
+posts (a thread) that a technical-but-not-expert audience can follow.
+
+Rules:
+- Post 1: what was actually measured — explain in plain English what a "run"
+  is (a planner AI breaks a real task into steps, a worker AI executes them,
+  the result is graded by automated checks AND a second AI reviewer).
+- Post 2: the interesting finding — the mechanical-vs-judge gap, the winning
+  or losing detail, what surprised you. Use the real numbers.
+- Post 3 (if requested): honest caveats — sample size, confidence interval,
+  judge calibration status, suite version. Never overclaim.
+- Each post MUST be under 270 characters. Write like an engineer, not a
+  marketer. No hashtags, no emojis, no hype words.
+- Reference the numbers from the data — never invent stats.
+
+Return only JSON: {{"posts": ["...", "..."]}}
+
+Data (JSON):
+{data}
+"""
+
+
+def _plain_english(card: dict[str, Any]) -> str:
+    """What this card measures, for someone who doesn't know the harness —
+    one sentence, no jargon."""
+    kind = card.get("kind")
+    if kind == "group":
+        return (
+            "Each run: a planner AI breaks a real task into steps, worker AIs "
+            "execute them in parallel, and the final result is graded two "
+            "ways — automated checks that actually run/verify the output, "
+            "plus a second AI that reviews whether it's genuinely good."
+        )
+    if kind == "pairing":
+        return (
+            f"One AI pairing under test: {card.get('orchestrator','?').split('/')[-1]} plans the work, "
+            f"{card.get('worker','?').split('/')[-1]} executes it. Every run is graded by automated "
+            "checks and an independent AI reviewer."
+        )
+    return (
+        "One eval run: a planner AI broke the task into steps, a worker AI "
+        "executed them, and the result was graded by automated checks plus "
+        "an AI reviewer."
+    )
+
+
+def _thread_template(card: dict[str, Any], n: int = 3) -> list[str]:
+    """Deterministic fallback drafts — used when no writer model is set, so
+    the thread button always produces something honest to edit."""
+    what = _plain_english(card)
+    posts = [f"How this was measured — {what}"[:270]]
+    kind = card.get("kind")
+    if kind in ("group", "pairing"):
+        pr = card.get("pass_rate")
+        jp = card.get("judge_pass_rate")
+        ci = card.get("pass_ci")
+        bits = []
+        if pr is not None:
+            bits.append(f"{round(pr * 100)}% passed the automated checks")
+        if jp is not None:
+            bits.append(f"{round(jp * 100)}% passed AI review")
+        if ci:
+            bits.append(f"95% CI {round(ci[0] * 100)}–{round(ci[1] * 100)}%")
+        posts.append((", ".join(bits) + ". " + (card.get("verdict_line") or ""))[:270])
+        caveat = (
+            f"Caveats: {card.get('finished', 0)} finished runs"
+            + (f", {card.get('judged', 0)} judged" if card.get("judged") else ", none AI-reviewed")
+            + f". Suite {card.get('suite', '?')}."
+            + " Mechanical pass = the output actually ran/verified; AI review = advisory quality axis."
+        )
+        posts.append(caveat[:270])
+    else:
+        posts.append(
+            (f"Verdict: {card.get('verdict_line','—')}. "
+             f"Cost ${card.get('cost_usd', 0):.4f}, "
+             f"{round((card.get('latency_ms') or 0) / 1000)}s.")[:270]
+        )
+        posts.append(
+            (f"Task: {card.get('task_id','?')} · suite {card.get('suite','?')} · "
+             "mechanical = execution truth, judge = advisory semantic axis.")[:270]
+        )
+    return posts[:n]
+
+
+def draft_thread(
+    *,
+    card: dict[str, Any],
+    client: Provider | None,
+    model: ModelConfig | None,
+    n: int = 3,
+) -> dict[str, Any]:
+    """Draft up to ``n`` follow-up X posts for a card.
+
+    With a writer model + client, the posts are model-written from the real
+    card data. Without them, honest deterministic templates are returned so
+    the feature never dead-ends on a missing key."""
+    data = {k: v for k, v in card.items() if k not in ("note",)}
+    if client is None or model is None:
+        return {"posts": _thread_template(card, n), "model": None, "templated": True}
+    try:
+        resp = client.chat(
+            model=model.slug,
+            messages=[{"role": "user",
+                       "content": _THREAD_PROMPT.format(n=n, data=json.dumps(data, default=str)[:12000])}],
+            temperature=0.4,
+            max_tokens=6000,
+        )
+        parsed = _extract_json(resp.get("content") or "")
+        posts = [str(p)[:270] for p in (parsed.get("posts") or [])][:n]
+        if not posts:
+            raise ValueError("writer returned no posts")
+        return {"posts": posts, "model": model.slug, "templated": False,
+                "cost_usd": resp.get("api_cost_usd")}
+    except Exception as exc:
+        out = _thread_template(card, n)
+        return {"posts": out, "model": model.slug, "templated": True,
+                "error": str(exc)[:160]}
+
+
 def backfill_judgments(
     store: Any,
     judge: ModelConfig,

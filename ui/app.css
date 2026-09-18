@@ -486,6 +486,31 @@ td .cell-delta { font-family: var(--mono); }
   color: var(--text-3);
   letter-spacing: .04em;
 }
+.xc-expl {
+  margin-top: 16px;
+  font: 11.5px/1.6 var(--sans);
+  color: var(--text-3);
+  max-width: 860px;
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+}
+
+/* pairing matrix + leaderboard */
+table.mx { border-collapse: collapse; }
+table.mx th.mx-h { font: 11px var(--mono); color: var(--text-2); padding: 8px 12px; text-align: left; white-space: nowrap; }
+td.mx-cell { min-width: 92px; height: 44px; text-align: center; border: 1px solid var(--line); font: 700 13px var(--mono); }
+td.mx-cell .mx-fill { display: block; padding: 12px 0; background: var(--accent); color: #062a30; border-radius: 2px; }
+td.mx-cell:hover { border-color: var(--accent); }
+.why-cell { max-width: 340px; font-size: 12px; }
+.thread-model {
+  background: var(--bg-inset); border: 1px solid var(--line); border-radius: 6px;
+  color: var(--text); font: 12px var(--mono); padding: 6px 10px; width: 280px;
+}
+.thread h3 { margin: 0 0 14px; font: 600 13px var(--sans); color: var(--text-2); }
+.tpost { display: flex; align-items: flex-start; gap: 14px; padding: 12px 0; border-top: 1px solid var(--line); }
+.tpost .tnum { font: 11px var(--mono); color: var(--text-3); padding-top: 2px; white-space: nowrap; }
+.tpost p { flex: 1; margin: 0; font: 13.5px/1.55 var(--sans); color: var(--text); }
+.tpost .copy { flex-shrink: 0; }
 
 .xc-hero { margin-top: auto; display: flex; align-items: flex-end; gap: 64px; }
 .xc-big { display: flex; flex-direction: column; gap: 6px; }

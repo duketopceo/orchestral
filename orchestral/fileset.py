@@ -262,7 +262,8 @@ def member_requirements(task_metadata: dict[str, Any]) -> dict[str, list[str]]:
             continue
         clean = [str(t) for t in tokens if str(t).strip()]
         if clean:
-            out[sanitize_path(member)] = clean
+            canonical = sanitize_path(member)
+            out[canonical] = sorted(set(out.get(canonical, ())) | set(clean))
     return out
 
 

@@ -283,7 +283,7 @@ metadata: {}                  # optional free-form map (video tasks read generat
 | `non_empty` | the artifact has bytes |
 | `zip_signature` | the archive opens as a zip |
 | `has_paths` | every path in `metadata.expected_paths` is present as a non-empty regular file |
-| `member_required` | every member named in `metadata.member_required` exists, decodes as UTF-8 text (first 100 KB), and contains each listed token (case-insensitive) |
+| `member_required` | every member named in `metadata.member_required` exists, decodes as UTF-8 text (members are already size-capped by the file-set limits), and contains each listed token (case-insensitive) |
 
 `member_required` metadata shape: `member_required: {"index.html": ["coffee"], "style.css": ["pricing"]}` — a member listed but absent, a token missing inside it, or an undecodable (binary) member each fails the check with a distinct error.
 

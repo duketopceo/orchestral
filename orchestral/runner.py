@@ -1154,6 +1154,9 @@ class Runner:
                     except KeyError:
                         member_missing.append(member)
                         continue
+                    except (RuntimeError, NotImplementedError, zipfile.BadZipFile, OSError) as exc:
+                        member_missing.append(f"{member} (unreadable: {type(exc).__name__})")
+                        continue
                     try:
                         text = raw.decode("utf-8").lower()
                     except UnicodeDecodeError:

@@ -25,6 +25,7 @@ from orchestral.config import (
     load_yaml,
 )
 from orchestral.export import leaderboard_csv, run_audit_markdown, runs_csv
+from orchestral.fileset import expected_paths, member_requirements
 from orchestral.planners import available_prompt_variants, load_prompt_variant
 from orchestral.pricing import DEFAULT_DRIFT_THRESHOLD, pricing_drift
 from orchestral.privacy import scrub_all
@@ -222,6 +223,11 @@ def cmd_validate(args: argparse.Namespace) -> None:
             print(f"  FAIL {path.name}: {exc}")
             continue
         missing = [k for k in _REQUIRED_META.get(task.type, ()) if k not in task.metadata]
+        try:
+            expected_paths(task.metadata)
+            member_requirements(task.metadata)
+        except Exception as exc:
+            missing.append(f"path sanitizer: {exc}")
         for check in task.validation:
             want = _VALIDATION_META.get(check)
             if isinstance(want, str):
@@ -721,8 +727,8 @@ def _print_group_delta(store: RunStore, spec: str, *, json_out: bool = False) ->
     drift in grid shape is visible rather than silently interpolated."""
     names = _slugs_from_arg(spec)
     if len(names) != 2:
-        print("--compare takes exactly two comma-separated run_group names")
-        return
+        print("--compare takes exactly two comma-separated run_group names", file=sys.stderr)
+        sys.exit(1)
     group_a, group_b = names
 
     def cells(group: str) -> dict[tuple[str, str, str], Any]:

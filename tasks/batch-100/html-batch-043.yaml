@@ -6,3 +6,7 @@ prompt: Create a landing page for a dev-ops observability platform targeted at e
   file with inline CSS.
 validation:
 - html
+- has_required
+metadata:
+  required:
+  - observability

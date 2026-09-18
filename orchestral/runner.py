@@ -1101,7 +1101,7 @@ class Runner:
 
     def _validate_multi(self, task: TaskSpec, artifact: bytes) -> tuple[bool, dict[str, Any]]:
         requested = set(task.validation) if task.validation else {"non_empty", "zip_signature"}
-        known = {"non_empty", "zip_signature", "has_paths"}
+        known = {"non_empty", "zip_signature", "has_paths", "member_required"}
         checks: dict[str, bool] = {}
         errors: list[str] = []
 
@@ -1132,6 +1132,39 @@ class Runner:
                 errors.append("has_paths requested but metadata.expected_paths is empty.")
             elif missing:
                 errors.append(f"Missing or empty expected files: {', '.join(missing)}.")
+        if "member_required" in requested:
+            member_req = task.metadata.get("member_required")
+            if not isinstance(member_req, dict) or not member_req:
+                checks["member_required"] = False
+                errors.append("member_required requested but metadata.member_required is empty.")
+            else:
+                member_missing: list[str] = []
+                token_missing: list[str] = []
+                decode_failed = False
+                try:
+                    with zipfile.ZipFile(io.BytesIO(artifact)) as archive:
+                        for member, tokens in member_req.items():
+                            try:
+                                raw = archive.read(member, pwd=None)
+                            except KeyError:
+                                member_missing.append(member)
+                                continue
+                            try:
+                                text = raw[:102400].decode("utf-8", errors="strict").lower()
+                            except UnicodeDecodeError:
+                                errors.append(f"Member {member} is not decodable text.")
+                                decode_failed = True
+                                continue
+                            absent = [t for t in tokens if str(t).lower() not in text]
+                            if absent:
+                                token_missing.append(f"{member}: {', '.join(map(str, absent))}")
+                except zipfile.BadZipFile:
+                    errors.append("Artifact is not a readable zip archive.")
+                checks["member_required"] = not (member_missing or token_missing or decode_failed)
+                if member_missing:
+                    errors.append(f"Members listed in member_required absent: {', '.join(member_missing)}.")
+                if token_missing:
+                    errors.append(f"Required content missing in members: {'; '.join(token_missing)}.")
 
         unknown = sorted(requested - known)
         if unknown:

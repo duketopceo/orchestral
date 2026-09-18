@@ -266,6 +266,51 @@ class TestMultiFileValidation(unittest.TestCase):
         self.assertFalse(passes)
         self.assertTrue(report["checks"]["zip_signature"])
 
+    def test_member_required_passes_when_tokens_present(self):
+        passes, report = self._check(
+            ["non_empty", "zip_signature", "member_required"],
+            self._zip({"index.html": "<h1>Coffee Plans</h1>", "style.css": ".pricing{}"}),
+            {"member_required": {"index.html": ["coffee"], "style.css": ["pricing"]}},
+        )
+        self.assertTrue(passes)
+        self.assertTrue(report["checks"]["member_required"])
+
+    def test_member_required_fails_on_missing_token(self):
+        passes, report = self._check(
+            ["non_empty", "zip_signature", "member_required"],
+            self._zip({"index.html": "<h1>SaaS</h1>"}),
+            {"member_required": {"index.html": ["coffee"]}},
+        )
+        self.assertFalse(passes)
+        self.assertFalse(report["checks"]["member_required"])
+        self.assertTrue(any("coffee" in e for e in report["errors"]))
+
+    def test_member_required_fails_on_absent_member(self):
+        passes, report = self._check(
+            ["non_empty", "zip_signature", "member_required"],
+            self._zip({"index.html": "coffee"}),
+            {"member_required": {"index.html": ["coffee"], "style.css": ["pricing"]}},
+        )
+        self.assertFalse(passes)
+        self.assertTrue(any("style.css" in e for e in report["errors"]))
+
+    def test_member_required_fails_without_metadata(self):
+        passes, report = self._check(
+            ["non_empty", "zip_signature", "member_required"],
+            self._zip({"index.html": "x"}),
+            {},
+        )
+        self.assertFalse(passes)
+        self.assertTrue(any("member_required" in e for e in report["errors"]))
+
+    def test_member_required_fails_on_binary_member(self):
+        passes, _ = self._check(
+            ["non_empty", "zip_signature", "member_required"],
+            self._zip({"logo.bin": "\xff\xfe\x00\x01"}),
+            {"member_required": {"logo.bin": ["x"]}},
+        )
+        self.assertFalse(passes)
+
 
 if __name__ == "__main__":
     unittest.main()

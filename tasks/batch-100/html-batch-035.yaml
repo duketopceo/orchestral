@@ -6,3 +6,7 @@ prompt: Create a landing page for a no-code automation tool targeted at climate-
   inline CSS.
 validation:
 - html
+- has_required
+metadata:
+  required:
+  - automation

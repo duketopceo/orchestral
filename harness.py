@@ -201,6 +201,7 @@ _REQUIRED_META: dict[str, tuple[str, ...]] = {
 # the metadata silently no-ops or errors at run time
 _VALIDATION_META = {
     "has_required": "required",
+    "member_required": "member_required",
     "no_forbidden": "forbidden",
     "matches_pattern": "pattern",
     "within_budget": ("min_chars", "max_chars", "min_words", "max_words"),

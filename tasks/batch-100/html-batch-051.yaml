@@ -6,3 +6,7 @@ prompt: Create a landing page for a AI coding assistant targeted at small busine
   inline CSS.
 validation:
 - html
+- has_required
+metadata:
+  required:
+  - coding

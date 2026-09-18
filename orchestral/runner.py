@@ -1059,6 +1059,15 @@ class Runner:
                 errors.append("no_forbidden requested but metadata.forbidden is empty.")
             elif hits:
                 errors.append(f"Forbidden token(s) present: {', '.join(map(str, hits))}.")
+        if "exact_answer" in requested:
+            expected = task.metadata.get("expected_answer")
+            if expected is None:
+                checks["exact_answer"] = False
+                errors.append("exact_answer requested but metadata.expected_answer is missing.")
+            else:
+                checks["exact_answer"] = artifact.strip() == str(expected).strip()
+                if not checks["exact_answer"]:
+                    errors.append("Artifact is not exactly the expected answer.")
         if "matches_pattern" in requested:
             pattern = task.metadata.get("pattern")
             if not pattern:
@@ -1089,7 +1098,7 @@ class Runner:
         known = {
             "html", "html_parses", "non_empty", "has_title", "has_cta", "has_form",
             "has_viewport", "no_placeholder", "within_budget", "has_required",
-            "no_forbidden", "matches_pattern", "no_pattern",
+            "no_forbidden", "exact_answer", "matches_pattern", "no_pattern",
         }
         unknown = sorted(requested - known)
         if unknown:

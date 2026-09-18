@@ -205,6 +205,7 @@ _VALIDATION_META = {
     "has_required": "required",
     "member_required": "member_required",
     "no_forbidden": "forbidden",
+    "exact_answer": "expected_answer",
     "matches_pattern": "pattern",
     "within_budget": ("min_chars", "max_chars", "min_words", "max_words"),
 }
@@ -215,7 +216,7 @@ _VALIDATION_META = {
 _TEXT_CHECKS = {
     "html", "html_parses", "non_empty", "has_title", "has_cta", "has_form",
     "has_viewport", "no_placeholder", "within_budget", "has_required",
-    "no_forbidden", "matches_pattern", "no_pattern",
+    "no_forbidden", "exact_answer", "matches_pattern", "no_pattern",
 }
 _CHECK_NAMES = {
     "html": _TEXT_CHECKS,
@@ -917,6 +918,37 @@ def cmd_review(args: argparse.Namespace) -> None:
     print("full report: reports/review-*.md | per-run: <run_dir>/review.json")
 
 
+def cmd_judge(args: argparse.Namespace) -> None:
+    """Retroactively judge artifacts of finished runs (score axis without re-running)."""
+    from orchestral.judge import backfill_judgments
+
+    judge = _judge_from_arg(args)
+    if judge is None:
+        print("error: --judge is required (a model slug configured in models/)")
+        raise SystemExit(1)
+    _check_provider_envs(args, judge)
+    client = None if args.dry_run else provider_for(judge)
+    try:
+        result = backfill_judgments(
+            RunStore(args.runs_dir), judge, client,
+            run_group=args.group, task_id=args.task,
+            orchestrator=args.orchestrator, worker=args.worker,
+            limit=args.limit, jobs=args.jobs, dry_run=args.dry_run,
+            force=args.force, tasks_dir=Path(args.tasks_dir),
+        )
+    finally:
+        if client is not None:
+            client.close()
+    if args.json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+    print(f"judged {result['judged']} runs with {result['judge']} "
+          f"({result['skipped']} skipped, {result['dry_run_judged']} dry-run stubs)")
+    scored = [r["score"] for r in result["results"] if r.get("score") is not None]
+    if scored:
+        print(f"score: mean {sum(scored)/len(scored):.2f} over {len(scored)} judged artifacts")
+
+
 def cmd_scrub(args: argparse.Namespace) -> None:
     copied = scrub_all(Path(args.runs_dir), Path(args.scrub_dir))
     print(f"Scrubbed {len(copied)} runs to {args.scrub_dir}")
@@ -1119,6 +1151,19 @@ def main() -> None:
     review.add_argument("--reports-dir", default="reports", help="Output directory for the corpus report")
     review.add_argument("--json", action="store_true", help="Emit the full result as JSON")
     review.set_defaults(func=cmd_review)
+
+    judge = sub.add_parser("judge", help="Retroactively judge artifacts of finished runs (writes judge result into report.json + index score)")
+    judge.add_argument("--judge", required=True, help="Judge model slug (e.g. moonshotai/kimi-k2, x-ai/grok-4.3)")
+    judge.add_argument("--group", default=None, help="Only judge runs in this run_group")
+    judge.add_argument("--task", default=None, help="Only judge runs for this task")
+    judge.add_argument("--orchestrator", default=None)
+    judge.add_argument("--worker", default=None)
+    judge.add_argument("--limit", type=int, default=None, help="Cap the number of runs judged")
+    judge.add_argument("--jobs", type=int, default=4, help="Parallel judge calls")
+    judge.add_argument("--force", action="store_true", help="Re-judge runs that already have a judge result")
+    judge.add_argument("--dry-run", action="store_true", help="Exercise the path without calling the provider or writing results")
+    judge.add_argument("--json", action="store_true", help="Emit the full result as JSON")
+    judge.set_defaults(func=cmd_judge)
 
     serve = sub.add_parser("serve", help="Local web observatory — browse, launch, and cancel runs in a browser (localhost only)")
     serve.add_argument("--port", type=int, default=8787, help="Port to bind on 127.0.0.1 (default 8787)")

@@ -87,12 +87,14 @@ metadata: {}                  # optional free-form map (video tasks read generat
 - **`needle`** — long-context retrieval: `metadata.document` (the haystack)
   rides inside each subtask payload, workers return candidate answers, the
   orchestrator picks one, and `artifact.txt` is checked with the constraint
-  checks — `has_required` for `metadata.required` (the true needle) and
-  `no_forbidden` for `metadata.forbidden` (decoys). An answer that names the
-  right token but also mentions a decoy fails — the checks measure whether
-  the model actually found it, not whether it can recite the options.
-  `metadata.expected_answer` feeds the dry-run path. See
-  `tasks/needle-deploy-token.yaml`.
+  checks — `has_required` for `metadata.required` (the true needle),
+  `no_forbidden` for `metadata.forbidden` (decoys), and `exact_answer` for
+  `metadata.expected_answer` when the prompt demands the answer and nothing
+  else (a `{"result": "FALCON-4417"}` wrapper is not "only the token"). An
+  answer that names the right token but also mentions a decoy fails — the
+  checks measure whether the model actually found it, not whether it can
+  recite the options. `metadata.expected_answer` also feeds the dry-run
+  path. See `tasks/needle-deploy-token.yaml`.
 - **`bugfix`** — `code`'s repair sibling: same file-set contract, same hidden
   `metadata.tests` execution, but `metadata.files` ships the *broken* repo —
   injected into every worker subtask as `broken_files` so the worker repairs
@@ -303,6 +305,7 @@ Each fails closed when requested but its metadata key is missing:
 | `within_budget` | every declared bound holds | `min_chars`, `max_chars`, `min_words`, `max_words` |
 | `has_required` | every token appears (case-insensitive) | `required: [...]` |
 | `no_forbidden` | no token appears (case-insensitive) | `forbidden: [...]` |
+| `exact_answer` | the artifact is exactly the expected answer (whitespace-trimmed) | `expected_answer` |
 | `matches_pattern` | the regex matches | `pattern` |
 | `no_pattern` | the regex does not match | `forbidden_pattern` |
 

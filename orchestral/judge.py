@@ -3,19 +3,30 @@
 The judge scores the final artifact against the task and returns a score,
 pass/fail, and reasoning. It uses the same OpenRouter client as the rest of
 harness so it stays provider-agnostic.
+
+`backfill_judgments` applies the judge retroactively to finished runs whose
+artifacts are already on disk — the score axis without re-running the eval.
+Backfilled runs keep their recorded mechanical verdict; only `score` and the
+cost ledger grow, and `report.json` marks `judge_backfill: true` so the
+provenance is never ambiguous.
 """
 
 from __future__ import annotations
 
 import base64
+import hashlib
+import json
 import random
+import zipfile
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from typing import Any
 
-from orchestral.config import ModelConfig, TaskSpec
+from orchestral.config import ModelConfig, TaskSpec, find_task, load_task
 from orchestral.costs import compute_cost, token_usage_from_raw
 from orchestral.logger import EventLogger
-from orchestral.openrouter import OpenRouterClient
 from orchestral.planners import _extract_json
+from orchestral.providers import Provider
 
 JUDGE_PROMPT = """You are an expert judge evaluating the output of an AI system.
 
@@ -45,7 +56,7 @@ def judge_artifact(
     task: TaskSpec,
     artifact: str,
     judge: ModelConfig,
-    client: OpenRouterClient | None,
+    client: Provider | None,
     dry_run: bool,
     image_bytes: bytes | None = None,
     language: str = "html",
@@ -184,3 +195,148 @@ def judge_artifact(
 
 def _fake_judge_result() -> dict[str, Any]:
     return {"score": None, "passed": None, "reasoning": "Dry-run; no judge model was called."}
+
+
+_TEXT_ARTIFACT_EXTS = {"html", "txt", "sql", "diff", "json", "md", "css"}
+_IMAGE_ARTIFACT_EXTS = {"png", "jpg", "jpeg", "webp"}
+
+
+class _NoJudgeableArtifact(Exception):
+    """Run dir has no artifact the judge path can consume."""
+
+
+def _judge_input(run_dir: Path) -> tuple[bytes | None, str | None, str]:
+    """Rebuild the judge's view of a stored artifact — same shapes the live
+    path produces: image bytes for image tasks, a content-free member listing
+    for zips, raw text for everything else.
+
+    Raises _NoJudgeableArtifact for missing artifacts and video (the live
+    path defers video judging the same way).
+    """
+    artifacts = sorted(run_dir.glob("artifact.*"))
+    if not artifacts:
+        raise _NoJudgeableArtifact(f"no artifact.* in {run_dir}")
+    path = artifacts[0]
+    ext = path.suffix.lstrip(".").lower()
+    if ext in _IMAGE_ARTIFACT_EXTS:
+        return path.read_bytes(), None, "html"
+    if ext == "mp4":
+        raise _NoJudgeableArtifact("video judging deferred — no video-input judge path")
+    if ext == "zip":
+        with zipfile.ZipFile(path) as zf:
+            listing = "\n".join(f"{i.filename} ({i.file_size} bytes)" for i in zf.infolist())
+        return None, listing, "text"
+    if ext in _TEXT_ARTIFACT_EXTS:
+        return None, path.read_text(encoding="utf-8", errors="replace"), "html"
+    raise _NoJudgeableArtifact(f"unjudgeable artifact type: {path.name}")
+
+
+def backfill_judgments(
+    store: Any,
+    judge: ModelConfig,
+    client: Provider | None,
+    *,
+    run_group: str | None = None,
+    task_id: str | None = None,
+    orchestrator: str | None = None,
+    worker: str | None = None,
+    limit: int | None = None,
+    jobs: int = 4,
+    dry_run: bool = False,
+    force: bool = False,
+    tasks_dir: Path | str = "tasks",
+) -> dict[str, Any]:
+    """Judge the artifacts of finished runs retroactively.
+
+    Writes `judge` + `judge_backfill` into report.json, sets the index score,
+    and adds judge cost to the run's recorded total — the same fields a
+    natively judged run carries, minus the `passed` gate (the mechanical
+    verdict recorded at run time stands).
+    """
+    metas = [
+        m for m in store.list_runs(
+            orchestrator=orchestrator, worker=worker,
+            task_id=task_id, run_group=run_group,
+        )
+        if m.status == "finished"
+    ]
+    spec_cache: dict[str, TaskSpec] = {}
+
+    def _spec(tid: str) -> TaskSpec:
+        if tid not in spec_cache:
+            path = find_task(tid, tasks_dir)
+            if path is None:
+                raise FileNotFoundError(f"task spec not found: {tid}")
+            spec_cache[tid] = load_task(path)
+        return spec_cache[tid]
+
+    def _already_judged(run_dir: Path) -> bool:
+        report_path = run_dir / "report.json"
+        if not report_path.exists():
+            return False
+        try:
+            return json.loads(report_path.read_text()).get("judge") is not None
+        except Exception:
+            return False
+
+    def _one(meta: Any) -> dict[str, Any]:
+        run_dir = Path(meta.run_dir)
+        if not force and _already_judged(run_dir):
+            return {"run_id": meta.run_id, "skipped": "already judged"}
+        try:
+            image_bytes, text, language = _judge_input(run_dir)
+        except _NoJudgeableArtifact as exc:
+            return {"run_id": meta.run_id, "skipped": str(exc)}
+        try:
+            task = _spec(meta.task_id)
+        except Exception as exc:
+            return {"run_id": meta.run_id, "skipped": f"spec: {exc}"}
+        logger = EventLogger(run_dir, store=store, run_id=meta.run_id, dry_run=dry_run)
+        try:
+            payload = image_bytes if image_bytes is not None else (text or "").encode()
+            sha = hashlib.sha256(task.prompt.encode() + b"\0" + payload).hexdigest()
+            with store.judge_lock((task.id, judge.slug, sha)):
+                cached = None if dry_run else store.get_judge_result(task.id, judge.slug, sha)
+                result: dict[str, Any]
+                costs: list[dict[str, Any]]
+                if cached is not None:
+                    result, costs = cached, []
+                else:
+                    result, costs = judge_artifact(
+                        logger=logger, step=0, task=task,
+                        artifact=text or "", judge=judge, client=client,
+                        dry_run=dry_run, image_bytes=image_bytes, language=language,
+                    )
+                    if not dry_run and not result.get("parse_failed"):
+                        store.put_judge_result(task.id, judge.slug, sha, result)
+            if dry_run:
+                return {"run_id": meta.run_id, "judged": "dry-run", "score": result.get("score")}
+            report_path = run_dir / "report.json"
+            report = json.loads(report_path.read_text()) if report_path.exists() else {}
+            report["judge"] = result
+            report["judge_backfill"] = True
+            report_path.write_text(json.dumps(report, indent=2, default=str))
+            if result.get("score") is not None:
+                meta.score = float(result["score"])
+            meta.total_cost_usd += sum(c.get("cost_usd") or 0.0 for c in costs)
+            store.update_meta(meta)
+            return {"run_id": meta.run_id, "judged": judge.slug, "score": result.get("score"),
+                    "passed": result.get("passed")}
+        finally:
+            logger.close()
+
+    results: list[dict[str, Any]] = []
+    targets = metas[:limit] if limit else metas
+    with ThreadPoolExecutor(max_workers=jobs) as pool:
+        for r in pool.map(_one, targets):
+            results.append(r)
+
+    judged = [r for r in results if "judged" in r and r["judged"] != "dry-run"]
+    return {
+        "runs_seen": len(targets),
+        "judged": len(judged),
+        "skipped": len(results) - len(judged) - sum(1 for r in results if r.get("judged") == "dry-run"),
+        "dry_run_judged": sum(1 for r in results if r.get("judged") == "dry-run"),
+        "judge": judge.slug,
+        "results": results,
+    }

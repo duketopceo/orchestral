@@ -743,15 +743,71 @@ def assemble_media(
         dry_run=dry_run,
         expect_json=True,
     )
-    try:
-        selection = _extract_json(content)
-        idx = int(selection.get("subtask_id", selection.get("index", 0)))
-    except Exception:
-        idx = 0
-    # resolve subtask_id to a position in results, clamped to range
-    position = next((i for i, r in enumerate(results) if r.get("subtask_id") == idx), 0)
-    position = max(0, min(position, len(results) - 1))
+    position, resolved = _resolve_pick(content, results)
+    if not resolved:
+        # the pick is part of what is being measured — log it loudly rather
+        # than silently degrading to candidate 0
+        logger.log(
+            phase="assemble",
+            step=step,
+            event_type="pick_unresolved",
+            model=orchestrator.slug,
+            role="orchestrator",
+            input_data={"task": task.id},
+            output_data={"raw": content[:400]},
+            reasoning="Orchestrator selection carried no resolvable subtask_id/index; falling back to the first candidate.",
+        )
     return position, [cost]
+
+
+def _iter_json_objects(text: str):
+    """Yield every top-level JSON object/array decodable from `text`, in order."""
+    decoder = json.JSONDecoder()
+    pos = 0
+    while pos < len(text):
+        m = re.search(r"[\[{]", text[pos:])
+        if not m:
+            return
+        start = pos + m.start()
+        try:
+            obj, end = decoder.raw_decode(text, start)
+        except json.JSONDecodeError:
+            pos = start + 1
+            continue
+        yield obj
+        pos = start + end
+
+
+def _resolve_pick(content: str, results: list[dict[str, Any]]) -> tuple[int, bool]:
+    """Map an orchestrator selection response to a results position.
+
+    Models commonly wrap the answer — `{"plan": "..."}` reasoning first, then
+    `{"subtask_id": 3}`. Taking only the first JSON object resolves nothing and
+    silently picks candidate 0, which is how correct worker outputs got dropped
+    in favor of an earlier partial. `subtask_id` is resolved as an id lookup;
+    `index` is treated as a 0-based position.
+    """
+    for obj in _iter_json_objects(content):
+        if not isinstance(obj, dict):
+            continue
+        for key in ("subtask_id", "index"):
+            value = obj.get(key)
+            if isinstance(value, bool) or not isinstance(value, int):
+                continue
+            if key == "subtask_id":
+                pos = next(
+                    (i for i, r in enumerate(results) if r.get("subtask_id") == value),
+                    None,
+                )
+                if pos is None:
+                    # the model may have meant "position" under the wrong key —
+                    # accept it if it lands in range rather than failing
+                    pos = value if 0 <= value < len(results) else None
+            else:
+                pos = value if 0 <= value < len(results) else None
+            if pos is not None:
+                return pos, True
+    return 0, False
 
 
 def delegate_constraint(

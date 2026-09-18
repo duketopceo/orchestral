@@ -1,0 +1,138 @@
+"""Retroactive judge backfill: report.json marker, index score, idempotence."""
+
+from __future__ import annotations
+
+import json
+import tempfile
+import unittest
+from pathlib import Path
+
+from orchestral.config import ModelConfig, TaskSpec
+from orchestral.judge import _judge_input, _NoJudgeableArtifact, backfill_judgments
+from orchestral.runner import Runner
+from orchestral.storage import RunStore
+
+
+def _model(slug: str, role: str) -> ModelConfig:
+    return ModelConfig(slug=slug, name=slug, role=role,
+                       input_price_per_mtok=0.03, output_price_per_mtok=0.10)
+
+
+class FakeJudgeClient:
+    def __init__(self, score: float = 0.8):
+        self.calls = 0
+        self.score = score
+
+    def chat(self, **kw):
+        self.calls += 1
+        return {
+            "content": json.dumps({"score": self.score, "passed": self.score > 0.5,
+                                   "reasoning": "fake judge"}),
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+            "latency_ms": 1.0,
+        }
+
+
+class TestBackfill(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+        (self.root / "tasks").mkdir()
+        (self.root / "tasks" / "t-task.yaml").write_text(
+            "id: t-task\ntype: html\nprompt: make a page\nvalidation:\n  - non_empty\n")
+        self.runs = self.root / "runs"
+        self.judge = _model("j/model", "judge")
+
+    def _seed(self) -> str:
+        meta = Runner(dry_run=True, runs_dir=str(self.runs),
+                      store=RunStore(self.runs)).run(
+            TaskSpec(id="t-task", type="html", prompt="make a page"),
+            _model("o/model", "orchestrator"), _model("w/model", "worker"))
+        return meta.run_id
+
+    def test_backfill_writes_judge_and_score(self):
+        run_id = self._seed()
+        store = RunStore(self.runs)
+        res = backfill_judgments(store, self.judge, FakeJudgeClient(0.9),
+                                 run_group=None, tasks_dir=self.root / "tasks")
+        self.assertEqual(res["judged"], 1)
+        run_dir = Path(store.get_run(run_id).run_dir)  # type: ignore[union-attr]
+        report = json.loads((run_dir / "report.json").read_text())
+        self.assertEqual(report["judge"]["score"], 0.9)
+        self.assertTrue(report["judge_backfill"])
+        meta = store.get_run(run_id)
+        self.assertEqual(meta.score, 0.9)
+        # the recorded mechanical verdict is untouched
+        self.assertTrue(meta.passes)
+
+    def test_second_pass_skips_judged(self):
+        self._seed()
+        store = RunStore(self.runs)
+        client = FakeJudgeClient()
+        backfill_judgments(store, self.judge, client, tasks_dir=self.root / "tasks")
+        res = backfill_judgments(RunStore(self.runs), self.judge, client,
+                                 tasks_dir=self.root / "tasks")
+        self.assertEqual(res["judged"], 0)
+        self.assertEqual(res["skipped"], 1)
+        self.assertEqual(client.calls, 1)  # cached + dedup: one API call total
+
+    def test_force_rejudges(self):
+        self._seed()
+        client = FakeJudgeClient()
+        backfill_judgments(RunStore(self.runs), self.judge, client,
+                           tasks_dir=self.root / "tasks")
+        res = backfill_judgments(RunStore(self.runs), self.judge, client,
+                                 force=True, tasks_dir=self.root / "tasks")
+        # second pass hits the persistent judge cache — still one API call,
+        # but the run is re-marked judged rather than skipped
+        self.assertEqual(res["judged"], 1)
+        self.assertEqual(client.calls, 1)
+
+    def test_no_artifact_skipped(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = RunStore(tmp)
+            meta = Runner(dry_run=True, runs_dir=tmp, store=store).run(
+                TaskSpec(id="t-task", type="html", prompt="p"),
+                _model("o/model", "orchestrator"), _model("w/model", "worker"))
+            for a in Path(meta.run_dir).glob("artifact.*"):
+                a.unlink()
+            res = backfill_judgments(store, self.judge, FakeJudgeClient(),
+                                     tasks_dir=self.root / "tasks")
+            self.assertEqual(res["judged"], 0)
+            self.assertIn("no artifact", res["results"][0]["skipped"])
+
+    def test_dry_run_writes_nothing(self):
+        run_id = self._seed()
+        store = RunStore(self.runs)
+        res = backfill_judgments(store, self.judge, FakeJudgeClient(),
+                                 dry_run=True, tasks_dir=self.root / "tasks")
+        self.assertEqual(res["dry_run_judged"], 1)
+        run_dir = Path(store.get_run(run_id).run_dir)  # type: ignore[union-attr]
+        report = json.loads((run_dir / "report.json").read_text())
+        self.assertNotIn("judge_backfill", report)
+
+
+class TestJudgeInput(unittest.TestCase):
+    def test_zip_listing_is_content_free(self):
+        import zipfile
+        with tempfile.TemporaryDirectory() as tmp:
+            zpath = Path(tmp) / "artifact.zip"
+            with zipfile.ZipFile(zpath, "w") as zf:
+                zf.writestr("index.html", "<html>secret body</html>")
+                zf.writestr("style.css", "body{}")
+            img, text, lang = _judge_input(Path(tmp))
+            self.assertIsNone(img)
+            self.assertEqual(lang, "text")
+            self.assertIn("index.html", text)
+            self.assertNotIn("secret body", text)  # bodies never reach the judge
+
+    def test_mp4_skipped(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "artifact.mp4").write_bytes(b"\x00\x00\x00\x18ftyp")
+            with self.assertRaises(_NoJudgeableArtifact):
+                _judge_input(Path(tmp))
+
+
+if __name__ == "__main__":
+    unittest.main()

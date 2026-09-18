@@ -199,5 +199,57 @@ class TestSpecAudit(unittest.TestCase):
         self.assertIn("error", rows[0])
 
 
+class TestClaimsAudit(unittest.TestCase):
+    """Decisions-engine audit of our own claims — the scorch battery."""
+
+    def _claims(self) -> list[dict]:
+        return [{
+            "id": "c1", "statement": "the thing works",
+            "context": "ctx", "evidence": {"n": 132},
+            "caveats": ["small n"],
+        }]
+
+    def test_dry_run_needs_no_client(self):
+        rows = judge.audit_claims(
+            claims=self._claims(),
+            judge=_model("~typesafe/jev-latest", "judge"),
+            client=None, dry_run=True,
+        )
+        self.assertEqual(rows[0]["skipped"], "dry-run")
+
+    def test_non_decisions_judge_rejected(self):
+        with self.assertRaises(ValueError):
+            judge.audit_claims(
+                claims=self._claims(),
+                judge=_model("moonshotai/kimi-k2", "judge"),
+                client=None, dry_run=False,
+            )
+
+    def test_maps_verdict_fields(self):
+        class FakeDecisions:
+            def decide(self, **kw):
+                return {
+                    "answers": {
+                        "supported": {"noul": 0.3, "confidence": 0.9},
+                        "fatal_flaw": {"noul": 0.8},
+                        "severity": {"score": 2.5},
+                        "strength": {"score": 1.0},
+                    },
+                    "usage": {"cost": 0.0002},
+                }
+
+        rows = judge.audit_claims(
+            claims=self._claims(),
+            judge=_model("~typesafe/jev-latest", "judge"),
+            client=FakeDecisions(), dry_run=False, workers=1,
+        )
+        r = rows[0]
+        self.assertEqual(r["supported"], 0.3)
+        self.assertEqual(r["fatal_flaw"], 0.8)
+        self.assertEqual(r["severity"], 2.5)
+        self.assertEqual(r["strength"], 1.0)
+        self.assertEqual(r["confidence"], 0.9)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -428,6 +428,93 @@ def audit_specs(
         return list(ex.map(audit_one, specs))
 
 
+_CLAIM_AUDIT_QUESTIONS: dict[str, Any] = {
+    "supported": {
+        "type": "noul",
+        "instructions": (
+            "Given ONLY the stated evidence, is the claim supported as written? "
+            "Do not credit vibes, intent, or adjacent truths — rule on the "
+            "claim as literally stated against the evidence shown."
+        ),
+        "true": "The evidence supports the claim as stated.",
+        "false": "The evidence does not support the claim, or the claim overreaches.",
+    },
+    "fatal_flaw": {
+        "type": "noul",
+        "instructions": (
+            "Does the methodology or evidence contain a flaw that would "
+            "invalidate this claim even if the numbers are accurate — e.g. "
+            "confounded variables, conflated metrics, tiny n, survivorship, "
+            "contamination, or the evidence measuring something else?"
+        ),
+        "true": "Yes — a methodological flaw undermines the claim.",
+        "false": "No fatal flaw found in the stated methodology.",
+    },
+    "severity": {
+        "type": "score",
+        "instructions": (
+            "If a flaw exists, how severe is it for THIS claim specifically — "
+            "does it change the conclusion, or just qualify it?"
+        ),
+        "criteria": ["cosmetic", "minor", "material", "severe", "fatal"],
+    },
+    "strength": {
+        "type": "score",
+        "instructions": "How strong is the evidence for this claim, ignoring whether you agree with it?",
+        "criteria": ["anecdotal", "weak", "suggestive", "strong", "conclusive"],
+    },
+}
+
+
+def audit_claims(
+    *,
+    claims: list[dict[str, Any]],
+    judge: ModelConfig,
+    client: Provider | None,
+    dry_run: bool,
+    workers: int = 4,
+) -> list[dict[str, Any]]:
+    """Point a decisions engine at our own claims, evidence attached.
+
+    The 'scorch our ideas' battery: each claim is a dict with an id, a
+    statement, and an evidence object (real stats — never vibes). jev rules
+    on support, fatal flaws, and evidentiary strength. Cheap enough to run
+    on every published result."""
+    if not is_decisions_model(judge):
+        raise ValueError("claims audit requires a decisions-engine judge (e.g. '~typesafe/jev-latest')")
+    if dry_run:
+        return [{"claim_id": c.get("id", "?"), "skipped": "dry-run"} for c in claims]
+    if client is None:
+        raise ValueError("claims audit requires a provider client (unless --dry-run)")
+
+    def audit_one(c: dict[str, Any]) -> dict[str, Any]:
+        state = {
+            "claim_id": c.get("id"),
+            "claim": c.get("statement"),
+            "context": c.get("context", ""),
+            "evidence": c.get("evidence", {}),
+            "caveats_already_known": c.get("caveats", []),
+        }
+        try:
+            data = client.decide(model=judge.slug, state=state, questions=_CLAIM_AUDIT_QUESTIONS)  # type: ignore[attr-defined]
+        except Exception as exc:
+            return {"claim_id": c.get("id"), "error": str(exc)[:160]}
+        a = data.get("answers") or {}
+        return {
+            "claim_id": c.get("id"),
+            "statement": (c.get("statement") or "")[:120],
+            "supported": (a.get("supported") or {}).get("noul"),
+            "fatal_flaw": (a.get("fatal_flaw") or {}).get("noul"),
+            "severity": (a.get("severity") or {}).get("score"),
+            "strength": (a.get("strength") or {}).get("score"),
+            "confidence": (a.get("supported") or {}).get("confidence"),
+            "cost_usd": (data.get("usage") or {}).get("cost"),
+        }
+
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        return list(ex.map(audit_one, claims))
+
+
 def backfill_judgments(
     store: Any,
     judge: ModelConfig,

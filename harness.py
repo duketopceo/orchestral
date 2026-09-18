@@ -986,6 +986,75 @@ def cmd_specaudit(args: argparse.Namespace) -> None:
               f"{r['difficulty']:>5.1f} {r['adversarial']:>5.1f}{flag}")
 
 
+def _group_evidence(store: RunStore, groups: list[str]) -> dict[str, Any]:
+    """Live stats for named run groups — evidence attached to claims must be
+    computed from the index, never hand-typed numbers that can drift."""
+    out: dict[str, Any] = {}
+    for g in groups:
+        metas = store.list_runs(run_group=g)
+        finished = [m for m in metas if m.status == "finished"]
+        failed = [m for m in metas if m.status == "failed"]
+        passes = sum(1 for m in finished if m.passes)
+        scores = [m.score for m in finished if m.score is not None]
+        out[g] = {
+            "runs_total": len(metas),
+            "finished": len(finished),
+            "failed": len(failed),
+            "passes": passes,
+            "pass_rate_of_finished": round(passes / len(finished), 3) if finished else None,
+            "pass_rate_of_all": round(passes / len(metas), 3) if metas else None,
+            "score_mean": round(sum(scores) / len(scores), 3) if scores else None,
+            "cost_usd": round(sum(m.total_cost_usd for m in metas), 3),
+        }
+    return out
+
+
+def cmd_audit(args: argparse.Namespace) -> None:
+    """Decisions-engine audit of our own claims — scorch the ideas."""
+    import yaml
+
+    from orchestral.judge import audit_claims
+
+    judge = _judge_from_arg(args)
+    if judge is None:
+        print("error: --judge is required (a decisions-model slug, e.g. '~typesafe/jev-latest')")
+        raise SystemExit(1)
+    path = Path(args.claims)
+    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    claims = data.get("claims") or []
+    store = RunStore(args.runs_dir)
+    for c in claims:
+        groups = c.pop("groups", []) or []
+        ev = c.setdefault("evidence", {})
+        ev["live_group_stats"] = _group_evidence(store, groups)
+    client = None if args.dry_run else provider_for(judge)
+    try:
+        rows = audit_claims(claims=claims, judge=judge, client=client,
+                            dry_run=args.dry_run, workers=args.jobs)
+    finally:
+        if client is not None:
+            client.close()
+    out_path = Path(args.reports_dir) / "claims-audit.json"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(json.dumps({
+        "judge": judge.slug, "claims_file": str(path),
+        "audited_at": datetime.now(UTC).isoformat(), "claims": rows,
+    }, indent=2, default=str), encoding="utf-8")
+    if args.json:
+        print(json.dumps(rows, indent=2, default=str))
+        return
+    print(f"claims audit — {len(rows)} claims · judge {judge.slug} · wrote {out_path}")
+    print(f"{'claim':<28} {'supported':>10} {'fatal?':>7} {'severity':>9} {'strength':>9}")
+    for r in rows:
+        if "error" in r or "skipped" in r:
+            print(f"{r.get('claim_id','?'):<28} {'—':>10} {'—':>7} {'—':>9} {'—':>9}  {r.get('error','dry-run')[:40]}")
+            continue
+        sev = r.get("severity")
+        verdict = " ☠" if isinstance(sev, (int, float)) and sev >= 3.5 else ""
+        print(f"{r['claim_id']:<28} {r['supported']:>10.2f} {r['fatal_flaw']:>7.2f} "
+              f"{sev:>9.1f} {r['strength']:>9.1f}{verdict}")
+
+
 def cmd_scrub(args: argparse.Namespace) -> None:
     copied = scrub_all(Path(args.runs_dir), Path(args.scrub_dir))
     print(f"Scrubbed {len(copied)} runs to {args.scrub_dir}")
@@ -1209,6 +1278,15 @@ def main() -> None:
     specaudit.add_argument("--dry-run", action="store_true")
     specaudit.add_argument("--json", action="store_true")
     specaudit.set_defaults(func=cmd_specaudit)
+
+    audit = sub.add_parser("audit", help="Decisions-engine audit of claims in audit/claims.yaml — scorch our own ideas")
+    audit.add_argument("--judge", required=True, help="Decisions-model slug (e.g. '~typesafe/jev-latest' — quote it)")
+    audit.add_argument("--claims", default="audit/claims.yaml", help="Claims battery file")
+    audit.add_argument("--jobs", type=int, default=4, help="Parallel audit calls")
+    audit.add_argument("--reports-dir", default="reports", help="Output directory for claims-audit.json")
+    audit.add_argument("--dry-run", action="store_true")
+    audit.add_argument("--json", action="store_true")
+    audit.set_defaults(func=cmd_audit)
 
     serve = sub.add_parser("serve", help="Local web observatory — browse, launch, and cancel runs in a browser (localhost only)")
     serve.add_argument("--port", type=int, default=8787, help="Port to bind on 127.0.0.1 (default 8787)")

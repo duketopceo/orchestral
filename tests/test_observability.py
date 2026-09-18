@@ -22,7 +22,7 @@ from orchestral.openrouter import (
     OpenRouterVideoSubmittedError,
     ProviderConfigError,
 )
-from orchestral.planners import PlanError
+from orchestral.planners import PlanError, _extract_json
 from orchestral.runner import Runner, ValidationError
 from orchestral.storage import RunStore
 from orchestral.taxonomy import CATEGORIES, classify_exception
@@ -58,9 +58,16 @@ class TestTaxonomy(unittest.TestCase):
         self.assertEqual(classify_exception(FilesetError("bad")), "malformed_output")
         self.assertEqual(classify_exception(PlanError("not an object")), "malformed_output")
         self.assertEqual(classify_exception(json.JSONDecodeError("m", "d", 0)), "malformed_output")
+
         self.assertEqual(classify_exception(ProviderConfigError("no env")), "config")
         self.assertEqual(classify_exception(KeyError("k")), "config")
         self.assertEqual(classify_exception(RuntimeError("?")), "unknown")
+
+    def test_extract_json_failure_is_malformed(self):
+        # An unparseable model response must land in malformed_output, not
+        # exception:unknown — the stale-label class this regression produced.
+        with self.assertRaises(PlanError):
+            _extract_json("no json at all")
 
     def test_every_category_reachable(self):
         self.assertGreaterEqual(len(set(CATEGORIES)), 10)

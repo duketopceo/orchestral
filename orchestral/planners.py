@@ -224,7 +224,7 @@ def _extract_json(content: str) -> Any:
             start = i
             break
     if start is None:
-        raise ValueError(f"No JSON found in model response: {content[:200]}")
+        raise PlanError(f"No JSON found in model response: {content[:200]}")
     # naive brace matching
     depth = 0
     in_string = False

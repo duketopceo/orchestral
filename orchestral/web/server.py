@@ -174,6 +174,15 @@ def make_handler(obs: Observatory) -> type[BaseHTTPRequestHandler]:
                 if not a or not b:
                     return self._json({"error": "compare needs ?a=<group>&b=<group>"}, 400)
                 self._json(state.compare_payload(obs.store, a, b))
+            elif path == "/api/flags":
+                self._json(obs.store.annotations())
+            elif path == "/api/card":
+                kind = self._q1(qs, "kind", "group") or "group"
+                target = self._q1(qs, "target", "") or ""
+                payload = state.card_payload(obs.store, kind, target)
+                if payload is None:
+                    return self._json({"error": f"no {kind} '{target}'"}, 404)
+                self._json(payload)
             elif path == "/api/leaderboard":
                 self._json(state.leaderboard_rows(obs.store, self._q1(qs, "sort", "cost_per_pass") or "cost_per_pass"))
             elif path == "/api/tasks":
@@ -265,6 +274,15 @@ def make_handler(obs: Observatory) -> type[BaseHTTPRequestHandler]:
             if len(parts) == 4 and parts[3] == "cancel" and parts[0] == "api" and parts[1] == "run":
                 cancelled = obs.registry.cancel_run(parts[2])
                 return self._json({"cancelled": cancelled})
+            if path == "/api/flag":
+                form = self._form()
+                try:
+                    return self._json(obs.store.set_annotation(
+                        form.get("kind", ""), form.get("target", ""),
+                        form.get("flag", ""), form.get("note", ""),
+                    ))
+                except ValueError as exc:
+                    return self._json({"error": str(exc)}, 400)
             self._json({"error": f"not found: {path}"}, 404)
 
         def _post_run(self, json_out: bool) -> None:

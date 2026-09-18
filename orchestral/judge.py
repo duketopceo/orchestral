@@ -48,6 +48,100 @@ Return only a JSON object with this exact shape:
 # base64 inflates ~33%, so this keeps judge payloads under ~10MB
 MAX_JUDGE_IMAGE_BYTES = 7_500_000
 
+# Decisions-engine question set — the same semantic questions the chat rubric
+# asks, expressed as typed noul/score questions so answers are calibrated
+# probabilities rather than free text we have to parse.
+_DECISIONS_QUESTIONS: dict[str, Any] = {
+    "verdict": {
+        "type": "noul",
+        "instructions": (
+            "Does the artifact correctly and completely satisfy the task "
+            "requirements? Judge correctness against the task, not surface polish."
+        ),
+        "true": "The artifact meets the task requirements.",
+        "false": "The artifact is wrong, incomplete, or off-task.",
+    },
+    "quality": {
+        "type": "score",
+        "instructions": "Rate the artifact's overall quality for this task.",
+        "criteria": ["poor", "weak", "adequate", "good", "excellent"],
+    },
+}
+
+
+def is_decisions_model(model: ModelConfig) -> bool:
+    """True for typed-decision engines (``~typesafe/jev-latest`` et al.) —
+    identified by ``metadata.engine: decisions`` or the ``~``/``typesafe/``
+    slug prefix, so an ad-hoc ``--judge`` slug works without a models/*.yaml."""
+    meta = model.metadata or {}
+    return meta.get("engine") == "decisions" or model.slug.startswith(("~", "typesafe/"))
+
+
+def _judge_via_decisions(
+    *,
+    logger: EventLogger,
+    step: int,
+    task: TaskSpec,
+    artifact: str,
+    judge: ModelConfig,
+    client: Provider,
+    language: str,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Judge through /api/alpha/decisions — calibrated noul + rubric score.
+
+    ``verdict`` noul >= 0.5 maps to ``passed``; the 0-4 quality rubric's
+    expected value maps to ``score`` (0-1). Both probabilities and the
+    engine's own confidence are preserved in the result for provenance."""
+    state = {
+        "task": task.prompt[:4000],
+        "artifact_language": language,
+        "artifact": artifact[:8000],
+    }
+    data = client.decide(model=judge.slug, state=state, questions=_DECISIONS_QUESTIONS)  # type: ignore[attr-defined]
+    answers = data.get("answers") or {}
+    verdict = answers.get("verdict") or {}
+    quality = answers.get("quality") or {}
+    noul = verdict.get("noul")
+    raw = quality.get("score")
+    score = (float(raw) / 4.0) if isinstance(raw, int | float) else None
+    passed = (float(noul) >= 0.5) if isinstance(noul, int | float) else None
+    usage = data.get("usage") or {}
+    result: dict[str, Any] = {
+        "score": score,
+        "passed": passed,
+        "reasoning": (
+            f"jev noul={noul} rubric={raw}/4 "
+            f"confidence={quality.get('confidence')} probs={quality.get('probabilities')}"
+        ),
+        "noul": noul,
+        "confidence": quality.get("confidence"),
+        "engine": "decisions",
+    }
+    cost: dict[str, Any] = {
+        "phase": "judge",
+        "model": judge.slug,
+        "input_tokens": usage.get("input_tokens") or 0,
+        "output_tokens": usage.get("output_tokens") or 0,
+        "cost_usd": usage.get("cost") or 0.0,
+        "pricing_source": "api",
+        "usage": usage,
+    }
+    logger.log_llm_call(
+        phase="judge",
+        step=step,
+        model=judge.slug,
+        role="judge",
+        messages=[{"role": "user", "content": json.dumps({"state": state, "questions": _DECISIONS_QUESTIONS})}],
+        completion={"content": json.dumps(answers), "usage": usage, "id": data.get("id")},
+        reasoning=str(result["reasoning"]),
+        input_tokens=cost["input_tokens"],
+        output_tokens=cost["output_tokens"],
+        cost_usd=cost["cost_usd"],
+        latency_ms=data.get("latency_ms") or 0.0,
+        pricing_source="api",
+    )
+    return result, [cost]
+
 
 def judge_artifact(
     *,
@@ -112,6 +206,21 @@ def judge_artifact(
             pricing_source="none",
         )
         return result, [cost]
+
+    if is_decisions_model(judge):
+        if image_bytes is not None:
+            # decisions engines are text-only — no image path exists
+            result = {"score": None, "passed": None,
+                      "reasoning": "decisions engine cannot judge image artifacts"}
+            logger.log(phase="judge", step=step, event_type="judge_skipped",
+                       model=judge.slug, role="judge",
+                       input_data={"task": task.id}, output_data=result,
+                       reasoning="Decisions engine is text-only; image skipped.")
+            return result, []
+        return _judge_via_decisions(
+            logger=logger, step=step, task=task, artifact=artifact,
+            judge=judge, client=client, language=language,
+        )
 
     if image_bytes is not None:
         b64 = base64.b64encode(image_bytes).decode()
@@ -229,6 +338,94 @@ def _judge_input(run_dir: Path) -> tuple[bytes | None, str | None, str]:
     if ext in _TEXT_ARTIFACT_EXTS:
         return None, path.read_text(encoding="utf-8", errors="replace"), "html"
     raise _NoJudgeableArtifact(f"unjudgeable artifact type: {path.name}")
+
+
+_SPEC_AUDIT_QUESTIONS: dict[str, Any] = {
+    "lowballs": {
+        "type": "noul",
+        "instructions": (
+            "Would this task UNDER-TEST the capability it claims to measure — "
+            "i.e. could a weak model pass it with shallow or lucky output? "
+            "Consider fixture adversariality, ambiguity, and whether the "
+            "ground truth can be gamed."
+        ),
+        "true": "Yes — the task is too weak to discriminate real capability.",
+        "false": "No — the task meaningfully discriminates capability.",
+    },
+    "sound": {
+        "type": "noul",
+        "instructions": "Is the task spec unambiguous — one clear correct behavior a competent model can identify?",
+        "true": "The spec is clear and unambiguous.",
+        "false": "The spec is ambiguous or self-contradictory.",
+    },
+    "difficulty": {
+        "type": "score",
+        "instructions": "How difficult is this task for a mid-tier code-capable LLM?",
+        "criteria": ["trivial", "easy", "moderate", "hard", "expert"],
+    },
+    "adversarial": {
+        "type": "score",
+        "instructions": (
+            "How adversarial is the fixture — does it contain traps that make "
+            "plausible-looking wrong answers diverge from the reference?"
+        ),
+        "criteria": ["none", "light", "moderate", "strong", "brutal"],
+    },
+}
+
+
+def audit_specs(
+    *,
+    specs: list[TaskSpec],
+    judge: ModelConfig,
+    client: Provider | None,
+    dry_run: bool,
+    workers: int = 8,
+) -> list[dict[str, Any]]:
+    """Ask a decisions-engine judge to audit our own task specs.
+
+    The meta-question every benchmark owes an answer to: are these tasks
+    actually discriminating, or do they low-ball the capability they claim
+    to measure? Requires a decisions model — chat judges answer this kind
+    of structured audit unreliably. Returns one row per spec."""
+    if not is_decisions_model(judge):
+        raise ValueError("spec audit requires a decisions-engine judge (e.g. '~typesafe/jev-latest')")
+    if dry_run:
+        return [
+            {"task_id": t.id, "type": t.type, "skipped": "dry-run"}
+            for t in specs
+        ]
+    if client is None:
+        raise ValueError("spec audit requires a provider client (unless --dry-run)")
+
+    def audit_one(t: TaskSpec) -> dict[str, Any]:
+        state = {
+            "task_id": t.id,
+            "type": t.type,
+            "prompt": t.prompt[:4000],
+            "validation": t.validation,
+            "metadata_keys": sorted((t.metadata or {}).keys()),
+            "seed_rows": len((t.metadata or {}).get("seed") or []),
+            "has_reference": bool((t.metadata or {}).get("reference_sql") or (t.metadata or {}).get("tests") or (t.metadata or {}).get("expected_answer")),
+        }
+        try:
+            data = client.decide(model=judge.slug, state=state, questions=_SPEC_AUDIT_QUESTIONS)  # type: ignore[attr-defined]
+        except Exception as exc:
+            return {"task_id": t.id, "type": t.type, "error": str(exc)[:160]}
+        a = data.get("answers") or {}
+        return {
+            "task_id": t.id,
+            "type": t.type,
+            "lowballs": (a.get("lowballs") or {}).get("noul"),
+            "sound": (a.get("sound") or {}).get("noul"),
+            "difficulty": (a.get("difficulty") or {}).get("score"),
+            "adversarial": (a.get("adversarial") or {}).get("score"),
+            "confidence": (a.get("difficulty") or {}).get("confidence"),
+            "cost_usd": (data.get("usage") or {}).get("cost"),
+        }
+
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        return list(ex.map(audit_one, specs))
 
 
 def backfill_judgments(

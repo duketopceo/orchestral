@@ -68,7 +68,7 @@ function judgeChip(r) {
 
 function runRow(r) {
   return `<tr>
-    <td>${statusChip(r)}</td>
+    <td>${statusChip(r)} ${flagWidget("run", r.run_id)}</td>
     <td><a href="#/run/${esc(r.run_id)}">${esc(r.task_id)}</a></td>
     <td class="mono">${esc(slug(r.orchestrator))} <span class="dim">→</span> ${esc(slug(r.worker))}</td>
     <td>${judgeChip(r)}</td>
@@ -104,6 +104,7 @@ setInterval(refreshJobs, 5000);
 
 async function viewOverview() {
   const ov = await api("/api/overview");
+  await loadFlags();
   const live = (ov.jobs || []).filter(j => j.status === "running");
   const groups = ov.groups || [];
   const tax = ov.taxonomy || {};
@@ -125,7 +126,7 @@ async function viewOverview() {
       const rest = g.runs - (g.finished || 0);
       return `<a class="panel group-card" href="#/runs?group=${encodeURIComponent(g.group)}">
         <div class="split"><span class="gc-name">${esc(g.group)}</span>
-          <span class="dim">${g.runs} runs</span></div>
+          <span class="dim">${g.runs} runs ${flagWidget("group", g.group)}</span></div>
         <div class="gc-stats">
           <span>pass <b>${fmtPct(pass)}</b></span>
           <span>judge <b class="judge-axis">${fmtScore(g.score_median)}</b></span>
@@ -148,10 +149,12 @@ async function viewOverview() {
     <div class="panel"><table class="data">${RUN_HEAD}
       <tbody>${(ov.recent || []).map(runRow).join("") || `<tr><td colspan="9" class="empty">no runs</td></tr>`}</tbody>
     </table></div>`;
+  bindFlags($view);
 }
 
 async function viewRuns(params) {
   const groups = await api("/api/groups");
+  await loadFlags();
   const group = params.get("group") || "";
   const status = params.get("status") || "";
   const task = params.get("task") || "";
@@ -184,8 +187,11 @@ async function viewRuns(params) {
     if (qv) qs.set("q", qv);
     const rows = await api("/api/runs?" + qs);
     const body = document.getElementById("runs-body");
-    if (body) body.innerHTML =
-      rows.map(runRow).join("") || `<tr><td colspan="9" class="empty">no matching runs</td></tr>`;
+    if (body) {
+      body.innerHTML =
+        rows.map(runRow).join("") || `<tr><td colspan="9" class="empty">no matching runs</td></tr>`;
+      bindFlags(body);
+    }
   }
   for (const id of ["f-group", "f-status", "f-task", "f-q"]) {
     document.getElementById(id).addEventListener("input", () => load());
@@ -213,6 +219,7 @@ function kv(label, val, cls) {
 async function viewRun(runId, params) {
   const tab = params.get("tab") || "artifact";
   const d = await api(`/api/run/${runId}`);
+  await loadFlags();
   const m = d.meta, rep = d.report || {};
   const running = m.status === "running";
 
@@ -230,6 +237,8 @@ async function viewRun(runId, params) {
         ${kv("tokens", fmtTok((m.total_input_tokens || 0) + (m.total_output_tokens || 0)))}
         ${kv("time", fmtMs(m.latency_ms))}
         ${m.failure_reason ? kv("failure", esc(m.failure_reason), "") : ""}
+        ${flagWidget("run", runId)}
+        <a class="btn" href="#/card?kind=run&target=${esc(runId)}">card →</a>
         ${d.cancellable ? `<button class="danger" id="cancel-btn">cancel</button>` : ""}
       </div>
     </div>
@@ -255,6 +264,7 @@ async function viewRun(runId, params) {
   });
 
   renderTab(runId, tab, d, running);
+  bindFlags($view);
   if (running) poll(() => refreshRun(runId, tab), 3000);
 }
 
@@ -528,6 +538,147 @@ async function viewNew() {
   });
 }
 
+/* ---------- flags (stateful annotations) ---------- */
+
+let FLAGS = {};
+
+async function loadFlags() {
+  try {
+    const rows = await api("/api/flags");
+    FLAGS = {};
+    for (const a of rows) FLAGS[`${a.kind}:${a.target}`] = a;
+  } catch { FLAGS = {}; }
+}
+
+function flagOf(kind, target) { return FLAGS[`${kind}:${target}`]?.flag || ""; }
+
+function flagWidget(kind, target) {
+  const cur = flagOf(kind, target);
+  return `<span class="flag-pair" data-kind="${esc(kind)}" data-target="${esc(target)}">
+    <button class="flag-btn ${cur === "interesting" ? "f-interesting" : ""}" data-f="interesting" title="flag interesting">★</button>
+    <button class="flag-btn ${cur === "not" ? "f-not" : ""}" data-f="not" title="flag not interesting">∅</button>
+  </span>`;
+}
+
+function bindFlags(root) {
+  for (const pair of root.querySelectorAll(".flag-pair")) {
+    for (const btn of pair.querySelectorAll(".flag-btn")) {
+      btn.addEventListener("click", async e => {
+        e.preventDefault(); e.stopPropagation();
+        const kind = pair.dataset.kind, target = pair.dataset.target;
+        const cur = flagOf(kind, target);
+        const flag = btn.dataset.f === cur ? "" : btn.dataset.f;
+        await api("/api/flag", {
+          method: "POST",
+          body: new URLSearchParams({ kind, target, flag }),
+        });
+        await loadFlags();
+        route(); // re-render current view with the new flag
+      });
+    }
+  }
+}
+
+/* ---------- X showcase cards ---------- */
+
+async function viewCards() {
+  const [groups, flags] = await Promise.all([api("/api/groups"), api("/api/flags")]);
+  FLAGS = {};
+  for (const a of flags) FLAGS[`${a.kind}:${a.target}`] = a;
+  const flagged = flags.filter(f => f.flag);
+  $view.innerHTML = `
+    <h1>Cards</h1>
+    <p class="page-sub">Screenshot-ready showcase cards for X. Flag a group or run, open its card, capture.</p>
+    ${flagged.length ? `<h2>flagged</h2><div class="cardlist">` +
+      flagged.map(f => `<a class="panel cl-row" href="#/card?kind=${esc(f.kind)}&target=${encodeURIComponent(f.target)}">
+        <span class="xc-flag ${esc(f.flag)}">${esc(f.flag === "not" ? "not interesting" : f.flag)}</span>
+        <span class="name">${esc(f.target)}</span><span class="dim">${esc(f.kind)}</span></a>`).join("") +
+      `</div>` : ""}
+    <h2>groups</h2>
+    <div class="cardlist">${groups.map(g => `
+      <a class="panel cl-row" href="#/card?kind=group&target=${encodeURIComponent(g.group)}">
+        <span class="name">${esc(g.group)}</span>
+        <span class="dim">${g.runs} runs · pass ${fmtPct(g.pass_rate)} · judge ${fmtScore(g.score_median)}</span>
+        ${flagWidget("group", g.group)}
+      </a>`).join("") || `<div class="empty">no groups</div>`}</div>`;
+  bindFlags($view);
+}
+
+async function viewCard(params) {
+  const kind = params.get("kind") || (params.get("run") ? "run" : "group");
+  const target = params.get("target") || params.get("run") || params.get("group") || "";
+  if (!target) { location.hash = "#/cards"; return; }
+  await loadFlags();
+  const d = await api(`/api/card?kind=${kind}&target=${encodeURIComponent(target)}`);
+  const flag = flagOf(kind, target);
+  const flagCls = flag === "interesting" ? "interesting" : flag === "not" ? "not" : "unflagged";
+  const flagTxt = flag === "interesting" ? "★ interesting" : flag === "not" ? "∅ not interesting" : "unflagged";
+
+  let hero, title, sub, kvs, barPct = 0, caveat;
+  if (kind === "group") {
+    const pairTxt = (d.pairings || []).slice(0, 3)
+      .map(p => `${slug(p.orchestrator)}→${slug(p.worker)}`).join("  ·  ");
+    title = esc(d.target);
+    sub = `${(d.pairings || []).length} pairing${d.pairings.length === 1 ? "" : "s"} · ${esc(pairTxt)}${d.pairings.length > 3 ? " …" : ""}`;
+    hero = `
+      <div class="xc-big mech"><span class="v">${fmtPct(d.pass_rate)}</span><span class="l">mechanical pass</span></div>
+      <div class="xc-big judge"><span class="v">${fmtScore(d.score_median)}</span><span class="l">judge median</span></div>`;
+    barPct = (d.pass_rate || 0) * 100;
+    const rest = d.runs - d.finished;
+    kvs = [
+      ["runs", `${d.finished}/${d.runs}${rest ? ` (+${rest} running)` : ""}`],
+      ["tasks", d.tasks],
+      ["cost", fmtMoney(d.cost_usd)],
+      ["latest", fmtWhen(d.latest)],
+    ];
+    caveat = `mechanical = execution truth · judge = advisory semantic axis · suite ${esc(d.suite)}`;
+  } else {
+    title = esc(d.task_id);
+    sub = `${esc(slug(d.orchestrator))} <span class="arrow">→</span> ${esc(slug(d.worker))}${d.run_group ? ` · ${esc(d.run_group)}` : ""}`;
+    const verdict = d.status === "finished" ? (d.passes ? "PASS" : "FAIL") : String(d.status || "—").toUpperCase();
+    hero = `
+      <div class="xc-big ${d.passes ? "mech" : "miss"}"><span class="v">${verdict}</span><span class="l">mechanical</span></div>
+      <div class="xc-big judge"><span class="v">${d.judge_noul != null ? Number(d.judge_noul).toFixed(2) : fmtScore(d.score)}</span><span class="l">judge ${d.judge_engine === "decisions" ? "noul" : "score"}</span></div>`;
+    barPct = d.passes ? 100 : 0;
+    kvs = [
+      ["cost", fmtMoney(d.cost_usd)],
+      ["latency", fmtMs(d.latency_ms)],
+      ["failure", d.failure_reason || "—"],
+      ["when", fmtWhen(d.started_at)],
+    ];
+    caveat = `mechanical = execution truth · judge ${d.judge_engine === "decisions" ? "= jev decisions engine (calibrated noul)" : "= advisory semantic axis"} · suite ${esc(d.suite)}`;
+  }
+
+  $view.innerHTML = `
+    <div class="card-stage">
+      <div class="card-toolbar">
+        ${flagWidget(kind, target)}
+        <a class="btn" href="#/cards">all cards</a>
+        <a class="btn" href="${kind === "group" ? `#/runs?group=${encodeURIComponent(target)}` : `#/run/${target}`}">inspect →</a>
+        <span class="hint">1200×675 — screenshot the card region for X</span>
+      </div>
+      <div class="xcard">
+        <div class="xc-top">
+          <div class="xc-brand"><span class="mark">◆</span><span class="word">orchestral</span><span class="sub">observatory</span></div>
+          <div class="xc-suite">suite ${esc(d.suite)} · eval harness</div>
+        </div>
+        <div class="xc-headline">
+          <div><div class="xc-title">${title}</div><div class="xc-sub">${sub}</div></div>
+          <span class="xc-flag ${flagCls}">${flagTxt}</span>
+        </div>
+        <div class="xc-hero">${hero}
+          <div class="xc-side">${kvs.map(([k, v]) => `<div class="xc-kv"><span class="k">${esc(k)}</span><span class="v">${esc(v)}</span></div>`).join("")}</div>
+        </div>
+        <div class="xc-bar"><i class="b-pass" style="width:${barPct}%"></i><i class="b-fail" style="width:${kind === "group" ? ((d.finished - d.passed) / Math.max(d.runs, 1)) * 100 : (d.passes ? 0 : 100)}%"></i><i class="b-rest" style="width:${kind === "group" ? (1 - d.finished / Math.max(d.runs, 1)) * 100 : 0}%"></i></div>
+        <div class="xc-footer">
+          <span class="xc-caveat">${caveat}</span>
+          <span>${new Date().toISOString().slice(0, 10)}</span>
+        </div>
+      </div>
+    </div>`;
+  bindFlags($view);
+}
+
 /* ---------- router ---------- */
 
 async function route() {
@@ -548,6 +699,8 @@ async function route() {
     else if (path.startsWith("/run/")) await viewRun(path.split("/")[2], params);
     else if (path === "/compare") await viewCompare(params);
     else if (path === "/leaderboard") await viewLeaderboard(params);
+    else if (path === "/cards") await viewCards();
+    else if (path === "/card") await viewCard(params);
     else if (path === "/new") await viewNew();
     else $view.innerHTML = `<div class="empty">unknown view ${esc(path)}</div>`;
   } catch (e) {

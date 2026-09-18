@@ -6,6 +6,7 @@ runs/
 runs-pub/
 reports/
 *.db
+.codebase-memory/
 .DS_Store
 data/
 *.egg-info/

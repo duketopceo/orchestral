@@ -116,6 +116,49 @@ class TestPureLayer(unittest.TestCase):
             self.assertEqual(len(hist), 1)
             self.assertEqual(state.history_rows(store, "nomatch"), [])
 
+    def test_annotation_roundtrip_upsert_and_validation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = RunStore(tmp)
+            store.set_annotation("run", "r1", "interesting", "worth a post")
+            store.set_annotation("group", "g1", "not")
+            anns = {(a["kind"], a["target"]): a for a in store.annotations()}
+            self.assertEqual(anns[("run", "r1")]["flag"], "interesting")
+            self.assertEqual(anns[("run", "r1")]["note"], "worth a post")
+            self.assertEqual(anns[("group", "g1")]["flag"], "not")
+            # upsert on the same (kind, target) updates rather than duplicating
+            store.set_annotation("run", "r1", "not", "revised")
+            anns = store.annotations()
+            self.assertEqual(len(anns), 2)
+            self.assertEqual(anns[0]["flag"] if anns[0]["target"] == "r1" else anns[1]["flag"], "not")
+            # clearing with '' keeps the row (note survives) but drops the flag
+            store.set_annotation("run", "r1", "", "still noted")
+            anns = {(a["kind"], a["target"]): a for a in store.annotations()}
+            self.assertEqual(anns[("run", "r1")]["flag"], "")
+            self.assertEqual(anns[("run", "r1")]["note"], "still noted")
+            with self.assertRaises(ValueError):
+                store.set_annotation("bogus", "x", "interesting")
+            with self.assertRaises(ValueError):
+                store.set_annotation("run", "x", "bogus")
+
+    def test_card_payload_run_group_and_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rid = _seed_run(tmp, run_group="g-cards")
+            store = RunStore(tmp)
+            store.set_annotation("run", rid, "interesting")
+            card = state.card_payload(store, "run", rid)
+            self.assertIsNotNone(card)
+            self.assertEqual(card["kind"], "run")
+            self.assertEqual(card["suite"], "v3")
+            self.assertEqual(card["task_id"], "t-task")
+            self.assertEqual(card["flag"], "interesting")
+            gcard = state.card_payload(store, "group", "g-cards")
+            self.assertIsNotNone(gcard)
+            self.assertEqual(gcard["suite"], "v3")
+            self.assertEqual(gcard["runs"], 1)
+            self.assertEqual(len(gcard["pairings"]), 1)
+            self.assertIsNone(state.card_payload(store, "run", "ghost"))
+            self.assertIsNone(state.card_payload(store, "group", "ghost"))
+
     def test_escaping_in_error_pages(self):
         # model/path strings reach the browser through render.py's error
         # pages — they must escape, same contract the SPA's esc() upholds
@@ -268,6 +311,30 @@ class TestHttpRoutes(unittest.TestCase):
         payload = json.loads(body)
         self.assertIn("timeline", payload)
         self.assertIn("artifact", payload)
+
+    def test_flags_and_card_api(self):
+        # set a flag through the API, read it back through /api/flags + /api/card
+        code, _, body = self._post(
+            "/api/flag",
+            f"kind=run&target={self.rid}&flag=interesting&note=post+candidate",
+        )
+        self.assertEqual(code, 200)
+        self.assertEqual(json.loads(body)["flag"], "interesting")
+        code, body = self._get("/api/flags")
+        self.assertEqual(code, 200)
+        flags = {(a["kind"], a["target"]): a for a in json.loads(body)}
+        self.assertEqual(flags[("run", self.rid)]["flag"], "interesting")
+        code, body = self._get(f"/api/card?kind=run&target={self.rid}")
+        self.assertEqual(code, 200)
+        card = json.loads(body)
+        self.assertEqual(card["suite"], "v3")
+        self.assertEqual(card["flag"], "interesting")
+        code, _ = self._get("/api/card?kind=run&target=ghost")
+        self.assertEqual(code, 404)
+        # invalid flag values are rejected, not silently stored
+        code, _, body = self._post("/api/flag", "kind=run&target=x&flag=bogus")
+        self.assertEqual(code, 400)
+        self.assertIn("flag", json.loads(body)["error"])
 
     def test_unknown_routes_404(self):
         for path in ("/nope", "/run/nope", "/api/run/nope/live"):

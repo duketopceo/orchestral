@@ -949,6 +949,43 @@ def cmd_judge(args: argparse.Namespace) -> None:
         print(f"score: mean {sum(scored)/len(scored):.2f} over {len(scored)} judged artifacts")
 
 
+def cmd_specaudit(args: argparse.Namespace) -> None:
+    """jev-style audit of the task suite itself — does the benchmark low-ball?"""
+    from orchestral.judge import audit_specs
+
+    judge = _judge_from_arg(args)
+    if judge is None:
+        print("error: --judge is required (a decisions-model slug, e.g. '~typesafe/jev-latest')")
+        raise SystemExit(1)
+    specs = [load_task(f) for f in sorted(Path(args.tasks_dir).rglob("*.yaml"))]
+    client = None if args.dry_run else provider_for(judge)
+    try:
+        rows = audit_specs(specs=specs, judge=judge, client=client,
+                           dry_run=args.dry_run, workers=args.jobs)
+    finally:
+        if client is not None:
+            client.close()
+    out_path = Path(args.reports_dir) / "spec-audit.json"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(json.dumps({
+        "judge": judge.slug, "suite": __import__("orchestral").SUITE_VERSION,
+        "audited_at": datetime.now(UTC).isoformat(), "specs": rows,
+    }, indent=2, default=str), encoding="utf-8")
+    if args.json:
+        print(json.dumps(rows, indent=2, default=str))
+        return
+    print(f"spec audit — {len(rows)} specs · judge {judge.slug} · wrote {out_path}")
+    print(f"{'task':<30} {'type':<12} {'lowball':>8} {'sound':>6} {'diff':>5} {'adv':>5}")
+    for r in rows:
+        if "error" in r or "skipped" in r:
+            print(f"{r['task_id']:<30} {r['type']:<12} {'—':>8} {'—':>6} {'—':>5} {'—':>5}  {r.get('error', 'dry-run')[:40]}")
+            continue
+        low = r["lowballs"]
+        flag = " ⚠" if isinstance(low, float) and low >= 0.5 else ""
+        print(f"{r['task_id']:<30} {r['type']:<12} {low:>8.2f} {r['sound']:>6.2f} "
+              f"{r['difficulty']:>5.1f} {r['adversarial']:>5.1f}{flag}")
+
+
 def cmd_scrub(args: argparse.Namespace) -> None:
     copied = scrub_all(Path(args.runs_dir), Path(args.scrub_dir))
     print(f"Scrubbed {len(copied)} runs to {args.scrub_dir}")
@@ -1164,6 +1201,14 @@ def main() -> None:
     judge.add_argument("--dry-run", action="store_true", help="Exercise the path without calling the provider or writing results")
     judge.add_argument("--json", action="store_true", help="Emit the full result as JSON")
     judge.set_defaults(func=cmd_judge)
+
+    specaudit = sub.add_parser("specaudit", help="Decisions-engine audit of the task suite — lowball/sound/difficulty/adversarial per spec")
+    specaudit.add_argument("--judge", required=True, help="Decisions-model slug (e.g. '~typesafe/jev-latest' — quote it)")
+    specaudit.add_argument("--jobs", type=int, default=8, help="Parallel audit calls")
+    specaudit.add_argument("--reports-dir", default="reports", help="Output directory for spec-audit.json")
+    specaudit.add_argument("--dry-run", action="store_true")
+    specaudit.add_argument("--json", action="store_true")
+    specaudit.set_defaults(func=cmd_specaudit)
 
     serve = sub.add_parser("serve", help="Local web observatory — browse, launch, and cancel runs in a browser (localhost only)")
     serve.add_argument("--port", type=int, default=8787, help="Port to bind on 127.0.0.1 (default 8787)")

@@ -388,6 +388,51 @@ def groups_payload(store: RunStore) -> list[dict[str, Any]]:
     return out
 
 
+def card_payload(store: RunStore, kind: str, target: str) -> dict[str, Any] | None:
+    """Share-card data — the engineered summary an X post needs: flagship
+    numbers, both verdict axes, the annotation flag, and caveat inputs
+    (suite version, judge provenance, sample size)."""
+    from orchestral import SUITE_VERSION
+
+    flags = {(a["kind"], a["target"]): a for a in store.annotations()}
+    ann = flags.get((kind, target)) or {}
+    if kind == "group":
+        g = next((x for x in groups_payload(store) if x["group"] == target), None)
+        if g is None:
+            return None
+        cells = aggregate(store.list_runs(run_group=target))
+        pairings = sorted({(c.orchestrator, c.worker) for c in cells})
+        return {
+            "kind": "group", "target": target, "suite": SUITE_VERSION,
+            "runs": g["runs"], "finished": g["finished"], "passed": g["passed"],
+            "pass_rate": g["pass_rate"], "score_median": g["score_median"],
+            "cost_usd": g["cost_usd"], "tasks": g["tasks"],
+            "pairings": [{"orchestrator": o, "worker": w} for o, w in pairings],
+            "latest": g["latest"],
+            "flag": ann.get("flag", ""), "note": ann.get("note", ""),
+        }
+    if kind == "run":
+        meta = store.get_run(target)
+        if meta is None:
+            return None
+        report = read_json(Path(meta.run_dir) / "report.json") or {}
+        judge = report.get("judge") or {}
+        return {
+            "kind": "run", "target": target, "suite": SUITE_VERSION,
+            "task_id": meta.task_id, "orchestrator": meta.orchestrator,
+            "worker": meta.worker, "status": meta.status,
+            "passes": meta.passes, "score": meta.score,
+            "cost_usd": meta.total_cost_usd, "latency_ms": meta.latency_ms,
+            "failure_reason": meta.failure_reason,
+            "run_group": meta.run_group, "replicate": meta.replicate,
+            "started_at": meta.started_at,
+            "judge_engine": judge.get("engine"), "judge_noul": judge.get("noul"),
+            "judge_passed": judge.get("passed"),
+            "flag": ann.get("flag", ""), "note": ann.get("note", ""),
+        }
+    return None
+
+
 def compare_payload(store: RunStore, group_a: str, group_b: str) -> dict[str, Any]:
     """Cell-by-cell group delta — the same join `report --compare` prints,
     plus a pairing matrix the SPA renders as a grid."""

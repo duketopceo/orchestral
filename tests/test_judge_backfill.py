@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from orchestral import judge
 from orchestral.config import ModelConfig, TaskSpec
 from orchestral.judge import _judge_input, _NoJudgeableArtifact, backfill_judgments
 from orchestral.runner import Runner
@@ -132,6 +133,70 @@ class TestJudgeInput(unittest.TestCase):
             (Path(tmp) / "artifact.mp4").write_bytes(b"\x00\x00\x00\x18ftyp")
             with self.assertRaises(_NoJudgeableArtifact):
                 _judge_input(Path(tmp))
+
+
+class TestSpecAudit(unittest.TestCase):
+    """Decisions-engine meta-audit of the task suite itself."""
+
+    def _specs(self) -> list[TaskSpec]:
+        return [
+            TaskSpec(id="t-one", type="sql", prompt="q1",
+                     metadata={"seed": [{"a": 1}], "reference_sql": "SELECT 1"}),
+            TaskSpec(id="t-two", type="code", prompt="q2"),
+        ]
+
+    def test_dry_run_returns_rows_without_client(self):
+        rows = judge.audit_specs(
+            specs=self._specs(),
+            judge=_model("~typesafe/jev-latest", "judge"),
+            client=None, dry_run=True,
+        )
+        self.assertEqual(len(rows), 2)
+        self.assertTrue(all(r["skipped"] == "dry-run" for r in rows))
+
+    def test_non_decisions_judge_rejected(self):
+        with self.assertRaises(ValueError):
+            judge.audit_specs(
+                specs=self._specs(),
+                judge=_model("moonshotai/kimi-k2", "judge"),
+                client=None, dry_run=False,
+            )
+
+    def test_audit_maps_typed_answers(self):
+        class FakeDecisions:
+            def decide(self, **kw):
+                return {
+                    "answers": {
+                        "lowballs": {"noul": 0.7},
+                        "sound": {"noul": 0.9},
+                        "difficulty": {"score": 1.5, "confidence": 0.8},
+                        "adversarial": {"score": 2.0},
+                    },
+                    "usage": {"cost": 0.0001},
+                }
+
+        rows = judge.audit_specs(
+            specs=self._specs()[:1],
+            judge=_model("~typesafe/jev-latest", "judge"),
+            client=FakeDecisions(), dry_run=False, workers=1,
+        )
+        self.assertEqual(rows[0]["lowballs"], 0.7)
+        self.assertEqual(rows[0]["sound"], 0.9)
+        self.assertEqual(rows[0]["difficulty"], 1.5)
+        self.assertEqual(rows[0]["adversarial"], 2.0)
+        self.assertEqual(rows[0]["cost_usd"], 0.0001)
+
+    def test_decide_error_is_row_not_crash(self):
+        class Flaky:
+            def decide(self, **kw):
+                raise RuntimeError("provider 500")
+
+        rows = judge.audit_specs(
+            specs=self._specs()[:1],
+            judge=_model("~typesafe/jev-latest", "judge"),
+            client=Flaky(), dry_run=False, workers=1,
+        )
+        self.assertIn("error", rows[0])
 
 
 if __name__ == "__main__":

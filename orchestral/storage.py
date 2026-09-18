@@ -165,6 +165,18 @@ class RunStore:
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS annotations (
+                    kind TEXT NOT NULL,
+                    target TEXT NOT NULL,
+                    flag TEXT NOT NULL DEFAULT '',
+                    note TEXT NOT NULL DEFAULT '',
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (kind, target)
+                )
+                """
+            )
 
     def new_run(
         self,
@@ -323,6 +335,39 @@ class RunStore:
                 GROUP BY model, pricing_source
                 ORDER BY model
                 """
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def set_annotation(
+        self, kind: str, target: str, flag: str, note: str = ""
+    ) -> dict[str, Any]:
+        """Upsert a user annotation — the observatory's stateful layer.
+
+        ``kind`` is ``run`` or ``group``; ``flag`` is ``interesting``,
+        ``not``, or ``''`` (clears the flag but keeps the row for the note)."""
+        if kind not in ("run", "group"):
+            raise ValueError(f"annotation kind must be run|group, got {kind!r}")
+        if flag not in ("interesting", "not", ""):
+            raise ValueError(f"flag must be interesting|not|'', got {flag!r}")
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO annotations (kind, target, flag, note, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT (kind, target) DO UPDATE SET
+                    flag = excluded.flag,
+                    note = excluded.note,
+                    updated_at = excluded.updated_at
+                """,
+                (kind, target, flag, note, datetime.now(UTC).isoformat()),
+            )
+        return {"kind": kind, "target": target, "flag": flag, "note": note}
+
+    def annotations(self) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT kind, target, flag, note, updated_at FROM annotations"
             ).fetchall()
         return [dict(r) for r in rows]
 

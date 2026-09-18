@@ -32,6 +32,7 @@ from orchestral.fileset import (
     build_zip,
     expected_paths,
     manifest_listing,
+    member_requirements,
     merge_filesets,
 )
 from orchestral.judge import judge_artifact
@@ -50,7 +51,9 @@ from orchestral.planners import (
     delegate_image,
     delegate_multi,
     delegate_needle,
+    delegate_patch,
     delegate_sql,
+    delegate_terminal,
     delegate_video,
     plan_ce,
     plan_raw,
@@ -59,10 +62,24 @@ from orchestral.providers import provider_for, provider_key
 from orchestral.sqlexec import run_sql_check
 from orchestral.storage import RunMeta, RunStore
 from orchestral.taxonomy import classify_exception
+from orchestral.terminal import check_terminal
 
 
 class ValidationError(Exception):
     """Raised when a run fails structural validation."""
+
+
+# task types whose assembly is "orchestrator picks the best candidate":
+# type -> (artifact filename, result key to read, validator method name)
+_CANDIDATE_TASKS: dict[str, tuple[str, str, str]] = {
+    "needle": ("artifact.txt", "content", "_validate"),
+    "constraint": ("artifact.txt", "content", "_validate"),
+    "sql": ("artifact.sql", "query", "_validate_sql"),
+    "extract": ("artifact.json", "content", "_validate_extract"),
+    "api": ("artifact.json", "content", "_validate_api"),
+    "terminal": ("artifact.json", "content", "_validate_terminal"),
+    "swe-patch": ("artifact.diff", "content", "_validate_patch"),
+}
 
 
 class RunCancelled(Exception):
@@ -284,18 +301,33 @@ class Runner:
             is_video = task.type == "video"
             # code tasks share the fileset protocol: workers return files,
             # the merge+zip is identical, only validation differs
-            is_multi = task.type in ("multi-file", "code")
+            is_multi = task.type in ("multi-file", "code", "bugfix")
             is_constraint = task.type == "constraint"
             is_needle = task.type == "needle"
             is_sql = task.type == "sql"
             is_extract = task.type == "extract"
             is_api = task.type == "api"
+            is_terminal = task.type == "terminal"
+            is_patch = task.type == "swe-patch"
+            is_pipeline = task.type == "pipeline"
             is_media = is_image or is_video
             results: list[dict[str, Any]] = []
             media_paths: list[Path | None] = []
             file_sets: list[tuple[int, dict[str, str]]] = []
             media_ext = _artifact_ext(task.type)
             subtasks = plan.get("subtasks") or plan.get("sections", {}).get("subtasks", [])
+            if not isinstance(subtasks, list):
+                raise ValidationError(
+                    f"Plan subtasks must be a list, got {type(subtasks).__name__}"
+                )
+            # cost-control gate: an orchestrator that over-decomposes burns a
+            # worker call per subtask — exceeding the budget is a recorded
+            # failure, not a silent truncation
+            max_subtasks = int(task.metadata.get("max_subtasks") or 20)
+            if len(subtasks) > max_subtasks:
+                raise ValidationError(
+                    f"Plan produced {len(subtasks)} subtasks, over max_subtasks {max_subtasks}"
+                )
             logger.lifecycle(
                 "delegation.created", phase="delegate",
                 subtasks=len(subtasks),
@@ -309,6 +341,18 @@ class Runner:
                 elif not isinstance(sub, dict):
                     sub = {"id": i, "description": str(sub)}
                 wid = f"worker-{i}"
+                # the canonical brief always reaches the worker — an
+                # orchestrator's thin description shouldn't leave the worker
+                # guessing the spec (review: workers hallucinated the task)
+                sub = {**sub}
+                sub.setdefault("task_prompt", task.prompt)
+                if is_pipeline and results:
+                    # each subtask sees the outputs of every prior subtask —
+                    # the chain is the test: does context actually propagate
+                    sub = {**sub, "prior_outputs": [
+                        {"subtask_id": r.get("subtask_id"), "content": r.get("content")}
+                        for r in results
+                    ]}
                 out: dict[str, Any] | None = None
                 media_bytes: bytes = b""
                 files: dict[str, str] = {}
@@ -366,6 +410,28 @@ class Runner:
                             )
                         elif is_api:
                             out, worker_costs = delegate_api(
+                                logger=logger,
+                                step=i + 3,
+                                subtask=sub,
+                                task=task,
+                                worker=worker,
+                                client=role_clients.get("worker"),
+                                dry_run=self.dry_run,
+                                attempt=attempt + 1,
+                            )
+                        elif is_terminal:
+                            out, worker_costs = delegate_terminal(
+                                logger=logger,
+                                step=i + 3,
+                                subtask=sub,
+                                task=task,
+                                worker=worker,
+                                client=role_clients.get("worker"),
+                                dry_run=self.dry_run,
+                                attempt=attempt + 1,
+                            )
+                        elif is_patch:
+                            out, worker_costs = delegate_patch(
                                 logger=logger,
                                 step=i + 3,
                                 subtask=sub,
@@ -545,9 +611,10 @@ class Runner:
                     judge_bytes = artifact_bytes
                 else:
                     passes, report = self._validate_video(task, artifact_bytes)
-            elif is_needle:
-                # Same raw-text candidate pick as constraint; validation is
-                # the constraint checks (expected token present, decoys absent).
+            elif task.type in _CANDIDATE_TASKS:
+                # Orchestrator picks the winning worker output; the chosen
+                # payload becomes the artifact and the type's validator runs.
+                artifact_name, key, validate_name = _CANDIDATE_TASKS[task.type]
                 position, assembly_costs = assemble_media(
                     logger=logger,
                     task=task,
@@ -559,7 +626,25 @@ class Runner:
                 )
                 ledger.add_many(assembly_costs)
                 chosen = results[position] if results else {}
-                artifact = str(chosen.get("content") or "")
+                artifact = str(chosen.get(key) or chosen.get("content") or "")
+                (run_dir / artifact_name).write_text(artifact, encoding="utf-8")
+                logger.lifecycle(
+                    "artifact.saved", phase="assemble",
+                    path=artifact_name, bytes=len(artifact.encode()),
+                )
+                logger.lifecycle("synthesis.completed", phase="assemble", role="orchestrator")
+                logger.lifecycle("evaluation.started", phase="validate")
+                passes, report = getattr(self, validate_name)(task, artifact)
+                judge_text = artifact
+            elif is_pipeline:
+                # The chain's final output IS the artifact — orchestration
+                # value was in the plan; assembly adds no synthesis call.
+                if self.dry_run and task.metadata.get("reference_text"):
+                    artifact = str(task.metadata["reference_text"])
+                elif results:
+                    artifact = str(results[-1].get("content") or "")
+                else:
+                    raise ValidationError("No output produced for the pipeline task")
                 (run_dir / "artifact.txt").write_text(artifact, encoding="utf-8")
                 logger.lifecycle(
                     "artifact.saved", phase="assemble",
@@ -569,103 +654,6 @@ class Runner:
                 logger.lifecycle("evaluation.started", phase="validate")
                 passes, report = self._validate(task, artifact)
                 judge_text = artifact
-            elif is_constraint:
-                # Orchestrator picks the best candidate; the artifact is the
-                # raw text so word budgets and pattern checks apply to worker
-                # output, not HTML scaffolding.
-                position, assembly_costs = assemble_media(
-                    logger=logger,
-                    task=task,
-                    orchestrator=orchestrator,
-                    step=assembly_step,
-                    results=results,
-                    client=role_clients.get("orchestrator"),
-                    dry_run=self.dry_run,
-                )
-                ledger.add_many(assembly_costs)
-                chosen = results[position] if results else {}
-                artifact = str(chosen.get("content") or "")
-                (run_dir / "artifact.txt").write_text(artifact, encoding="utf-8")
-                logger.lifecycle(
-                    "artifact.saved", phase="assemble",
-                    path="artifact.txt", bytes=len(artifact.encode()),
-                )
-                logger.lifecycle("synthesis.completed", phase="assemble", role="orchestrator")
-                logger.lifecycle("evaluation.started", phase="validate")
-                passes, report = self._validate(task, artifact)
-                judge_text = artifact
-            elif is_sql:
-                # Orchestrator picks the candidate query; validation runs it
-                # read-only against the task fixture's reference result.
-                position, assembly_costs = assemble_media(
-                    logger=logger,
-                    task=task,
-                    orchestrator=orchestrator,
-                    step=assembly_step,
-                    results=results,
-                    client=role_clients.get("orchestrator"),
-                    dry_run=self.dry_run,
-                )
-                ledger.add_many(assembly_costs)
-                chosen = results[position] if results else {}
-                candidate_sql = str(chosen.get("query") or "")
-                (run_dir / "artifact.sql").write_text(candidate_sql, encoding="utf-8")
-                logger.lifecycle(
-                    "artifact.saved", phase="assemble",
-                    path="artifact.sql", bytes=len(candidate_sql.encode()),
-                )
-                logger.lifecycle("synthesis.completed", phase="assemble", role="orchestrator")
-                logger.lifecycle("evaluation.started", phase="validate")
-                passes, report = self._validate_sql(task, candidate_sql)
-                judge_text = candidate_sql
-            elif is_extract:
-                # Orchestrator picks the best candidate extraction; grading is
-                # deterministic per-field against metadata.expected.
-                position, assembly_costs = assemble_media(
-                    logger=logger,
-                    task=task,
-                    orchestrator=orchestrator,
-                    step=assembly_step,
-                    results=results,
-                    client=role_clients.get("orchestrator"),
-                    dry_run=self.dry_run,
-                )
-                ledger.add_many(assembly_costs)
-                chosen = results[position] if results else {}
-                artifact = str(chosen.get("content") or "")
-                (run_dir / "artifact.json").write_text(artifact, encoding="utf-8")
-                logger.lifecycle(
-                    "artifact.saved", phase="assemble",
-                    path="artifact.json", bytes=len(artifact.encode()),
-                )
-                logger.lifecycle("synthesis.completed", phase="assemble", role="orchestrator")
-                logger.lifecycle("evaluation.started", phase="validate")
-                passes, report = self._validate_extract(task, artifact)
-                judge_text = artifact
-            elif is_api:
-                # Orchestrator picks the best candidate plan; validation
-                # replays it over real loopback HTTP against the task's stub.
-                position, assembly_costs = assemble_media(
-                    logger=logger,
-                    task=task,
-                    orchestrator=orchestrator,
-                    step=assembly_step,
-                    results=results,
-                    client=role_clients.get("orchestrator"),
-                    dry_run=self.dry_run,
-                )
-                ledger.add_many(assembly_costs)
-                chosen = results[position] if results else {}
-                plan_text = str(chosen.get("content") or "")
-                (run_dir / "artifact.json").write_text(plan_text, encoding="utf-8")
-                logger.lifecycle(
-                    "artifact.saved", phase="assemble",
-                    path="artifact.json", bytes=len(plan_text.encode()),
-                )
-                logger.lifecycle("synthesis.completed", phase="assemble", role="orchestrator")
-                logger.lifecycle("evaluation.started", phase="validate")
-                passes, report = self._validate_api(task, plan_text)
-                judge_text = plan_text
             elif is_multi:
                 # Deterministic merge + zip: no orchestrator call, and the
                 # artifact is bytes — the HTML branch below writes text.
@@ -680,7 +668,7 @@ class Runner:
                 )
                 logger.lifecycle("synthesis.completed", phase="assemble", role="orchestrator")
                 logger.lifecycle("evaluation.started", phase="validate")
-                if task.type == "code":
+                if task.type in ("code", "bugfix"):
                     passes, report = self._validate_code(task, merged)
                 else:
                     passes, report = self._validate_multi(task, artifact_bytes)
@@ -710,6 +698,10 @@ class Runner:
                         client=role_clients.get("orchestrator"),
                         dry_run=self.dry_run,
                     )
+                if self.dry_run:
+                    required = [str(t) for t in (task.metadata.get("required") or [])]
+                    if required:
+                        artifact += "\n" + " ".join(required)
                 ext = _artifact_ext(task.type)
                 (run_dir / f"artifact{ext}").write_text(artifact)
                 ledger.add_many(assembly_costs)
@@ -747,22 +739,39 @@ class Runner:
                         output_data={},
                         reasoning="Judge model has no `vision: true` metadata; image judging may fail at the API.",
                     )
-                judge_result, judge_costs = self._judge_with_cache(
-                    logger=logger,
-                    step=assembly_step + 3,
-                    task=task,
-                    client=role_clients.get("judge"),
-                    artifact_bytes=judge_bytes,
-                    artifact_text=judge_text,
-                    judge=judge,
-                    language="text" if is_multi else "html",
-                )
-                ledger.add_many(judge_costs)
-                report["judge"] = judge_result
-                if judge_result.get("score") is not None:
-                    report["score"] = judge_result["score"]
-                if judge_result.get("passed") is not None:
-                    passes = passes and judge_result["passed"]
+                try:
+                    judge_result, judge_costs = self._judge_with_cache(
+                        logger=logger,
+                        step=assembly_step + 3,
+                        task=task,
+                        client=role_clients.get("judge"),
+                        artifact_bytes=judge_bytes,
+                        artifact_text=judge_text,
+                        judge=judge,
+                        language="text" if is_multi else "html",
+                    )
+                except Exception as exc:
+                    # the judge is advisory — its failure must not convert a
+                    # mechanically-verified run into a `failed` record
+                    logger.log(
+                        phase="judge",
+                        step=assembly_step + 3,
+                        event_type="judge_error",
+                        model=judge.slug,
+                        role="judge",
+                        input_data={"task": task.id},
+                        output_data={},
+                        error=str(exc),
+                        reasoning="Judge call failed; keeping the mechanical verdict.",
+                    )
+                    report["judge_error"] = str(exc)
+                else:
+                    ledger.add_many(judge_costs)
+                    report["judge"] = judge_result
+                    if judge_result.get("score") is not None:
+                        report["score"] = judge_result["score"]
+                    if judge_result.get("passed") is not None:
+                        passes = passes and judge_result["passed"]
 
             logger.lifecycle(
                 "evaluation.completed", phase="validate", role="judge" if judge else "harness",
@@ -776,10 +785,11 @@ class Runner:
                 artifact_path = run_dir / "artifact.html"
                 if artifact_path.exists():
                     try:
-                        from orchestral.shots import ScreenshotUnavailable, capture_html
+                        from orchestral.shots import capture_html
 
                         capture_html(artifact_path, run_dir / "screenshot.png")
-                    except ScreenshotUnavailable as exc:
+                    except Exception as exc:
+                        # observability garnish, never a run outcome
                         logger.log(
                             phase="shots",
                             step=assembly_step + 5,
@@ -788,7 +798,7 @@ class Runner:
                             role="harness",
                             input_data={"artifact": str(artifact_path)},
                             output_data={"reason": str(exc)},
-                            reasoning="Playwright or browser binaries unavailable; screenshot skipped.",
+                            reasoning="Screenshot capture failed or unavailable; skipped.",
                         )
 
             # 6. Final accounting
@@ -1049,6 +1059,15 @@ class Runner:
                 errors.append("no_forbidden requested but metadata.forbidden is empty.")
             elif hits:
                 errors.append(f"Forbidden token(s) present: {', '.join(map(str, hits))}.")
+        if "exact_answer" in requested:
+            expected = task.metadata.get("expected_answer")
+            if expected is None:
+                checks["exact_answer"] = False
+                errors.append("exact_answer requested but metadata.expected_answer is missing.")
+            else:
+                checks["exact_answer"] = artifact.strip() == str(expected).strip()
+                if not checks["exact_answer"]:
+                    errors.append("Artifact is not exactly the expected answer.")
         if "matches_pattern" in requested:
             pattern = task.metadata.get("pattern")
             if not pattern:
@@ -1076,10 +1095,20 @@ class Runner:
                     checks["no_pattern"] = False
                     errors.append(f"metadata.forbidden_pattern is not a valid regex: {exc}.")
 
-        return _validation_report(task, checks, errors, len(artifact))
+        known = {
+            "html", "html_parses", "non_empty", "has_title", "has_cta", "has_form",
+            "has_viewport", "no_placeholder", "within_budget", "has_required",
+            "no_forbidden", "exact_answer", "matches_pattern", "no_pattern",
+        }
+        unknown = sorted(requested - known)
+        if unknown:
+            errors.append(f"Unknown validation check(s): {', '.join(unknown)}.")
+        passes, report = _validation_report(task, checks, errors, len(artifact))
+        return passes and not unknown, report
 
     def _validate_image(self, task: TaskSpec, artifact: bytes) -> tuple[bool, dict[str, Any]]:
         requested = set(task.validation) if task.validation else {"non_empty", "png_signature"}
+        known = {"non_empty", "png_signature"}
         checks: dict[str, bool] = {}
         errors: list[str] = []
 
@@ -1092,11 +1121,15 @@ class Runner:
             if not checks["png_signature"]:
                 errors.append("Artifact is not a well-formed PNG (bad magic or missing IEND).")
 
-        return _validation_report(task, checks, errors, len(artifact))
+        unknown = sorted(requested - known)
+        if unknown:
+            errors.append(f"Unknown validation check(s): {', '.join(unknown)}.")
+        passes, report = _validation_report(task, checks, errors, len(artifact))
+        return passes and not unknown, report
 
     def _validate_multi(self, task: TaskSpec, artifact: bytes) -> tuple[bool, dict[str, Any]]:
         requested = set(task.validation) if task.validation else {"non_empty", "zip_signature"}
-        known = {"non_empty", "zip_signature", "has_paths"}
+        known = {"non_empty", "zip_signature", "has_paths", "member_required"}
         checks: dict[str, bool] = {}
         errors: list[str] = []
 
@@ -1104,22 +1137,22 @@ class Runner:
             checks["non_empty"] = bool(artifact)
             if not checks["non_empty"]:
                 errors.append("Artifact is empty.")
-        present: dict[str, int] = {}
-        if "zip_signature" in requested or "has_paths" in requested:
+
+        archive: zipfile.ZipFile | None = None
+        if requested & {"zip_signature", "has_paths", "member_required"}:
             try:
-                with zipfile.ZipFile(io.BytesIO(artifact)) as archive:
-                    present = {
-                        info.filename: info.file_size
-                        for info in archive.infolist()
-                        if not info.filename.endswith("/")
-                    }
+                archive = zipfile.ZipFile(io.BytesIO(artifact))
             except zipfile.BadZipFile:
-                present = {}
+                archive = None
         if "zip_signature" in requested:
-            checks["zip_signature"] = zipfile.is_zipfile(io.BytesIO(artifact))
+            checks["zip_signature"] = archive is not None
             if not checks["zip_signature"]:
                 errors.append("Artifact is not a readable zip archive.")
         if "has_paths" in requested:
+            present = (
+                {info.filename: info.file_size for info in archive.infolist() if not info.filename.endswith("/")}
+                if archive is not None else {}
+            )
             declared = expected_paths(task.metadata)
             missing = [p for p in declared if present.get(p, 0) <= 0]
             checks["has_paths"] = bool(declared) and not missing
@@ -1127,6 +1160,41 @@ class Runner:
                 errors.append("has_paths requested but metadata.expected_paths is empty.")
             elif missing:
                 errors.append(f"Missing or empty expected files: {', '.join(missing)}.")
+        if "member_required" in requested:
+            member_req = member_requirements(task.metadata)
+            if not member_req:
+                checks["member_required"] = False
+                errors.append("member_required requested but metadata.member_required is empty.")
+            elif archive is None:
+                checks["member_required"] = False
+                errors.append("Artifact is not a readable zip archive.")
+            else:
+                member_missing: list[str] = []
+                token_missing: list[str] = []
+                for member, tokens in member_req.items():
+                    try:
+                        raw = archive.read(member)
+                    except KeyError:
+                        member_missing.append(member)
+                        continue
+                    except (RuntimeError, NotImplementedError, zipfile.BadZipFile, OSError) as exc:
+                        member_missing.append(f"{member} (unreadable: {type(exc).__name__})")
+                        continue
+                    try:
+                        text = raw.decode("utf-8").lower()
+                    except UnicodeDecodeError:
+                        member_missing.append(f"{member} (not decodable text)")
+                        continue
+                    absent = [t for t in tokens if t.lower() not in text]
+                    if absent:
+                        token_missing.append(f"{member}: {', '.join(absent)}")
+                checks["member_required"] = not (member_missing or token_missing)
+                if member_missing:
+                    errors.append(f"Members listed in member_required absent: {', '.join(member_missing)}.")
+                if token_missing:
+                    errors.append(f"Required content missing in members: {'; '.join(token_missing)}.")
+        if archive is not None:
+            archive.close()
 
         unknown = sorted(requested - known)
         if unknown:
@@ -1193,6 +1261,7 @@ class Runner:
 
     def _validate_video(self, task: TaskSpec, artifact: bytes) -> tuple[bool, dict[str, Any]]:
         requested = set(task.validation) if task.validation else {"non_empty", "mp4_signature"}
+        known = {"non_empty", "mp4_signature"}
         checks: dict[str, bool] = {}
         errors: list[str] = []
 
@@ -1206,7 +1275,11 @@ class Runner:
             if not checks["mp4_signature"]:
                 errors.append("Artifact is not a well-formed MP4 (missing leading ftyp box).")
 
-        return _validation_report(task, checks, errors, len(artifact))
+        unknown = sorted(requested - known)
+        if unknown:
+            errors.append(f"Unknown validation check(s): {', '.join(unknown)}.")
+        passes, report = _validation_report(task, checks, errors, len(artifact))
+        return passes and not unknown, report
 
     def _validate_sql(self, task: TaskSpec, sql: str) -> tuple[bool, dict[str, Any]]:
         report = run_sql_check(task.metadata, sql)
@@ -1237,6 +1310,64 @@ class Runner:
         report["task_id"] = task.id
         report["artifact_length"] = len(plan_text)
         return bool(report.get("passes")), report
+
+    def _validate_terminal(self, task: TaskSpec, plan_text: str) -> tuple[bool, dict[str, Any]]:
+        report = check_terminal(task.metadata, plan_text)
+        report["task_id"] = task.id
+        report["artifact_length"] = len(plan_text)
+        return bool(report.get("passes")), report
+
+    def _validate_patch(self, task: TaskSpec, patch_text: str) -> tuple[bool, dict[str, Any]]:
+        """Apply the worker's diff to metadata.files; run the hidden tests.
+
+        `applies` is its own gate — a diff that doesn't apply fails before
+        tests run, so patch-craft is measured independently of correctness.
+        """
+        from orchestral.patch import PatchError, apply_unified_diff, extract_patch
+
+        repo = {str(k): str(v) for k, v in (task.metadata.get("files") or {}).items()}
+        checks: dict[str, bool] = {}
+        errors: list[str] = []
+        report: dict[str, Any] = {
+            "task_id": task.id,
+            "artifact_length": len(patch_text),
+            "checks": checks,
+            "errors": errors,
+            "score": None,
+        }
+        diff = extract_patch(patch_text)
+        checks["extracted"] = diff is not None
+        if diff is None:
+            errors.append("artifact does not contain a unified diff")
+            return False, report
+        try:
+            patched = apply_unified_diff(repo, diff)
+            checks["applies"] = True
+        except PatchError as exc:
+            checks["applies"] = False
+            errors.append(f"patch does not apply: {exc}")
+            return False, report
+
+        quality = check_code_quality(patched, task.metadata)
+        checks["quality_ok"] = not quality["violations"]
+        errors.extend(quality["violations"])
+        report["quality"] = quality
+        report["files"] = sorted(patched)
+
+        if self.dry_run:
+            report["executed"] = False
+            return checks["applies"] and checks["quality_ok"], report
+        suite = run_unittest_suite(
+            patched,
+            str(task.metadata.get("tests") or ""),
+            timeout_seconds=float(task.metadata.get("timeout_seconds", DEFAULT_TIMEOUT_SECONDS)),
+        )
+        report["execution"] = suite
+        checks["tests_pass"] = bool(suite.get("ok"))
+        if not suite.get("executed"):
+            errors.append(suite.get("error", "tests did not execute"))
+        report["score"] = score_from_report(suite)
+        return bool(all(checks.values())), report
 
 
 PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
@@ -1274,7 +1405,7 @@ def _subtask_produced_output(
 
 
 def _artifact_ext(task_type: str) -> str:
-    return {"html": ".html", "image": ".png", "video": ".mp4", "api": ".json", "multi-file": ".zip", "code": ".zip", "sql": ".sql", "extract": ".json"}.get(task_type, ".txt")
+    return {"html": ".html", "image": ".png", "video": ".mp4", "api": ".json", "terminal": ".json", "swe-patch": ".diff", "multi-file": ".zip", "code": ".zip", "bugfix": ".zip", "sql": ".sql", "extract": ".json"}.get(task_type, ".txt")
 
 
 class _HTMLValidator(html.parser.HTMLParser):

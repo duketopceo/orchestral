@@ -253,6 +253,24 @@ models:
     metadata:
       vision: true
 
+  - slug: "x-ai/grok-4.3"
+    name: "Grok 4.3"
+    role: reference
+    input_price_per_mtok: 1.25
+    output_price_per_mtok: 2.50
+    context: 1000000
+    max_tokens: 30720
+    metadata:
+      reasoning: true
+
+  - slug: "moonshotai/kimi-k2"
+    name: "Kimi K2"
+    role: reference
+    input_price_per_mtok: 0.57
+    output_price_per_mtok: 2.30
+    context: 131072
+    max_tokens: 16384
+
   - slug: "x-ai/grok-4.6"
     name: "Grok 4.6"
     role: orchestrator

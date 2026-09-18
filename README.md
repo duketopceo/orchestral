@@ -73,12 +73,13 @@ orchestral dashboard               # reports/dashboard.html
 | Command | What it does |
 |---|---|
 | `init` | Create the runs directory and SQLite index |
+| `validate` | Parse all task/model specs and check per-type metadata contracts (exit 1 on problems) |
 | `run` | One orchestrator × worker pairing on one task |
 | `grid` | Every orchestrator × worker pairing on one task (`--orchestrators`, `--workers`, `--jobs`) |
 | `batch` | One pairing across many tasks (`--batch-dir` or `--batch-tasks`, `--jobs`) |
 | `ablate` | Sweep one knob for a pairing (`--sweep retry_limit=0,1,2` or `prompt_variant=terse,detailed`) |
 | `history` | Per-model aggregates across all stored runs |
-| `report` | List/compare runs (`--pairings`, `--leaderboard`, `--groups`, `--html`, `--sort`, `--json`) |
+| `report` | List/compare runs (`--pairings`, `--leaderboard`, `--groups`, `--compare A,B`, `--html`, `--sort`, `--json`) |
 | `export` | CSV run/leaderboard export, Markdown run audit, JSONL trace (`--format`, `--run`, `--out`) |
 | `prices` | Pricing drift check — provider-reported `api_cost_usd` vs configured rates (`--threshold`, `--json`) |
 | `dashboard` | Static HTML dashboard with cost-vs-quality scatter |
@@ -87,6 +88,7 @@ orchestral dashboard               # reports/dashboard.html
 | `serve` | Local web observatory — same views in a browser, launch/cancel runs (localhost only) |
 | `scrub` | Redact secrets/paths from `runs/` into `runs-pub/` + `manifest.json` |
 | `calibrate` | Judge-vs-human agreement from a labels file (`--labels`, `--json`) |
+| `review` | Frontier-model audit of run evidence — per-run `review.json` + `reports/review-*.md` (`--model`, `--group`, `--dry-run`) |
 
 Shared run flags (on `run`, `grid`, `batch`, `ablate`): `--planner raw|ce-plan`,
 `--judge <slug>`, `--no-judge-cache`, `--retry-limit N`, `--prompt-variant NAME`,
@@ -97,6 +99,16 @@ Shared run flags (on `run`, `grid`, `batch`, `ablate`): `--planner raw|ce-plan`,
 `--group` is absent); replicate `i` records seed `S+i-1`. `report --groups`
 aggregates cells with pass rate, score/cost mean±sd, p50/p95 latency, and
 successes-per-dollar.
+
+`review --model x-ai/grok-4.3` audits archived runs with a strong reviewer
+model: each run gets a bounded evidence digest (meta, plan, report, cost
+ledger, event/error summary, task spec) and a structured verdict —
+`run_quality` (clean/suspect/invalid), findings that must cite digest
+evidence, and a suggested mechanical check. Results land as `review.json`
+in the run dir; a corpus pass writes `reports/review-<ts>.md` ranking
+systemic issues. Reviewer output is hypotheses, not verdicts — every
+finding carries the evidence it claims. Runs already holding `review.json`
+are skipped unless `--force`; `--dry-run` writes stubs for plumbing tests.
 
 `calibrate --labels labels.yaml` measures how much to trust `--judge`: the
 labels file is `labels: [{run_id, score, passed}]` over runs the judge
@@ -154,7 +166,7 @@ unittest` in a subprocess — score = fraction of tests passed, replicates
 give pass@k), and **constraint tasks** (workers produce text under hard
 constraints — word/char budgets, required and forbidden tokens, regex
 patterns — the orchestrator picks the best candidate, deterministic
-validators check every constraint), and **long-context needle** tasks (`metadata.document` haystack injected into each subtask; the answer must name the true token and no decoys), and **SQL analytics** (workers produce candidate queries, the orchestrator picks one, and the harness executes it read-only against a fixture SQLite database and compares to `metadata.reference_sql` — fully deterministic scoring), and **structured extraction** (workers return JSON per a declared `metadata.fields` schema, graded per-field against `metadata.expected` — deterministic, partial credit), and **API integration** (workers produce a JSON request plan, replayed over real loopback HTTP against a stub server built from `metadata.stub`; scored by which expected calls actually arrived).
+validators check every constraint), and **long-context needle** tasks (`metadata.document` haystack injected into each subtask; the answer must name the true token and no decoys), and **SQL analytics** (workers produce candidate queries, the orchestrator picks one, and the harness executes it read-only against a fixture SQLite database and compares to `metadata.reference_sql` — fully deterministic scoring), and **structured extraction** (workers return JSON per a declared `metadata.fields` schema, graded per-field against `metadata.expected` — deterministic, partial credit), **API integration** (workers produce a JSON request plan, replayed over real loopback HTTP against a stub server built from `metadata.stub`; scored by which expected calls actually arrived), **bugfix** (`code` with a provided broken repo in `metadata.files` — repair, not generation), and **terminal** (Terminal-Bench-flavored: workers emit a shell-command plan replayed in a virtual shell over a seeded tmpdir, graded on final filesystem state).
 Validation checks and the full schema are documented in
 [docs/task-spec.md](docs/task-spec.md); model config fields in
 [docs/model-config.md](docs/model-config.md).

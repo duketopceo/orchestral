@@ -1,0 +1,849 @@
+/* orchestral observatory — hash-routed SPA over /api/*.
+   Two verdict axes are kept visually distinct everywhere:
+   mechanical pass = green/red, judge score = info blue. */
+
+"use strict";
+
+const $view = document.getElementById("view");
+const $jobs = document.getElementById("rail-jobs");
+let pollTimer = null;
+let liveCursor = 0;
+
+/* ---------- helpers ---------- */
+
+function esc(s) {
+  return String(s ?? "").replace(/[&<>"']/g, c =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+async function api(path, opts) {
+  const r = await fetch(path, opts);
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(body.error || `${r.status} ${path}`);
+  return body;
+}
+
+function fmtMoney(v) { return v == null ? "—" : `$${Number(v).toFixed(4)}`; }
+function fmtPct(v) { return v == null ? "—" : `${Math.round(v * 100)}%`; }
+function fmtScore(v) { return v == null ? "—" : Number(v).toFixed(2); }
+function fmtMs(v) {
+  if (v == null) return "—";
+  const s = v / 1000;
+  return s < 60 ? `${s.toFixed(1)}s` : `${(s / 60).toFixed(1)}m`;
+}
+function fmtTok(v) {
+  if (v == null) return "—";
+  return v >= 1000 ? `${(v / 1000).toFixed(1)}k` : String(v);
+}
+function fmtWhen(iso) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) +
+    " " + d.toLocaleDateString([], { month: "short", day: "numeric" });
+}
+function slug(s) { return String(s || "").split("/").pop(); }
+
+function stopPolling() {
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+}
+function poll(fn, ms) {
+  stopPolling();
+  pollTimer = setInterval(fn, ms);
+}
+
+function statusChip(r) {
+  if (r.status === "running") return `<span class="chip chip-warn"><span class="dot dot-run pulse"></span>running</span>`;
+  if (r.status === "failed") return `<span class="chip chip-fail">failed</span>`;
+  if (r.status === "cancelled") return `<span class="chip chip-dim">cancelled</span>`;
+  if (r.passes === true || r.passes === 1) return `<span class="chip chip-pass">pass</span>`;
+  if (r.passes === false || r.passes === 0) return `<span class="chip chip-fail">fail</span>`;
+  return `<span class="chip chip-dim">${esc(r.status)}</span>`;
+}
+
+function judgeChip(r) {
+  return r.score == null
+    ? `<span class="chip chip-dim">judge —</span>`
+    : `<span class="chip chip-info">judge ${fmtScore(r.score)}</span>`;
+}
+
+function runRow(r) {
+  return `<tr>
+    <td>${statusChip(r)} ${flagWidget("run", r.run_id)}</td>
+    <td><a href="#/run/${esc(r.run_id)}">${esc(r.task_id)}</a></td>
+    <td class="mono">${esc(slug(r.orchestrator))} <span class="dim">→</span> ${esc(slug(r.worker))}</td>
+    <td>${judgeChip(r)}</td>
+    <td class="t-num">${fmtMoney(r.total_cost_usd)}</td>
+    <td class="t-num">${fmtTok((r.total_input_tokens || 0) + (r.total_output_tokens || 0))}</td>
+    <td class="t-num">${fmtMs(r.latency_ms)}</td>
+    <td class="dim">${esc(r.run_group || "—")}</td>
+    <td class="dim">${fmtWhen(r.started_at)}</td>
+  </tr>`;
+}
+
+const RUN_HEAD = `<tr>
+  <th>verdict</th><th>task</th><th>orch → worker</th><th>judge</th>
+  <th class="t-num">cost</th><th class="t-num">tok</th><th class="t-num">time</th>
+  <th>group</th><th>started</th>
+</tr>`;
+
+/* ---------- rail activity ---------- */
+
+async function refreshJobs() {
+  try {
+    const ov = await api("/api/overview");
+    const jobs = (ov.jobs || []).filter(j => j.status === "running" || j.cancellable);
+    $jobs.innerHTML = jobs.length
+      ? jobs.map(j => `<div class="rail-job"><span class="dot dot-run pulse"></span><span class="jl">${esc(j.label)}</span></div>`).join("")
+      : `<div class="rail-empty">no active jobs</div>`;
+  } catch { /* rail is best-effort */ }
+}
+refreshJobs();
+setInterval(refreshJobs, 5000);
+
+/* ---------- views ---------- */
+
+async function viewOverview() {
+  const ov = await api("/api/overview");
+  await loadFlags();
+  const live = (ov.jobs || []).filter(j => j.status === "running");
+  const groups = ov.groups || [];
+  const tax = ov.taxonomy || {};
+  const taxMax = Math.max(1, ...Object.values(tax));
+
+  $view.innerHTML = `
+    <h1>Overview</h1>
+    <p class="page-sub">Live experiment observatory — mechanical verdicts and judge scores are separate axes.</p>
+
+    ${live.length ? `<div class="live-strip">${live.map(j => `
+      <div class="live-card"><span class="dot dot-run pulse"></span>
+        <span class="lc-label">${esc(j.label)}</span>
+        <span class="dim">${esc(j.detail || "")}</span>
+      </div>`).join("")}</div>` : ""}
+
+    <h2>Groups</h2>
+    <div class="group-grid">${groups.map(g => {
+      const pass = g.pass_rate, fail = g.finished ? (1 - (pass ?? 0)) : 0;
+      const rest = g.runs - (g.finished || 0);
+      return `<a class="panel group-card" href="#/runs?group=${encodeURIComponent(g.group)}">
+        <div class="split"><span class="gc-name">${esc(g.group)}</span>
+          <span class="dim">${g.runs} runs ${flagWidget("group", g.group)}</span></div>
+        <div class="gc-stats">
+          <span>pass <b>${fmtPct(pass)}</b></span>
+          <span>judge <b class="judge-axis">${fmtScore(g.score_median)}</b></span>
+          <span>cost <b>${fmtMoney(g.cost_usd)}</b></span>
+        </div>
+        <div class="gc-bar">
+          <i class="b-pass" style="width:${(pass ?? 0) * 100}%"></i>
+          <i class="b-fail" style="width:${fail * 100 * (g.finished ? 1 : 0) / Math.max(g.finished, 1) * (g.finished / Math.max(g.runs, 1)) * 100 / 100}%"></i>
+          <i class="b-rest" style="width:${(rest / Math.max(g.runs, 1)) * 100}%"></i>
+        </div></a>`;
+    }).join("") || `<div class="empty">no run groups yet</div>`}</div>
+
+    ${Object.keys(tax).length ? `<h2>Failure taxonomy</h2>
+    <div class="tax-list">${Object.entries(tax).map(([k, n]) => `
+      <div class="tax-row"><span class="tx-name">${esc(k)}</span>
+        <span class="tx-bar"><i style="width:${(n / taxMax) * 100}%"></i></span>
+        <span class="tx-n">${n}</span></div>`).join("")}</div>` : ""}
+
+    <h2>Recent runs</h2>
+    <div class="panel"><table class="data">${RUN_HEAD}
+      <tbody>${(ov.recent || []).map(runRow).join("") || `<tr><td colspan="9" class="empty">no runs</td></tr>`}</tbody>
+    </table></div>`;
+  bindFlags($view);
+}
+
+async function viewRuns(params) {
+  const groups = await api("/api/groups");
+  await loadFlags();
+  const group = params.get("group") || "";
+  const status = params.get("status") || "";
+  const task = params.get("task") || "";
+  const q = params.get("q") || "";
+
+  $view.innerHTML = `
+    <h1>Runs</h1>
+    <div class="filters">
+      <select id="f-group"><option value="">all groups</option>
+        ${groups.map(g => `<option ${g.group === group ? "selected" : ""}>${esc(g.group)}</option>`).join("")}</select>
+      <input type="search" id="f-q" placeholder="task / model / reason…" value="${esc(q)}">
+      <select id="f-status">
+        ${["", "running", "finished", "passed", "failed", "cancelled"].map(s =>
+          `<option value="${s}" ${s === status ? "selected" : ""}>${s || "any status"}</option>`).join("")}
+      </select>
+      <input type="search" id="f-task" placeholder="task id…" value="${esc(task)}" style="min-width:150px">
+    </div>
+    <div class="panel"><table class="data">${RUN_HEAD}<tbody id="runs-body">
+      <tr><td colspan="9" class="empty">loading…</td></tr></tbody></table></div>`;
+
+  async function load() {
+    const qs = new URLSearchParams();
+    const gv = document.getElementById("f-group").value;
+    const sv = document.getElementById("f-status").value;
+    const tv = document.getElementById("f-task").value;
+    const qv = document.getElementById("f-q").value;
+    if (gv) qs.set("group", gv);
+    if (sv) qs.set("status", sv);
+    if (tv) qs.set("task", tv);
+    if (qv) qs.set("q", qv);
+    const rows = await api("/api/runs?" + qs);
+    const body = document.getElementById("runs-body");
+    if (body) {
+      body.innerHTML =
+        rows.map(runRow).join("") || `<tr><td colspan="9" class="empty">no matching runs</td></tr>`;
+      bindFlags(body);
+    }
+  }
+  for (const id of ["f-group", "f-status", "f-task", "f-q"]) {
+    document.getElementById(id).addEventListener("input", () => load());
+  }
+  await load();
+}
+
+/* ----- run detail ----- */
+
+function timelineHtml(tl, livePhase) {
+  return `<div class="timeline">${(tl || []).map(n => {
+    const live = livePhase === n.phase;
+    const cls = n.errors ? "tl-err" : live ? "tl-live" : "tl-done";
+    return `<div class="tl-node ${cls}">
+      <div class="tl-name">${esc(n.phase)}${live ? ' <span class="dot dot-run pulse"></span>' : ""}</div>
+      <div class="tl-meta">${n.events} ev · ${fmtMoney(n.cost_usd)} · ${fmtMs(n.latency_ms)}${n.errors ? ` · <span class="e">${n.errors} err</span>` : ""}</div>
+    </div>`;
+  }).join("")}</div>`;
+}
+
+function kv(label, val, cls) {
+  return `<div class="stat"><span class="s-label">${label}</span><span class="s-val ${cls || ""}">${val}</span></div>`;
+}
+
+async function viewRun(runId, params) {
+  const tab = params.get("tab") || "artifact";
+  const d = await api(`/api/run/${runId}`);
+  await loadFlags();
+  const m = d.meta, rep = d.report || {};
+  const running = m.status === "running";
+
+  const tabs = ["artifact", "events", "calls", "report", "review", "plan", "manifest"];
+  $view.innerHTML = `
+    <div class="run-head">
+      <div class="rh-title">
+        <h1>${esc(m.task_id)}</h1>
+        <div class="rh-pair">${esc(m.orchestrator)} <span class="arrow">→</span> ${esc(m.worker)}</div>
+        <div class="rh-pair dim">${esc(m.run_group || "")} ${m.replicate ? `· rep ${m.replicate}` : ""} · ${esc(runId)}</div>
+      </div>
+      <div class="run-stats">
+        ${statusChip(m)} ${judgeChip(m)}
+        ${kv("cost", fmtMoney(m.total_cost_usd))}
+        ${kv("tokens", fmtTok((m.total_input_tokens || 0) + (m.total_output_tokens || 0)))}
+        ${kv("time", fmtMs(m.latency_ms))}
+        ${m.failure_reason ? kv("failure", esc(m.failure_reason), "") : ""}
+        ${flagWidget("run", runId)}
+        <a class="btn" href="#/card?kind=run&target=${esc(runId)}">card →</a>
+        ${d.cancellable ? `<button class="danger" id="cancel-btn">cancel</button>` : ""}
+      </div>
+    </div>
+    <div class="detail-grid">
+      <div class="panel panel-pad" id="tl">${timelineHtml(d.timeline, running ? "running" : null)}</div>
+      <div>
+        <div class="tabs">${tabs.map(t =>
+          `<button data-tab="${t}" class="${t === tab ? "active" : ""}">${t}</button>`).join("")}</div>
+        <div id="tab-body"></div>
+      </div>
+    </div>`;
+
+  for (const b of $view.querySelectorAll(".tabs button")) {
+    b.addEventListener("click", () => {
+      location.hash = `#/run/${runId}?tab=${b.dataset.tab}`;
+    });
+  }
+  const cancelBtn = document.getElementById("cancel-btn");
+  if (cancelBtn) cancelBtn.addEventListener("click", async () => {
+    cancelBtn.disabled = true;
+    await api(`/api/run/${runId}/cancel`, { method: "POST" });
+    viewRun(runId, params);
+  });
+
+  renderTab(runId, tab, d, running);
+  bindFlags($view);
+  if (running) poll(() => refreshRun(runId, tab), 3000);
+}
+
+async function refreshRun(runId, tab) {
+  try {
+    const d = await api(`/api/run/${runId}`);
+    const tl = document.getElementById("tl");
+    if (tl) tl.innerHTML = timelineHtml(d.timeline, "running");
+    if (tab === "events") renderTab(runId, "events", d, true);
+    if (d.meta.status !== "running") { stopPolling(); viewRun(runId, new URLSearchParams(`tab=${tab}`)); }
+  } catch { /* transient */ }
+}
+
+async function renderTab(runId, tab, d, running) {
+  const el = document.getElementById("tab-body");
+  if (!el) return;
+
+  if (tab === "artifact") {
+    const a = d.artifact;
+    if (!a) { el.innerHTML = `<div class="empty">no artifact stored${running ? " yet" : ""}</div>`; return; }
+    let inner = `<div class="artifact-meta"><span>${esc(a.name)}</span><span>${a.bytes} B</span></div>`;
+    if (a.ext === "zip") {
+      const members = a.members || [];
+      inner += `<div class="member-list">${members.map(mm =>
+        `<button data-m="${esc(mm.name)}">${esc(mm.name)} <span class="dim">${mm.bytes}B</span></button>`).join("")}</div>
+        <div id="member-view"><div class="empty">pick a member to preview</div></div>`;
+      el.innerHTML = inner;
+      for (const b of el.querySelectorAll(".member-list button")) {
+        b.addEventListener("click", () => {
+          for (const x of el.querySelectorAll(".member-list button")) x.classList.remove("active");
+          b.classList.add("active");
+          const name = b.dataset.m;
+          const ext = name.rsplit(".", 1).length > 1 ? name.split(".").pop().toLowerCase() : "";
+          const src = `/api/run/${runId}/artifact/${encodeURIComponent(name)}`;
+          const mv = document.getElementById("member-view");
+          mv.innerHTML = ext === "html"
+            ? `<iframe class="artifact-frame" sandbox="allow-scripts" src="${src}"></iframe>`
+            : `<iframe class="artifact-frame" style="background:var(--bg-inset)" sandbox="" src="${src}"></iframe>`;
+        });
+      }
+      return;
+    }
+    const src = `/api/run/${runId}/artifact`;
+    if (a.ext === "html") {
+      inner += `<iframe class="artifact-frame" sandbox="allow-scripts" src="${src}"></iframe>`;
+    } else if (["png", "jpg", "jpeg", "svg", "webp", "gif"].includes(a.ext)) {
+      inner += `<img class="artifact-img" src="${src}">`;
+    } else {
+      inner += `<iframe class="artifact-frame" style="background:var(--bg-inset)" sandbox="" src="${src}"></iframe>`;
+    }
+    el.innerHTML = inner;
+    return;
+  }
+
+  if (tab === "events") {
+    const live = await api(`/api/run/${runId}/live?after=0`);
+    liveCursor = live.next;
+    const rows = live.rows, details = live.details;
+    el.innerHTML = `<div class="ev-wrap" id="ev-wrap">` +
+      rows.map((r, i) => evRow(r, details[i])).join("") +
+      `</div>` + (running ? `<div class="dim" style="padding:8px;font-size:11px">streaming…</div>` : "");
+    bindEvRows(el, rows, details);
+    if (running) poll(async () => {
+      try {
+        const inc = await api(`/api/run/${runId}/live?after=${liveCursor}`);
+        liveCursor = inc.next;
+        const wrap = document.getElementById("ev-wrap");
+        if (wrap && inc.rows.length) {
+          const html = inc.rows.map((r, i) => evRow(r, inc.details[i])).join("");
+          wrap.insertAdjacentHTML("beforeend", html);
+          bindEvRows(wrap, inc.rows, inc.details, true);
+          wrap.scrollTop = wrap.scrollHeight;
+        }
+      } catch { /* transient */ }
+    }, 2000);
+    return;
+  }
+
+  if (tab === "calls") {
+    const calls = d.calls || [];
+    el.innerHTML = `<div class="panel"><table class="data"><tr>
+      <th>phase</th><th>model</th><th class="t-num">in tok</th><th class="t-num">out tok</th>
+      <th class="t-num">cost</th><th class="t-num">ms</th></tr><tbody>` +
+      calls.map(c => `<tr>
+        <td class="mono">${esc(c.phase || "")}</td>
+        <td class="mono">${esc(c.model || "")}</td>
+        <td class="t-num">${fmtTok(c.input_tokens)}</td>
+        <td class="t-num">${fmtTok(c.output_tokens)}</td>
+        <td class="t-num">${fmtMoney(c.cost_usd)}</td>
+        <td class="t-num">${fmtMs(c.latency_ms)}</td>
+      </tr>`).join("") || `<tr><td colspan="6" class="empty">no calls recorded</td></tr>` +
+      `</tbody></table></div>`;
+    return;
+  }
+
+  const key = { report: "report", review: "review", manifest: "manifest", plan: "plan" }[tab];
+  const val = d[key];
+  if (val == null) { el.innerHTML = `<div class="empty">no ${tab} recorded</div>`; return; }
+  if (tab === "review" && val && typeof val === "object") {
+    el.innerHTML = reviewHtml(val);
+    return;
+  }
+  el.innerHTML = `<pre class="block">${esc(typeof val === "string" ? val : JSON.stringify(val, null, 2))}</pre>`;
+}
+
+function evRow(r, detail) {
+  const [t, type, worker, d] = r;
+  const err = /fail|error/i.test(type) ? " ev-err" : "";
+  return `<div class="ev-row"><span class="ev-t">${esc(t)}</span>
+    <span class="ev-type${err}">${esc(type)}</span>
+    <span class="ev-d">${esc(worker)} · ${esc(d)}</span></div>`;
+}
+
+function bindEvRows(el, rows, details, append) {
+  // click a row to reveal its detail inline under it
+  const evRows = el.querySelectorAll(".ev-row");
+  const start = append ? evRows.length - rows.length : 0;
+  rows.forEach((r, i) => {
+    const row = evRows[start + i];
+    if (!row) return;
+    row.style.cursor = "pointer";
+    row.addEventListener("click", () => {
+      const next = row.nextElementSibling;
+      if (next && next.classList.contains("ev-detail")) { next.remove(); return; }
+      row.insertAdjacentHTML("afterend", `<div class="ev-detail">${esc(details[i] || "")}</div>`);
+    });
+  });
+}
+
+function reviewHtml(v) {
+  const verdict = v.verdict || v.summary || "";
+  const findings = v.findings || [];
+  return `<div class="panel panel-pad">
+    ${verdict ? `<p style="margin-top:0">${esc(String(verdict))}</p>` : ""}
+    ${findings.length ? `<table class="data"><tr><th>severity</th><th>finding</th><th>evidence</th></tr><tbody>` +
+      findings.map(f => `<tr>
+        <td><span class="chip ${/high|crit/i.test(f.severity || "") ? "chip-fail" : /med/i.test(f.severity || "") ? "chip-warn" : "chip-dim"}">${esc(f.severity || "")}</span></td>
+        <td>${esc(f.title || f.finding || "")}</td>
+        <td class="dim">${esc(String(f.evidence || "").slice(0, 200))}</td></tr>`).join("") +
+      `</tbody></table>` : `<pre class="block">${esc(JSON.stringify(v, null, 2))}</pre>`}
+  </div>`;
+}
+
+/* ----- compare ----- */
+
+async function viewCompare(params) {
+  const groups = await api("/api/groups");
+  const a = params.get("a") || (groups[0] && groups[0].group) || "";
+  const b = params.get("b") || (groups[1] && groups[1].group) || "";
+
+  $view.innerHTML = `
+    <h1>Compare</h1>
+    <p class="page-sub">Cell-by-cell delta between two run groups — task × orchestrator × worker.</p>
+    <div class="compare-controls">
+      <label class="f">baseline<select id="cmp-a">${groups.map(g =>
+        `<option ${g.group === a ? "selected" : ""}>${esc(g.group)}</option>`).join("")}</select></label>
+      <span class="dim" style="padding-bottom:8px">→</span>
+      <label class="f">candidate<select id="cmp-b">${groups.map(g =>
+        `<option ${g.group === b ? "selected" : ""}>${esc(g.group)}</option>`).join("")}</select></label>
+      <button class="primary" id="cmp-go" style="margin-bottom:1px">compare</button>
+    </div>
+    <div id="cmp-out"></div>`;
+
+  document.getElementById("cmp-go").addEventListener("click", () => {
+    const av = document.getElementById("cmp-a").value, bv = document.getElementById("cmp-b").value;
+    location.hash = `#/compare?a=${encodeURIComponent(av)}&b=${encodeURIComponent(bv)}`;
+  });
+  if (a && b) await renderCompare(a, b);
+}
+
+async function renderCompare(a, b) {
+  const out = document.getElementById("cmp-out");
+  if (!out) return;
+  out.innerHTML = `<div class="loading">comparing…</div>`;
+  const d = await api(`/api/compare?a=${encodeURIComponent(a)}&b=${encodeURIComponent(b)}`);
+  const v = d.verdicts || {};
+  const chipFor = x => ({ improved: "chip-pass", regressed: "chip-fail", stable: "chip-dim", "one-sided": "chip-warn" }[x]);
+
+  out.innerHTML = `
+    <div class="m">
+      ${["improved", "regressed", "stable", "one-sided"].map(k =>
+        `<span class="chip ${chipFor(k)}">${k} ${v[k] || 0}</span>`).join("")}
+      <span class="chip chip-dim">${esc(a)} ${fmtMoney(d.cost_a)}</span>
+      <span class="chip chip-dim">${esc(b)} ${fmtMoney(d.cost_b)}</span>
+    </div>
+    <div class="panel"><table class="data"><tr>
+      <th>task</th><th>orch → worker</th><th class="t-num">n</th>
+      <th class="t-num">${esc(a)}</th><th class="t-num">${esc(b)}</th><th class="t-num">Δ</th><th>verdict</th>
+    </tr><tbody>` +
+    (d.cells || []).map(c => {
+      const delta = c.verdict === "one-sided" ? "—" : `${((c.pass_b - c.pass_a) * 100).toFixed(0)}pp`;
+      const sign = c.verdict === "one-sided" ? "" : (c.pass_b - c.pass_a >= 0 ? "+" : "");
+      return `<tr>
+        <td><a href="#/runs?task=${encodeURIComponent(c.task_id)}">${esc(c.task_id)}</a></td>
+        <td class="mono">${esc(slug(c.orchestrator))} <span class="dim">→</span> ${esc(slug(c.worker))}</td>
+        <td class="t-num">${c.n_a}/${c.n_b}</td>
+        <td class="t-num">${fmtPct(c.pass_a)}</td>
+        <td class="t-num">${fmtPct(c.pass_b)}</td>
+        <td class="t-num cell-delta">${sign}${delta}</td>
+        <td><span class="chip ${chipFor(c.verdict)}">${c.verdict}</span></td>
+      </tr>`;
+    }).join("") + `</tbody></table></div>`;
+}
+
+/* ----- leaderboard ----- */
+
+async function viewLeaderboard(params) {
+  const group = params.get("group") || "";
+  const sort = params.get("sort") || "pass_rate";
+  const d = await api("/api/pairings" + (group ? `?group=${encodeURIComponent(group)}` : ""));
+  const sorters = {
+    pass_rate: (a, b) => (b.pass_rate ?? -1) - (a.pass_rate ?? -1),
+    cost_per_pass: (a, b) => (a.cost_per_pass ?? 1e9) - (b.cost_per_pass ?? 1e9),
+    score_mean: (a, b) => (b.score_mean ?? -1) - (a.score_mean ?? -1),
+    cost_total: (a, b) => (a.cost_total ?? 1e9) - (b.cost_total ?? 1e9),
+    tasks: (a, b) => (b.tasks_covered ?? 0) - (a.tasks_covered ?? 0),
+  };
+  const rows = [...d.rows].sort(sorters[sort] || sorters.pass_rate);
+  const mx = d.matrix;
+  const maxPass = Math.max(0.01, ...mx.cells.map(c => c.pass_rate ?? 0));
+  const cellOf = (o, w) => mx.cells.find(c => c.orchestrator === o && c.worker === w);
+
+  $view.innerHTML = `
+    <h1>Leaderboard</h1>
+    <p class="page-sub">Orchestrator × worker pairings across all runs${group ? ` in <b>${esc(group)}</b>` : ""}.
+    pass = mechanical gate · score = judge axis · CI = Wilson 95% — thin samples stay honest.</p>
+    <div class="filters"><label class="f">sort by
+      <select id="lb-sort">${Object.keys(sorters).map(s =>
+        `<option value="${s}" ${s === sort ? "selected" : ""}>${s.replace(/_/g, " ")}</option>`).join("")}</select></label>
+      <label class="f">group<input id="lb-group" value="${esc(group)}" placeholder="all groups"></label></div>
+
+    <h2>matrix</h2>
+    <div class="panel panel-pad"><table class="data mx">
+      <tr><th class="dim">orch ↓ worker →</th>${mx.workers.map(w =>
+        `<th class="mx-h">${esc(slug(w))}</th>`).join("")}</tr>
+      ${mx.orchestrators.map(o => `<tr>
+        <th class="mx-h">${esc(slug(o))}</th>
+        ${mx.workers.map(w => {
+          const c = cellOf(o, w);
+          const v = c && c.runs ? c.pass_rate : null;
+          const a = v == null ? 0 : 0.12 + 0.7 * (v / maxPass);
+          return `<td class="mx-cell" title="${esc(o)} → ${esc(w)}${v != null ? ` · pass ${fmtPct(v)} · n=${c.runs}` : ""}"
+            ${v != null ? `data-go="#/card?kind=pairing&target=${encodeURIComponent(o + "|" + w)}"` : ""}>
+            ${v != null ? `<span class="mx-fill" style="opacity:${a.toFixed(2)}">${fmtPct(v)}</span>` : `<span class="dim">·</span>`}
+          </td>`;
+        }).join("")}</tr>`).join("")}
+    </table></div>
+
+    <h2>pairings</h2>
+    <div class="panel"><table class="data"><tr>
+      <th>#</th><th>pairing</th><th class="t-num">runs</th>
+      <th class="t-num">pass</th><th class="t-num">95% CI</th><th class="t-num">judge</th>
+      <th class="t-num">$/pass</th><th class="t-num">cost</th><th class="t-num">med latency</th>
+      <th>why</th><th></th>
+    </tr><tbody>` +
+    rows.map((r, i) => `<tr>
+      <td class="dim">${i + 1}</td>
+      <td class="mono">${esc(slug(r.orchestrator))} <span class="dim">→</span> ${esc(slug(r.worker))}
+        ${r.low_sample ? ' <span class="chip chip-dim">low-n</span>' : ""}</td>
+      <td class="t-num">${r.finished ?? 0}/${r.runs ?? 0}</td>
+      <td class="t-num mech-axis">${fmtPct(r.pass_rate)}</td>
+      <td class="t-num dim">${r.pass_ci ? `${Math.round(r.pass_ci[0] * 100)}–${Math.round(r.pass_ci[1] * 100)}%` : "—"}</td>
+      <td class="t-num judge-axis">${fmtScore(r.score_mean ?? r.score_median)}</td>
+      <td class="t-num">${r.cost_per_pass != null ? fmtMoney(r.cost_per_pass) : "—"}</td>
+      <td class="t-num">${fmtMoney(r.cost_total)}</td>
+      <td class="t-num">${fmtMs(r.duration_median_ms)}</td>
+      <td class="dim why-cell">${esc(r.why || "—")}</td>
+      <td><a class="btn" href="#/card?kind=pairing&target=${encodeURIComponent(r.orchestrator + "|" + r.worker)}${group ? `&group=${encodeURIComponent(group)}` : ""}">card</a>
+        ${flagWidget("pairing", `${r.orchestrator}|${r.worker}`)}</td>
+    </tr>`).join("") + `</tbody></table></div>`;
+
+  document.getElementById("lb-sort").addEventListener("input", e => {
+    location.hash = `#/leaderboard?sort=${e.target.value}${group ? `&group=${encodeURIComponent(group)}` : ""}`;
+  });
+  document.getElementById("lb-group").addEventListener("change", e => {
+    const g = e.target.value.trim();
+    location.hash = `#/leaderboard?sort=${sort}${g ? `&group=${encodeURIComponent(g)}` : ""}`;
+  });
+  for (const td of $view.querySelectorAll("td.mx-cell[data-go]")) {
+    td.style.cursor = "pointer";
+    td.addEventListener("click", () => { location.hash = td.dataset.go; });
+  }
+  await loadFlags();
+  bindFlags($view);
+}
+
+/* ----- launch ----- */
+
+async function viewNew() {
+  const [tasks, orchs, workers, models] = await Promise.all([
+    api("/api/tasks"), api("/api/models?role=orchestrator"),
+    api("/api/models?role=worker"), api("/api/models"),
+  ]);
+  $view.innerHTML = `
+    <h1>New run</h1>
+    <p class="page-sub">Launch an evaluation. Replicates &gt; 1 creates a run group.</p>
+    <div class="panel panel-pad"><form id="launch" class="form-grid">
+      <label class="f">task<select name="task" required>${tasks.map(t => `<option>${esc(t)}</option>`).join("")}</select></label>
+      <label class="f">orchestrator<select name="orchestrator" required>${orchs.map(m => `<option>${esc(m)}</option>`).join("")}</select></label>
+      <label class="f">worker<select name="worker" required>${workers.map(m => `<option>${esc(m)}</option>`).join("")}</select></label>
+      <label class="f">judge (optional)<select name="judge"><option value="">none</option>${models.map(m => `<option>${esc(m)}</option>`).join("")}</select></label>
+      <label class="f">replicates<input type="number" name="replicates" value="1" min="1" max="50"></label>
+      <label class="f">seed (optional)<input type="number" name="seed" placeholder="auto"></label>
+      <label class="f wide check-line"><input type="checkbox" name="dry_run" value="1"> dry run — stub models, no API spend</label>
+      <div class="wide form-actions">
+        <button type="submit" class="primary">launch</button>
+        <span class="form-error" id="launch-err"></span>
+      </div>
+    </form></div>`;
+
+  document.getElementById("launch").addEventListener("submit", async e => {
+    e.preventDefault();
+    const err = document.getElementById("launch-err");
+    err.textContent = "";
+    const f = new FormData(e.target);
+    const body = new URLSearchParams();
+    for (const [k, v] of f) body.set(k, v);
+    try {
+      const r = await api("/api/run", { method: "POST", body });
+      location.hash = r.run_id ? `#/run/${r.run_id}` : "#/runs";
+    } catch (ex) { err.textContent = ex.message; }
+  });
+}
+
+/* ---------- flags (stateful annotations) ---------- */
+
+let FLAGS = {};
+
+async function loadFlags() {
+  try {
+    const rows = await api("/api/flags");
+    FLAGS = {};
+    for (const a of rows) FLAGS[`${a.kind}:${a.target}`] = a;
+  } catch { FLAGS = {}; }
+}
+
+function flagOf(kind, target) { return FLAGS[`${kind}:${target}`]?.flag || ""; }
+
+function flagWidget(kind, target) {
+  const cur = flagOf(kind, target);
+  return `<span class="flag-pair" data-kind="${esc(kind)}" data-target="${esc(target)}">
+    <button class="flag-btn ${cur === "interesting" ? "f-interesting" : ""}" data-f="interesting" title="flag interesting">★</button>
+    <button class="flag-btn ${cur === "not" ? "f-not" : ""}" data-f="not" title="flag not interesting">∅</button>
+  </span>`;
+}
+
+function bindFlags(root) {
+  for (const pair of root.querySelectorAll(".flag-pair")) {
+    for (const btn of pair.querySelectorAll(".flag-btn")) {
+      btn.addEventListener("click", async e => {
+        e.preventDefault(); e.stopPropagation();
+        const kind = pair.dataset.kind, target = pair.dataset.target;
+        const cur = flagOf(kind, target);
+        const flag = btn.dataset.f === cur ? "" : btn.dataset.f;
+        await api("/api/flag", {
+          method: "POST",
+          body: new URLSearchParams({ kind, target, flag }),
+        });
+        await loadFlags();
+        route(); // re-render current view with the new flag
+      });
+    }
+  }
+}
+
+/* ---------- X showcase cards ---------- */
+
+async function viewCards() {
+  const [groups, flags, pairings] = await Promise.all([
+    api("/api/groups"), api("/api/flags"), api("/api/pairings"),
+  ]);
+  FLAGS = {};
+  for (const a of flags) FLAGS[`${a.kind}:${a.target}`] = a;
+  const flagged = flags.filter(f => f.flag);
+  $view.innerHTML = `
+    <h1>Cards</h1>
+    <p class="page-sub">Screenshot-ready showcase cards for X — one post per pairing or group.
+    Flag it, open the card, capture the image, then draft the follow-up thread from real numbers.</p>
+    ${flagged.length ? `<h2>flagged</h2><div class="cardlist">` +
+      flagged.map(f => `<a class="panel cl-row" href="#/card?kind=${esc(f.kind)}&target=${encodeURIComponent(f.target)}">
+        <span class="xc-flag ${esc(f.flag)}">${esc(f.flag === "not" ? "not interesting" : f.flag)}</span>
+        <span class="name">${esc(f.target)}</span><span class="dim">${esc(f.kind)}</span></a>`).join("") +
+      `</div>` : ""}
+    <h2>pairings</h2>
+    <div class="cardlist">${pairings.rows.map(r => `
+      <a class="panel cl-row" href="#/card?kind=pairing&target=${encodeURIComponent(r.orchestrator + "|" + r.worker)}">
+        <span class="name">${esc(slug(r.orchestrator))} → ${esc(slug(r.worker))}</span>
+        <span class="dim">${r.finished}/${r.runs} runs · pass ${fmtPct(r.pass_rate)}${r.pass_ci ? ` (CI ${Math.round(r.pass_ci[0] * 100)}–${Math.round(r.pass_ci[1] * 100)}%)` : ""} · ${esc(r.why)}</span>
+        ${flagWidget("pairing", `${r.orchestrator}|${r.worker}`)}
+      </a>`).join("") || `<div class="empty">no pairings</div>`}</div>
+    <h2>groups</h2>
+    <div class="cardlist">${groups.map(g => `
+      <a class="panel cl-row" href="#/card?kind=group&target=${encodeURIComponent(g.group)}">
+        <span class="name">${esc(g.group)}</span>
+        <span class="dim">${g.runs} runs · pass ${fmtPct(g.pass_rate)} · judge ${fmtScore(g.score_median)}</span>
+        ${flagWidget("group", g.group)}
+      </a>`).join("") || `<div class="empty">no groups</div>`}</div>`;
+  bindFlags($view);
+}
+
+async function viewCard(params) {
+  const kind = params.get("kind") || (params.get("run") ? "run" : "group");
+  const target = params.get("target") || params.get("run") || params.get("group") || "";
+  if (!target) { location.hash = "#/cards"; return; }
+  await loadFlags();
+  const scopedGroup = kind === "pairing" ? (params.get("group") || "") : "";
+  const d = await api(`/api/card?kind=${kind}&target=${encodeURIComponent(target)}${scopedGroup ? `&group=${encodeURIComponent(scopedGroup)}` : ""}`);
+  const flag = flagOf(kind, target);
+  const flagCls = flag === "interesting" ? "interesting" : flag === "not" ? "not" : "unflagged";
+  const flagTxt = flag === "interesting" ? "★ interesting" : flag === "not" ? "∅ not interesting" : "unflagged";
+
+  let hero, title, sub, kvs, barPct = 0, caveat;
+  const vline = d.verdict_line ? `<div class="xc-vline">${esc(d.verdict_line)}</div>` : "";
+  if (kind === "group") {
+    const pairTxt = (d.pairings || []).slice(0, 3)
+      .map(p => `${slug(p.orchestrator)}→${slug(p.worker)}`).join("  ·  ");
+    title = esc(d.target);
+    sub = `${(d.pairings || []).length} pairing${d.pairings.length === 1 ? "" : "s"} · ${esc(pairTxt)}${d.pairings.length > 3 ? " …" : ""}`;
+    const ci = d.pass_ci ? `<span class="xc-ci">95% CI ${Math.round(d.pass_ci[0] * 100)}–${Math.round(d.pass_ci[1] * 100)}%</span>` : "";
+    const judgeVal = d.judge_noul_mean != null ? Number(d.judge_noul_mean).toFixed(2)
+      : d.judge_pass_rate != null ? fmtPct(d.judge_pass_rate)
+      : fmtScore(d.score_median);
+    const judgeLbl = d.judged ? `judge · ${d.judged} judged` : "judge · unjudged";
+    hero = `
+      <div class="xc-big mech"><span class="v">${fmtPct(d.pass_rate)}</span><span class="l">mechanical pass</span>${ci}</div>
+      <div class="xc-big judge"><span class="v">${judgeVal}</span><span class="l">${judgeLbl}</span></div>`;
+    barPct = (d.pass_rate || 0) * 100;
+    const restBits = [];
+    if (d.failed) restBits.push(`${d.failed} failed`);
+    if (d.running) restBits.push(`${d.running} running`);
+    kvs = [
+      ["runs", `${d.finished}/${d.runs}${restBits.length ? ` (+${restBits.join(", ")})` : ""}`],
+      ["tasks", d.tasks],
+      ["cost", fmtMoney(d.cost_usd)],
+      ["latest", fmtWhen(d.latest)],
+    ];
+    const jm = (d.judge_models || []).map(m => slug(m)).join(", ");
+    caveat = `mechanical = execution truth · judge = ${jm ? `${esc(jm)} · ` : ""}advisory semantic axis · suite ${esc(d.suite)}`;
+  } else if (kind === "pairing") {
+    title = `${esc(slug(d.orchestrator))} <span class="arrow">→</span> ${esc(slug(d.worker))}`;
+    sub = `${d.tasks} task${d.tasks === 1 ? "" : "s"} · ${esc((d.groups || []).join(", ") || "ungrouped")}`;
+    const ci = d.pass_ci ? `<span class="xc-ci">95% CI ${Math.round(d.pass_ci[0] * 100)}–${Math.round(d.pass_ci[1] * 100)}%</span>` : "";
+    const judgeVal = d.judge_score_mean != null ? fmtScore(d.judge_score_mean)
+      : d.judge_pass_rate != null ? fmtPct(d.judge_pass_rate) : "—";
+    hero = `
+      <div class="xc-big mech"><span class="v">${fmtPct(d.pass_rate)}</span><span class="l">mechanical pass</span>${ci}</div>
+      <div class="xc-big judge"><span class="v">${judgeVal}</span><span class="l">judge${d.judged ? ` · ${d.judged} judged` : " · unjudged"}</span></div>`;
+    barPct = (d.pass_rate || 0) * 100;
+    kvs = [
+      ["runs", `${d.finished}/${d.runs}`],
+      ["cost", fmtMoney(d.cost_usd)],
+      ["best", d.best_type || "—"],
+      ["worst", d.worst_type || "—"],
+      ["top failure", d.top_failure || "—"],
+    ];
+    caveat = `mechanical = execution truth · judge = advisory semantic axis · suite ${esc(d.suite)}`;
+  } else {
+    title = esc(d.task_id);
+    sub = `${esc(slug(d.orchestrator))} <span class="arrow">→</span> ${esc(slug(d.worker))}${d.run_group ? ` · ${esc(d.run_group)}` : ""}`;
+    const verdict = d.status === "finished" ? (d.passes ? "PASS" : "FAIL") : String(d.status || "—").toUpperCase();
+    hero = `
+      <div class="xc-big ${d.passes ? "mech" : "miss"}"><span class="v">${verdict}</span><span class="l">mechanical</span></div>
+      <div class="xc-big judge"><span class="v">${d.judge_noul != null ? Number(d.judge_noul).toFixed(2) : fmtScore(d.score)}</span><span class="l">judge ${d.judge_engine === "decisions" ? "noul" : "score"}${d.judge_model ? ` · ${esc(slug(d.judge_model))}` : ""}</span></div>`;
+    barPct = d.passes ? 100 : 0;
+    kvs = [
+      ["cost", fmtMoney(d.cost_usd)],
+      ["latency", fmtMs(d.latency_ms)],
+      ["failure", d.failure_reason || "—"],
+      ["when", fmtWhen(d.started_at)],
+    ];
+    caveat = `mechanical = execution truth · judge ${d.judge_engine === "decisions" ? "= jev decisions engine (calibrated noul)" : "= advisory semantic axis"}${d.judge_model ? ` · ${esc(d.judge_model)}` : ""} · suite ${esc(d.suite)}`;
+  }
+
+  $view.innerHTML = `
+    <div class="card-stage">
+      <div class="card-toolbar">
+        ${flagWidget(kind, target)}
+        <a class="btn" href="#/cards">all cards</a>
+        <a class="btn" href="${kind === "group" ? `#/runs?group=${encodeURIComponent(target)}` : kind === "pairing" ? "#/leaderboard" : `#/run/${target}`}">inspect →</a>
+        <button class="btn" id="btn-dl">download</button>
+        <input id="thread-model" class="thread-model" placeholder="writer model (blank = template)" value="moonshotai/kimi-k2">
+        <button class="btn primary" id="btn-thread">draft thread</button>
+        <span class="hint">1200×675 — screenshot the card region for X</span>
+      </div>
+      <div class="xcard">
+        <div class="xc-top">
+          <div class="xc-brand"><span class="mark">◆</span><span class="word">orchestral</span><span class="sub">observatory</span></div>
+          <div class="xc-suite">suite ${esc(d.suite)} · eval harness</div>
+        </div>
+        <div class="xc-headline">
+          <div><div class="xc-title">${title}</div><div class="xc-sub">${sub}</div></div>
+          <span class="xc-flag ${flagCls}">${flagTxt}</span>
+        </div>
+        ${vline}
+        ${kind === "run" && d.description ? `<div class="xc-desc">${esc(d.description)} <span class="xc-by">— ${esc(d.description_by)}${d.description_model ? ` · ${esc(slug(d.description_model))}` : ""}</span></div>` : ""}
+        <div class="xc-hero">${hero}
+          <div class="xc-side">${kvs.map(([k, v]) => `<div class="xc-kv"><span class="k">${esc(k)}</span><span class="v">${esc(v)}</span></div>`).join("")}</div>
+        </div>
+        <div class="xc-bar"><i class="b-pass" style="width:${barPct}%"></i><i class="b-fail" style="width:${kind === "group" ? ((d.finished - d.passed) / Math.max(d.runs, 1)) * 100 : (d.passes ? 0 : 100)}%"></i><i class="b-rest" style="width:${kind === "group" ? (1 - d.finished / Math.max(d.runs, 1)) * 100 : 0}%"></i></div>
+        ${d.explainer && kind !== "run" ? `<div class="xc-expl">${esc(d.explainer)}</div>` : ""}
+        <div class="xc-footer">
+          <span class="xc-caveat">${caveat}</span>
+          <span>${new Date().toISOString().slice(0, 10)}</span>
+        </div>
+      </div>
+      <div id="thread-panel"></div>
+    </div>`;
+
+  document.getElementById("btn-thread").addEventListener("click", async e => {
+    const btn = e.currentTarget;
+    btn.disabled = true;
+    btn.textContent = "drafting…";
+    try {
+      const body = new URLSearchParams({ kind, target, model: document.getElementById("thread-model").value.trim() });
+      if (d.kind === "pairing" && params.get("group")) body.set("group", params.get("group"));
+      const out = await api("/api/thread", { method: "POST", body });
+      document.getElementById("thread-panel").innerHTML = `
+        <div class="panel panel-pad thread">
+          <h3>follow-up thread ${out.templated ? '<span class="chip chip-dim">template</span>' : `<span class="chip">by ${esc(slug(out.model))}</span>`}</h3>
+          ${out.posts.map((p, i) => `<div class="tpost"><span class="tnum">${i + 2}/${out.posts.length + 1}</span>
+            <p>${esc(p)}</p><button class="btn copy" data-p="${esc(p)}">copy</button></div>`).join("")}
+          ${out.error ? `<div class="dim">writer fell back to template: ${esc(out.error)}</div>` : ""}
+        </div>`;
+      for (const b of $view.querySelectorAll("button.copy")) {
+        b.addEventListener("click", () => {
+          navigator.clipboard?.writeText(b.dataset.p);
+          b.textContent = "copied";
+        });
+      }
+    } catch (ex) {
+      document.getElementById("thread-panel").innerHTML = `<div class="panel panel-pad dim">thread failed: ${esc(ex.message)}</div>`;
+    }
+    btn.disabled = false;
+    btn.textContent = "draft thread";
+  });
+
+  document.getElementById("btn-dl").addEventListener("click", async () => {
+    const css = await (await fetch("/static/app.css")).text();
+    const cardHtml = document.querySelector(".xcard").outerHTML;
+    const html = `<!doctype html><html><head><meta charset="utf-8"><title>orchestral card — ${esc(d.target)}</title><style>${css}</style>
+<style>body{background:#0b0e11;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}</style></head>
+<body>${cardHtml}</body></html>`;
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([html], { type: "text/html" }));
+    a.download = `card-${d.kind}-${String(d.target).replace(/[^a-z0-9_-]+/gi, "_")}.html`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  });
+  bindFlags($view);
+}
+
+/* ---------- router ---------- */
+
+async function route() {
+  stopPolling();
+  const hash = location.hash.slice(1) || "/";
+  const [pathQ, query] = hash.split("?");
+  const params = new URLSearchParams(query || "");
+  const path = pathQ || "/";
+
+  document.querySelectorAll("#nav a").forEach(a => {
+    a.classList.toggle("active",
+      a.dataset.route === "/" ? path === "/" : path.startsWith(a.dataset.route));
+  });
+
+  try {
+    if (path === "/") await viewOverview();
+    else if (path === "/runs") await viewRuns(params);
+    else if (path.startsWith("/run/")) await viewRun(path.split("/")[2], params);
+    else if (path === "/compare") await viewCompare(params);
+    else if (path === "/leaderboard") await viewLeaderboard(params);
+    else if (path === "/cards") await viewCards();
+    else if (path === "/card") await viewCard(params);
+    else if (path === "/new") await viewNew();
+    else $view.innerHTML = `<div class="empty">unknown view ${esc(path)}</div>`;
+  } catch (e) {
+    $view.innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+  }
+}
+
+window.addEventListener("hashchange", route);
+route();

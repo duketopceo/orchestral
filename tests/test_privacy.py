@@ -123,6 +123,15 @@ class TestScrubRun(unittest.TestCase):
             self.assertFalse((out / ".env").exists())
             self.assertTrue((out / "artifact.html").exists())
 
+    def test_review_json_is_published(self):
+        with tempfile.TemporaryDirectory() as td:
+            src = _make_run(Path(td) / "runs", files={
+                "review.json": b'{"run_quality": "clean", "key": "sk-or-abc123456789012345678901234"}',
+            })
+            out = scrub_run(src, Path(td) / "pub")
+            self.assertTrue((out / "review.json").exists())
+            self.assertNotIn("sk-or-", (out / "review.json").read_text())
+
     def test_malformed_json_falls_back_to_text_scrub(self):
         with tempfile.TemporaryDirectory() as td:
             src = _make_run(Path(td) / "runs")

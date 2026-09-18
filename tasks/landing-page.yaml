@@ -13,7 +13,9 @@ validation:
   - has_title
   - has_cta
   - has_form
+  - has_required
 assets: []
 metadata:
   difficulty: easy
   estimated_subtasks: 3
+  required: ["coffee"]

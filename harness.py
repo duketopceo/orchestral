@@ -8,6 +8,7 @@ import json
 import os
 import sys
 import uuid
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -24,13 +25,14 @@ from orchestral.config import (
     load_yaml,
 )
 from orchestral.export import leaderboard_csv, run_audit_markdown, runs_csv
+from orchestral.fileset import expected_paths, member_requirements
 from orchestral.planners import available_prompt_variants, load_prompt_variant
 from orchestral.pricing import DEFAULT_DRIFT_THRESHOLD, pricing_drift
 from orchestral.privacy import scrub_all
-from orchestral.providers import provider_key
+from orchestral.providers import provider_for, provider_key
 from orchestral.reporter import generate_dashboard, generate_html_report, model_history
 from orchestral.runner import Runner
-from orchestral.stats import aggregate, pairing_leaderboard
+from orchestral.stats import MIN_LEADERBOARD_SAMPLES, aggregate, pairing_leaderboard
 from orchestral.storage import RunStore
 from orchestral.tui import run_tui
 
@@ -111,8 +113,47 @@ def _run_preamble(args: argparse.Namespace) -> tuple[RunStore, dict[str, ModelCo
         sys.exit(1)
     _check_prompt_variant(args)
     store = RunStore(args.runs_dir)
+    _budget_check(args, store, 1)
     known = _model_map(args.models_dir)
     return store, known, _judge_from_arg(args, known)
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, "") or default)
+    except ValueError:
+        return default
+
+
+def _budget_check(args: argparse.Namespace, store: RunStore, n_runs: int) -> None:
+    """Spend guard. Two independent brakes on top of the provider-side key cap:
+
+    --daily-cap aborts once today's recorded spend reaches the cap;
+    --max-cost aborts when this invocation's launch count × historical mean
+    cost would exceed the estimate limit. Both default on; set 0 to disable.
+    In-flight spend is only metered once runs index, so the cap is a
+    guardrail, not a realtime limiter."""
+    if getattr(args, "dry_run", False):
+        return
+    daily_cap = getattr(args, "daily_cap", 0) or 0
+    max_cost = getattr(args, "max_cost", 0) or 0
+    if daily_cap <= 0 and max_cost <= 0:
+        return
+    spent = store.spend_today()
+    if daily_cap > 0 and spent >= daily_cap:
+        print(f"Daily cap reached: ${spent:.2f} spent today >= ${daily_cap:.2f} cap. "
+              "Raise --daily-cap or wait for UTC midnight.", file=sys.stderr)
+        sys.exit(1)
+    mean = store.mean_run_cost()
+    estimate = n_runs * (mean if mean is not None else 0.01)
+    if max_cost > 0 and estimate > max_cost:
+        print(f"Estimated ${estimate:.2f} for {n_runs} launches exceeds --max-cost "
+              f"${max_cost:.2f}. Raise it or shrink the matrix.", file=sys.stderr)
+        sys.exit(1)
+    if daily_cap > 0 and spent + estimate > daily_cap:
+        print(f"Estimated ${estimate:.2f} would push today past the ${daily_cap:.2f} "
+              f"daily cap (already spent ${spent:.2f}).", file=sys.stderr)
+        sys.exit(1)
 
 
 def _check_provider_envs(args: argparse.Namespace, *models: ModelConfig | None) -> None:
@@ -185,6 +226,90 @@ def cmd_init(args: argparse.Namespace) -> None:
     print(f"Index at {store.db}")
 
 
+# metadata keys each task type cannot function without — checked by `validate`
+_REQUIRED_META: dict[str, tuple[str, ...]] = {
+    "api": ("stub", "calls"),
+    "sql": ("schema", "reference_sql"),
+    "needle": ("document", "expected_answer"),
+    "extract": ("expected", "fields"),
+    "terminal": ("fs", "expect"),
+    "swe-patch": ("files", "tests"),
+    "bugfix": ("files", "tests"),
+    "code": ("module", "tests"),
+    "multi-file": ("expected_paths",),
+}
+# validation names that read a metadata key — requesting the check without
+# the metadata silently no-ops or errors at run time
+_VALIDATION_META = {
+    "has_required": "required",
+    "member_required": "member_required",
+    "no_forbidden": "forbidden",
+    "exact_answer": "expected_answer",
+    "matches_pattern": "pattern",
+    "within_budget": ("min_chars", "max_chars", "min_words", "max_words"),
+}
+# check names each validator actually implements — a typo'd name fails the run
+# at validation time (validators fail closed on unknowns) but validate should
+# catch it before a grid spends money on it. Execution-graded types
+# (code/bugfix/swe-patch/sql/extract/api/terminal) ignore validation: by design.
+_TEXT_CHECKS = {
+    "html", "html_parses", "non_empty", "has_title", "has_cta", "has_form",
+    "has_viewport", "no_placeholder", "within_budget", "has_required",
+    "no_forbidden", "exact_answer", "matches_pattern", "no_pattern",
+}
+_CHECK_NAMES = {
+    "html": _TEXT_CHECKS,
+    "constraint": _TEXT_CHECKS,
+    "needle": _TEXT_CHECKS,
+    "pipeline": _TEXT_CHECKS,
+    "multi-file": {"non_empty", "zip_signature", "has_paths", "member_required"},
+    "image": {"non_empty", "png_signature"},
+    "video": {"non_empty", "mp4_signature"},
+}
+
+
+def cmd_validate(args: argparse.Namespace) -> None:
+    """Parse every spec and check per-type contracts — catches the silent
+    failures that otherwise only surface mid-run (missing metadata, a
+    validation name with no backing key, unparseable YAML)."""
+    failures = 0
+    for path in sorted(Path(args.tasks_dir).rglob("*.yaml")):
+        try:
+            task = load_task(path)
+        except Exception as exc:
+            failures += 1
+            print(f"  FAIL {path.name}: {exc}")
+            continue
+        missing = [k for k in _REQUIRED_META.get(task.type, ()) if k not in task.metadata]
+        try:
+            expected_paths(task.metadata)
+            member_requirements(task.metadata)
+        except Exception as exc:
+            missing.append(f"path sanitizer: {exc}")
+        known = _CHECK_NAMES.get(task.type)
+        if known is not None:
+            for check in sorted(set(task.validation) - known):
+                missing.append(f"unknown validation check '{check}' for type {task.type}")
+        for check in task.validation:
+            want = _VALIDATION_META.get(check)
+            if isinstance(want, str):
+                want = (want,)
+            if want and not any(task.metadata.get(k) for k in want):
+                missing.append(f"{want[0]} (required by validation '{check}')")
+        if missing:
+            failures += 1
+            print(f"  FAIL {path.name}: missing metadata {', '.join(missing)}")
+        else:
+            print(f"  ok   {path.name} ({task.type})")
+    try:
+        load_models(args.models_dir)
+    except Exception as exc:
+        failures += 1
+        print(f"  FAIL {args.models_dir}: {exc}")
+    print(f"{failures} spec problem(s)" if failures else "All specs valid")
+    sys.exit(1 if failures else 0)
+
+
 def cmd_run(args: argparse.Namespace) -> None:
     store, known, judge = _run_preamble(args)
     task = load_task(_task_from_arg(args.task, args.tasks_dir))
@@ -252,6 +377,7 @@ def cmd_grid(args: argparse.Namespace) -> None:
 
     group, n_reps = _resolve_replicates(args)
     cells = [(o, w, i) for o in orchestrators for w in workers for i in range(1, n_reps + 1)]
+    _budget_check(args, store, len(cells))
 
     def _one(orchestrator: ModelConfig, worker: ModelConfig, rep: int) -> dict[str, Any]:
         # copy per pairing — ModelConfig objects from `known` are shared across threads
@@ -350,6 +476,7 @@ def cmd_batch(args: argparse.Namespace) -> None:
 
     group, n_reps = _resolve_replicates(args)
     cells = [(p, i) for p in paths for i in range(1, n_reps + 1)]
+    _budget_check(args, store, len(cells))
 
     def _one(path: Path, rep: int) -> dict[str, Any]:
         task = load_task(path)
@@ -524,6 +651,9 @@ def cmd_report(args: argparse.Namespace) -> None:
         return
 
     store = RunStore(args.runs_dir)
+    if getattr(args, "compare", None):
+        _print_group_delta(store, args.compare, json_out=args.json)
+        return
     runs = store.list_runs(
         orchestrator=args.orchestrator,
         worker=args.worker,
@@ -535,7 +665,7 @@ def cmd_report(args: argparse.Namespace) -> None:
     )
 
     if getattr(args, "leaderboard", False):
-        min_samples = getattr(args, "min_samples", 10)
+        min_samples = getattr(args, "min_samples", None) or MIN_LEADERBOARD_SAMPLES
         rows = pairing_leaderboard(runs, min_samples=min_samples)
         if args.json:
             print(json.dumps([r.to_dict() for r in rows], indent=2, default=str))
@@ -654,6 +784,68 @@ def _print_groups_table(cells: list[Any]) -> None:
         print(f"{c.run_group or '-':<18} {c.task_id:<18} {c.orchestrator:<26} {c.worker:<26} {c.runs:>3} {c.pass_rate * 100:>5.0f}% {score:>12} {cost:>16} {c.latency_p50:>8.0f} {c.latency_p95:>8.0f} {spd:>9} {fails:<20}")
 
 
+def _print_group_delta(store: RunStore, spec: str, *, json_out: bool = False) -> None:
+    """Compare two run groups cell-by-cell — the v1→v2 evidence question.
+
+    Cells join on (task, orchestrator, worker); each side keeps its own n so
+    drift in grid shape is visible rather than silently interpolated."""
+    names = _slugs_from_arg(spec)
+    if len(names) != 2:
+        print("--compare takes exactly two comma-separated run_group names", file=sys.stderr)
+        sys.exit(1)
+    group_a, group_b = names
+
+    def cells(group: str) -> dict[tuple[str, str, str], Any]:
+        return {
+            (c.task_id, c.orchestrator, c.worker): c
+            for c in aggregate(store.list_runs(run_group=group))
+        }
+
+    cells_a, cells_b = cells(group_a), cells(group_b)
+    keys = sorted(set(cells_a) | set(cells_b))
+    if not keys:
+        print(f"No runs in either group ({group_a}, {group_b}).")
+        return
+    rows: list[dict[str, Any]] = []
+    for task_id, orch, worker in keys:
+        a, b = cells_a.get((task_id, orch, worker)), cells_b.get((task_id, orch, worker))
+        pa = a.pass_rate if a else None
+        pb = b.pass_rate if b else None
+        if pa is None or pb is None:
+            verdict = "one-sided"
+        elif pb > pa:
+            verdict = "improved"
+        elif pb < pa:
+            verdict = "regressed"
+        else:
+            verdict = "stable"
+        rows.append({
+            "task_id": task_id, "orchestrator": orch, "worker": worker,
+            "n_a": a.runs if a else 0, "pass_a": pa, "cost_a": a.cost_total if a else None,
+            "n_b": b.runs if b else 0, "pass_b": pb, "cost_b": b.cost_total if b else None,
+            "verdict": verdict,
+            "failures_a": a.failures if a else {}, "failures_b": b.failures if b else {},
+        })
+    if json_out:
+        print(json.dumps({"group_a": group_a, "group_b": group_b, "cells": rows}, indent=2, default=str))
+        return
+    print(f"Delta {group_a} -> {group_b}  (cells joined on task x orchestrator x worker)")
+    print(f"{'task':<22} {'orchestrator':<24} {'worker':<24} {'n':>7} {'pass':>11} {'delta':>7} {'verdict':<10}")
+    print("-" * 115)
+    for r in rows:
+        n = f"{r['n_a']}/{r['n_b']}"
+        pass_a = f"{r['pass_a'] * 100:.0f}%" if r['pass_a'] is not None else "-"
+        pass_b = f"{r['pass_b'] * 100:.0f}%" if r['pass_b'] is not None else "-"
+        delta = "-" if r["verdict"] == "one-sided" else f"{(r['pass_b'] - r['pass_a']) * 100:+.0f}pp"
+        print(f"{r['task_id']:<22} {r['orchestrator']:<24} {r['worker']:<24} {n:>7} {pass_a:>5}->{pass_b:<5} {delta:>7} {r['verdict']:<10}")
+    counts = Counter(r["verdict"] for r in rows)
+    total_a = sum(r["cost_a"] or 0 for r in rows)
+    total_b = sum(r["cost_b"] or 0 for r in rows)
+    print("-" * 115)
+    print("Verdicts: " + ", ".join(f"{k}={v}" for k, v in sorted(counts.items())))
+    print(f"Cost: {group_a}=${total_a:.4f}  {group_b}=${total_b:.4f}")
+
+
 def cmd_export(args: argparse.Namespace) -> None:
     """Export run data: CSV for analysis, Markdown for human audit."""
     store = RunStore(args.runs_dir)
@@ -738,6 +930,172 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
         print("  labels:\n    - run_id: <prefix>\n      score: 0.8\n      passed: true")
 
 
+def cmd_review(args: argparse.Namespace) -> None:
+    """Frontier-model audit of archived run evidence."""
+    from orchestral.review import run_review_batch
+
+    model = _model_from_arg(args.model, args.models_dir)
+    client = None if args.dry_run else provider_for(model)
+    try:
+        result = run_review_batch(
+            RunStore(args.runs_dir), model, client,
+            run_group=args.group, task_id=args.task,
+            orchestrator=args.orchestrator, worker=args.worker,
+            limit=args.limit, dry_run=args.dry_run, force=args.force,
+            reports_dir=Path(args.reports_dir), tasks_dir=Path(args.tasks_dir),
+        )
+    finally:
+        if client is not None:
+            client.close()
+    if args.json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+    syn = result["corpus"]["synthesis"]
+    print(f"reviewed {result['reviewed']} runs ({result['skipped']} already reviewed) — ${result['cost_usd']:.4f}")
+    print(f"quality: {result['corpus']['stats']['run_quality']}")
+    for iss in syn.get("systemic_issues") or []:
+        print(f"  [{iss.get('severity')}] {iss.get('issue')} ({iss.get('run_count')} runs) — {iss.get('fix')}")
+    print(f"\nverdict: {syn.get('verdict', '')}")
+    print("full report: reports/review-*.md | per-run: <run_dir>/review.json")
+
+
+def cmd_judge(args: argparse.Namespace) -> None:
+    """Retroactively judge artifacts of finished runs (score axis without re-running)."""
+    from orchestral.judge import backfill_judgments
+
+    judge = _judge_from_arg(args)
+    if judge is None:
+        print("error: --judge is required (a model slug configured in models/)")
+        raise SystemExit(1)
+    _check_provider_envs(args, judge)
+    client = None if args.dry_run else provider_for(judge)
+    try:
+        result = backfill_judgments(
+            RunStore(args.runs_dir), judge, client,
+            run_group=args.group, task_id=args.task,
+            orchestrator=args.orchestrator, worker=args.worker,
+            limit=args.limit, jobs=args.jobs, dry_run=args.dry_run,
+            force=args.force, tasks_dir=Path(args.tasks_dir),
+        )
+    finally:
+        if client is not None:
+            client.close()
+    if args.json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+    print(f"judged {result['judged']} runs with {result['judge']} "
+          f"({result['skipped']} skipped, {result['dry_run_judged']} dry-run stubs)")
+    scored = [r["score"] for r in result["results"] if r.get("score") is not None]
+    if scored:
+        print(f"score: mean {sum(scored)/len(scored):.2f} over {len(scored)} judged artifacts")
+
+
+def cmd_specaudit(args: argparse.Namespace) -> None:
+    """jev-style audit of the task suite itself — does the benchmark low-ball?"""
+    from orchestral.judge import audit_specs
+
+    judge = _judge_from_arg(args)
+    if judge is None:
+        print("error: --judge is required (a decisions-model slug, e.g. '~typesafe/jev-latest')")
+        raise SystemExit(1)
+    specs = [load_task(f) for f in sorted(Path(args.tasks_dir).rglob("*.yaml"))]
+    client = None if args.dry_run else provider_for(judge)
+    try:
+        rows = audit_specs(specs=specs, judge=judge, client=client,
+                           dry_run=args.dry_run, workers=args.jobs)
+    finally:
+        if client is not None:
+            client.close()
+    out_path = Path(args.reports_dir) / "spec-audit.json"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(json.dumps({
+        "judge": judge.slug, "suite": __import__("orchestral").SUITE_VERSION,
+        "audited_at": datetime.now(UTC).isoformat(), "specs": rows,
+    }, indent=2, default=str), encoding="utf-8")
+    if args.json:
+        print(json.dumps(rows, indent=2, default=str))
+        return
+    print(f"spec audit — {len(rows)} specs · judge {judge.slug} · wrote {out_path}")
+    print(f"{'task':<30} {'type':<12} {'lowball':>8} {'sound':>6} {'diff':>5} {'adv':>5}")
+    for r in rows:
+        if "error" in r or "skipped" in r:
+            print(f"{r['task_id']:<30} {r['type']:<12} {'—':>8} {'—':>6} {'—':>5} {'—':>5}  {r.get('error', 'dry-run')[:40]}")
+            continue
+        low = r["lowballs"]
+        flag = " ⚠" if isinstance(low, float) and low >= 0.5 else ""
+        print(f"{r['task_id']:<30} {r['type']:<12} {low:>8.2f} {r['sound']:>6.2f} "
+              f"{r['difficulty']:>5.1f} {r['adversarial']:>5.1f}{flag}")
+
+
+def _group_evidence(store: RunStore, groups: list[str]) -> dict[str, Any]:
+    """Live stats for named run groups — evidence attached to claims must be
+    computed from the index, never hand-typed numbers that can drift."""
+    out: dict[str, Any] = {}
+    for g in groups:
+        metas = store.list_runs(run_group=g)
+        finished = [m for m in metas if m.status == "finished"]
+        failed = [m for m in metas if m.status == "failed"]
+        passes = sum(1 for m in finished if m.passes)
+        scores = [m.score for m in finished if m.score is not None]
+        out[g] = {
+            "runs_total": len(metas),
+            "finished": len(finished),
+            "failed": len(failed),
+            "passes": passes,
+            "pass_rate_of_finished": round(passes / len(finished), 3) if finished else None,
+            "pass_rate_of_all": round(passes / len(metas), 3) if metas else None,
+            "score_mean": round(sum(scores) / len(scores), 3) if scores else None,
+            "cost_usd": round(sum(m.total_cost_usd for m in metas), 3),
+        }
+    return out
+
+
+def cmd_audit(args: argparse.Namespace) -> None:
+    """Decisions-engine audit of our own claims — scorch the ideas."""
+    import yaml
+
+    from orchestral.judge import audit_claims
+
+    judge = _judge_from_arg(args)
+    if judge is None:
+        print("error: --judge is required (a decisions-model slug, e.g. '~typesafe/jev-latest')")
+        raise SystemExit(1)
+    path = Path(args.claims)
+    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    claims = data.get("claims") or []
+    store = RunStore(args.runs_dir)
+    for c in claims:
+        groups = c.pop("groups", []) or []
+        ev = c.setdefault("evidence", {})
+        ev["live_group_stats"] = _group_evidence(store, groups)
+    client = None if args.dry_run else provider_for(judge)
+    try:
+        rows = audit_claims(claims=claims, judge=judge, client=client,
+                            dry_run=args.dry_run, workers=args.jobs)
+    finally:
+        if client is not None:
+            client.close()
+    out_path = Path(args.reports_dir) / "claims-audit.json"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(json.dumps({
+        "judge": judge.slug, "claims_file": str(path),
+        "audited_at": datetime.now(UTC).isoformat(), "claims": rows,
+    }, indent=2, default=str), encoding="utf-8")
+    if args.json:
+        print(json.dumps(rows, indent=2, default=str))
+        return
+    print(f"claims audit — {len(rows)} claims · judge {judge.slug} · wrote {out_path}")
+    print(f"{'claim':<28} {'supported':>10} {'fatal?':>7} {'severity':>9} {'strength':>9}")
+    for r in rows:
+        if "error" in r or "skipped" in r:
+            print(f"{r.get('claim_id','?'):<28} {'—':>10} {'—':>7} {'—':>9} {'—':>9}  {r.get('error','dry-run')[:40]}")
+            continue
+        sev = r.get("severity")
+        verdict = " ☠" if isinstance(sev, (int, float)) and sev >= 3.5 else ""
+        print(f"{r['claim_id']:<28} {r['supported']:>10.2f} {r['fatal_flaw']:>7.2f} "
+              f"{sev:>9.1f} {r['strength']:>9.1f}{verdict}")
+
+
 def cmd_scrub(args: argparse.Namespace) -> None:
     copied = scrub_all(Path(args.runs_dir), Path(args.scrub_dir))
     print(f"Scrubbed {len(copied)} runs to {args.scrub_dir}")
@@ -811,6 +1169,11 @@ def main() -> None:
     init = sub.add_parser("init", help="Create the runs directory and SQLite index")
     init.set_defaults(func=cmd_init)
 
+    validate = sub.add_parser("validate", help="Parse all task specs and model configs; check per-type metadata contracts")
+    validate.add_argument("--tasks-dir", default="tasks")
+    validate.add_argument("--models-dir", default="models")
+    validate.set_defaults(func=cmd_validate)
+
     def _add_run_flags(sp: argparse.ArgumentParser) -> None:
         sp.add_argument("--planner", default="raw", choices=["raw", "ce-plan"], help="Orchestrator planning strategy: raw or ce-plan")
         sp.add_argument("--judge", default=None, help="OpenRouter model slug for an optional LLM-as-judge pass (vision-capable for image tasks)")
@@ -824,6 +1187,10 @@ def main() -> None:
         sp.add_argument("--replicate", type=int, default=None, help="Replicate index within --group")
         sp.add_argument("--replicates", type=int, default=1, help="Run each cell N times under one --group for variance analysis")
         sp.add_argument("--seed", type=int, default=None, help="Record a seed label on the run config")
+        sp.add_argument("--daily-cap", type=float, default=_env_float("ORCHESTRAL_DAILY_CAP", 5.0),
+                        help="Abort launches once today's recorded spend reaches this USD (0=off, env ORCHESTRAL_DAILY_CAP, default 5)")
+        sp.add_argument("--max-cost", type=float, default=_env_float("ORCHESTRAL_MAX_GRID_COST", 10.0),
+                        help="Abort when launch count × historical mean run cost exceeds this USD (0=off, env ORCHESTRAL_MAX_GRID_COST, default 10)")
 
     run = sub.add_parser("run", help="Run one orchestrator × worker pairing")
     run.add_argument("--task", required=True, help="Task id or path")
@@ -873,9 +1240,10 @@ def main() -> None:
     report.add_argument("--desc", action="store_true", default=True, help="Sort descending")
     report.add_argument("--pairings", action="store_true", help="Aggregate by orchestrator × worker, sorted by quality per dollar")
     report.add_argument("--leaderboard", action="store_true", help="Pairing leaderboard: pass rate, medians, cost per pass, failure rate")
-    report.add_argument("--min-samples", type=int, default=10, help="Leaderboard sample-size floor for the low-evidence flag")
+    report.add_argument("--min-samples", type=int, default=MIN_LEADERBOARD_SAMPLES, help="Leaderboard sample-size floor for the low-evidence flag")
     report.add_argument("--groups", action="store_true", help="Aggregate by run_group × task × pairing with variance stats")
     report.add_argument("--group", default=None, help="Only include runs from this run_group")
+    report.add_argument("--compare", default=None, metavar="A,B", help="Compare two run groups cell-by-cell (pass-rate delta per task × pairing)")
     report.add_argument("--limit", type=int, default=None, help="Limit number of rows")
     report.add_argument("--json", action="store_true", help="Output as JSON")
     report.set_defaults(func=cmd_report)
@@ -890,7 +1258,7 @@ def main() -> None:
     export.add_argument("--format", choices=["csv", "md", "jsonl"], default="csv", help="Export format")
     export.add_argument("--run", default=None, help="Export a single run id (md audit or jsonl events)")
     export.add_argument("--leaderboard", action="store_true", help="Export pairing leaderboard as CSV")
-    export.add_argument("--min-samples", type=int, default=10, help="Leaderboard low-evidence floor")
+    export.add_argument("--min-samples", type=int, default=MIN_LEADERBOARD_SAMPLES, help="Leaderboard low-evidence floor")
     export.add_argument("--out", default=None, help="Write to this file instead of stdout")
     export.set_defaults(func=cmd_export)
 
@@ -921,6 +1289,49 @@ def main() -> None:
     calibrate.add_argument("--runs-dir", default="runs", help="Root directory for run data")
     calibrate.add_argument("--json", action="store_true", help="Machine-readable output")
     calibrate.set_defaults(func=cmd_calibrate)
+
+    review = sub.add_parser("review", help="Frontier-model audit of archived run evidence (writes review.json per run + reports/review-*.md)")
+    review.add_argument("--model", default="x-ai/grok-4.3", help="Reviewer model slug (default: x-ai/grok-4.3 — reasoning tier)")
+    review.add_argument("--group", default=None, help="Only review runs in this run_group")
+    review.add_argument("--task", default=None, help="Only review runs for this task")
+    review.add_argument("--orchestrator", default=None)
+    review.add_argument("--worker", default=None)
+    review.add_argument("--limit", type=int, default=None, help="Cap the number of runs reviewed")
+    review.add_argument("--force", action="store_true", help="Re-review runs that already have review.json")
+    review.add_argument("--dry-run", action="store_true", help="Write stub reviews without calling the provider")
+    review.add_argument("--reports-dir", default="reports", help="Output directory for the corpus report")
+    review.add_argument("--json", action="store_true", help="Emit the full result as JSON")
+    review.set_defaults(func=cmd_review)
+
+    judge = sub.add_parser("judge", help="Retroactively judge artifacts of finished runs (writes judge result into report.json + index score)")
+    judge.add_argument("--judge", required=True, help="Judge model slug (e.g. moonshotai/kimi-k2, x-ai/grok-4.3)")
+    judge.add_argument("--group", default=None, help="Only judge runs in this run_group")
+    judge.add_argument("--task", default=None, help="Only judge runs for this task")
+    judge.add_argument("--orchestrator", default=None)
+    judge.add_argument("--worker", default=None)
+    judge.add_argument("--limit", type=int, default=None, help="Cap the number of runs judged")
+    judge.add_argument("--jobs", type=int, default=4, help="Parallel judge calls")
+    judge.add_argument("--force", action="store_true", help="Re-judge runs that already have a judge result")
+    judge.add_argument("--dry-run", action="store_true", help="Exercise the path without calling the provider or writing results")
+    judge.add_argument("--json", action="store_true", help="Emit the full result as JSON")
+    judge.set_defaults(func=cmd_judge)
+
+    specaudit = sub.add_parser("specaudit", help="Decisions-engine audit of the task suite — lowball/sound/difficulty/adversarial per spec")
+    specaudit.add_argument("--judge", required=True, help="Decisions-model slug (e.g. '~typesafe/jev-latest' — quote it)")
+    specaudit.add_argument("--jobs", type=int, default=8, help="Parallel audit calls")
+    specaudit.add_argument("--reports-dir", default="reports", help="Output directory for spec-audit.json")
+    specaudit.add_argument("--dry-run", action="store_true")
+    specaudit.add_argument("--json", action="store_true")
+    specaudit.set_defaults(func=cmd_specaudit)
+
+    audit = sub.add_parser("audit", help="Decisions-engine audit of claims in audit/claims.yaml — scorch our own ideas")
+    audit.add_argument("--judge", required=True, help="Decisions-model slug (e.g. '~typesafe/jev-latest' — quote it)")
+    audit.add_argument("--claims", default="audit/claims.yaml", help="Claims battery file")
+    audit.add_argument("--jobs", type=int, default=4, help="Parallel audit calls")
+    audit.add_argument("--reports-dir", default="reports", help="Output directory for claims-audit.json")
+    audit.add_argument("--dry-run", action="store_true")
+    audit.add_argument("--json", action="store_true")
+    audit.set_defaults(func=cmd_audit)
 
     serve = sub.add_parser("serve", help="Local web observatory — browse, launch, and cancel runs in a browser (localhost only)")
     serve.add_argument("--port", type=int, default=8787, help="Port to bind on 127.0.0.1 (default 8787)")

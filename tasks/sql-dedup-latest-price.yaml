@@ -1,0 +1,29 @@
+id: sql-dedup-latest-price
+type: sql
+prompt: >
+  Write a single read-only SQL query (SQLite dialect) that returns the current
+  price of every product: the price_history row with the latest effective_date
+  for that product. When two rows share the same latest effective_date, the
+  row with the higher id wins. Return columns: product (name), price, one row
+  per product, ordered by product id.
+  The database has tables: products(id, name),
+  price_history(id, product_id, effective_date DATE, price).
+validation: []
+assets: []
+metadata:
+  ordered: true
+  schema:
+    - "CREATE TABLE products (id INTEGER PRIMARY KEY, name TEXT NOT NULL)"
+    - "CREATE TABLE price_history (id INTEGER PRIMARY KEY, product_id INTEGER NOT NULL, effective_date DATE NOT NULL, price REAL NOT NULL)"
+  seed:
+    - "INSERT INTO products VALUES (1, 'Kettle'), (2, 'Grinder'), (3, 'Dripper'), (4, 'Scale')"
+    - "INSERT INTO price_history VALUES (1, 1, '2025-01-01', 10.00), (2, 1, '2025-02-01', 12.00), (3, 1, '2025-02-01', 11.50), (4, 2, '2025-01-15', 5.00), (5, 3, '2025-01-01', 20.00), (6, 3, '2025-03-01', 18.00), (7, 4, '2025-01-05', 7.00)"
+  reference_sql: |
+    SELECT p.name, ph.price FROM products p
+    JOIN price_history ph ON ph.id = (
+      SELECT id FROM price_history h
+      WHERE h.product_id = p.id
+      ORDER BY h.effective_date DESC, h.id DESC
+      LIMIT 1
+    )
+    ORDER BY p.id

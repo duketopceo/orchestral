@@ -20,6 +20,7 @@ from orchestral.fileset import (
     FilesetError,
     check_response_size,
     expected_paths,
+    member_requirements,
     parse_fileset,
     summarize_fileset,
 )
@@ -223,7 +224,7 @@ def _extract_json(content: str) -> Any:
             start = i
             break
     if start is None:
-        raise ValueError(f"No JSON found in model response: {content[:200]}")
+        raise PlanError(f"No JSON found in model response: {content[:200]}")
     # naive brace matching
     depth = 0
     in_string = False
@@ -372,6 +373,16 @@ def delegate(
     except Exception:
         output = {"content": content}
     output.setdefault("subtask_id", subtask.get("id"))
+    if "content" not in output:
+        # workers answer with descriptive keys — {"release_token": ...},
+        # {"blurb": ...} — which would otherwise surface as an empty artifact
+        payload = {
+            k: v for k, v in output.items() if k not in ("subtask_id", "prompt")
+        }
+        if len(payload) == 1 and isinstance(next(iter(payload.values())), str):
+            output["content"] = next(iter(payload.values()))
+        elif payload:
+            output["content"] = json.dumps(payload, ensure_ascii=False)
     return output, [cost]
 
 
@@ -584,10 +595,13 @@ def delegate_multi(
     prompt = subtask.get("prompt") or subtask.get("description") or str(subtask)
     declared = expected_paths(task.metadata)
     if not declared:
-        # code tasks default to the declared module; multi-file to a site
-        declared = [str(task.metadata.get("module") or "solution.py")] if task.type == "code" else ["index.html", "style.css"]
+        # code/bugfix tasks default to the declared module; multi-file to a site
+        declared = [str(task.metadata.get("module") or "solution.py")] if task.type in ("code", "bugfix") else ["index.html", "style.css"]
     if dry_run:
         files = {path: _fake_file_body(path) for path in declared}
+        for member, tokens in member_requirements(task.metadata).items():
+            if member in files:
+                files[member] += "\n".join(tokens) + "\n"
         cost = _fake_cost(worker, {"subtask": subtask}, {"paths": sorted(files)})
         cost["phase"] = "delegate"
         summary = summarize_fileset(files)
@@ -619,12 +633,19 @@ def delegate_multi(
     if client is None:
         raise ValueError("OpenRouterClient is required for live runs")
 
+    # bugfix subtasks carry the broken repo in metadata.files so the worker
+    # repairs instead of generating from scratch
+    if task.type == "bugfix":
+        subtask = {**subtask, "broken_files": task.metadata.get("files") or {}}
     messages = _build_messages(
         "worker",
         {
             "subtask": subtask,
             "task_type": task.type,
             "instructions": (
+                "Repair the files in broken_files. Return a JSON object "
+                "{\"files\": [{\"path\": ..., \"content\": ...}]} with the complete corrected file set."
+                if task.type == "bugfix" else
                 "Return a JSON object {\"files\": [{\"path\": ..., \"content\": ...}]} "
                 "containing every file this subtask must produce."
             ),
@@ -706,7 +727,13 @@ def assemble_media(
         input_data={
             "prompt": task.prompt,
             "candidates": [
-                {"subtask_id": r.get("subtask_id"), "prompt": r.get("prompt"), "query": r.get("query")}
+                {
+                    "subtask_id": r.get("subtask_id"),
+                    "prompt": r.get("prompt"),
+                    "query": r.get("query"),
+                    # bounded preview — without it the orchestrator picks blind
+                    "content": str(r.get("content") or "")[:500],
+                }
                 for r in results
             ],
             "task_type": task.type,
@@ -716,15 +743,71 @@ def assemble_media(
         dry_run=dry_run,
         expect_json=True,
     )
-    try:
-        selection = _extract_json(content)
-        idx = int(selection.get("subtask_id", selection.get("index", 0)))
-    except Exception:
-        idx = 0
-    # resolve subtask_id to a position in results, clamped to range
-    position = next((i for i, r in enumerate(results) if r.get("subtask_id") == idx), 0)
-    position = max(0, min(position, len(results) - 1))
+    position, resolved = _resolve_pick(content, results)
+    if not resolved:
+        # the pick is part of what is being measured — log it loudly rather
+        # than silently degrading to candidate 0
+        logger.log(
+            phase="assemble",
+            step=step,
+            event_type="pick_unresolved",
+            model=orchestrator.slug,
+            role="orchestrator",
+            input_data={"task": task.id},
+            output_data={"raw": content[:400]},
+            reasoning="Orchestrator selection carried no resolvable subtask_id/index; falling back to the first candidate.",
+        )
     return position, [cost]
+
+
+def _iter_json_objects(text: str):
+    """Yield every top-level JSON object/array decodable from `text`, in order."""
+    decoder = json.JSONDecoder()
+    pos = 0
+    while pos < len(text):
+        m = re.search(r"[\[{]", text[pos:])
+        if not m:
+            return
+        start = pos + m.start()
+        try:
+            obj, end = decoder.raw_decode(text, start)
+        except json.JSONDecodeError:
+            pos = start + 1
+            continue
+        yield obj
+        pos = start + end
+
+
+def _resolve_pick(content: str, results: list[dict[str, Any]]) -> tuple[int, bool]:
+    """Map an orchestrator selection response to a results position.
+
+    Models commonly wrap the answer — `{"plan": "..."}` reasoning first, then
+    `{"subtask_id": 3}`. Taking only the first JSON object resolves nothing and
+    silently picks candidate 0, which is how correct worker outputs got dropped
+    in favor of an earlier partial. `subtask_id` is resolved as an id lookup;
+    `index` is treated as a 0-based position.
+    """
+    for obj in _iter_json_objects(content):
+        if not isinstance(obj, dict):
+            continue
+        for key in ("subtask_id", "index"):
+            value = obj.get(key)
+            if isinstance(value, bool) or not isinstance(value, int):
+                continue
+            if key == "subtask_id":
+                pos = next(
+                    (i for i, r in enumerate(results) if r.get("subtask_id") == value),
+                    None,
+                )
+                if pos is None:
+                    # the model may have meant "position" under the wrong key —
+                    # accept it if it lands in range rather than failing
+                    pos = value if 0 <= value < len(results) else None
+            else:
+                pos = value if 0 <= value < len(results) else None
+            if pos is not None:
+                return pos, True
+    return 0, False
 
 
 def delegate_constraint(
@@ -1015,6 +1098,129 @@ def delegate_api(
         # literal_eval recovers the original so the plan stays valid JSON
         with contextlib.suppress(ValueError, SyntaxError):
             out["content"] = json.dumps(ast.literal_eval(str(out["content"])))
+    return out, costs
+
+
+def delegate_terminal(
+    *,
+    logger: EventLogger,
+    step: int,
+    subtask: dict[str, Any],
+    task: TaskSpec,
+    worker: ModelConfig,
+    client: OpenRouterClient | None,
+    dry_run: bool,
+    attempt: int | None = None,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Produce one candidate shell-command plan for a subtask.
+
+    `content` is a JSON list of {"run": "..."} commands replayed in the
+    virtual shell at validation. Dry runs return `metadata.commands` so the
+    task spec's reference plan proves itself against `metadata.expect`.
+    """
+    if dry_run:
+        reference = json.dumps(task.metadata.get("commands") or [])
+        cost = _fake_cost(worker, {"subtask": subtask}, {"json_chars": len(reference)})
+        cost["phase"] = "delegate"
+        logger.log_llm_call(
+            phase="delegate",
+            step=step,
+            model=worker.slug,
+            role="worker",
+            messages=[{"role": "user", "content": str(subtask.get("description", ""))}],
+            completion={"json_chars": len(reference)},
+            reasoning=f"Write a shell command plan for subtask {subtask.get('id')} with {worker.slug}.",
+            input_tokens=cost["input_tokens"],
+            output_tokens=cost["output_tokens"],
+            cost_usd=cost["cost_usd"],
+            latency_ms=random.uniform(80, 1200),
+            pricing_source="none",
+            attempt=attempt,
+        )
+        return {
+            "subtask_id": subtask.get("id"),
+            "prompt": subtask.get("prompt") or subtask.get("description"),
+            "content": reference,
+        }, [cost]
+
+    out, costs = delegate(
+        logger=logger,
+        step=step,
+        subtask=subtask,
+        worker=worker,
+        client=client,
+        dry_run=dry_run,
+        attempt=attempt,
+    )
+    if "content" not in out:
+        plan = {k: v for k, v in out.items() if k not in ("subtask_id", "prompt")}
+        out["content"] = json.dumps(plan.get("commands", list(plan.values()) if len(plan) == 1 else plan))
+    elif parse_plan(str(out["content"])) is None:
+        with contextlib.suppress(ValueError, SyntaxError):
+            out["content"] = json.dumps(ast.literal_eval(str(out["content"])))
+    return out, costs
+
+
+def delegate_patch(
+    *,
+    logger: EventLogger,
+    step: int,
+    subtask: dict[str, Any],
+    task: TaskSpec,
+    worker: ModelConfig,
+    client: OpenRouterClient | None,
+    dry_run: bool,
+    attempt: int | None = None,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Produce one candidate unified diff for a subtask.
+
+    The worker sees `repo_files` (metadata.files) and must return a patch —
+    {"patch": "<unified diff>"} or raw diff text. Dry runs return
+    `metadata.patch` so the spec's reference diff proves itself against the
+    hidden tests.
+    """
+    if dry_run:
+        reference = str(task.metadata.get("patch") or "")
+        cost = _fake_cost(worker, {"subtask": subtask}, {"patch_chars": len(reference)})
+        cost["phase"] = "delegate"
+        logger.log_llm_call(
+            phase="delegate",
+            step=step,
+            model=worker.slug,
+            role="worker",
+            messages=[{"role": "user", "content": str(subtask.get("description", ""))}],
+            completion={"patch_chars": len(reference)},
+            reasoning=f"Write a unified diff for subtask {subtask.get('id')} with {worker.slug}.",
+            input_tokens=cost["input_tokens"],
+            output_tokens=cost["output_tokens"],
+            cost_usd=cost["cost_usd"],
+            latency_ms=random.uniform(80, 1200),
+            pricing_source="none",
+            attempt=attempt,
+        )
+        return {
+            "subtask_id": subtask.get("id"),
+            "prompt": subtask.get("prompt") or subtask.get("description"),
+            "content": reference,
+        }, [cost]
+
+    enriched = {**subtask, "repo_files": task.metadata.get("files") or {},
+                "output_contract": "Return a JSON object {\"patch\": \"<unified diff>\"} — "
+                                   "the diff must apply cleanly to repo_files."}
+    out, costs = delegate(
+        logger=logger,
+        step=step,
+        subtask=enriched,
+        worker=worker,
+        client=client,
+        dry_run=dry_run,
+        attempt=attempt,
+    )
+    if "content" not in out:
+        # {"patch": "..."} JSON output, or a bare dict holding the diff
+        out["content"] = str(out.get("patch") or json.dumps(
+            {k: v for k, v in out.items() if k not in ("subtask_id", "prompt")}
+        ))
     return out, costs
 
 

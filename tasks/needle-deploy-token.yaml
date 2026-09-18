@@ -8,6 +8,7 @@ validation:
 - non_empty
 - has_required
 - no_forbidden
+- exact_answer
 assets: []
 metadata:
   difficulty: medium

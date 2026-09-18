@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import statistics
 import threading
 import uuid
 from datetime import UTC, datetime
@@ -19,7 +20,7 @@ from typing import Any
 
 from orchestral.config import ModelConfig, find_task, load_models, load_task, load_yaml
 from orchestral.runner import Runner
-from orchestral.stats import pairing_leaderboard
+from orchestral.stats import aggregate, pairing_leaderboard
 from orchestral.storage import RunStore
 from orchestral.tui.state import (
     Job,
@@ -205,9 +206,14 @@ def leaderboard_rows(store: RunStore, sort: str = "cost_per_pass") -> list[dict[
 
 
 def overview_payload(store: RunStore, registry: JobRegistry) -> dict[str, Any]:
-    """Mission-control data: live jobs, leaderboard top rows, recent runs."""
+    """Mission-control data: live jobs, leaderboard top rows, recent runs,
+    group summaries, and the failure taxonomy — the SPA's landing view."""
     runs = store.list_runs(limit=None)
     lb = pairing_leaderboard(runs)
+    taxonomy: dict[str, int] = {}
+    for r in runs:
+        if r.failure_reason:
+            taxonomy[r.failure_reason] = taxonomy.get(r.failure_reason, 0) + 1
     return {
         "jobs": [
             {
@@ -218,6 +224,8 @@ def overview_payload(store: RunStore, registry: JobRegistry) -> dict[str, Any]:
         ],
         "leaderboard": [r.to_dict() for r in lb[:10]],
         "recent": [r.to_dict() for r in runs[:10]],
+        "groups": groups_payload(store)[:8],
+        "taxonomy": dict(sorted(taxonomy.items(), key=lambda kv: -kv[1])),
     }
 
 
@@ -245,3 +253,526 @@ def model_choices(models_dir: Path, role: str | None) -> list[str]:
         return sorted(m.slug for m in load_models(models_dir) if role is None or m.role == role)
     except Exception:
         return []
+
+
+# ---------------------------------------------------------------------------
+# SPA API payloads — the rebuilt observatory reads everything through these.
+
+
+def runs_payload(
+    store: RunStore,
+    group: str | None = None,
+    task: str | None = None,
+    status: str | None = None,
+    q: str = "",
+) -> list[dict[str, Any]]:
+    """Run rows for the filterable table. `status` accepts a lifecycle status
+    or `passed`/`failed` (verdict filters)."""
+    rows = store.list_runs(run_group=group, task_id=task, limit=None)
+    if q:
+        rows = filter_runs(rows, q)
+    if status == "passed":
+        rows = [r for r in rows if r.status == "finished" and r.passes]
+    elif status == "failed":
+        rows = [r for r in rows if r.status == "failed" or (r.status == "finished" and not r.passes)]
+    elif status:
+        rows = [r for r in rows if r.status == status]
+    return [r.to_dict() for r in rows]
+
+
+_TIMELINE_PHASE_ORDER = ("plan", "delegate", "assemble", "validate", "judge", "review")
+
+
+def timeline_payload(run_dir: Path) -> list[dict[str, Any]]:
+    """The evidence chain: one node per pipeline phase with cost, latency,
+    event count, and error count — derived from events.jsonl so a finished
+    run and a live one render the same way."""
+    run_dir = Path(run_dir)
+    events, _ = tail_events(run_dir / "events.jsonl", 0)
+    phases: dict[str, dict[str, Any]] = {}
+    for ev in events:
+        ph = ev.get("phase") or "other"
+        node = phases.setdefault(ph, {
+            "phase": ph, "events": 0, "cost_usd": 0.0, "latency_ms": 0.0,
+            "errors": 0, "first": None, "last": None,
+        })
+        node["events"] += 1
+        cost = ev.get("cost") or {}
+        node["cost_usd"] += cost.get("usd") or 0.0
+        node["latency_ms"] += ev.get("latency_ms") or 0.0
+        if ev.get("error"):
+            node["errors"] += 1
+        ts = ev.get("timestamp")
+        if node["first"] is None:
+            node["first"] = ts
+        node["last"] = ts
+    ordered = [phases[p] for p in _TIMELINE_PHASE_ORDER if p in phases]
+    ordered += [v for k, v in phases.items() if k not in _TIMELINE_PHASE_ORDER]
+    return ordered
+
+
+def artifact_info(run_dir: Path) -> dict[str, Any] | None:
+    """Metadata for the stored artifact — the SPA decides how to preview it.
+    Zip members come as a listing (never bodies — same rule as the judge)."""
+    import zipfile
+
+    run_dir = Path(run_dir)
+    artifacts = sorted(run_dir.glob("artifact.*"))
+    if not artifacts:
+        return None
+    p = artifacts[0]
+    ext = p.suffix.lstrip(".").lower()
+    info: dict[str, Any] = {"name": p.name, "ext": ext, "bytes": p.stat().st_size}
+    if ext == "zip":
+        try:
+            with zipfile.ZipFile(p) as zf:
+                info["members"] = [
+                    {"name": i.filename, "bytes": i.file_size} for i in zf.infolist()
+                ]
+        except Exception as exc:
+            info["error"] = str(exc)
+    return info
+
+
+def run_detail_payload(store: RunStore, run_id: str) -> dict[str, Any] | None:
+    """Everything the run detail view needs in one fetch."""
+    meta = store.get_run(run_id)
+    if meta is None:
+        return None
+    run_dir = Path(meta.run_dir)
+    plan_path = run_dir / "plan.md"
+    return {
+        "meta": meta.to_dict(),
+        "calls": store.calls_for_run(run_id),
+        "report": read_json(run_dir / "report.json"),
+        "review": read_json(run_dir / "review.json"),
+        "manifest": read_json(run_dir / "manifest.json"),
+        "plan": plan_path.read_text(encoding="utf-8", errors="replace") if plan_path.exists() else None,
+        "timeline": timeline_payload(run_dir),
+        "artifact": artifact_info(run_dir),
+    }
+
+
+def groups_payload(store: RunStore) -> list[dict[str, Any]]:
+    """One summary row per run_group — the unit comparisons happen on."""
+    groups: dict[str, dict[str, Any]] = {}
+    for r in store.list_runs(limit=None):
+        g = groups.setdefault(r.run_group or "(ungrouped)", {
+            "group": r.run_group or "(ungrouped)",
+            "runs": 0, "finished": 0, "passed": 0, "cost_usd": 0.0,
+            "scores": [], "tasks": set(), "pairings": set(),
+            "latest": None,
+        })
+        g["runs"] += 1
+        if r.status == "finished":
+            g["finished"] += 1
+            g["passed"] += 1 if r.passes else 0
+        g["cost_usd"] += r.total_cost_usd or 0.0
+        if r.score is not None:
+            g["scores"].append(r.score)
+        g["tasks"].add(r.task_id)
+        g["pairings"].add((r.orchestrator, r.worker))
+        if g["latest"] is None or (r.started_at or "") > (g["latest"] or ""):
+            g["latest"] = r.started_at
+    out = []
+    for g in groups.values():
+        scores = sorted(g.pop("scores"))
+        n = len(scores)
+        out.append({
+            **g,
+            "tasks": len(g["tasks"]),
+            "pairings": len(g["pairings"]),
+            "pass_rate": (g["passed"] / g["finished"]) if g["finished"] else None,
+            "score_median": scores[n // 2] if n else None,
+        })
+    out.sort(key=lambda x: x["latest"] or "", reverse=True)
+    return out
+
+
+def _task_types(store: RunStore, tasks_dir: Path | str | None) -> dict[str, str]:
+    """task_id → task type, resolved from specs on disk. Missing specs map to
+    '?' so the pairing breakdown never crashes on a pruned task."""
+    if not tasks_dir:
+        return {}
+    from orchestral.config import load_task
+    out: dict[str, str] = {}
+    for path in Path(tasks_dir).rglob("*.yaml"):
+        try:
+            spec = load_task(path)
+            out[spec.id] = spec.type
+        except Exception:
+            continue
+    return out
+
+
+def pairings_payload(
+    store: RunStore,
+    tasks_dir: Path | str | None = None,
+    group: str | None = None,
+) -> dict[str, Any]:
+    """Heavy leaderboard data: per-pairing stats with honest uncertainty,
+    per-task-type strength/weakness, the dominant failure class, the groups
+    each pairing appears in, and an orchestrator×worker matrix."""
+    metas = store.list_runs(run_group=group) if group else store.list_runs(limit=None)
+    rows = pairing_leaderboard(metas)
+    types = _task_types(store, tasks_dir)
+
+    by_pair: dict[tuple[str, str], list[Any]] = {}
+    for m in metas:
+        by_pair.setdefault((m.orchestrator, m.worker), []).append(m)
+
+    enriched: list[dict[str, Any]] = []
+    for r in rows:
+        cell = by_pair.get((r.orchestrator, r.worker), [])
+        # per-task-type breakdown → "strong on X, weak on Y"
+        per_type: dict[str, list[int]] = {}
+        for m in cell:
+            t = types.get(m.task_id, "?")
+            st = per_type.setdefault(t, [0, 0])
+            if m.status == "finished":
+                st[1] += 1
+                st[0] += 1 if m.passes else 0
+        strengths = sorted(
+            ((t, p, n) for t, (p, n) in per_type.items() if n),
+            key=lambda x: (-(x[1] / x[2]), x[0]),
+        )
+        best = strengths[0] if strengths else None
+        worst = strengths[-1] if strengths else None
+        top_failure = max(r.failures.items(), key=lambda kv: kv[1])[0] if r.failures else None
+        groups = sorted({m.run_group for m in cell if m.run_group})
+        d = r.to_dict()
+        d.update({
+            "pass_ci": _wilson(r.passed, r.finished),
+            "top_failure": top_failure,
+            "groups": groups,
+            "type_split": {t: {"passed": p, "finished": n} for t, (p, n) in per_type.items()},
+            "best_type": best[0] if best else None,
+            "worst_type": worst[0] if worst else None,
+            "why": _pairing_why(r, best, worst, top_failure),
+        })
+        enriched.append(d)
+
+    orchs = sorted({r.orchestrator for r in rows})
+    workers = sorted({r.worker for r in rows})
+    by_key = {(d["orchestrator"], d["worker"]): d for d in enriched}
+    matrix = {
+        "orchestrators": orchs,
+        "workers": workers,
+        "cells": [
+            {
+                "orchestrator": o, "worker": w,
+                "pass_rate": (c["pass_rate"] if c else None),
+                "runs": (c["runs"] if c else 0),
+                "score_mean": (c["score_mean"] if c else None),
+            }
+            for o in orchs for w in workers
+            for c in [by_key.get((o, w))]
+        ],
+    }
+    return {"rows": enriched, "matrix": matrix}
+
+
+def _pairing_why(r: Any, best: Any, worst: Any, top_failure: str | None) -> str:
+    """One-line 'why this pairing placed here' — computed, not vibes."""
+    if r.runs == 0:
+        return "no runs"
+    bits: list[str] = []
+    if r.low_sample:
+        bits.append("thin sample")
+    if best and best[1] / max(best[2], 1) >= 0.8 and best[2] >= 2:
+        bits.append(f"strong on {best[0]} ({best[1]}/{best[2]})")
+    if worst and worst[1] == 0 and worst[2] >= 2:
+        bits.append(f"fails {worst[0]} (0/{worst[2]})")
+    if top_failure:
+        bits.append(f"top failure: {top_failure}")
+    if r.cost_per_pass is not None and r.cost_per_pass < 0.01:
+        bits.append("cheap per pass")
+    return " · ".join(bits) or "mid-pack on every axis"
+
+
+def _wilson(passes: int, n: int) -> list[float] | None:
+    """Wilson 95% interval on a binomial pass rate — the honest uncertainty
+    a share card owes its audience when n is small."""
+    if n <= 0:
+        return None
+    z, p = 1.96, passes / n
+    denom = 1 + z * z / n
+    center = (p + z * z / (2 * n)) / denom
+    margin = z * ((p * (1 - p) / n + z * z / (4 * n * n)) ** 0.5) / denom
+    return [round(max(0.0, center - margin), 3), round(min(1.0, center + margin), 3)]
+
+
+def _verdict_line(mech_pass: bool | None, judge_passed: bool | None,
+                  status: str | None) -> str:
+    """One-line verdict in plain words — the card's subtitle hook."""
+    if status != "finished":
+        return f"run {status or 'unknown'} — no verdict yet"
+    if judge_passed is None:
+        return ("mechanical pass — unjudged" if mech_pass
+                else "mechanical fail — unjudged")
+    if mech_pass and judge_passed:
+        return "passes both axes — structure and semantics"
+    if mech_pass:
+        return "well-formed but semantically rejected"
+    if judge_passed:
+        return "mechanical reject, semantic rescue — inspect"
+    return "rejected on both axes"
+
+
+def _explainer(kind: str, card: dict[str, Any]) -> str:
+    """What the card measures, for a mild-AI-knowledge audience — one
+    sentence, no jargon. Mirrors the thread drafter's wording."""
+    if kind == "group":
+        return (
+            "Each run: a planner AI breaks a real task into steps, worker AIs "
+            "execute them in parallel, and the final result is graded two "
+            "ways — automated checks that actually run/verify the output, "
+            "plus a second AI that reviews whether it's genuinely good."
+        )
+    if kind == "pairing":
+        return (
+            f"One AI pairing: {str(card.get('orchestrator','?')).split('/')[-1]} plans the work, "
+            f"{str(card.get('worker','?')).split('/')[-1]} executes it. Every run is graded by "
+            "automated checks and an independent AI reviewer."
+        )
+    return (
+        "One eval run: a planner AI broke the task into steps, a worker AI "
+        "executed them, and the result was graded by automated checks plus "
+        "an AI reviewer."
+    )
+
+
+def card_payload(
+    store: RunStore,
+    kind: str,
+    target: str,
+    group: str | None = None,
+    tasks_dir: Path | str | None = None,
+) -> dict[str, Any] | None:
+    """Share-card data — the engineered summary an X post needs: flagship
+    numbers, both verdict axes, the annotation flag, and caveat inputs
+    (suite version, judge provenance, sample size).
+
+    ``kind`` is ``group``, ``run``, or ``pairing`` (target = ``orch|worker``).
+    """
+    from orchestral import SUITE_VERSION
+
+    flags = {(a["kind"], a["target"]): a for a in store.annotations()}
+    ann = flags.get((kind, target)) or {}
+    if kind == "pairing":
+        if "|" not in target:
+            return None
+        orch, worker = target.split("|", 1)
+        metas = store.list_runs(run_group=group) if group else store.list_runs(limit=None)
+        cell = [m for m in metas if m.orchestrator == orch and m.worker == worker]
+        if not cell:
+            return None
+        finished = [m for m in cell if m.status == "finished"]
+        passed = sum(1 for m in finished if m.passes)
+        scores = [m.score for m in finished if m.score is not None]
+        costs = [m.total_cost_usd for m in finished]
+        lat = [m.latency_ms for m in finished if m.latency_ms]
+        types = _task_types(store, tasks_dir)
+        per_type: dict[str, list[int]] = {}
+        failures: dict[str, int] = {}
+        judged_scores: list[float] = []
+        judge_passed_n = 0
+        for m in cell:
+            if m.failure_reason:
+                failures[m.failure_reason] = failures.get(m.failure_reason, 0) + 1
+            if m.status == "finished":
+                st = per_type.setdefault(types.get(m.task_id, "?"), [0, 0])
+                st[1] += 1
+                st[0] += 1 if m.passes else 0
+                j = (read_json(Path(m.run_dir) / "report.json") or {}).get("judge") or {}
+                if j.get("score") is not None:
+                    judged_scores.append(float(j["score"]))
+                if j.get("passed"):
+                    judge_passed_n += 1
+        judged_n = len(judged_scores)
+        pr = passed / len(finished) if finished else None
+        ci = _wilson(passed, len(finished))
+        top_failure = max(failures.items(), key=lambda kv: kv[1])[0] if failures else None
+        groups = sorted({m.run_group for m in cell if m.run_group})
+        strong = sorted(((t, p, n) for t, (p, n) in per_type.items() if n),
+                        key=lambda x: (-(x[1] / x[2]), x[0]))
+        best, worst = (strong[0] if strong else None), (strong[-1] if strong else None)
+        if judged_n and pr is not None:
+            jp = judge_passed_n / judged_n
+            if pr - jp > 0.15:
+                line = f"{round(pr * 100)}% pass structure, {round(jp * 100)}% survive semantic review"
+            elif jp - pr > 0.05:
+                line = f"{round(pr * 100)}% clear the full gate — judge alone approves {round(jp * 100)}%"
+            else:
+                line = "mechanical and judge axes agree"
+        elif judged_n:
+            line = f"{judged_n} runs judged — semantic axis active"
+        else:
+            line = "mechanical grading only — nothing judged yet"
+        return {
+            "kind": "pairing", "target": target, "suite": SUITE_VERSION,
+            "orchestrator": orch, "worker": worker,
+            "runs": len(cell), "finished": len(finished), "passed": passed,
+            "pass_rate": pr, "pass_ci": ci, "verdict_line": line,
+            "score_mean": round(sum(scores) / len(scores), 3) if scores else None,
+            "judged": judged_n,
+            "judge_pass_rate": judge_passed_n / judged_n if judged_n else None,
+            "judge_score_mean": round(sum(judged_scores) / len(judged_scores), 3) if judged_scores else None,
+            "cost_usd": round(sum(costs), 4),
+            "cost_median": round(statistics.median(costs), 4) if costs else None,
+            "latency_median_ms": round(statistics.median(lat)) if lat else None,
+            "tasks": len({m.task_id for m in cell}),
+            "type_split": {t: {"passed": p, "finished": n} for t, (p, n) in per_type.items()},
+            "best_type": best[0] if best else None,
+            "worst_type": worst[0] if worst else None,
+            "top_failure": top_failure,
+            "groups": groups,
+            "explainer": _explainer("pairing", {"orchestrator": orch, "worker": worker}),
+            "flag": ann.get("flag", ""), "note": ann.get("note", ""),
+        }
+    if kind == "group":
+        g = next((x for x in groups_payload(store) if x["group"] == target), None)
+        if g is None:
+            return None
+        metas = store.list_runs(run_group=target)
+        cells = aggregate(metas)
+        pairings = sorted({(c.orchestrator, c.worker) for c in cells})
+        # judge aggregates — read each finished run's report for the
+        # semantic axis; unjudged runs contribute nothing, honestly
+        judge_scores: list[float] = []
+        judge_nouls: list[float] = []
+        judge_models: set[str] = set()
+        judge_passed_n = 0
+        for m in metas:
+            if m.status != "finished":
+                continue
+            j = (read_json(Path(m.run_dir) / "report.json") or {}).get("judge") or {}
+            if not j or (j.get("score") is None and j.get("noul") is None):
+                continue
+            if j.get("score") is not None:
+                judge_scores.append(float(j["score"]))
+            if j.get("noul") is not None:
+                judge_nouls.append(float(j["noul"]))
+            if j.get("model"):
+                judge_models.add(j["model"])
+            if j.get("passed"):
+                judge_passed_n += 1
+        judged_n = len(judge_scores) or len(judge_nouls)
+        jp_rate = judge_passed_n / judged_n if judged_n else None
+        ci = _wilson(g["passed"], g["finished"])
+        failed_n = sum(1 for m in metas if m.status == "failed")
+        running_n = sum(1 for m in metas if m.status == "running")
+        if not judge_models and judged_n:
+            judge_models = set(store.judge_slugs({m.task_id for m in metas}))
+        if judged_n and jp_rate is not None and g["pass_rate"] is not None:
+            mech_pct, jp_pct = round(g["pass_rate"] * 100), round(jp_rate * 100)
+            if g["pass_rate"] - jp_rate > 0.15:
+                line = f"{mech_pct}% pass structure, {jp_pct}% survive semantic review"
+            elif jp_rate - g["pass_rate"] > 0.05:
+                line = f"{mech_pct}% clear the full gate — judge alone approves {jp_pct}%"
+            else:
+                line = "mechanical and judge axes agree"
+        elif judged_n:
+            line = f"{judged_n} runs judged — semantic axis active"
+        else:
+            line = "mechanical grading only — nothing judged yet"
+        return {
+            "kind": "group", "target": target, "suite": SUITE_VERSION,
+            "runs": g["runs"], "finished": g["finished"], "passed": g["passed"],
+            "failed": failed_n, "running": running_n,
+            "pass_rate": g["pass_rate"], "score_median": g["score_median"],
+            "pass_ci": ci, "verdict_line": line,
+            "judged": judged_n, "judge_pass_rate": jp_rate,
+            "judge_score_mean": (round(sum(judge_scores) / len(judge_scores), 3)
+                                 if judge_scores else None),
+            "judge_noul_mean": (round(sum(judge_nouls) / len(judge_nouls), 3)
+                                if judge_nouls else None),
+            "judge_models": sorted(judge_models),
+            "cost_usd": g["cost_usd"], "tasks": g["tasks"],
+            "pairings": [{"orchestrator": o, "worker": w} for o, w in pairings],
+            "latest": g["latest"],
+            "explainer": _explainer("group", {}),
+            "flag": ann.get("flag", ""), "note": ann.get("note", ""),
+        }
+    if kind == "run":
+        meta = store.get_run(target)
+        if meta is None:
+            return None
+        report = read_json(Path(meta.run_dir) / "report.json") or {}
+        judge = report.get("judge") or {}
+        plan = read_json(Path(meta.run_dir) / "plan.json") or {}
+        plan_summary = str(plan.get("plan") or "").strip() if isinstance(plan, dict) else ""
+        judge_reason = str(judge.get("reasoning") or "").strip()
+        if judge_reason:
+            description, description_by = judge_reason, "judge"
+        elif plan_summary:
+            description, description_by = plan_summary, "orchestrator"
+        else:
+            description, description_by = "", ""
+        return {
+            "kind": "run", "target": target, "suite": SUITE_VERSION,
+            "task_id": meta.task_id, "orchestrator": meta.orchestrator,
+            "worker": meta.worker, "status": meta.status,
+            "passes": meta.passes, "score": meta.score,
+            "cost_usd": meta.total_cost_usd, "latency_ms": meta.latency_ms,
+            "failure_reason": meta.failure_reason,
+            "run_group": meta.run_group, "replicate": meta.replicate,
+            "started_at": meta.started_at,
+            "judge_engine": judge.get("engine"), "judge_noul": judge.get("noul"),
+            "judge_passed": judge.get("passed"),
+            "judge_model": judge.get("model"),
+            "judge_reasoning": judge_reason[:280],
+            "description": description[:600],
+            "description_by": description_by,
+            "description_model": (judge.get("model") if description_by == "judge"
+                                  else meta.orchestrator) if description else "",
+            "verdict_line": _verdict_line(
+                bool(meta.passes),
+                judge.get("passed") if judge else None, meta.status),
+            "explainer": _explainer("run", {}),
+            "flag": ann.get("flag", ""), "note": ann.get("note", ""),
+        }
+    return None
+
+
+def compare_payload(store: RunStore, group_a: str, group_b: str) -> dict[str, Any]:
+    """Cell-by-cell group delta — the same join `report --compare` prints,
+    plus a pairing matrix the SPA renders as a grid."""
+    def cells(group: str) -> dict[tuple[str, str, str], Any]:
+        return {
+            (c.task_id, c.orchestrator, c.worker): c
+            for c in aggregate(store.list_runs(run_group=group))
+        }
+
+    cells_a, cells_b = cells(group_a), cells(group_b)
+    keys = sorted(set(cells_a) | set(cells_b))
+    rows: list[dict[str, Any]] = []
+    for task_id, orch, worker in keys:
+        a, b = cells_a.get((task_id, orch, worker)), cells_b.get((task_id, orch, worker))
+        pa = a.pass_rate if a else None
+        pb = b.pass_rate if b else None
+        if pa is None or pb is None:
+            verdict = "one-sided"
+        elif pb > pa:
+            verdict = "improved"
+        elif pb < pa:
+            verdict = "regressed"
+        else:
+            verdict = "stable"
+        rows.append({
+            "task_id": task_id, "orchestrator": orch, "worker": worker,
+            "n_a": a.runs if a else 0, "pass_a": pa, "cost_a": a.cost_total if a else None,
+            "n_b": b.runs if b else 0, "pass_b": pb, "cost_b": b.cost_total if b else None,
+            "verdict": verdict,
+            "failures_a": a.failures if a else {},
+            "failures_b": b.failures if b else {},
+        })
+    verdicts: dict[str, int] = {}
+    for r in rows:
+        verdicts[r["verdict"]] = verdicts.get(r["verdict"], 0) + 1
+    return {
+        "group_a": group_a, "group_b": group_b, "cells": rows,
+        "verdicts": verdicts,
+        "cost_a": sum(r["cost_a"] or 0 for r in rows),
+        "cost_b": sum(r["cost_b"] or 0 for r in rows),
+    }

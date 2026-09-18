@@ -165,6 +165,18 @@ class RunStore:
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS annotations (
+                    kind TEXT NOT NULL,
+                    target TEXT NOT NULL,
+                    flag TEXT NOT NULL DEFAULT '',
+                    note TEXT NOT NULL DEFAULT '',
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (kind, target)
+                )
+                """
+            )
 
     def new_run(
         self,
@@ -326,6 +338,39 @@ class RunStore:
             ).fetchall()
         return [dict(r) for r in rows]
 
+    def set_annotation(
+        self, kind: str, target: str, flag: str, note: str = ""
+    ) -> dict[str, Any]:
+        """Upsert a user annotation — the observatory's stateful layer.
+
+        ``kind`` is ``run`` or ``group``; ``flag`` is ``interesting``,
+        ``not``, or ``''`` (clears the flag but keeps the row for the note)."""
+        if kind not in ("run", "group"):
+            raise ValueError(f"annotation kind must be run|group, got {kind!r}")
+        if flag not in ("interesting", "not", ""):
+            raise ValueError(f"flag must be interesting|not|'', got {flag!r}")
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO annotations (kind, target, flag, note, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT (kind, target) DO UPDATE SET
+                    flag = excluded.flag,
+                    note = excluded.note,
+                    updated_at = excluded.updated_at
+                """,
+                (kind, target, flag, note, datetime.now(UTC).isoformat()),
+            )
+        return {"kind": kind, "target": target, "flag": flag, "note": note}
+
+    def annotations(self) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT kind, target, flag, note, updated_at FROM annotations"
+            ).fetchall()
+        return [dict(r) for r in rows]
+
     def debug_log(self, component: str, message: str, **fields: Any) -> None:
         """Append to the root-level runs/debug.jsonl for events that happen
         before a run directory exists (e.g. provider resolution failures)."""
@@ -398,6 +443,19 @@ class RunStore:
             ).fetchone()
         return json.loads(row[0]) if row else None
 
+    def judge_slugs(self, task_ids: set[str]) -> list[str]:
+        """Distinct judge models seen in the cache for these tasks — provenance
+        fallback for runs judged before report.json recorded judge.model."""
+        if not task_ids:
+            return []
+        marks = ",".join("?" for _ in task_ids)
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"SELECT DISTINCT judge_slug FROM judge_cache WHERE task_id IN ({marks})",
+                sorted(task_ids),
+            ).fetchall()
+        return [r[0] for r in rows]
+
     def put_judge_result(self, task_id: str, judge_slug: str, artifact_sha256: str, result: dict[str, Any]) -> None:
         with self._connect() as conn:
             conn.execute(
@@ -419,6 +477,37 @@ class RunStore:
             "orchestrator_counts": dict(orchestrators),
             "worker_counts": dict(workers),
         }
+
+    def spend_today(self) -> float:
+        """Recorded cost of all runs started today (UTC) — the spend-guard meter."""
+        today = datetime.now(UTC).date().isoformat()
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT COALESCE(SUM(total_cost_usd), 0) FROM runs WHERE started_at >= ?",
+                (today,),
+            ).fetchone()
+        return float(row[0] or 0.0)
+
+    def mean_run_cost(self, *, orchestrator: str | None = None,
+                      worker: str | None = None) -> float | None:
+        """Mean cost per finished run, optionally scoped to a pairing.
+
+        Used to estimate grid cost before launching. Returns None when no
+        finished runs match (caller falls back to the global mean or a
+        conservative default)."""
+        where = "status = 'finished'"
+        params: list[Any] = []
+        if orchestrator:
+            where += " AND orchestrator = ?"
+            params.append(orchestrator)
+        if worker:
+            where += " AND worker = ?"
+            params.append(worker)
+        with self._connect() as conn:
+            row = conn.execute(
+                f"SELECT AVG(total_cost_usd) FROM runs WHERE {where}", params,
+            ).fetchone()
+        return float(row[0]) if row and row[0] is not None else None
 
 
 _SORTABLE_COLUMNS = {"run_id", "started_at", "finished_at", "status", "orchestrator", "worker", "task_id", "total_cost_usd", "score", "latency_ms", "failure_reason", "run_group", "replicate"}

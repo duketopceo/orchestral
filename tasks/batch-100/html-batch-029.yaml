@@ -6,3 +6,7 @@ prompt: Create a landing page for a personal CRM targeted at data engineering te
   CSS.
 validation:
 - html
+- has_required
+metadata:
+  required:
+  - crm

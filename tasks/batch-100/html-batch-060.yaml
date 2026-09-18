@@ -6,3 +6,7 @@ prompt: Create a landing page for a remote team retreat planner targeted at earl
   inline CSS.
 validation:
 - html
+- has_required
+metadata:
+  required:
+  - retreat

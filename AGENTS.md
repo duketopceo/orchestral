@@ -19,6 +19,8 @@ python3 harness.py dashboard
 python3 harness.py tui
 python3 harness.py history
 python3 harness.py ablate --task landing-page-coffee --orchestrator deepseek/deepseek-v4-flash-0731 --worker z-ai/glm-5.3-flash --sweep retry_limit=0,1,2 --dry-run
+python3 harness.py review --model x-ai/grok-4.3 --limit 5 --dry-run
+python3 harness.py judge --judge moonshotai/kimi-k2 --group GROUP --dry-run
 python3 harness.py scrub
 ```
 
@@ -52,6 +54,7 @@ Before committing, run:
 ```bash
 python3 -m compileall orchestral harness.py
 python3 harness.py init
+python3 harness.py validate
 python3 harness.py run --task landing-page-coffee --orchestrator deepseek/deepseek-v4-flash-0731 --worker z-ai/glm-5.3-flash --dry-run
 python3 harness.py report --html
 ```

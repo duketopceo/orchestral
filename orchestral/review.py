@@ -17,7 +17,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from orchestral.config import ModelConfig, TaskSpec, load_task
+from orchestral.config import ModelConfig, TaskSpec, find_task, load_task
 from orchestral.costs import compute_cost, token_usage_from_raw
 from orchestral.planners import _extract_json
 from orchestral.providers import Provider
@@ -106,6 +106,8 @@ def build_run_digest(run_dir: Path, meta: RunMeta, tasks_dir: Path = Path("tasks
         }
     }
     spec_path = tasks_dir / f"{meta.task_id}.yaml"
+    if not spec_path.exists():
+        spec_path = find_task(meta.task_id, tasks_dir) or spec_path
     if spec_path.exists():
         try:
             spec: TaskSpec = load_task(spec_path)

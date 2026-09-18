@@ -208,6 +208,24 @@ _VALIDATION_META = {
     "matches_pattern": "pattern",
     "within_budget": ("min_chars", "max_chars", "min_words", "max_words"),
 }
+# check names each validator actually implements — a typo'd name fails the run
+# at validation time (validators fail closed on unknowns) but validate should
+# catch it before a grid spends money on it. Execution-graded types
+# (code/bugfix/swe-patch/sql/extract/api/terminal) ignore validation: by design.
+_TEXT_CHECKS = {
+    "html", "html_parses", "non_empty", "has_title", "has_cta", "has_form",
+    "has_viewport", "no_placeholder", "within_budget", "has_required",
+    "no_forbidden", "matches_pattern", "no_pattern",
+}
+_CHECK_NAMES = {
+    "html": _TEXT_CHECKS,
+    "constraint": _TEXT_CHECKS,
+    "needle": _TEXT_CHECKS,
+    "pipeline": _TEXT_CHECKS,
+    "multi-file": {"non_empty", "zip_signature", "has_paths", "member_required"},
+    "image": {"non_empty", "png_signature"},
+    "video": {"non_empty", "mp4_signature"},
+}
 
 
 def cmd_validate(args: argparse.Namespace) -> None:
@@ -228,6 +246,10 @@ def cmd_validate(args: argparse.Namespace) -> None:
             member_requirements(task.metadata)
         except Exception as exc:
             missing.append(f"path sanitizer: {exc}")
+        known = _CHECK_NAMES.get(task.type)
+        if known is not None:
+            for check in sorted(set(task.validation) - known):
+                missing.append(f"unknown validation check '{check}' for type {task.type}")
         for check in task.validation:
             want = _VALIDATION_META.get(check)
             if isinstance(want, str):

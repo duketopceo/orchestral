@@ -1086,10 +1086,20 @@ class Runner:
                     checks["no_pattern"] = False
                     errors.append(f"metadata.forbidden_pattern is not a valid regex: {exc}.")
 
-        return _validation_report(task, checks, errors, len(artifact))
+        known = {
+            "html", "html_parses", "non_empty", "has_title", "has_cta", "has_form",
+            "has_viewport", "no_placeholder", "within_budget", "has_required",
+            "no_forbidden", "matches_pattern", "no_pattern",
+        }
+        unknown = sorted(requested - known)
+        if unknown:
+            errors.append(f"Unknown validation check(s): {', '.join(unknown)}.")
+        passes, report = _validation_report(task, checks, errors, len(artifact))
+        return passes and not unknown, report
 
     def _validate_image(self, task: TaskSpec, artifact: bytes) -> tuple[bool, dict[str, Any]]:
         requested = set(task.validation) if task.validation else {"non_empty", "png_signature"}
+        known = {"non_empty", "png_signature"}
         checks: dict[str, bool] = {}
         errors: list[str] = []
 
@@ -1102,7 +1112,11 @@ class Runner:
             if not checks["png_signature"]:
                 errors.append("Artifact is not a well-formed PNG (bad magic or missing IEND).")
 
-        return _validation_report(task, checks, errors, len(artifact))
+        unknown = sorted(requested - known)
+        if unknown:
+            errors.append(f"Unknown validation check(s): {', '.join(unknown)}.")
+        passes, report = _validation_report(task, checks, errors, len(artifact))
+        return passes and not unknown, report
 
     def _validate_multi(self, task: TaskSpec, artifact: bytes) -> tuple[bool, dict[str, Any]]:
         requested = set(task.validation) if task.validation else {"non_empty", "zip_signature"}
@@ -1238,6 +1252,7 @@ class Runner:
 
     def _validate_video(self, task: TaskSpec, artifact: bytes) -> tuple[bool, dict[str, Any]]:
         requested = set(task.validation) if task.validation else {"non_empty", "mp4_signature"}
+        known = {"non_empty", "mp4_signature"}
         checks: dict[str, bool] = {}
         errors: list[str] = []
 
@@ -1251,7 +1266,11 @@ class Runner:
             if not checks["mp4_signature"]:
                 errors.append("Artifact is not a well-formed MP4 (missing leading ftyp box).")
 
-        return _validation_report(task, checks, errors, len(artifact))
+        unknown = sorted(requested - known)
+        if unknown:
+            errors.append(f"Unknown validation check(s): {', '.join(unknown)}.")
+        passes, report = _validation_report(task, checks, errors, len(artifact))
+        return passes and not unknown, report
 
     def _validate_sql(self, task: TaskSpec, sql: str) -> tuple[bool, dict[str, Any]]:
         report = run_sql_check(task.metadata, sql)

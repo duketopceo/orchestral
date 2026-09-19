@@ -563,9 +563,9 @@ async function viewNew() {
     <p class="page-sub">Launch an evaluation. Replicates &gt; 1 creates a run group.</p>
     <div class="panel panel-pad"><form id="launch" class="form-grid">
       <label class="f">task<select name="task" required>${tasks.map(t => `<option>${esc(t)}</option>`).join("")}</select></label>
-      <label class="f">orchestrator<select name="orchestrator" required>${orchs.map(m => `<option>${esc(m)}</option>`).join("")}</select></label>
-      <label class="f">worker<select name="worker" required>${workers.map(m => `<option>${esc(m)}</option>`).join("")}</select></label>
-      <label class="f">judge (optional)<select name="judge"><option value="">none</option>${models.map(m => `<option>${esc(m)}</option>`).join("")}</select></label>
+      <label class="f">orchestrator<select name="orchestrator" required>${orchs.map(m => `<option value="${esc(m.slug)}">${esc(m.slug)}</option>`).join("")}</select></label>
+      <label class="f">worker<select name="worker" required>${workers.map(m => `<option value="${esc(m.slug)}">${esc(m.slug)}${m.executor ? " · executor" : ""}</option>`).join("")}</select></label>
+      <label class="f">judge (optional)<select name="judge"><option value="">none</option>${models.map(m => `<option value="${esc(m.slug)}"${m.default ? " selected" : ""}>${esc(m.slug)}</option>`).join("")}</select></label>
       <label class="f">replicates<input type="number" name="replicates" value="1" min="1" max="50"></label>
       <label class="f">seed (optional)<input type="number" name="seed" placeholder="auto"></label>
       <label class="f wide check-line"><input type="checkbox" name="dry_run" value="1"> dry run — stub models, no API spend</label>

@@ -108,7 +108,7 @@ class TestVideoWorkerEligibility(unittest.TestCase):
             _cfg(slug="v/text"),
             _cfg(slug="v/img", metadata={"modalities": ["image"]}),
         ]
-        eligible = _eligible_workers(pool, "video")
+        eligible = _eligible_workers(pool, TaskSpec(id="t", type="video", prompt="p"))
         self.assertEqual([m.slug for m in eligible], ["v/vid"])
 
     def test_text_task_excludes_video_only_workers(self):
@@ -117,7 +117,7 @@ class TestVideoWorkerEligibility(unittest.TestCase):
             _cfg(slug="v/text"),
             _cfg(slug="v/multi", metadata={"modalities": ["text", "video"]}),
         ]
-        eligible = _eligible_workers(pool, "html")
+        eligible = _eligible_workers(pool, TaskSpec(id="t", type="html", prompt="p"))
         self.assertEqual([m.slug for m in eligible], ["v/text", "v/multi"])
 
 

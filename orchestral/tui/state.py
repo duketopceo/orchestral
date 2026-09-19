@@ -16,6 +16,15 @@ from pathlib import Path
 from typing import Any
 
 
+# Fields a launch spec may carry — must equal web.state.LAUNCH_FIELDS
+# (the parity test asserts it; divergence fails in CI, not production).
+# Executor opt-in is deliberately absent: it is a launch-context flag,
+# never a per-request field.
+LAUNCH_SPEC_FIELDS = frozenset({
+    "task", "orchestrator", "worker", "judge", "replicates", "seed", "dry_run",
+})
+
+
 class JobStatus(StrEnum):
     QUEUED = "queued"
     RUNNING = "running"

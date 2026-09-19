@@ -47,9 +47,13 @@ _ARTIFACT_TYPES = {
 class Observatory:
     """Bundles the server's dependencies so the handler stays thin."""
 
-    def __init__(self, runs_dir: Path, tasks_dir: Path, models_dir: Path):
+    def __init__(self, runs_dir: Path, tasks_dir: Path, models_dir: Path,
+                 allow_agent_exec: bool = False):
         self.store = RunStore(runs_dir)
-        self.registry = state.JobRegistry(runs_dir, tasks_dir, models_dir, self.store)
+        self.registry = state.JobRegistry(
+            runs_dir, tasks_dir, models_dir, self.store,
+            allow_agent_exec=allow_agent_exec,
+        )
         self.tasks_dir = Path(tasks_dir)
         self.models_dir = Path(models_dir)
 
@@ -274,9 +278,34 @@ def make_handler(obs: Observatory) -> type[BaseHTTPRequestHandler]:
 
         # -- POST ---------------------------------------------------------
 
+        _LOCAL_HOSTS = frozenset({"127.0.0.1", "localhost", "::1", "[::1]"})
+
+        def _same_origin(self) -> bool:
+            """CSRF guard for the unauthenticated POST surface.
+
+            A cross-site form post carries the attacker's Origin — require a
+            local Host (a foreign Host smells like DNS rebinding) and, when
+            Origin is present, a local origin on this server's port. A
+            missing Origin means a non-browser client, which can't be driven
+            cross-origin by a page the user visits.
+            """
+            host = self.headers.get("Host")
+            if not host or host.split(":", 1)[0].lower() not in self._LOCAL_HOSTS:
+                return False
+            origin = self.headers.get("Origin")
+            if origin is None:
+                return True
+            o = urlparse(origin)
+            if o.scheme not in ("http", "https") or (o.hostname or "").lower() not in self._LOCAL_HOSTS:
+                return False
+            port = o.port or (443 if o.scheme == "https" else 80)
+            return port == self.server.server_port
+
         def do_POST(self) -> None:
             url = urlparse(self.path)
             try:
+                if not self._same_origin():
+                    return self._json({"error": "cross-origin POST rejected"}, 403)
                 self._route_post(url.path)
             except Exception as exc:
                 self._json({"error": str(exc)[:200]}, 500)
@@ -384,8 +413,10 @@ def make_handler(obs: Observatory) -> type[BaseHTTPRequestHandler]:
     return Handler
 
 
-def serve(runs_dir: Path, tasks_dir: Path, models_dir: Path, port: int) -> None:
-    obs = Observatory(Path(runs_dir), Path(tasks_dir), Path(models_dir))
+def serve(runs_dir: Path, tasks_dir: Path, models_dir: Path, port: int,
+          allow_agent_exec: bool = False) -> None:
+    obs = Observatory(Path(runs_dir), Path(tasks_dir), Path(models_dir),
+                      allow_agent_exec=allow_agent_exec)
     httpd = ThreadingHTTPServer(("127.0.0.1", port), make_handler(obs))
     try:
         httpd.serve_forever()

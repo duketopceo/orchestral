@@ -273,10 +273,12 @@ class TestHttpRoutes(unittest.TestCase):
         except urllib.error.HTTPError as e:
             return e.code, e.read().decode()
 
-    def _post(self, path: str, data: str) -> tuple[int, str, str]:
+    def _post(self, path: str, data: str,
+              headers: dict[str, str] | None = None) -> tuple[int, str, str]:
         req = urllib.request.Request(
             f"http://127.0.0.1:{self.port}{path}", data=data.encode(),
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            headers={"Content-Type": "application/x-www-form-urlencoded",
+                     **(headers or {})},
             method="POST",
         )
         opener = urllib.request.build_opener(_NoRedirect())
@@ -383,6 +385,77 @@ class TestHttpRoutes(unittest.TestCase):
         )
         self.assertEqual(code, 400)
         self.assertIn("unknown fields", body)
+
+    def test_post_run_cannot_opt_into_executor(self):
+        # allow_agent_exec is a server-start flag — a POST field would be
+        # CSRF-triggerable from any web page the user visits
+        for path in ("/run", "/api/run"):
+            code, _, body = self._post(
+                path,
+                "task=t-task&orchestrator=o/model&worker=w/model"
+                "&replicates=1&dry_run=1&allow_agent_exec=1",
+            )
+            self.assertEqual(code, 400, path)
+            self.assertIn("unknown fields", body)
+
+    def test_post_rejects_foreign_origin_and_host(self):
+        # a cross-site form post carries the attacker's Origin — reject it
+        code, _, _ = self._post(
+            "/api/flag", "kind=run&target=x&flag=interesting",
+            headers={"Origin": "https://evil.example"},
+        )
+        self.assertEqual(code, 403)
+        # sandboxed/null origins can't prove same-origin either
+        code, _, _ = self._post(
+            "/api/flag", "kind=run&target=x&flag=interesting",
+            headers={"Origin": "null"},
+        )
+        self.assertEqual(code, 403)
+        # a foreign Host smells like DNS rebinding — reject it
+        code, _, _ = self._post(
+            "/api/flag", "kind=run&target=x&flag=interesting",
+            headers={"Host": "evil.example"},
+        )
+        self.assertEqual(code, 403)
+        code, _, _ = self._post(
+            "/api/flag", "kind=run&target=x&flag=interesting",
+            headers={"Host": "evil.example:8787",
+                     "Origin": "http://evil.example:8787"},
+        )
+        self.assertEqual(code, 403)
+
+    def test_post_accepts_same_origin_and_no_origin(self):
+        # matching Origin + Host → fine (a real same-site form post)
+        code, _, _ = self._post(
+            "/api/flag", "kind=run&target=x&flag=interesting",
+            headers={"Origin": f"http://127.0.0.1:{self.port}"},
+        )
+        self.assertEqual(code, 200)
+        # no Origin header → non-browser client, not a CSRF vector
+        code, _, _ = self._post(
+            "/api/flag", "kind=run&target=x&flag=not",
+        )
+        self.assertEqual(code, 200)
+
+    def test_models_api_exposes_executor_and_default_judge(self):
+        code, body = self._get("/api/models?role=worker")
+        self.assertEqual(code, 200)
+        rows = {r["slug"]: r for r in json.loads(body)}
+        self.assertIn("w/model", rows)
+        for row in rows.values():
+            self.assertIn("executor", row)
+            self.assertIn("capabilities", row)
+            self.assertIn("modalities", row)
+        # the default decisions judge is offered though no model file declares it
+        code, body = self._get("/api/models")
+        self.assertEqual(code, 200)
+        rows = {r["slug"]: r for r in json.loads(body)}
+        self.assertIn("~typesafe/jev-latest", rows)
+        self.assertTrue(rows["~typesafe/jev-latest"]["default"])
+        # role-filtered surfaces don't get the synthetic judge entry
+        code, body = self._get("/api/models?role=worker")
+        self.assertNotIn("~typesafe/jev-latest",
+                         {r["slug"] for r in json.loads(body)})
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):

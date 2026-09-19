@@ -18,7 +18,17 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from orchestral.config import ModelConfig, find_task, load_models, load_task, load_yaml
+from orchestral.agentexec import ExecutorPreflightError, launch_gate
+from orchestral.config import (
+    ConfigError,
+    find_task,
+    load_models,
+    load_task,
+    load_yaml,
+    resolve_judge,
+    resolve_model,
+)
+from orchestral.judge import DEFAULT_JUDGE
 from orchestral.runner import Runner
 from orchestral.stats import aggregate, pairing_leaderboard
 from orchestral.storage import RunStore
@@ -48,11 +58,13 @@ class JobRegistry:
     mechanism — only runs this process started are cancellable.
     """
 
-    def __init__(self, runs_dir: Path, tasks_dir: Path, models_dir: Path, store: RunStore):
+    def __init__(self, runs_dir: Path, tasks_dir: Path, models_dir: Path, store: RunStore,
+                 allow_agent_exec: bool = False):
         self.runs_dir = Path(runs_dir)
         self.tasks_dir = Path(tasks_dir)
         self.models_dir = Path(models_dir)
         self.store = store
+        self.allow_agent_exec = allow_agent_exec
         self.jobs: list[Job] = []
         self._lock = threading.Lock()
 
@@ -69,6 +81,26 @@ class JobRegistry:
             raise ValueError("replicates must be >= 1")
         seed = spec.get("seed")
         seed = int(seed) if seed not in (None, "") else None
+
+        # Executor launches are a server-start decision (never a POST
+        # field): validate the pairing and binary/env readiness before a
+        # job exists — a 400 beats a failed run for a launch-time error.
+        task_path = find_task(spec["task"], str(self.tasks_dir))
+        if task_path is None:
+            raise ValueError(f"task '{spec['task']}' not found in {self.tasks_dir}")
+        try:
+            task_spec = load_task(task_path)
+        except ConfigError as exc:
+            raise ValueError(str(exc)) from exc
+        worker_cfg = resolve_model(spec["worker"], self.models_dir)
+        try:
+            launch_gate(
+                worker_cfg, task_spec,
+                allow_agent_exec=self.allow_agent_exec,
+                probe=not bool(spec.get("dry_run")),
+            )
+        except ExecutorPreflightError as exc:
+            raise ValueError(str(exc)) from exc
 
         label = f"{spec['task']}·{spec['worker'].split('/')[-1]}"
         if replicates > 1:
@@ -103,16 +135,9 @@ class JobRegistry:
             if task_path is None:
                 raise FileNotFoundError(f"task '{spec['task']}' not found in {self.tasks_dir}")
             task = load_task(task_path)
-            models = {m.slug: m for m in load_models(self.models_dir)}
-            orchestrator = models.get(spec["orchestrator"]) or ModelConfig(
-                slug=spec["orchestrator"], name=spec["orchestrator"], role="orchestrator",
-                input_price_per_mtok=0.03, output_price_per_mtok=0.10,
-            )
-            worker = models.get(spec["worker"]) or ModelConfig(
-                slug=spec["worker"], name=spec["worker"], role="worker",
-                input_price_per_mtok=0.03, output_price_per_mtok=0.10,
-            )
-            judge = models.get(spec["judge"]) if spec.get("judge") else None
+            orchestrator = resolve_model(spec["orchestrator"], self.models_dir, role="orchestrator")
+            worker = resolve_model(spec["worker"], self.models_dir, role="worker")
+            judge = resolve_judge(spec.get("judge") or None, self.models_dir)
         except Exception as exc:
             self._done(job, JobStatus.FAILED, f"setup failed: {exc}")
             return
@@ -133,6 +158,7 @@ class JobRegistry:
                     seed=(seed + i - 1) if seed is not None else None,
                     cancel_event=job.cancel_event,
                     on_run_created=job.run_ids.append,
+                    allow_agent_exec=self.allow_agent_exec,
                 ).run(task, orchestrator, worker, judge)
                 if meta.run_id not in job.run_ids:
                     job.run_ids.append(meta.run_id)
@@ -246,13 +272,36 @@ def task_choices(tasks_dir: Path) -> list[str]:
     return ids
 
 
-def model_choices(models_dir: Path, role: str | None) -> list[str]:
-    """Model slugs for the launch form; role=None lists all — the judge field
-    offers every model, same as the TUI (any model can judge)."""
+def model_choices(models_dir: Path, role: str | None) -> list[dict[str, Any]]:
+    """Model options for the launch form — slug plus the metadata the UI
+    needs for executor badges and capability/modality filtering.
+
+    role=None lists all; role="judge" also lists all (any model can judge,
+    same as the TUI). Both offer DEFAULT_JUDGE — a `~` decisions-engine
+    slug load_models skips — flagged ``default`` so the form can prefill it.
+    """
     try:
-        return sorted(m.slug for m in load_models(models_dir) if role is None or m.role == role)
+        models = [
+            m for m in load_models(models_dir)
+            if role in (None, "judge") or m.role == role
+        ]
     except Exception:
-        return []
+        models = []
+    out = [
+        {
+            "slug": m.slug,
+            "executor": bool(m.metadata.get("executor")),
+            "capabilities": sorted(m.metadata.get("capabilities") or []),
+            "modalities": sorted(m.metadata.get("modalities") or []),
+            "default": False,
+        }
+        for m in models
+    ]
+    if role in (None, "judge") and DEFAULT_JUDGE not in {m.slug for m in models}:
+        out.append({"slug": DEFAULT_JUDGE, "executor": False,
+                    "capabilities": [], "modalities": ["text"], "default": True})
+    out.sort(key=lambda d: d["slug"])
+    return out
 
 
 # ---------------------------------------------------------------------------

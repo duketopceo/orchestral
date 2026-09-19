@@ -26,6 +26,7 @@ from textual.widgets import (
 )
 
 from orchestral.export import leaderboard_csv, run_audit_markdown
+from orchestral.judge import DEFAULT_JUDGE
 from orchestral.stats import aggregate, pairing_leaderboard
 from orchestral.storage import RunStore
 from orchestral.tui.state import (
@@ -501,8 +502,12 @@ class LaunchScreen(ModalScreen):
             yield Select([(m, m) for m in self._orchestrators], id="launch-orch", allow_blank=not self._orchestrators)
             yield Label("Worker")
             yield Select([(m, m) for m in self._workers], id="launch-worker", allow_blank=not self._workers)
-            yield Label("Judge (optional)")
-            yield Select([("(none)", ""), *[(m, m) for m in self._judges]], id="launch-judge", value="")
+            yield Label("Judge (optional — default is the decisions engine)")
+            yield Select(
+                [("(none)", ""), *[(m, m) for m in self._judges]],
+                id="launch-judge",
+                value=DEFAULT_JUDGE if DEFAULT_JUDGE in self._judges else "",
+            )
             yield Label("Replicates")
             yield Input(value="1", id="launch-reps", type="integer")
             yield Label("Seed (optional)")
@@ -536,7 +541,7 @@ class LaunchScreen(ModalScreen):
             self.app.notify("seed must be an integer", severity="error")
             return
         self.dismiss({
-            "task_id": task,
+            "task": task,
             "orchestrator": orch,
             "worker": worker,
             "judge": judge,

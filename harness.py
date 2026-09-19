@@ -15,17 +15,22 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from orchestral.agentexec import ExecutorPreflightError, launch_gate
 from orchestral.calibrate import agreement_metrics, collect_pairs, load_labels
 from orchestral.config import (
     ConfigError,
     ModelConfig,
+    TaskSpec,
     find_task,
     load_models,
     load_task,
     load_yaml,
+    resolve_judge,
+    resolve_model,
 )
 from orchestral.export import leaderboard_csv, run_audit_markdown, runs_csv
 from orchestral.fileset import expected_paths, member_requirements
+from orchestral.judge import DEFAULT_JUDGE
 from orchestral.planners import available_prompt_variants, load_prompt_variant
 from orchestral.pricing import DEFAULT_DRIFT_THRESHOLD, pricing_drift
 from orchestral.privacy import scrub_all
@@ -42,31 +47,33 @@ def _model_map(models_dir: str) -> dict[str, ModelConfig]:
 
 
 def _model_from_arg(slug: str, models_dir: str = "models", known: dict[str, ModelConfig] | None = None) -> ModelConfig:
-    cfg = (known if known is not None else _model_map(models_dir)).get(slug)
-    if cfg is not None:
-        return cfg
-    # If the slug is not in the config, treat it as an ad-hoc model with cheap defaults.
-    return ModelConfig(
-        slug=slug,
-        name=slug,
-        role="unknown",
-        input_price_per_mtok=0.03,
-        output_price_per_mtok=0.10,
-    )
+    # If the slug is not in the config, treat it as an ad-hoc model with
+    # cheap defaults — the shared resolver every launch surface uses.
+    return resolve_model(slug, models_dir, known)
 
 
 def _slugs_from_arg(arg: str) -> list[str]:
     return [s.strip() for s in arg.split(",") if s.strip()]
 
 
-def _eligible_workers(pool: list[ModelConfig], task_type: str) -> list[ModelConfig]:
+def _eligible_workers(pool: list[ModelConfig], task: TaskSpec) -> list[ModelConfig]:
     """Filter a worker pool to models that can produce the task's artifact.
 
-    Media tasks need a model declaring the modality; text tasks accept
-    multimodal or modality-free workers but not media-only ones.
+    ``requires_executor`` tasks pair only with executor workers declaring
+    the task type in ``metadata.capabilities``; ordinary tasks pair with
+    chat workers by modality (media tasks need the modality declared).
+    Executor workers are excluded from undeclared tasks — the dispatch
+    conjunction would reject every cell anyway.
     """
-    if task_type in ("image", "video"):
-        return [m for m in pool if m.supports(task_type)]
+    if (task.metadata or {}).get("requires_executor"):
+        return [
+            m for m in pool
+            if (m.metadata or {}).get("executor")
+            and task.type in ((m.metadata or {}).get("capabilities") or [])
+        ]
+    pool = [m for m in pool if not (m.metadata or {}).get("executor")]
+    if task.type in ("image", "video"):
+        return [m for m in pool if m.supports(task.type)]
     return [m for m in pool if not m.metadata.get("modalities") or m.supports("text")]
 
 
@@ -82,8 +89,13 @@ def _task_from_arg(task_id: str, tasks_dir: str = "tasks") -> Path:
 
 
 def _judge_from_arg(args: argparse.Namespace, known: dict[str, ModelConfig] | None = None) -> ModelConfig | None:
-    judge = _model_from_arg(args.judge, args.models_dir, known) if getattr(args, "judge", None) else None
-    return replace(judge, role="judge") if judge is not None else None
+    """Judge by default (KTD8): ``--judge`` overrides, ``--no-judge`` opts
+    out. The shared resolver makes ``~`` decisions-engine slugs resolvable
+    here the same as on web/TUI launches."""
+    if getattr(args, "no_judge", False):
+        return None
+    slug = getattr(args, "judge", None) or DEFAULT_JUDGE
+    return resolve_judge(slug, getattr(args, "models_dir", "models"), known)
 
 
 def _check_prompt_variant(args: argparse.Namespace) -> None:
@@ -125,12 +137,43 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
-def _budget_check(args: argparse.Namespace, store: RunStore, n_runs: int) -> None:
+def _env_flag(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _scoped_mean(store: RunStore, orchestrator: str | None, worker: str | None) -> float:
+    """Per-launch estimate: the pairing's own cost history, falling back to
+    the global mean, then a conservative default when no history exists."""
+    mean = store.mean_run_cost(orchestrator=orchestrator, worker=worker)
+    if mean is None:
+        mean = store.mean_run_cost()
+    return mean if mean is not None else 0.01
+
+
+def _grid_estimate(store: RunStore, cells: list[tuple[ModelConfig, ModelConfig, int]]) -> float:
+    """Aggregate launch estimate honoring per-pairing cost history — a
+    cheap pairing shouldn't be priced at the grid's expensive mean."""
+    counts: dict[tuple[str, str], int] = {}
+    for o, w, _i in cells:
+        counts[(o.slug, w.slug)] = counts.get((o.slug, w.slug), 0) + 1
+    return sum(_scoped_mean(store, o, w) * n for (o, w), n in counts.items())
+
+
+def _budget_check(
+    args: argparse.Namespace,
+    store: RunStore,
+    n_runs: int,
+    *,
+    orchestrator: str | None = None,
+    worker: str | None = None,
+    estimate: float | None = None,
+) -> None:
     """Spend guard. Two independent brakes on top of the provider-side key cap:
 
     --daily-cap aborts once today's recorded spend reaches the cap;
     --max-cost aborts when this invocation's launch count × historical mean
-    cost would exceed the estimate limit. Both default on; set 0 to disable.
+    cost would exceed the estimate limit. The mean is pairing-scoped when a
+    pairing is known (global fallback). Both default on; set 0 to disable.
     In-flight spend is only metered once runs index, so the cap is a
     guardrail, not a realtime limiter."""
     if getattr(args, "dry_run", False):
@@ -144,8 +187,8 @@ def _budget_check(args: argparse.Namespace, store: RunStore, n_runs: int) -> Non
         print(f"Daily cap reached: ${spent:.2f} spent today >= ${daily_cap:.2f} cap. "
               "Raise --daily-cap or wait for UTC midnight.", file=sys.stderr)
         sys.exit(1)
-    mean = store.mean_run_cost()
-    estimate = n_runs * (mean if mean is not None else 0.01)
+    if estimate is None:
+        estimate = n_runs * _scoped_mean(store, orchestrator, worker)
     if max_cost > 0 and estimate > max_cost:
         print(f"Estimated ${estimate:.2f} for {n_runs} launches exceeds --max-cost "
               f"${max_cost:.2f}. Raise it or shrink the matrix.", file=sys.stderr)
@@ -156,21 +199,51 @@ def _budget_check(args: argparse.Namespace, store: RunStore, n_runs: int) -> Non
         sys.exit(1)
 
 
+def _spend_recheck(args: argparse.Namespace, store: RunStore) -> None:
+    """Mid-flight spend guard for grids/batches: the aggregate pre-check
+    can't see spend that lands between sequential cell launches — re-check
+    before each one so in-flight overshoot stays bounded."""
+    if getattr(args, "dry_run", False):
+        return
+    daily_cap = getattr(args, "daily_cap", 0) or 0
+    if daily_cap <= 0:
+        return
+    spent = store.spend_today()
+    if spent >= daily_cap:
+        print(f"Daily cap reached mid-run: ${spent:.2f} spent today >= "
+              f"${daily_cap:.2f} cap — aborting remaining cells.", file=sys.stderr)
+        sys.exit(1)
+
+
 def _check_provider_envs(args: argparse.Namespace, *models: ModelConfig | None) -> None:
-    """Fail fast naming every API-key env var the selected models' providers need."""
+    """Fail fast naming every API-key env var the selected models' providers
+    need — and, for executor workers, the launch opt-in + adapter binary +
+    dedicated credential env keys (the same gate web/TUI launches enforce)."""
     if args.dry_run:
         return
-    missing = sorted({
-        env
-        for m in models
-        if m is not None
-        for env in [provider_key(m)[2]]
-        if env and not os.environ.get(env)
-    })
-    if missing:
+    missing_env: set[str] = set()
+    problems: list[str] = []
+    for m in models:
+        if m is None:
+            continue
+        if (m.metadata or {}).get("executor"):
+            try:
+                launch_gate(
+                    m,
+                    allow_agent_exec=getattr(args, "allow_agent_exec", False),
+                )
+            except ExecutorPreflightError as exc:
+                problems.append(str(exc))
+            continue
+        env = provider_key(m)[2]
+        if env and not os.environ.get(env):
+            missing_env.add(env)
+    if missing_env or problems:
+        parts = problems[:]
+        if missing_env:
+            parts.insert(0, f"API key env var(s) not set: {', '.join(sorted(missing_env))}.")
         print(
-            f"API key env var(s) not set: {', '.join(missing)}. "
-            "Set them for the configured providers, or pass --dry-run.",
+            " ".join(parts) + " Set them for the configured providers, or pass --dry-run.",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -187,6 +260,7 @@ def _runner_kwargs(args: argparse.Namespace, store: RunStore, **extra: Any) -> d
         "replicate": getattr(args, "replicate", None),
         "seed": getattr(args, "seed", None),
         "verbose": getattr(args, "verbose", False),
+        "allow_agent_exec": getattr(args, "allow_agent_exec", False),
         "store": store,
         **extra,
     }
@@ -318,11 +392,15 @@ def cmd_run(args: argparse.Namespace) -> None:
     _check_provider_envs(args, orchestrator, worker, judge)
 
     group, n_reps = _resolve_replicates(args)
+    # the preamble checked n=1 before the replicate count was known —
+    # re-check now so --replicates 10 --max-cost 0.05 prices ten launches
+    _budget_check(args, store, n_reps, orchestrator=orchestrator.slug, worker=worker.slug)
     metas = []
     failures = 0
     for i in range(1, n_reps + 1):
         rep = i if n_reps > 1 else getattr(args, "replicate", None)
         try:
+            _spend_recheck(args, store)
             metas.append(Runner(**_rep_kwargs(args, store, group, rep)).run(task, orchestrator, worker, judge))
         except Exception as exc:
             # Runner.record_failure persists the failed run before re-raising;
@@ -359,7 +437,7 @@ def cmd_grid(args: argparse.Namespace) -> None:
 
     def _configured_workers() -> list[ModelConfig]:
         pool = [m for m in known.values() if m.role == "worker"]
-        return _eligible_workers(pool, task.type)
+        return _eligible_workers(pool, task)
 
     if args.orchestrators:
         orchestrators = [_model_from_arg(s, args.models_dir, known) for s in _slugs_from_arg(args.orchestrators)]
@@ -377,9 +455,10 @@ def cmd_grid(args: argparse.Namespace) -> None:
 
     group, n_reps = _resolve_replicates(args)
     cells = [(o, w, i) for o in orchestrators for w in workers for i in range(1, n_reps + 1)]
-    _budget_check(args, store, len(cells))
+    _budget_check(args, store, len(cells), estimate=_grid_estimate(store, cells))
 
     def _one(orchestrator: ModelConfig, worker: ModelConfig, rep: int) -> dict[str, Any]:
+        _spend_recheck(args, store)
         # copy per pairing — ModelConfig objects from `known` are shared across threads
         orchestrator = replace(orchestrator, role="orchestrator")
         worker = _apply_retry_limit(replace(worker, role="worker"), args)
@@ -476,9 +555,10 @@ def cmd_batch(args: argparse.Namespace) -> None:
 
     group, n_reps = _resolve_replicates(args)
     cells = [(p, i) for p in paths for i in range(1, n_reps + 1)]
-    _budget_check(args, store, len(cells))
+    _budget_check(args, store, len(cells), orchestrator=orchestrator.slug, worker=worker.slug)
 
     def _one(path: Path, rep: int) -> dict[str, Any]:
+        _spend_recheck(args, store)
         task = load_task(path)
         kwargs = _rep_kwargs(args, store, group, rep if n_reps > 1 else getattr(args, "replicate", None))
         meta = Runner(**kwargs).run(task, orchestrator, worker, judge)
@@ -1116,6 +1196,7 @@ def cmd_tui(args: argparse.Namespace) -> None:
         models_dir=args.models_dir,
         reports_dir=args.reports_dir,
         refresh=args.refresh,
+        allow_agent_exec=getattr(args, "allow_agent_exec", False),
     )
 
 
@@ -1128,6 +1209,7 @@ def cmd_serve(args: argparse.Namespace) -> None:
         models_dir=args.models_dir,
         port=args.port,
         open_browser=args.open,
+        allow_agent_exec=getattr(args, "allow_agent_exec", False),
     )
 
 
@@ -1159,7 +1241,7 @@ def cmd_shots(args: argparse.Namespace) -> None:
     print(f"screenshots: {captured} captured, {current} already current, {no_artifact} no HTML artifact, {failed} unavailable")
 
 
-def main() -> None:
+def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="orchestral eval harness")
     p.add_argument("--runs-dir", default="runs", help="Root directory for run data")
     p.add_argument("--tasks-dir", default="tasks", help="Task spec directory")
@@ -1176,7 +1258,8 @@ def main() -> None:
 
     def _add_run_flags(sp: argparse.ArgumentParser) -> None:
         sp.add_argument("--planner", default="raw", choices=["raw", "ce-plan"], help="Orchestrator planning strategy: raw or ce-plan")
-        sp.add_argument("--judge", default=None, help="OpenRouter model slug for an optional LLM-as-judge pass (vision-capable for image tasks)")
+        sp.add_argument("--judge", default=None, help=f"Judge model slug (default {DEFAULT_JUDGE} — the decisions engine; vision-capable slugs for image tasks)")
+        sp.add_argument("--no-judge", action="store_true", help="Skip the judge pass entirely — mechanical verdict only")
         sp.add_argument("--no-judge-cache", action="store_true", help="Bypass judge result cache reads (still writes)")
         sp.add_argument("--retry-limit", type=int, default=None, help="Override the worker's retry_limit for this invocation")
         sp.add_argument("--prompt-variant", default=None, help="Orchestrator prompt variant from prompts/orchestrator-<name>.md")
@@ -1191,6 +1274,9 @@ def main() -> None:
                         help="Abort launches once today's recorded spend reaches this USD (0=off, env ORCHESTRAL_DAILY_CAP, default 5)")
         sp.add_argument("--max-cost", type=float, default=_env_float("ORCHESTRAL_MAX_GRID_COST", 10.0),
                         help="Abort when launch count × historical mean run cost exceeds this USD (0=off, env ORCHESTRAL_MAX_GRID_COST, default 10)")
+        sp.add_argument("--allow-agent-exec", action="store_true",
+                        default=_env_flag("ORCHESTRAL_ALLOW_AGENT_EXEC"),
+                        help="Opt in to executor workers (agent CLIs run with your OS privileges; env ORCHESTRAL_ALLOW_AGENT_EXEC)")
 
     run = sub.add_parser("run", help="Run one orchestrator × worker pairing")
     run.add_argument("--task", required=True, help="Task id or path")
@@ -1276,6 +1362,9 @@ def main() -> None:
     tui.add_argument("--runs-dir", default="runs", help="Root directory for run data")
     tui.add_argument("--reports-dir", default="reports", help="Output directory for exports")
     tui.add_argument("--refresh", action="store_true", help="Auto-refresh every 5s")
+    tui.add_argument("--allow-agent-exec", action="store_true",
+                     default=_env_flag("ORCHESTRAL_ALLOW_AGENT_EXEC"),
+                     help="Opt in to executor workers (agent CLIs run with your OS privileges; env ORCHESTRAL_ALLOW_AGENT_EXEC)")
     tui.set_defaults(func=cmd_tui)
 
     shots = sub.add_parser("shots", help="Screenshot HTML artifacts in stored runs (requires playwright extra)")
@@ -1336,8 +1425,15 @@ def main() -> None:
     serve = sub.add_parser("serve", help="Local web observatory — browse, launch, and cancel runs in a browser (localhost only)")
     serve.add_argument("--port", type=int, default=8787, help="Port to bind on 127.0.0.1 (default 8787)")
     serve.add_argument("--open", action="store_true", help="Open the observatory in a browser")
+    serve.add_argument("--allow-agent-exec", action="store_true",
+                       default=_env_flag("ORCHESTRAL_ALLOW_AGENT_EXEC"),
+                       help="Opt in to executor workers at server start — never a per-request field (env ORCHESTRAL_ALLOW_AGENT_EXEC)")
     serve.set_defaults(func=cmd_serve)
+    return p
 
+
+def main() -> None:
+    p = _build_parser()
     args = p.parse_args()
     if not hasattr(args, "func"):
         p.print_help()

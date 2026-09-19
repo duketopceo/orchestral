@@ -64,8 +64,21 @@ class Provider(Protocol):
 
 
 def provider_key(model: ModelConfig) -> tuple[str, str, str]:
-    """Identity tuple for client caching: (provider, base_url, api_key_env)."""
+    """Identity tuple for client caching: (provider, base_url, api_key_env).
+
+    Executor-marked workers are not chat providers — their identity is the
+    adapter name + dedicated credential env key, and `provider_for` must
+    never be called on them (runners branch on `metadata.executor` before
+    resolving clients).
+    """
     meta = model.metadata or {}
+    if meta.get("executor"):
+        from orchestral.agentexec import ADAPTERS
+
+        name = str(meta["executor"])
+        adapter = ADAPTERS.get(name)
+        env_key = adapter.env_keys[0] if adapter and adapter.env_keys else ""
+        return ("executor", name, env_key)
     provider = meta.get("provider", "openrouter")
     base_url = meta.get("base_url") or (DEFAULT_BASE_URL if provider == "openrouter" else "")
     api_key_env = meta.get("api_key_env") or _DEFAULT_ENV.get(provider, "")

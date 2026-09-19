@@ -188,14 +188,23 @@ class PairingAggregate:
 
 
 def pairing_leaderboard(
-    runs: Iterable[RunMeta], *, min_samples: int = MIN_LEADERBOARD_SAMPLES
+    runs: Iterable[RunMeta],
+    *,
+    min_samples: int = MIN_LEADERBOARD_SAMPLES,
+    unmetered_workers: Iterable[str] | None = None,
 ) -> list[PairingAggregate]:
     """Aggregate runs into leaderboard rows keyed on (orchestrator, worker).
 
     Medians over finished runs only — unfinished runs distort cost/latency
     downward. `low_sample` marks pairings under `min_samples` so a caller can
     refuse to crown a "best" on anecdotal evidence.
+
+    `unmetered_workers` carries worker slugs whose calls are declared
+    unmetered (free/local agent CLIs). A $0 total must not read as a free
+    `cost_per_pass` — those rows get None and sort last, detected via
+    `calls.pricing_source`, never `cost_total == 0`.
     """
+    unmetered = set(unmetered_workers or ())
     cells: dict[tuple[str, str], list[RunMeta]] = {}
     for r in runs:
         cells.setdefault((r.orchestrator, r.worker), []).append(r)
@@ -228,7 +237,11 @@ def pairing_leaderboard(
             cost_total=cost_total,
             duration_median_ms=statistics.median(latencies) if latencies else 0.0,
             failure_rate=failed_n / n if n else None,
-            cost_per_pass=cost_total / passed if passed else None,
+            cost_per_pass=(
+                None
+                if worker in unmetered or not passed
+                else cost_total / passed
+            ),
             failures=failures,
             low_sample=n < min_samples,
         ))

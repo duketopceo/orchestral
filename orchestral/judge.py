@@ -48,6 +48,19 @@ Return only a JSON object with this exact shape:
 # base64 inflates ~33%, so this keeps judge payloads under ~10MB
 MAX_JUDGE_IMAGE_BYTES = 7_500_000
 
+# The structured-decisions judge offered on every launch surface. The `~`
+# prefix marks a decisions-engine slug: it never appears in load_models()
+# output (the prefix also marks disabled model entries), so launch paths
+# resolve it through config.resolve_judge's ad-hoc fallback.
+DEFAULT_JUDGE = "~typesafe/jev-latest"
+
+
+def judge_choices(slugs: list[str]) -> list[str]:
+    """Judge dropdown options — DEFAULT_JUDGE first so the `~` decisions
+    slug is selectable even though ``load_models`` never returns it."""
+    return [DEFAULT_JUDGE, *[s for s in slugs if s != DEFAULT_JUDGE]]
+
+
 # Decisions-engine question set — the same semantic questions the chat rubric
 # asks, expressed as typed noul/score questions so answers are calibrated
 # probabilities rather than free text we have to parse.
@@ -117,6 +130,9 @@ def _judge_via_decisions(
         "confidence": quality.get("confidence"),
         "engine": "decisions",
         "model": judge.slug,
+        # the decisions state cap is artifact[:8000] — a truncated judge
+        # input is partial evidence and badge provenance must see it
+        "judge_input_truncated": len(artifact) > 8000,
     }
     cost: dict[str, Any] = {
         "phase": "judge",
@@ -183,6 +199,9 @@ def judge_artifact(
 
     if dry_run or client is None:
         result = _fake_judge_result()
+        # provenance parity with the real paths — report["judge"]["model"]
+        # names which judge would have run, even when no call was made
+        result["model"] = judge.slug
         cost: dict[str, Any] = {
             "phase": "judge",
             "model": judge.slug,
@@ -272,6 +291,9 @@ def judge_artifact(
         result["reasoning"] = ""
     result["model"] = judge.slug
     result["engine"] = "chat"
+    # the chat judge's artifact section caps at artifact[:2000] — partial
+    # evidence is recorded, not hidden
+    result["judge_input_truncated"] = len(artifact) > 2000
 
     logger.log_llm_call(
         phase="judge",

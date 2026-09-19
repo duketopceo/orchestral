@@ -17,6 +17,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from orchestral.agentexec import (
+    ExecutorCancelled,
+    ExecutorPreflightError,
+    launch_gate,
+    preflight,
+)
 from orchestral.apistub import check_api
 from orchestral.codeexec import (
     DEFAULT_TIMEOUT_SECONDS,
@@ -40,11 +46,13 @@ from orchestral.logger import EventLogger
 from orchestral.manifest import build_manifest, finalize_manifest, write_manifest
 from orchestral.metrics import build_metrics
 from orchestral.openrouter import OpenRouterVideoSubmittedError
+from orchestral.privacy import scrub_text
 from orchestral.planners import (
     assemble_ce,
     assemble_media,
     assemble_raw,
     delegate,
+    delegate_agentic,
     delegate_api,
     delegate_constraint,
     delegate_extract,
@@ -61,7 +69,7 @@ from orchestral.planners import (
 from orchestral.providers import provider_for, provider_key
 from orchestral.sqlexec import run_sql_check
 from orchestral.storage import RunMeta, RunStore
-from orchestral.taxonomy import classify_exception
+from orchestral.taxonomy import classify_exception, retryable
 from orchestral.terminal import check_terminal
 
 
@@ -104,6 +112,7 @@ class Runner:
         verbose: bool = False,
         cancel_event: threading.Event | None = None,
         on_run_created: Any = None,
+        allow_agent_exec: bool = False,
     ):
         self.dry_run = dry_run
         self.planner = planner
@@ -114,6 +123,9 @@ class Runner:
         self.seed = seed
         self.verbose = verbose
         self.cancel_event = cancel_event
+        # launch-context opt-in for agent-CLI workers — one leg of the
+        # executor trust boundary (worker flag + task declaration + this)
+        self.allow_agent_exec = allow_agent_exec
         # called with run_id as soon as the run dir exists — lets a caller
         # (e.g. the TUI) map a job to its in-flight run before run() returns
         self.on_run_created = on_run_created
@@ -150,6 +162,10 @@ class Runner:
             if role in self._injected_clients:
                 resolved[role] = self._injected_clients[role]
                 continue
+            if role == "worker" and (model.metadata or {}).get("executor"):
+                # executor workers are agent CLIs, not chat providers —
+                # provider_for would raise ProviderConfigError on them
+                continue
             key = provider_key(model)
             if key not in cache:
                 try:
@@ -161,6 +177,29 @@ class Runner:
             resolved[role] = cache[key]
         self._owned_clients = list(cache.values())
         return resolved
+
+    def _resolve_executor(self, task: TaskSpec, worker: ModelConfig) -> Any:
+        """The KTD12 dispatch conjunction, checked explicitly.
+
+        Executor routing requires all three: `worker.metadata.executor`
+        (adapter name), `task.metadata.requires_executor`, and the launch
+        opt-in. Every half-state fails loudly — an executor worker on an
+        undeclared task is executor_preflight (never retries), and a
+        declared task on a chat worker is a launch validation error. The
+        executor-side checks live in `agentexec.launch_gate` so the CLI
+        env check, web registry, and TUI modal enforce the same rules.
+        """
+        name = (worker.metadata or {}).get("executor")
+        if not name:
+            if (task.metadata or {}).get("requires_executor"):
+                raise ValidationError(
+                    f"Task {task.id} declares metadata.requires_executor but "
+                    f"worker {worker.slug} is not an executor worker"
+                )
+            return None
+        return launch_gate(
+            worker, task, allow_agent_exec=self.allow_agent_exec, probe=False,
+        )
 
     def run(self, task: TaskSpec, orchestrator: ModelConfig, worker: ModelConfig, judge: ModelConfig | None = None) -> RunMeta:
         # Resolve providers before the run dir exists — a bad provider config
@@ -266,6 +305,27 @@ class Runner:
 
         try:
             self._check_cancelled()
+            # Executor dispatch (KTD12): the adapter resolves only when the
+            # worker flag, task declaration, and launch opt-in all agree —
+            # every half-state is a recorded failure, not a silent fallback.
+            executor = self._resolve_executor(task, worker)
+            if executor is not None:
+                manifest["worker_executor"] = {
+                    "adapter": executor.name,
+                    "argv_hash": hashlib.sha256(
+                        "\0".join(
+                            executor.run_argv(executor.binary, "<prompt>")
+                        ).encode()
+                    ).hexdigest(),
+                    "cli_version": None,
+                }
+                # the chat worker system prompt never reaches an agent CLI
+                manifest["worker_prompt_hash"] = None
+                write_manifest(run_dir, manifest)
+                manifest["worker_executor"]["cli_version"] = preflight(executor)
+                write_manifest(run_dir, manifest)
+            agent_diffs: list[str] = []
+
             # 1. Plan
             logger.lifecycle("orchestrator.started", phase="plan", role="orchestrator")
             if self.planner == "ce-plan":
@@ -356,15 +416,39 @@ class Runner:
                 out: dict[str, Any] | None = None
                 media_bytes: bytes = b""
                 files: dict[str, str] = {}
-                attempts = max(1, worker.retry_limit + 1)
+                # executor workers default to zero retries — a respawned
+                # agent CLI is a fresh process with fresh cost, not a cheap
+                # chat retry. The schema default (2) counts as "unspecified";
+                # a non-default value is an explicit opt-in to retries.
+                if executor is not None:
+                    attempts = 1 if worker.retry_limit == 2 else max(1, worker.retry_limit + 1)
+                else:
+                    attempts = max(1, worker.retry_limit + 1)
                 logger.lifecycle(
                     "worker.started", phase="delegate", role="worker",
                     worker_id=wid, subtask_id=sub.get("id", i),
                     description=str(sub.get("description", ""))[:200],
                 )
                 for attempt in range(attempts):
+                    self._check_cancelled()
                     try:
-                        if is_image:
+                        if executor is not None:
+                            out, files, agent_diff, worker_costs = delegate_agentic(
+                                logger=logger,
+                                step=i + 3,
+                                subtask=sub,
+                                task=task,
+                                worker=worker,
+                                adapter=executor,
+                                dry_run=self.dry_run,
+                                attempt=attempt + 1,
+                                cancel_event=self.cancel_event,
+                                evidence_dir=run_dir / "raw" / f"{wid}-attempt-{attempt + 1}",
+                                repo_root=Path.cwd(),
+                            )
+                            if agent_diff:
+                                agent_diffs.append(agent_diff)
+                        elif is_image:
                             out, media_bytes, worker_costs = delegate_image(
                                 logger=logger,
                                 step=i + 3,
@@ -373,6 +457,7 @@ class Runner:
                                 client=role_clients.get("worker"),
                                 dry_run=self.dry_run,
                                 attempt=attempt + 1,
+                                cancel_event=self.cancel_event,
                             )
                         elif is_video:
                             out, media_bytes, worker_costs = delegate_video(
@@ -385,6 +470,7 @@ class Runner:
                                 dry_run=self.dry_run,
                                 attempt=attempt + 1,
                                 seed=self.seed,
+                                cancel_event=self.cancel_event,
                             )
                         elif is_sql:
                             out, worker_costs = delegate_sql(
@@ -396,6 +482,7 @@ class Runner:
                                 client=role_clients.get("worker"),
                                 dry_run=self.dry_run,
                                 attempt=attempt + 1,
+                                cancel_event=self.cancel_event,
                             )
                         elif is_extract:
                             out, worker_costs = delegate_extract(
@@ -407,6 +494,7 @@ class Runner:
                                 client=role_clients.get("worker"),
                                 dry_run=self.dry_run,
                                 attempt=attempt + 1,
+                                cancel_event=self.cancel_event,
                             )
                         elif is_api:
                             out, worker_costs = delegate_api(
@@ -418,6 +506,7 @@ class Runner:
                                 client=role_clients.get("worker"),
                                 dry_run=self.dry_run,
                                 attempt=attempt + 1,
+                                cancel_event=self.cancel_event,
                             )
                         elif is_terminal:
                             out, worker_costs = delegate_terminal(
@@ -429,6 +518,7 @@ class Runner:
                                 client=role_clients.get("worker"),
                                 dry_run=self.dry_run,
                                 attempt=attempt + 1,
+                                cancel_event=self.cancel_event,
                             )
                         elif is_patch:
                             out, worker_costs = delegate_patch(
@@ -440,6 +530,7 @@ class Runner:
                                 client=role_clients.get("worker"),
                                 dry_run=self.dry_run,
                                 attempt=attempt + 1,
+                                cancel_event=self.cancel_event,
                             )
                         elif is_multi:
                             out, files, worker_costs = delegate_multi(
@@ -451,6 +542,7 @@ class Runner:
                                 client=role_clients.get("worker"),
                                 dry_run=self.dry_run,
                                 attempt=attempt + 1,
+                                cancel_event=self.cancel_event,
                             )
                         elif is_needle:
                             out, worker_costs = delegate_needle(
@@ -462,6 +554,7 @@ class Runner:
                                 client=role_clients.get("worker"),
                                 dry_run=self.dry_run,
                                 attempt=attempt + 1,
+                                cancel_event=self.cancel_event,
                             )
                         elif is_constraint:
                             out, worker_costs = delegate_constraint(
@@ -473,6 +566,7 @@ class Runner:
                                 client=role_clients.get("worker"),
                                 dry_run=self.dry_run,
                                 attempt=attempt + 1,
+                                cancel_event=self.cancel_event,
                             )
                         else:
                             out, worker_costs = delegate(
@@ -483,11 +577,25 @@ class Runner:
                                 client=role_clients.get("worker"),
                                 dry_run=self.dry_run,
                                 attempt=attempt + 1,
+                                cancel_event=self.cancel_event,
                             )
                         ledger.add_many(worker_costs)
+                    except ExecutorCancelled as exc:
+                        # agent-CLI cancel maps onto the run's own taxonomy —
+                        # without this the generic handler could retry it
+                        raise RunCancelled("cancelled during agent execution") from exc
+                    except RunCancelled:
+                        # cancel must not be retried — re-raise before the
+                        # generic handler turns it into a respawn
+                        raise
                     except Exception as exc:
                         out = None
                         cat = classify_exception(exc)
+                        # executor errors can carry argv/env text — bounded
+                        # and scrubbed before they land in a published event
+                        err_text = str(exc)
+                        if executor is not None:
+                            err_text = scrub_text(err_text)[:1000]
                         logger.log(
                             phase="delegate",
                             step=i + 3,
@@ -498,14 +606,18 @@ class Runner:
                             input_data={"subtask": sub},
                             output_data={"attempt": attempt + 1, "max_attempts": attempts},
                             reasoning=f"Worker call raised an exception on attempt {attempt + 1}.",
-                            error=str(exc),
+                            error=err_text,
                             metadata={"error_category": cat, "subtask_id": sub.get("id", i)},
                         )
                         # Any post-submission video failure (terminal status,
                         # poll exhaustion, timeout, unsafe URL, download) is
                         # unrecoverable by retry — resubmitting bills a new job.
+                        # Non-retryable categories (config, executor preflight,
+                        # spawn failure) reproduce identically — fail fast.
                         will_retry = not (
-                            isinstance(exc, OpenRouterVideoSubmittedError) or attempt + 1 >= attempts
+                            isinstance(exc, OpenRouterVideoSubmittedError)
+                            or not retryable(cat)
+                            or attempt + 1 >= attempts
                         )
                         logger.log_debug(
                             "delegate", "worker call failed",
@@ -660,7 +772,11 @@ class Runner:
                 merged, conflicts = merge_filesets(file_sets)
                 if not merged:
                     raise ValidationError("No files were produced for the multi-file task")
-                artifact_bytes = build_zip(merged)
+                artifact_bytes = build_zip(
+                    merged,
+                    preserve_case=executor is not None,
+                    allow_hidden=bool((task.metadata or {}).get("allow_hidden")),
+                )
                 (run_dir / "artifact.zip").write_bytes(artifact_bytes)
                 logger.lifecycle(
                     "artifact.saved", phase="assemble",
@@ -669,9 +785,11 @@ class Runner:
                 logger.lifecycle("synthesis.completed", phase="assemble", role="orchestrator")
                 logger.lifecycle("evaluation.started", phase="validate")
                 if task.type in ("code", "bugfix"):
-                    passes, report = self._validate_code(task, merged)
+                    passes, report = self._validate_code(
+                        task, merged, preserve_case=executor is not None)
                 else:
-                    passes, report = self._validate_multi(task, artifact_bytes)
+                    passes, report = self._validate_multi(
+                        task, artifact_bytes, preserve_case=executor is not None)
                 report["files"] = sorted(merged)
                 report["merge_conflicts"] = conflicts
                 # the judge sees a content-free listing — file bodies never
@@ -713,6 +831,12 @@ class Runner:
                 logger.lifecycle("evaluation.started", phase="validate")
                 passes, report = self._validate(task, artifact)
                 judge_text = artifact
+
+            # the judge reads the harvested diff for executor runs — the
+            # real change under test, agent-controlled text and all (the
+            # injection milestone already flagged instruction-shaped lines)
+            if agent_diffs:
+                judge_text = "\n".join(agent_diffs)
 
             # 4. Judge (optional; image tasks need a vision-capable judge model;
             # video judging is deferred — there is no video-input judge path yet)
@@ -802,10 +926,7 @@ class Runner:
                         )
 
             # 6. Final accounting
-            total_cost = ledger.total_cost_usd()
-            total_input = ledger.total_input_tokens()
-            total_output = ledger.total_output_tokens()
-            (run_dir / "cost.json").write_text(json.dumps(ledger.to_breakdown(), indent=2, default=str))
+            total_cost, total_input, total_output = _flush_ledger(run_dir, ledger)
             logger.lifecycle(
                 "usage.recorded", phase="end",
                 total_cost_usd=total_cost, input_tokens=total_input,
@@ -855,7 +976,10 @@ class Runner:
             return meta
 
         except RunCancelled:
-            # cancel is a normal outcome, not an error — mark and return
+            # cancel is a normal outcome, not an error — mark and return.
+            # Whatever the run spent before the cancel still counts.
+            with contextlib.suppress(Exception):
+                _flush_ledger(run_dir, ledger)
             with contextlib.suppress(Exception):
                 meta = self.store.get_run(run_id)
                 if meta is not None:
@@ -863,6 +987,9 @@ class Runner:
                     meta.finished_at = datetime.now(UTC).isoformat()
                     meta.latency_ms = (time.perf_counter() - t0) * 1000
                     meta.failure_reason = "cancelled"
+                    meta.total_cost_usd = ledger.total_cost_usd()
+                    meta.total_input_tokens = ledger.total_input_tokens()
+                    meta.total_output_tokens = ledger.total_output_tokens()
                     self.store.update_meta(meta)
             with contextlib.suppress(Exception):
                 logger.lifecycle("run.cancelled", phase="end", status="cancelled")
@@ -878,7 +1005,10 @@ class Runner:
         except Exception as exc:
             cat = classify_exception(exc)
             # bookkeeping must never mask the real exception — a locked index
-            # or dead log handle inside the handler would otherwise replace it
+            # or dead log handle inside the handler would otherwise replace it.
+            # The run's accrued spend is recorded before it dies.
+            with contextlib.suppress(Exception):
+                _flush_ledger(run_dir, ledger)
             with contextlib.suppress(Exception):
                 meta = self.store.get_run(run_id)
                 if meta is not None:
@@ -886,6 +1016,9 @@ class Runner:
                     meta.finished_at = datetime.now(UTC).isoformat()
                     meta.latency_ms = (time.perf_counter() - t0) * 1000
                     meta.failure_reason = f"exception:{cat}"
+                    meta.total_cost_usd = ledger.total_cost_usd()
+                    meta.total_input_tokens = ledger.total_input_tokens()
+                    meta.total_output_tokens = ledger.total_output_tokens()
                     self.store.update_meta(meta)
             with contextlib.suppress(Exception):
                 logger.log(
@@ -1127,7 +1260,13 @@ class Runner:
         passes, report = _validation_report(task, checks, errors, len(artifact))
         return passes and not unknown, report
 
-    def _validate_multi(self, task: TaskSpec, artifact: bytes) -> tuple[bool, dict[str, Any]]:
+    def _validate_multi(
+        self,
+        task: TaskSpec,
+        artifact: bytes,
+        *,
+        preserve_case: bool = False,
+    ) -> tuple[bool, dict[str, Any]]:
         requested = set(task.validation) if task.validation else {"non_empty", "zip_signature"}
         known = {"non_empty", "zip_signature", "has_paths", "member_required"}
         checks: dict[str, bool] = {}
@@ -1153,7 +1292,7 @@ class Runner:
                 {info.filename: info.file_size for info in archive.infolist() if not info.filename.endswith("/")}
                 if archive is not None else {}
             )
-            declared = expected_paths(task.metadata)
+            declared = expected_paths(task.metadata, preserve_case=preserve_case)
             missing = [p for p in declared if present.get(p, 0) <= 0]
             checks["has_paths"] = bool(declared) and not missing
             if not declared:
@@ -1161,7 +1300,7 @@ class Runner:
             elif missing:
                 errors.append(f"Missing or empty expected files: {', '.join(missing)}.")
         if "member_required" in requested:
-            member_req = member_requirements(task.metadata)
+            member_req = member_requirements(task.metadata, preserve_case=preserve_case)
             if not member_req:
                 checks["member_required"] = False
                 errors.append("member_required requested but metadata.member_required is empty.")
@@ -1202,16 +1341,23 @@ class Runner:
         passes, report = _validation_report(task, checks, errors, len(artifact))
         return passes and not unknown, report
 
-    def _validate_code(self, task: TaskSpec, files: dict[str, str]) -> tuple[bool, dict[str, Any]]:
+    def _validate_code(
+        self,
+        task: TaskSpec,
+        files: dict[str, str],
+        *,
+        preserve_case: bool = False,
+    ) -> tuple[bool, dict[str, Any]]:
         """Run the task's hidden unittest source against the merged file set.
 
         Expected files must exist; live runs execute the suite in a
         subprocess (see codeexec for containment notes). Dry runs only
         compile-check the Python files — no model code ever ran, so the
-        report says `executed: false`.
+        report says `executed: false`. `preserve_case` selects the executor
+        canonical variant for expected-path matching (Main.java keeps case).
         """
         module = str(task.metadata.get("module") or "solution.py")
-        declared = expected_paths(task.metadata) or [module]
+        declared = expected_paths(task.metadata, preserve_case=preserve_case) or [module]
         missing = [p for p in declared if not files.get(p)]
         errors = [f"Missing or empty expected files: {', '.join(missing)}."] if missing else []
         checks: dict[str, bool] = {"expected_paths": not missing}
@@ -1448,6 +1594,18 @@ def _orch_version() -> str:
         return version("orchestral")
     except Exception:
         return "unknown"
+
+
+def _flush_ledger(run_dir: Path, ledger: CostLedger) -> tuple[float, int, int]:
+    """Write cost.json and return (usd, input_tokens, output_tokens).
+
+    Called on every exit path — a failed or cancelled run still spent real
+    money, and spend_today/leaderboards read meta.total_cost_usd."""
+    total_cost = ledger.total_cost_usd()
+    total_input = ledger.total_input_tokens()
+    total_output = ledger.total_output_tokens()
+    (run_dir / "cost.json").write_text(json.dumps(ledger.to_breakdown(), indent=2, default=str))
+    return total_cost, total_input, total_output
 
 
 def _write_metrics(run_dir: Path) -> None:

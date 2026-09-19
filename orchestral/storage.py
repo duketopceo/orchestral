@@ -52,6 +52,7 @@ class RunMeta:
     env: dict[str, Any] = field(default_factory=dict)
     run_group: str | None = None
     replicate: int | None = None
+    dry_run: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -99,7 +100,8 @@ class RunStore:
                     failure_reason TEXT,
                     env TEXT,
                     run_group TEXT,
-                    replicate INTEGER
+                    replicate INTEGER,
+                    dry_run INTEGER
                 )
                 """
             )
@@ -213,6 +215,9 @@ class RunStore:
             run_group=run_group,
             replicate=replicate,
             env=env or {},
+            # indexed so spend meters can exclude dry runs without parsing
+            # the config blob on every query
+            dry_run=bool((config or {}).get("dry_run")),
         )
         self._write_meta_file(run_dir, meta)
         self.index_meta(meta)
@@ -230,9 +235,9 @@ class RunStore:
                     started_at, finished_at, total_cost_usd,
                     total_input_tokens, total_output_tokens, score, passes,
                     run_dir, config, latency_ms, failure_reason, env,
-                    run_group, replicate
+                    run_group, replicate, dry_run
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     meta.run_id,
@@ -254,6 +259,7 @@ class RunStore:
                     json.dumps(meta.env, default=str),
                     meta.run_group,
                     meta.replicate,
+                    int(meta.dry_run),
                 ),
             )
 
@@ -337,6 +343,20 @@ class RunStore:
                 """
             ).fetchall()
         return [dict(r) for r in rows]
+
+    def unmetered_workers(self) -> set[str]:
+        """Model slugs whose calls are declared `pricing_source="unmetered"`.
+
+        Leaderboards must not read a $0 total as a free `cost_per_pass` —
+        unmetered is detected here, never inferred from `cost_total == 0`
+        (a legitimately cheap run is not unmetered). Dry-run rows excluded.
+        """
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT model FROM calls "
+                "WHERE pricing_source = 'unmetered' AND dry_run = 0 AND model IS NOT NULL"
+            ).fetchall()
+        return {r[0] for r in rows}
 
     def set_annotation(
         self, kind: str, target: str, flag: str, note: str = ""
@@ -483,7 +503,8 @@ class RunStore:
         today = datetime.now(UTC).date().isoformat()
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT COALESCE(SUM(total_cost_usd), 0) FROM runs WHERE started_at >= ?",
+                "SELECT COALESCE(SUM(total_cost_usd), 0) FROM runs "
+                "WHERE started_at >= ? AND COALESCE(dry_run, 0) = 0",
                 (today,),
             ).fetchone()
         return float(row[0] or 0.0)
@@ -495,7 +516,7 @@ class RunStore:
         Used to estimate grid cost before launching. Returns None when no
         finished runs match (caller falls back to the global mean or a
         conservative default)."""
-        where = "status = 'finished'"
+        where = "status = 'finished' AND COALESCE(dry_run, 0) = 0"
         params: list[Any] = []
         if orchestrator:
             where += " AND orchestrator = ?"
@@ -520,6 +541,7 @@ _RUN_COLUMNS_V2 = (
     ("env", "TEXT"),
     ("run_group", "TEXT"),
     ("replicate", "INTEGER"),
+    ("dry_run", "INTEGER"),
 )
 
 _CALL_COLUMNS_V2 = (
@@ -560,4 +582,5 @@ def _row_to_meta(row: sqlite3.Row) -> RunMeta:
         env=env,
         run_group=row[17] if len(row) > 17 else None,
         replicate=row[18] if len(row) > 18 else None,
+        dry_run=bool(row[19]) if len(row) > 19 else False,
     )

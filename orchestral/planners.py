@@ -9,10 +9,15 @@ import html
 import json
 import random
 import re
+import subprocess
+import threading
+import time
 from functools import cache
 from pathlib import Path
 from typing import Any
 
+from orchestral import agentexec
+from orchestral.agentexec import AgentAdapter
 from orchestral.apistub import parse_plan
 from orchestral.config import ModelConfig, TaskSpec
 from orchestral.costs import compute_cost, compute_image_cost, compute_video_cost, token_usage_from_raw
@@ -352,6 +357,7 @@ def delegate(
     client: OpenRouterClient | None,
     dry_run: bool,
     attempt: int | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     content, cost = _llm_call(
         logger=logger,
@@ -395,6 +401,7 @@ def delegate_image(
     client: OpenRouterClient | None,
     dry_run: bool,
     attempt: int | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> tuple[dict[str, Any], bytes, list[dict[str, Any]]]:
     """Generate one image for a subtask brief via the Images API."""
     prompt = subtask.get("prompt") or subtask.get("description") or str(subtask)
@@ -477,6 +484,7 @@ def delegate_video(
     dry_run: bool,
     attempt: int | None = None,
     seed: int | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> tuple[dict[str, Any], bytes, list[dict[str, Any]]]:
     """Generate one video for a subtask brief via the async Videos API.
 
@@ -585,6 +593,7 @@ def delegate_multi(
     client: OpenRouterClient | None,
     dry_run: bool,
     attempt: int | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> tuple[dict[str, Any], dict[str, str], list[dict[str, Any]]]:
     """Produce one file set for a subtask brief.
 
@@ -820,6 +829,7 @@ def delegate_constraint(
     client: OpenRouterClient | None,
     dry_run: bool,
     attempt: int | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Produce one candidate constrained text for a subtask.
 
@@ -872,6 +882,7 @@ def delegate_needle(
     client: OpenRouterClient | None,
     dry_run: bool,
     attempt: int | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Produce one candidate answer for a needle-in-haystack subtask.
 
@@ -929,6 +940,7 @@ def delegate_sql(
     client: OpenRouterClient | None,
     dry_run: bool,
     attempt: int | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Produce one candidate SQL query for a subtask.
 
@@ -987,6 +999,7 @@ def delegate_extract(
     client: OpenRouterClient | None,
     dry_run: bool,
     attempt: int | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Produce one candidate extraction for a subtask.
 
@@ -1048,6 +1061,7 @@ def delegate_api(
     client: OpenRouterClient | None,
     dry_run: bool,
     attempt: int | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Produce one candidate request plan for a subtask.
 
@@ -1111,6 +1125,7 @@ def delegate_terminal(
     client: OpenRouterClient | None,
     dry_run: bool,
     attempt: int | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Produce one candidate shell-command plan for a subtask.
 
@@ -1171,6 +1186,7 @@ def delegate_patch(
     client: OpenRouterClient | None,
     dry_run: bool,
     attempt: int | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Produce one candidate unified diff for a subtask.
 
@@ -1222,6 +1238,268 @@ def delegate_patch(
             {k: v for k, v in out.items() if k not in ("subtask_id", "prompt")}
         ))
     return out, costs
+
+
+# conservative per-attempt guess when a CLI reports no usage — the ledger
+# must cover executor runs so `spend_today` can't be bypassed by silence
+EXECUTOR_FLAT_ESTIMATE_USD = 0.25
+
+# added diff-lines shaped like instructions to the judge — the judge reads
+# agent-controlled text, so these are flagged as evidence, not hidden
+_INJECTION_HINT = re.compile(
+    r"^\+\s*[^\n]*(?:ignore\s+(?:all\s+)?(?:previous|prior)\s+instructions"
+    r"|verdict\s*[:=]\s*(?:pass|true)|score\s*[:=]\s*(?:1\.0|10)"
+    r"|note\s+to\s+(?:the\s+)?judge|dear\s+judge)",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def _repo_status(root: Path) -> set[str]:
+    """`git status --porcelain` baseline for the repo-mutation tripwire.
+
+    Empty on any failure — a non-git cwd simply disables the check rather
+    than blocking the attempt.
+    """
+    try:
+        out = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=root, capture_output=True, text=True, timeout=10,
+        )
+        return set(out.stdout.splitlines())
+    except Exception:
+        return set()
+
+
+def _oracle_probe_needles(
+    transcript_path: Path | None,
+    repo_root: Path | None,
+    task: TaskSpec,
+) -> list[str]:
+    """Scan the captured transcript for oracle-adjacent references.
+
+    The filesystem is open to the agent — containment is environmental, so
+    reads of task oracles are *detected*, not prevented. A mention is not
+    proof of a read, which is why this is a warning milestone.
+    """
+    if transcript_path is None or not Path(transcript_path).exists():
+        return []
+    text = Path(transcript_path).read_text(encoding="utf-8", errors="replace")
+    needles: list[str] = []
+    if repo_root is not None and str(repo_root) in text:
+        needles.append("repo_root")
+    if re.search(r"tasks/[^\s'\"]+\.ya?ml", text):
+        needles.append("task_spec")
+    if "metadata.tests" in text or "hidden test" in text.lower():
+        needles.append("oracle")
+    return needles
+
+
+def delegate_agentic(
+    *,
+    logger: EventLogger,
+    step: int,
+    subtask: dict[str, Any],
+    task: TaskSpec,
+    worker: ModelConfig,
+    adapter: AgentAdapter,
+    dry_run: bool,
+    attempt: int | None = None,
+    cancel_event: threading.Event | None = None,
+    evidence_dir: Path | None = None,
+    repo_root: Path | None = None,
+) -> tuple[dict[str, Any], dict[str, str], str, list[dict[str, Any]]]:
+    """Run one agent-CLI attempt for a subtask.
+
+    Returns (out, files, diff, costs): `files` is the harvested workspace
+    fileset for multi-type tasks, `diff` is the unified diff that becomes
+    the artifact for patch-shaped tasks (and the judge's input). `out` is
+    content-free for fileset tasks — worker-*.json carries paths/sizes/
+    hashes, never agent file bodies; the diff only lands in `content` where
+    the artifact contract already publishes it (swe-patch), mirroring
+    delegate_patch.
+
+    The `llm_call` event's completion carries usage and milestones —
+    transcript text and file bodies never enter it. Raw evidence lives
+    under `evidence_dir` (the run's raw/ dir), omitted from scrubbed output.
+    """
+    prompt = str(subtask.get("task_prompt") or task.prompt)
+    desc = str(subtask.get("description") or "").strip()
+    if desc and desc != task.prompt:
+        prompt = f"{prompt}\n\n## Subtask {subtask.get('id')}\n{desc}"
+    is_fileset = task.type in ("multi-file", "code", "bugfix")
+
+    if dry_run:
+        # never spawn — return the spec's declared reference oracle so the
+        # pipeline still proves itself end-to-end
+        if is_fileset:
+            files = {
+                str(k): str(v)
+                for k, v in (
+                    (task.metadata.get("reference_files")
+                     or task.metadata.get("files"))
+                    or {}
+                ).items()
+            }
+            reference_diff = ""
+        else:
+            files = {}
+            reference_diff = str(task.metadata.get("patch") or "")
+        completion = {
+            "executor": adapter.name,
+            "dry_run": True,
+            "reference": "metadata.files" if is_fileset else "metadata.patch",
+        }
+        cost = _fake_cost(worker, {"subtask": subtask.get("id")}, completion)
+        cost["phase"] = "delegate"
+        logger.log_llm_call(
+            phase="delegate",
+            step=step,
+            model=worker.slug,
+            role="worker",
+            messages=[{"role": "user", "content": prompt}],
+            completion=completion,
+            reasoning=f"Agent-executor dry run for subtask {subtask.get('id')} ({adapter.name}); returning the reference oracle.",
+            input_tokens=cost["input_tokens"],
+            output_tokens=cost["output_tokens"],
+            cost_usd=cost["cost_usd"],
+            latency_ms=random.uniform(80, 1200),
+            pricing_source="none",
+            attempt=attempt,
+        )
+        out: dict[str, Any] = {
+            "subtask_id": subtask.get("id"),
+            "prompt": subtask.get("prompt") or subtask.get("description"),
+        }
+        if is_fileset:
+            out.update(summarize_fileset(files))
+        else:
+            out["content"] = reference_diff
+        return out, files, reference_diff, [cost]
+
+    baseline = _repo_status(repo_root) if repo_root is not None else None
+    t0 = time.perf_counter()
+    result = agentexec.run_attempt(
+        adapter,
+        prompt=prompt,
+        files={str(k): str(v) for k, v in (task.metadata.get("files") or {}).items()},
+        timeout=float(task.metadata.get("timeout_seconds") or agentexec.DEFAULT_TIMEOUT_SECONDS),
+        cancel_event=cancel_event,
+        allow_hidden=bool(task.metadata.get("allow_hidden")),
+        evidence_dir=evidence_dir,
+    )
+    latency_ms = (time.perf_counter() - t0) * 1000
+
+    # usage -> pricing source: CLI-reported usage, a flat estimate when the
+    # CLI is silent, or a declared-unmetered worker (never a $0 free pass)
+    usage = result.usage or {}
+    unmetered = adapter.unmetered or bool((worker.metadata or {}).get("executor_unmetered"))
+    if unmetered:
+        pricing_source, cost_usd, in_tok, out_tok = "unmetered", 0.0, 0, 0
+    elif result.usage:
+        pricing_source = "cli_reported"
+        in_tok = int(usage.get("input_tokens") or 0)
+        out_tok = int(usage.get("output_tokens") or usage.get("tokens") or 0)
+        cost_usd = float(
+            usage.get("usd")
+            or (in_tok * worker.input_price + out_tok * worker.output_price)
+        )
+    else:
+        pricing_source, cost_usd, in_tok, out_tok = (
+            "flat_estimate", EXECUTOR_FLAT_ESTIMATE_USD, 0, 0,
+        )
+
+    # tripwire 1: the repo tree changed during the attempt — the agent wrote
+    # outside its workspace (or a stray process did)
+    if baseline is not None:
+        touched = sorted(_repo_status(repo_root) - baseline)
+        if touched:
+            logger.log(
+                phase="delegate",
+                step=step,
+                event_type="executor.repo_mutation",
+                model=worker.slug,
+                role="harness",
+                input_data={"subtask": subtask.get("id")},
+                output_data={"paths": touched[:20]},
+                reasoning="Repo tree changed during the agent attempt — the agent (or a stray process) wrote outside its workspace.",
+            )
+
+    # tripwire 2: transcript references the repo or task oracles — reads are
+    # detected, not prevented (open filesystem is the documented boundary)
+    needles = _oracle_probe_needles(result.transcript_path, repo_root, task)
+    if needles:
+        logger.log(
+            phase="delegate",
+            step=step,
+            event_type="executor.oracle_probe",
+            model=worker.slug,
+            role="harness",
+            input_data={"subtask": subtask.get("id")},
+            output_data={"needles": needles},
+            reasoning="Agent transcript references repo paths or task oracles — possible oracle probing.",
+        )
+
+    # the judge will read this diff — added lines shaped like instructions
+    # to it are recorded as a milestone, not removed
+    injection_hits = len(_INJECTION_HINT.findall(result.diff))
+    if injection_hits:
+        logger.log(
+            phase="delegate",
+            step=step,
+            event_type="executor.judge_injection",
+            model=worker.slug,
+            role="harness",
+            input_data={"subtask": subtask.get("id")},
+            output_data={"hits": injection_hits},
+            reasoning="Harvested diff contains lines shaped like instructions to the judge — flagged, not stripped.",
+        )
+
+    logger.log_llm_call(
+        phase="delegate",
+        step=step,
+        model=worker.slug,
+        role="worker",
+        messages=[{"role": "user", "content": prompt}],
+        completion={
+            "executor": adapter.name,
+            "changed_paths": result.changed_paths,
+            "deleted_paths": result.deleted_paths,
+            "hidden_paths": result.hidden_paths,
+            "file_count": len(result.files),
+            "exit_code": result.exit_code,
+            "usage": usage or None,
+            "transcript_sha256": result.transcript_sha256,
+            "transcript_bytes": result.transcript_bytes,
+            "redactions": result.redactions,
+            "group_survivors": result.group_survivors,
+            "diff_bytes": len(result.diff.encode("utf-8")),
+        },
+        reasoning=f"Agent CLI {adapter.name} executed subtask {subtask.get('id')} in a contained workspace.",
+        input_tokens=in_tok,
+        output_tokens=out_tok,
+        cost_usd=cost_usd,
+        latency_ms=latency_ms,
+        pricing_source=pricing_source,
+        attempt=attempt,
+    )
+    cost = {
+        "phase": "delegate",
+        "model": worker.slug,
+        "input_tokens": in_tok,
+        "output_tokens": out_tok,
+        "cost_usd": cost_usd,
+        "pricing_source": pricing_source,
+        "usage": usage or None,
+    }
+    out = {
+        "subtask_id": subtask.get("id"),
+        "prompt": subtask.get("prompt") or subtask.get("description"),
+    }
+    if is_fileset:
+        out.update(summarize_fileset(result.files))
+    else:
+        out["content"] = result.diff
+    return out, result.files, result.diff, [cost]
 
 
 def plan_ce(

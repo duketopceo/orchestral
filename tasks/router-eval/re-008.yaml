@@ -1,0 +1,16 @@
+id: router-eval-re-008
+type: extract
+prompt: |
+  You are a desktop assistant decision router. Given the state, decide which
+  app to open. Return ONLY a JSON object: {"choice": "<one of: browser, terminal, files, vscode>"}.
+
+  State:
+  utterance: "launch a shell"
+  focused_app: "browser"
+validation: []
+assets: []
+metadata:
+  fields:
+    choice: {type: str, required: true, enum: ["browser", "terminal", "files", "vscode"]}
+  expected:
+    choice: "terminal"

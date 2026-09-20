@@ -394,6 +394,11 @@ def cmd_batch(args: argparse.Namespace) -> None:
         rep = f"{r['replicate']:>4} " if n_reps > 1 else ""
         print(f"{r['task_id']:<30} {rep}${r['cost']:.6f} {r['tokens']:>8} {r['passes']!s:>6} {score:>6}")
 
+    total_cost = sum(r["cost"] for r in results)
+    n_pass = sum(1 for r in results if r["passes"])
+    rate = f"{n_pass / len(results):.0%}" if results else "-"
+    print(f"TOTAL: {n_pass}/{len(results)} passed ({rate}) | ${total_cost:.6f} | {failures} failures")
+
     if n_reps > 1:
         for cell in aggregate(store.list_runs(run_group=group)):
             score = f"{cell.score_mean:.2f}±{cell.score_sd:.2f}" if cell.score_mean is not None else "-"

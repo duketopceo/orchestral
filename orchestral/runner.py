@@ -296,10 +296,13 @@ class Runner:
             file_sets: list[tuple[int, dict[str, str]]] = []
             media_ext = _artifact_ext(task.type)
             subtasks = plan.get("subtasks") or plan.get("sections", {}).get("subtasks", [])
-            if not subtasks and is_extract:
-                # Raw/none planners may emit no subtasks; an extract task is
-                # a single-shot extraction — fall back to one default subtask
-                # so the worker still runs and the artifact isn't empty.
+            if not subtasks:
+                # Raw/none planners may emit no subtasks; every task type's
+                # delegate paths are single-shot over one subtask (extract,
+                # sql, api, needle, constraint, media, multi). With zero
+                # subtasks the loop would run zero times and the assembly
+                # branches would write empty artifacts — fall back to one
+                # default subtask so the worker still runs.
                 subtasks = [{"id": "s0", "description": task.prompt}]
             logger.lifecycle(
                 "delegation.created", phase="delegate",

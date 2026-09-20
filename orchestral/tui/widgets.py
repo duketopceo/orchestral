@@ -25,7 +25,6 @@ class StatusBar(Static):
         self._runs = 0
         self._cost = 0.0
         self._jobs: list[Job] = []
-        self._message = ""
 
     def set_counts(self, runs: int, total_cost: float) -> None:
         self._runs = runs
@@ -34,10 +33,6 @@ class StatusBar(Static):
 
     def set_jobs(self, jobs: list[Job]) -> None:
         self._jobs = jobs
-        self._render_text()
-
-    def set_message(self, message: str) -> None:
-        self._message = message
         self._render_text()
 
     def _render_text(self) -> None:

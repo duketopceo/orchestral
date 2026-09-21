@@ -71,7 +71,7 @@ def judge_artifact(
     artifact_section = (
         "The artifact is the attached image."
         if image_bytes is not None
-        else f"```{language}\n{artifact[:2000]}\n```"
+        else f"```{language}\n{artifact[:2000]}\n```\n[artifact truncated to first 2000 chars for review]"
     )
     prompt_text = JUDGE_PROMPT.format(prompt=task.prompt, artifact_section=artifact_section)
 
@@ -137,16 +137,21 @@ def judge_artifact(
             raise ValueError("Judge did not return a JSON object")
         if "score" not in result or "passed" not in result:
             raise ValueError("Judge JSON missing score or passed")
-    except Exception:
+        result["score"] = float(result.get("score", 0.0))
+        passed = result.get("passed", False)
+        # bool("false") is True — a judge returning the string "false" must
+        # not be scored as a pass; only bools and true/false strings count
+        if isinstance(passed, bool):
+            result["passed"] = passed
+        else:
+            result["passed"] = str(passed).strip().lower() == "true"
+    except (TypeError, ValueError):
         result = {
             "score": 0.0,
             "passed": False,
             "reasoning": f"Could not parse judge response: {content[:200]}",
             "parse_failed": True,
         }
-
-    result["score"] = float(result.get("score", 0.0))
-    result["passed"] = bool(result.get("passed", False))
     if "reasoning" not in result:
         result["reasoning"] = ""
 

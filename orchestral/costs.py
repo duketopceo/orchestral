@@ -122,7 +122,11 @@ def token_usage_from_raw(usage: dict[str, Any]) -> TokenUsage:
 
 
 def compute_cost(usage: TokenUsage, model_cfg: ModelConfig) -> tuple[float, TokenUsage]:
-    """Return (cost_usd, normalized_token_usage) for a model call."""
+    """Return (cost_usd, usage) — cost from configured per-token pricing.
+
+    The token usage object is returned unchanged; normalization from raw API
+    payloads happens upstream via `token_usage_from_raw`.
+    """
     input_cost = _token_component(usage.prompt_tokens, model_cfg.input_price)
     output_cost = _token_component(usage.completion_tokens, model_cfg.output_price)
     cost = input_cost + output_cost
@@ -180,11 +184,13 @@ def _video_rate(
     `price_per_video_second`.
     """
     pricing = model_cfg.metadata.get("video_pricing") or {}
-    if resolution:
-        audio = "audio" if generate_audio else "silent"
-        for key in (f"{resolution}:{audio}", f"{resolution}:*", f"*:{audio}", "*"):
-            if key in pricing:
-                return float(pricing[key])
+    # wildcard pricing keys must still be probed when the resolution is
+    # unknown (e.g. an audio-enabled job priced via "*:audio")
+    res = resolution or "*"
+    audio = "audio" if generate_audio else "silent"
+    for key in (f"{res}:{audio}", f"{res}:*", f"*:{audio}", "*"):
+        if key in pricing:
+            return float(pricing[key])
     return model_cfg.price_per_video_second
 
 

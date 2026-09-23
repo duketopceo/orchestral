@@ -297,31 +297,32 @@ button:disabled { opacity: .45; cursor: default; }
 .stat .s-label { font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: var(--text-3); }
 .stat .s-val { font: 15px var(--mono); color: var(--text); font-variant-numeric: tabular-nums; }
 
-.detail-grid { display: grid; grid-template-columns: 190px 1fr; gap: 16px; align-items: start; }
-
-/* evidence chain timeline */
-.timeline { display: flex; flex-direction: column; }
-.tl-node {
-  position: relative;
-  padding: 0 0 16px 22px;
-  border-left: 1px solid var(--line);
-  margin-left: 7px;
+/* evidence chain — horizontal phase ribbon */
+.ph-strip { padding: 0; overflow: hidden; margin-bottom: 14px; }
+.phases { display: flex; }
+.ph-seg {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 10px 12px 8px;
+  border-top: 2px solid var(--line-bright);
+  border-right: 1px solid var(--line);
+  background: var(--bg-inset);
 }
-.tl-node:last-child { border-left-color: transparent; padding-bottom: 4px; }
-.tl-node::before {
-  content: "";
-  position: absolute;
-  left: -4.5px; top: 4px;
-  width: 8px; height: 8px;
-  border-radius: 50%;
-  background: var(--line-bright);
+.ph-seg:last-child { border-right: none; }
+.ph-seg.ph-done { border-top-color: var(--pass); }
+.ph-seg.ph-err { border-top-color: var(--fail); }
+.ph-seg.ph-live { border-top-color: var(--warn); }
+.ph-name {
+  font: 600 12px var(--mono); color: var(--text); text-transform: lowercase;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.tl-node.tl-err::before { background: var(--fail); }
-.tl-node.tl-live::before { background: var(--warn); }
-.tl-node.tl-done::before { background: var(--pass); }
-.tl-name { font: 600 12px var(--mono); color: var(--text); text-transform: lowercase; }
-.tl-meta { font: 11px var(--mono); color: var(--text-3); margin-top: 2px; }
-.tl-meta .e { color: var(--fail); }
+.ph-name .e { color: var(--fail); }
+.ph-meta {
+  font: 10.5px var(--mono); color: var(--text-3); margin-top: 3px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.ph-share { height: 2px; background: var(--line); margin-top: 7px; }
+.ph-share i { display: block; height: 100%; background: var(--text-3); opacity: .55; }
 
 /* tabs */
 .tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--line); margin-bottom: 14px; flex-wrap: wrap; }
@@ -603,6 +604,7 @@ tr.row-thin td { opacity: .55; }
   #rail .brand-word, #rail .brand-sub, #nav a span.lbl, .rail-live-head, #rail-jobs { display: none; }
   #nav a { font-size: 0; }
   #nav a::first-letter { font-size: 13px; }
-  .detail-grid { grid-template-columns: 1fr; }
+  .phases { flex-wrap: wrap; }
+  .ph-seg { flex: 1 1 45%; border-bottom: 1px solid var(--line); }
   #main { padding: 14px; }
 }

@@ -221,12 +221,16 @@ async function viewRuns(params) {
 /* ----- run detail ----- */
 
 function timelineHtml(tl, livePhase) {
-  return `<div class="timeline">${(tl || []).map(n => {
+  const nodes = tl || [];
+  const totalMs = nodes.reduce((s, n) => s + (n.latency_ms || 0), 0) || 1;
+  return `<div class="phases">${nodes.map(n => {
     const live = livePhase === n.phase;
-    const cls = n.errors ? "tl-err" : live ? "tl-live" : "tl-done";
-    return `<div class="tl-node ${cls}">
-      <div class="tl-name">${esc(n.phase)}${live ? ' <span class="dot dot-run pulse"></span>' : ""}</div>
-      <div class="tl-meta">${n.events} ev · ${fmtMoney(n.cost_usd)} · ${fmtMs(n.latency_ms)}${n.errors ? ` · <span class="e">${n.errors} err</span>` : ""}</div>
+    const cls = n.errors ? "ph-err" : live ? "ph-live" : "ph-done";
+    const share = Math.min(100, Math.round(100 * (n.latency_ms || 0) / totalMs));
+    return `<div class="ph-seg ${cls}" title="${esc(n.phase)}: ${n.events} events, ${fmtMoney(n.cost_usd)}, ${fmtMs(n.latency_ms)}${n.errors ? `, ${n.errors} errors` : ""}">
+      <div class="ph-name">${esc(n.phase)}${live ? ' <span class="dot dot-run pulse"></span>' : ""}${n.errors ? ` <span class="e">${n.errors}✕</span>` : ""}</div>
+      <div class="ph-meta">${n.events} ev · ${fmtMoney(n.cost_usd)} · ${fmtMs(n.latency_ms)}</div>
+      <div class="ph-share"><i style="width:${share}%"></i></div>
     </div>`;
   }).join("")}</div>`;
 }
@@ -262,14 +266,10 @@ async function viewRun(runId, params) {
         ${d.cancellable ? `<button class="danger" id="cancel-btn">cancel</button>` : ""}
       </div>
     </div>
-    <div class="detail-grid">
-      <div class="panel panel-pad" id="tl">${timelineHtml(d.timeline, running ? "running" : null)}</div>
-      <div>
-        <div class="tabs">${tabs.map(t =>
-          `<button data-tab="${t}" class="${t === tab ? "active" : ""}">${t}</button>`).join("")}</div>
-        <div id="tab-body"></div>
-      </div>
-    </div>`;
+    <div class="panel ph-strip" id="tl">${timelineHtml(d.timeline, running ? "running" : null)}</div>
+    <div class="tabs">${tabs.map(t =>
+      `<button data-tab="${t}" class="${t === tab ? "active" : ""}">${t}</button>`).join("")}</div>
+    <div id="tab-body"></div>`;
 
   for (const b of $view.querySelectorAll(".tabs button")) {
     b.addEventListener("click", () => {
@@ -312,12 +312,13 @@ async function renderTab(runId, tab, d, running) {
         `<button data-m="${esc(mm.name)}">${esc(mm.name)} <span class="dim">${mm.bytes}B</span></button>`).join("")}</div>
         <div id="member-view"><div class="empty">pick a member to preview</div></div>`;
       el.innerHTML = inner;
-      for (const b of el.querySelectorAll(".member-list button")) {
+      const memberBtns = [...el.querySelectorAll(".member-list button")];
+      for (const b of memberBtns) {
         b.addEventListener("click", () => {
           for (const x of el.querySelectorAll(".member-list button")) x.classList.remove("active");
           b.classList.add("active");
           const name = b.dataset.m;
-          const ext = name.rsplit(".", 1).length > 1 ? name.split(".").pop().toLowerCase() : "";
+          const ext = name.includes(".") ? name.split(".").pop().toLowerCase() : "";
           const src = `/api/run/${runId}/artifact/${encodeURIComponent(name)}`;
           const mv = document.getElementById("member-view");
           mv.innerHTML = ext === "html"
@@ -325,6 +326,7 @@ async function renderTab(runId, tab, d, running) {
             : `<iframe class="artifact-frame" style="background:var(--bg-inset)" sandbox="" src="${src}"></iframe>`;
         });
       }
+      if (memberBtns[0]) memberBtns[0].click();
       return;
     }
     const src = `/api/run/${runId}/artifact`;

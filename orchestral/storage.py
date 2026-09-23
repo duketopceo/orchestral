@@ -30,6 +30,11 @@ from typing import Any
 RUNS_DIR = Path("runs")
 DB_NAME = "index.db"
 
+# Judge-cache payload version — bump when the result shape or the input
+# contract changes so stale records go cold on read instead of being
+# trusted. v1 was the bare result dict (pre-inconclusive rule).
+JUDGE_CACHE_SCHEMA = 2
+
 
 @dataclass
 class RunMeta:
@@ -53,6 +58,8 @@ class RunMeta:
     run_group: str | None = None
     replicate: int | None = None
     dry_run: bool = False
+    judge_score: float | None = None
+    judge_passed: bool | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -235,9 +242,9 @@ class RunStore:
                     started_at, finished_at, total_cost_usd,
                     total_input_tokens, total_output_tokens, score, passes,
                     run_dir, config, latency_ms, failure_reason, env,
-                    run_group, replicate, dry_run
+                    run_group, replicate, dry_run, judge_score, judge_passed
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     meta.run_id,
@@ -260,6 +267,8 @@ class RunStore:
                     meta.run_group,
                     meta.replicate,
                     int(meta.dry_run),
+                    meta.judge_score,
+                    int(meta.judge_passed) if meta.judge_passed is not None else None,
                 ),
             )
 
@@ -461,7 +470,19 @@ class RunStore:
                 "SELECT result_json FROM judge_cache WHERE task_id = ? AND judge_slug = ? AND artifact_sha256 = ?",
                 (task_id, judge_slug, artifact_sha256),
             ).fetchone()
-        return json.loads(row[0]) if row else None
+        if not row:
+            return None
+        try:
+            data = json.loads(row[0])
+        except json.JSONDecodeError:
+            return None
+        # pre-schema rows carry a bare result dict — a rubric/format change
+        # must replay the call, not trust the old payload (e.g. records
+        # written when parse failures were coerced into passed=false)
+        if not isinstance(data, dict) or data.get("schema") != JUDGE_CACHE_SCHEMA:
+            return None
+        result = data.get("result")
+        return result if isinstance(result, dict) else None
 
     def judge_slugs(self, task_ids: set[str]) -> list[str]:
         """Distinct judge models seen in the cache for these tasks — provenance
@@ -477,10 +498,11 @@ class RunStore:
         return [r[0] for r in rows]
 
     def put_judge_result(self, task_id: str, judge_slug: str, artifact_sha256: str, result: dict[str, Any]) -> None:
+        payload = {"schema": JUDGE_CACHE_SCHEMA, "result": result}
         with self._connect() as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO judge_cache VALUES (?, ?, ?, ?, ?)",
-                (task_id, judge_slug, artifact_sha256, json.dumps(result, default=str), datetime.now(UTC).isoformat()),
+                (task_id, judge_slug, artifact_sha256, json.dumps(payload, default=str), datetime.now(UTC).isoformat()),
             )
 
     def summary(self) -> dict[str, Any]:
@@ -542,6 +564,8 @@ _RUN_COLUMNS_V2 = (
     ("run_group", "TEXT"),
     ("replicate", "INTEGER"),
     ("dry_run", "INTEGER"),
+    ("judge_score", "REAL"),
+    ("judge_passed", "INTEGER"),
 )
 
 _CALL_COLUMNS_V2 = (
@@ -583,4 +607,6 @@ def _row_to_meta(row: sqlite3.Row) -> RunMeta:
         run_group=row[17] if len(row) > 17 else None,
         replicate=row[18] if len(row) > 18 else None,
         dry_run=bool(row[19]) if len(row) > 19 else False,
+        judge_score=row[20] if len(row) > 20 else None,
+        judge_passed=bool(row[21]) if len(row) > 21 and row[21] is not None else None,
     )

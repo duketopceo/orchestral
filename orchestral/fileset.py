@@ -281,6 +281,26 @@ def build_zip(
     return data
 
 
+def read_zip(data: bytes) -> dict[str, str]:
+    """Zip bytes -> {member_name: utf-8 text}.
+
+    The inverse of build_zip for re-validation and inspection: directory
+    entries are skipped and members that are not decodable text are dropped
+    rather than failing the whole read (a zip can legitimately carry a
+    binary asset alongside the code under test).
+    """
+    out: dict[str, str] = {}
+    with zipfile.ZipFile(io.BytesIO(data)) as archive:
+        for info in archive.infolist():
+            if info.is_dir():
+                continue
+            try:
+                out[info.filename] = archive.read(info).decode("utf-8")
+            except (UnicodeDecodeError, RuntimeError, zipfile.BadZipFile, OSError):
+                continue
+    return out
+
+
 def summarize_fileset(files: dict[str, str]) -> dict[str, Any]:
     """The only file-set shape allowed into traces: paths, sizes, hashes."""
     return {
@@ -293,6 +313,40 @@ def summarize_fileset(files: dict[str, str]) -> dict[str, Any]:
 def manifest_listing(files: dict[str, str]) -> str:
     """A content-free listing for the judge prompt (paths and sizes only)."""
     return "\n".join(f"{p} ({len(files[p])} bytes)" for p in sorted(files))
+
+
+# The judge reads member bodies within a bounded budget: a name-only
+# listing let verdicts be computed without ever seeing the artifact.
+# Every member gets an equal share so many-file sets don't starve
+# later paths — callers pass the cap their judge path actually applies.
+def files_listing_with_content(files: dict[str, str], *, total_chars: int) -> str:
+    """Manifest listing with member bodies inlined, bounded by `total_chars`.
+
+    Each member gets a `=== path (N bytes) ===` header plus up to an equal
+    share of the budget; longer bodies are cut with a truncation marker.
+    Members with no body (binary/undecodable at the zip layer) keep the
+    header line only. When the budget runs out, remaining paths still get
+    header lines — presence evidence outranks depth.
+    """
+    paths = sorted(files)
+    if not paths:
+        return ""
+    body_share = max(120, (total_chars // len(paths)) - 60)
+    out: list[str] = []
+    used = 0
+    for i, p in enumerate(paths):
+        body = files[p]
+        head = f"=== {p} ({len(body)} bytes) ==="
+        snippet = body[:body_share]
+        if len(body) > body_share:
+            snippet += "\n…[truncated]"
+        block = f"{head}\n{snippet}" if snippet else head
+        if used + len(block) + 1 > total_chars:
+            out.extend(f"=== {q} ({len(files[q])} bytes) ===" for q in paths[i:])
+            break
+        out.append(block)
+        used += len(block) + 1
+    return "\n".join(out)[:total_chars]
 
 
 def expected_paths(task_metadata: dict[str, Any], *, preserve_case: bool = False) -> list[str]:

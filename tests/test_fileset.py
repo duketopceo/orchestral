@@ -14,6 +14,7 @@ from orchestral.fileset import (
     build_zip,
     check_response_size,
     expected_paths,
+    files_listing_with_content,
     manifest_listing,
     merge_filesets,
     parse_fileset,
@@ -224,6 +225,36 @@ class TestSummaries(unittest.TestCase):
         listing = manifest_listing({"index.html": "SECRET_BODY"})
         self.assertIn("index.html", listing)
         self.assertNotIn("SECRET_BODY", listing)
+
+    def test_files_listing_with_content_inlines_bodies(self):
+        listing = files_listing_with_content(
+            {"b.css": "body{}", "a.py": "def f():\n    return 1"}, total_chars=4000)
+        self.assertIn("=== a.py", listing)
+        self.assertIn("def f():", listing)
+        self.assertIn("=== b.css", listing)
+        self.assertIn("body{}", listing)
+
+    def test_files_listing_with_content_respects_total_cap(self):
+        files = {f"f{i}.txt": "x" * 500 for i in range(5)}
+        listing = files_listing_with_content(files, total_chars=800)
+        self.assertLessEqual(len(listing), 800)
+        # every member still gets evidence — header lines survive the budget
+        for i in range(5):
+            self.assertIn(f"f{i}.txt", listing)
+
+    def test_files_listing_with_content_truncates_long_member(self):
+        listing = files_listing_with_content(
+            {"big.py": "y" * 10000, "small.py": "pass"}, total_chars=2000)
+        self.assertIn("[truncated]", listing)
+        # the small member is not starved by the big one
+        self.assertIn("small.py", listing)
+        self.assertIn("pass", listing)
+
+    def test_files_listing_with_content_empty_body_is_header_only(self):
+        listing = files_listing_with_content(
+            {"blob.bin": "", "a.py": "x"}, total_chars=1000)
+        self.assertIn("=== blob.bin (0 bytes) ===", listing)
+        self.assertIn("x", listing)
 
     def test_expected_paths_sanitizes_and_tolerates_garbage(self):
         self.assertEqual(

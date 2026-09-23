@@ -281,6 +281,16 @@ models:
     metadata:
       vision: true
 
+  - slug: "x-ai/grok-4.7"
+    name: "Grok 4.7"
+    role: orchestrator
+    input_price_per_mtok: 1.6
+    output_price_per_mtok: 4.8
+    context: 500000
+    max_tokens: 131072
+    metadata:
+      vision: true
+
   - slug: "google/gemini-3.8-flash"
     name: "Gemini 3.8 Flash"
     role: orchestrator

@@ -63,7 +63,11 @@ class TestBackfill(unittest.TestCase):
         self.assertEqual(report["judge"]["score"], 0.9)
         self.assertTrue(report["judge_backfill"])
         meta = store.get_run(run_id)
-        self.assertEqual(meta.score, 0.9)
+        # the judge's number lands on the judge axis — the mechanical
+        # score field is never overwritten by a judge result
+        self.assertEqual(meta.judge_score, 0.9)
+        self.assertTrue(meta.judge_passed)
+        self.assertIsNone(meta.score)  # html has no mechanical score
         # the recorded mechanical verdict is untouched
         self.assertTrue(meta.passes)
 
@@ -103,6 +107,49 @@ class TestBackfill(unittest.TestCase):
             self.assertEqual(res["judged"], 0)
             self.assertIn("no artifact", res["results"][0]["skipped"])
 
+    def test_inconclusive_report_is_rejudged(self):
+        """An inconclusive judge block is a no-answer, not a lock — the next
+        backfill pass must retry it without --force."""
+        run_id = self._seed()
+        store = RunStore(self.runs)
+        run_dir = Path(store.get_run(run_id).run_dir)  # type: ignore[union-attr]
+        report_path = run_dir / "report.json"
+        report = json.loads(report_path.read_text())
+        report["judge"] = {"inconclusive": True, "score": None, "passed": None,
+                           "reasoning": "parse failure"}
+        report_path.write_text(json.dumps(report))
+
+        client = FakeJudgeClient(0.7)
+        res = backfill_judgments(store, self.judge, client,
+                                 tasks_dir=self.root / "tasks")
+        self.assertEqual(res["judged"], 1)
+        self.assertEqual(client.calls, 1)
+        meta = store.get_run(run_id)
+        self.assertEqual(meta.judge_score, 0.7)
+
+    def test_inconclusive_backfill_keeps_meta_clean(self):
+        """A judge that fails again writes no judge fields to the index."""
+        self._seed()
+        store = RunStore(self.runs)
+
+        class BadClient:
+            calls = 0
+
+            def chat(self, **kw):
+                self.calls += 1
+                return {"content": "not json at all", "usage": {}, "latency_ms": 1}
+
+        res = backfill_judgments(store, self.judge, BadClient(),
+                                 tasks_dir=self.root / "tasks")
+        self.assertEqual(res["judged"], 1)
+        meta = store.list_runs()[0]
+        self.assertIsNone(meta.judge_score)
+        self.assertIsNone(meta.judge_passed)
+        # and a second pass retries — inconclusive didn't lock the run
+        res2 = backfill_judgments(RunStore(self.runs), self.judge,
+                                  FakeJudgeClient(0.6), tasks_dir=self.root / "tasks")
+        self.assertEqual(res2["judged"], 1)
+
     def test_dry_run_writes_nothing(self):
         run_id = self._seed()
         store = RunStore(self.runs)
@@ -115,18 +162,24 @@ class TestBackfill(unittest.TestCase):
 
 
 class TestJudgeInput(unittest.TestCase):
-    def test_zip_listing_is_content_free(self):
+    def test_zip_listing_inlines_member_bodies(self):
+        """Backfill sees the same bounded-content view the live path builds —
+        a name-only listing let zip verdicts be computed blind."""
         import zipfile
         with tempfile.TemporaryDirectory() as tmp:
             zpath = Path(tmp) / "artifact.zip"
             with zipfile.ZipFile(zpath, "w") as zf:
                 zf.writestr("index.html", "<html>secret body</html>")
                 zf.writestr("style.css", "body{}")
+                zf.writestr("logo.bin", b"\xff\xfe\x00\x01")  # undecodable
             img, text, lang = _judge_input(Path(tmp))
             self.assertIsNone(img)
             self.assertEqual(lang, "text")
             self.assertIn("index.html", text)
-            self.assertNotIn("secret body", text)  # bodies never reach the judge
+            self.assertIn("secret body", text)   # real content reaches the judge
+            self.assertIn("body{}", text)
+            self.assertIn("logo.bin", text)      # binary keeps its header line
+            self.assertNotIn("\\xff", text)
 
     def test_mp4_skipped(self):
         with tempfile.TemporaryDirectory() as tmp:

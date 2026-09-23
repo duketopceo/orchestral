@@ -37,11 +37,16 @@ from orchestral.extract import check_extraction
 from orchestral.fileset import (
     build_zip,
     expected_paths,
-    manifest_listing,
+    files_listing_with_content,
     member_requirements,
     merge_filesets,
 )
-from orchestral.judge import judge_artifact
+from orchestral.judge import (
+    JUDGE_CHAT_ARTIFACT_CAP,
+    JUDGE_DECISIONS_ARTIFACT_CAP,
+    is_decisions_model,
+    judge_artifact,
+)
 from orchestral.logger import EventLogger
 from orchestral.manifest import build_manifest, finalize_manifest, write_manifest
 from orchestral.metrics import build_metrics
@@ -792,9 +797,13 @@ class Runner:
                         task, artifact_bytes, preserve_case=executor is not None)
                 report["files"] = sorted(merged)
                 report["merge_conflicts"] = conflicts
-                # the judge sees a content-free listing — file bodies never
-                # enter the judge prompt, events, or report
-                judge_text = manifest_listing(merged)
+                # the judge reads bounded member bodies — a name-only listing
+                # let verdicts be computed blind. Bodies enter the judge
+                # prompt (and its logged events) but never report["files"].
+                cap = (JUDGE_DECISIONS_ARTIFACT_CAP
+                       if judge is not None and is_decisions_model(judge)
+                       else JUDGE_CHAT_ARTIFACT_CAP)
+                judge_text = files_listing_with_content(merged, total_chars=cap)
             else:
                 if self.planner == "ce-plan":
                     artifact, assembly_costs = assemble_ce(
@@ -876,7 +885,9 @@ class Runner:
                     )
                 except Exception as exc:
                     # the judge is advisory — its failure must not convert a
-                    # mechanically-verified run into a `failed` record
+                    # mechanically-verified run into a `failed` record; the
+                    # exception records judge_inconclusive on the judge axis
+                    # (the same rule as parse failure and null verdicts)
                     logger.log(
                         phase="judge",
                         step=assembly_step + 3,
@@ -889,13 +900,17 @@ class Runner:
                         reasoning="Judge call failed; keeping the mechanical verdict.",
                     )
                     report["judge_error"] = str(exc)
+                    report["judge"] = {
+                        "score": None, "passed": None, "inconclusive": True,
+                        "model": judge.slug,
+                        "reasoning": f"judge call failed: {str(exc)[:200]}",
+                    }
                 else:
                     ledger.add_many(judge_costs)
                     report["judge"] = judge_result
-                    if judge_result.get("score") is not None:
-                        report["score"] = judge_result["score"]
-                    if judge_result.get("passed") is not None:
-                        passes = passes and judge_result["passed"]
+                    # KTD14: the judge never mutates `passes` or `score` — the
+                    # stored verdict is mechanical-only; judge evidence lives
+                    # on the judge_* fields and report.judge.
 
             logger.lifecycle(
                 "evaluation.completed", phase="validate", role="judge" if judge else "harness",
@@ -942,17 +957,13 @@ class Runner:
             meta.total_output_tokens = total_output
             meta.passes = passes
             meta.score = report.get("score")
+            judge_result = report.get("judge") or {}
+            if not judge_result.get("inconclusive"):
+                meta.judge_score = judge_result.get("score")
+                meta.judge_passed = judge_result.get("passed")
             meta.latency_ms = (time.perf_counter() - t0) * 1000
             if passes is False:
-                # distinguish a judge rejection of a structurally-valid
-                # artifact from a failed structural check
-                checks = report.get("checks") or {}
-                judge_res = report.get("judge") or {}
-                meta.failure_reason = (
-                    "judge"
-                    if all(checks.values()) and judge_res.get("passed") is False
-                    else "validation"
-                )
+                meta.failure_reason = "validation"
             self.store.update_meta(meta)
 
             logger.log(
@@ -1098,8 +1109,9 @@ class Runner:
                 judge=judge, client=client, dry_run=False, image_bytes=artifact_bytes,
                 language=language,
             )
-            # synthetic parse-failure results are transient — don't poison the cache
-            if not result.get("parse_failed"):
+            # inconclusive results (parse failure, null verdict, skips) are
+            # transient no-answers — don't poison the cache with them
+            if not result.get("inconclusive"):
                 self.store.put_judge_result(task.id, judge.slug, sha, result)
             return result, costs
 

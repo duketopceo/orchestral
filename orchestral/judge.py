@@ -22,8 +22,10 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
+from orchestral.calibrate import _coerce_score, _coerce_verdict
 from orchestral.config import ModelConfig, TaskSpec, find_task, load_task
 from orchestral.costs import compute_cost, token_usage_from_raw
+from orchestral.fileset import files_listing_with_content
 from orchestral.logger import EventLogger
 from orchestral.planners import _extract_json
 from orchestral.providers import Provider
@@ -108,7 +110,7 @@ def _judge_via_decisions(
     state = {
         "task": task.prompt[:4000],
         "artifact_language": language,
-        "artifact": artifact[:8000],
+        "artifact": artifact[:JUDGE_DECISIONS_ARTIFACT_CAP],
     }
     data = client.decide(model=judge.slug, state=state, questions=_DECISIONS_QUESTIONS)  # type: ignore[attr-defined]
     answers = data.get("answers") or {}
@@ -122,6 +124,8 @@ def _judge_via_decisions(
     result: dict[str, Any] = {
         "score": score,
         "passed": passed,
+        # a null verdict noul is no answer — one inconclusive rule (KTD7)
+        "inconclusive": passed is None,
         "reasoning": (
             f"jev noul={noul} rubric={raw}/4 "
             f"confidence={quality.get('confidence')} probs={quality.get('probabilities')}"
@@ -132,7 +136,7 @@ def _judge_via_decisions(
         "model": judge.slug,
         # the decisions state cap is artifact[:8000] — a truncated judge
         # input is partial evidence and badge provenance must see it
-        "judge_input_truncated": len(artifact) > 8000,
+        "judge_input_truncated": len(artifact) > JUDGE_DECISIONS_ARTIFACT_CAP,
     }
     cost: dict[str, Any] = {
         "phase": "judge",
@@ -178,7 +182,9 @@ def judge_artifact(
     neutral tag because their artifact section is a file listing, not HTML.
     """
     if image_bytes is not None and len(image_bytes) > MAX_JUDGE_IMAGE_BYTES:
-        result: dict[str, Any] = {"score": None, "passed": None, "reasoning": f"image too large to judge ({len(image_bytes)} bytes)"}
+        result: dict[str, Any] = {"score": None, "passed": None, "inconclusive": True,
+                                  "model": judge.slug,
+                                  "reasoning": f"image too large to judge ({len(image_bytes)} bytes)"}
         logger.log(
             phase="judge",
             step=step,
@@ -193,7 +199,7 @@ def judge_artifact(
     artifact_section = (
         "The artifact is the attached image."
         if image_bytes is not None
-        else f"```{language}\n{artifact[:2000]}\n```"
+        else f"```{language}\n{artifact[:JUDGE_CHAT_ARTIFACT_CAP]}\n```"
     )
     prompt_text = JUDGE_PROMPT.format(prompt=task.prompt, artifact_section=artifact_section)
 
@@ -230,7 +236,8 @@ def judge_artifact(
     if is_decisions_model(judge):
         if image_bytes is not None:
             # decisions engines are text-only — no image path exists
-            result = {"score": None, "passed": None,
+            result = {"score": None, "passed": None, "inconclusive": True,
+                      "model": judge.slug,
                       "reasoning": "decisions engine cannot judge image artifacts"}
             logger.log(phase="judge", step=step, event_type="judge_skipped",
                        model=judge.slug, role="judge",
@@ -279,14 +286,23 @@ def judge_artifact(
             raise ValueError("Judge JSON missing score or passed")
     except Exception:
         result = {
-            "score": 0.0,
-            "passed": False,
+            "score": None,
+            "passed": None,
             "reasoning": f"Could not parse judge response: {content[:200]}",
             "parse_failed": True,
+            # no answer is inconclusive, never a rejection (KTD7)
+            "inconclusive": True,
         }
-
-    result["score"] = float(result.get("score", 0.0))
-    result["passed"] = bool(result.get("passed", False))
+    else:
+        verdict = _coerce_verdict(result.get("passed"))
+        if verdict is None:
+            # a well-formed reply with a null/garbage verdict is still no
+            # answer — bool("false") must never read as a pass
+            result["inconclusive"] = True
+            result["passed"] = None
+        else:
+            result["passed"] = verdict
+        result["score"] = _coerce_score(result.get("score"))
     if "reasoning" not in result:
         result["reasoning"] = ""
     result["model"] = judge.slug
@@ -328,11 +344,17 @@ def judge_artifact(
 
 
 def _fake_judge_result() -> dict[str, Any]:
-    return {"score": None, "passed": None, "reasoning": "Dry-run; no judge model was called."}
+    return {"score": None, "passed": None, "inconclusive": True,
+            "reasoning": "Dry-run; no judge model was called."}
 
 
 _TEXT_ARTIFACT_EXTS = {"html", "txt", "sql", "diff", "json", "md", "css"}
 _IMAGE_ARTIFACT_EXTS = {"png", "jpg", "jpeg", "webp"}
+
+# Artifact budgets the two judge paths enforce — runners sizing a judge
+# payload should target these caps, not a guessed truncation point.
+JUDGE_CHAT_ARTIFACT_CAP = 2000       # fenced block in the chat rubric
+JUDGE_DECISIONS_ARTIFACT_CAP = 8000  # `state.artifact` for decisions engines
 
 
 class _NoJudgeableArtifact(Exception):
@@ -358,8 +380,14 @@ def _judge_input(run_dir: Path) -> tuple[bytes | None, str | None, str]:
         raise _NoJudgeableArtifact("video judging deferred — no video-input judge path")
     if ext == "zip":
         with zipfile.ZipFile(path) as zf:
-            listing = "\n".join(f"{i.filename} ({i.file_size} bytes)" for i in zf.infolist())
-        return None, listing, "text"
+            members: dict[str, str] = {}
+            for i in zf.infolist():
+                try:
+                    members[i.filename] = zf.read(i).decode("utf-8")
+                except Exception:
+                    members[i.filename] = ""  # binary/undecodable → header only
+        return None, files_listing_with_content(
+            members, total_chars=JUDGE_DECISIONS_ARTIFACT_CAP), "text"
     if ext in _TEXT_ARTIFACT_EXTS:
         return None, path.read_text(encoding="utf-8", errors="replace"), "html"
     raise _NoJudgeableArtifact(f"unjudgeable artifact type: {path.name}")
@@ -701,13 +729,16 @@ def backfill_judgments(
         return spec_cache[tid]
 
     def _already_judged(run_dir: Path) -> bool:
+        # only a conclusive verdict locks the run — an inconclusive record
+        # is a transient no-answer and must retry on the next pass
         report_path = run_dir / "report.json"
         if not report_path.exists():
             return False
         try:
-            return json.loads(report_path.read_text()).get("judge") is not None
+            j = json.loads(report_path.read_text()).get("judge")
         except Exception:
             return False
+        return bool(j) and not j.get("inconclusive")
 
     def _one(meta: Any) -> dict[str, Any]:
         run_dir = Path(meta.run_dir)
@@ -737,7 +768,7 @@ def backfill_judgments(
                         artifact=text or "", judge=judge, client=client,
                         dry_run=dry_run, image_bytes=image_bytes, language=language,
                     )
-                    if not dry_run and not result.get("parse_failed"):
+                    if not dry_run and not result.get("inconclusive"):
                         store.put_judge_result(task.id, judge.slug, sha, result)
             if dry_run:
                 return {"run_id": meta.run_id, "judged": "dry-run", "score": result.get("score")}
@@ -746,8 +777,9 @@ def backfill_judgments(
             report["judge"] = result
             report["judge_backfill"] = True
             report_path.write_text(json.dumps(report, indent=2, default=str))
-            if result.get("score") is not None:
-                meta.score = float(result["score"])
+            if not result.get("inconclusive"):
+                meta.judge_score = result.get("score")
+                meta.judge_passed = result.get("passed")
             meta.total_cost_usd += sum(c.get("cost_usd") or 0.0 for c in costs)
             store.update_meta(meta)
             return {"run_id": meta.run_id, "judged": judge.slug, "score": result.get("score"),

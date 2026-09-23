@@ -16,7 +16,15 @@ from pathlib import Path
 from typing import Any
 
 from orchestral.agentexec import ExecutorPreflightError, launch_gate
-from orchestral.calibrate import agreement_metrics, collect_pairs, load_labels
+from orchestral.calibrate import (
+    MIN_CALIBRATION_PAIRS,
+    agreement_metrics,
+    calibration_status,
+    collect_pairs,
+    emit_label_skeleton,
+    load_labels,
+    persist_calibration,
+)
 from orchestral.config import (
     ConfigError,
     ModelConfig,
@@ -750,7 +758,8 @@ def cmd_report(args: argparse.Namespace) -> None:
         if args.json:
             print(json.dumps([r.to_dict() for r in rows], indent=2, default=str))
             return
-        _print_leaderboard(rows, min_samples)
+        _print_leaderboard(rows, min_samples, store=store, metas=runs,
+                           reports_dir=args.reports_dir)
         return
 
     if args.pairings:
@@ -829,24 +838,43 @@ def _print_pairing_table(runs: list[Any]) -> None:
         print(f"{orch:<35} {work:<35} {n:>5} {passed:>5} {score:>9} ${cost:>10.4f} {tokens:>8} {qpd:>10.1f}")
 
 
-def _print_leaderboard(rows: list[Any], min_samples: int) -> None:
+def _print_leaderboard(
+    rows: list[Any],
+    min_samples: int,
+    store: Any = None,
+    metas: list[Any] | None = None,
+    reports_dir: str = "reports",
+) -> None:
     """Pairing leaderboard — one row per (orchestrator, worker)."""
     if not rows:
         print("No runs match.")
         return
-    print(f"{'orchestrator':<30} {'worker':<30} {'n':>3} {'tasks':>5} {'pass%':>6} {'med score':>9} {'med cost':>9} {'med ms':>8} {'fail%':>6} {'$/pass':>9}")
+    print(f"{'orchestrator':<30} {'worker':<30} {'n':>3} {'tasks':>5} {'pass%':>6} {'med judge':>9} {'med cost':>9} {'med ms':>8} {'fail%':>6} {'$/pass':>9}")
     print("-" * 120)
+    rank = 0
+    divided = False
     for p in rows:
-        flag = "" if not p.low_sample else " *"
-        score = f"{p.score_median:.2f}" if p.score_median is not None else "-"
+        if p.low_sample and not divided:
+            divided = True
+            print(f"{'':<4}── unranked: fewer than {min_samples} runs — anecdote, not evidence ──")
+        rank += 0 if p.low_sample else 1
+        score = f"{p.judge_score_median:.2f}" if p.judge_score_median is not None else "-"
         cpp = f"${p.cost_per_pass:.4f}" if p.cost_per_pass is not None else "-"
+        rank_txt = "—" if p.low_sample else str(rank)
         print(
-            f"{p.orchestrator:<30} {p.worker:<30} {p.runs:>3}{flag} {p.tasks_covered:>5} "
+            f"{rank_txt:>3} {p.orchestrator:<30} {p.worker:<30} {p.runs:>3} {p.tasks_covered:>5} "
             f"{(p.pass_rate or 0) * 100:>5.0f}% {score:>9} ${p.cost_median:>8.4f} "
             f"{p.duration_median_ms:>8.0f} {(p.failure_rate or 0) * 100:>5.0f}% {cpp:>9}"
         )
-    if any(p.low_sample for p in rows):
-        print(f"\n* fewer than {min_samples} runs — treat the ranking as anecdotal, not evidence.")
+    if store is not None and metas:
+        for slug in store.judge_slugs({m.task_id for m in metas}):
+            st = calibration_status(reports_dir, slug)
+            if st["calibrated"]:
+                detail = f"kappa {st['kappa']:.2f} over {st['verdict_pairs']} pairs"
+            else:
+                detail = (f"uncalibrated — {st['verdict_pairs']} verdict pairs "
+                          f"(need {MIN_CALIBRATION_PAIRS}+ labeled, kappa >= 0.7)")
+            print(f"judge: {slug} — {detail}")
 
 
 def _print_groups_table(cells: list[Any]) -> None:
@@ -982,17 +1010,39 @@ def cmd_prices(args: argparse.Namespace) -> None:
 
 def cmd_calibrate(args: argparse.Namespace) -> None:
     """Judge-vs-human agreement metrics from a labels file."""
+    if args.emit:
+        yaml_text = emit_label_skeleton(
+            RunStore(args.runs_dir),
+            run_group=None if args.emit == "all" else args.emit,
+        )
+        reports_dir = Path(args.reports_dir)
+        reports_dir.mkdir(parents=True, exist_ok=True)
+        ts = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+        out_path = reports_dir / f"labels-{args.emit}-{ts}.yaml"
+        out_path.write_text(yaml_text)
+        print(f"wrote {out_path} — fill in score/passed, then:")
+        print(f"  python3 harness.py calibrate --labels {out_path}")
+        return
+    if not args.labels:
+        raise SystemExit("calibrate needs --labels <file> (or --emit <group> to write a skeleton)")
     labels = load_labels(args.labels)
     result = collect_pairs(RunStore(args.runs_dir), labels)
     metrics = agreement_metrics(result["pairs"])
-    out = {"coverage": result["coverage"], "metrics": metrics}
+    report_path = persist_calibration(
+        args.reports_dir, labels_path=args.labels,
+        pairs=result["pairs"], metrics=metrics)
+    out = {"coverage": result["coverage"], "metrics": metrics,
+           "report": str(report_path)}
     if args.json:
         print(json.dumps(out, indent=2))
         return
     cov = result["coverage"]
-    print(f"Labeled: {cov['labeled']} | matched to runs: {cov['matched']} | unmatched: {len(cov['unmatched'])}")
+    print(f"Labeled: {cov['labeled']} | matched to runs: {cov['matched']} | "
+          f"unmatched: {len(cov['unmatched'])} | unjudged: {len(cov['unjudged'])}")
     if cov["unmatched"]:
         print(f"  unmatched run_ids: {', '.join(cov['unmatched'][:10])}")
+    if cov["unjudged"]:
+        print(f"  matched but never judged: {', '.join(cov['unjudged'][:10])}")
     score = metrics.get("score")
     if score:
         print(f"\nScore agreement (n={score['n']}):")
@@ -1004,10 +1054,33 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
         print(f"\nVerdict agreement (n={verdict['n']}):")
         print(f"  accuracy {verdict['accuracy']:.1%} | Cohen's kappa {verdict['kappa'] if verdict['kappa'] is not None else 'n/a'}")
         print(f"  tp {verdict['tp']} | tn {verdict['tn']} | fp {verdict['fp']} | fn {verdict['fn']}")
+    for axis, title in (("by_judge", "By judge"), ("by_task", "By task")):
+        slices = {k: v for k, v in (metrics.get(axis) or {}).items()
+                  if v.get("verdict") or v.get("score")}
+        if len(slices) > 1:
+            print(f"\n{title}:")
+            for name, block in sorted(slices.items()):
+                v = block.get("verdict")
+                line = f"  {name}: "
+                if v:
+                    line += f"n={v['n']} accuracy {v['accuracy']:.1%} "
+                    line += f"kappa {v['kappa']:.2f}" if v["kappa"] is not None else "kappa n/a"
+                else:
+                    s = block["score"]
+                    line += f"score-only n={s['n']} mae {s['mae']:.3f}"
+                print(line)
     if not score and not verdict:
         print("\nNo overlapping pairs — label runs that have judge scores/verdicts.")
         print("Labels file format:")
         print("  labels:\n    - run_id: <prefix>\n      score: 0.8\n      passed: true")
+        print(f"\nOr emit a skeleton:  python3 harness.py calibrate --emit <group>")
+    print(f"\nReport: {report_path}")
+    for judge_slug in sorted({p.get("judge_model") for p in result["pairs"] if p.get("judge_model")}):
+        status = calibration_status(args.reports_dir, judge_slug)
+        state = "calibrated" if status["calibrated"] else "uncalibrated"
+        detail = f"kappa {status['kappa']:.2f} over {status['verdict_pairs']} pairs" \
+            if status["kappa"] is not None else f"{status['verdict_pairs']} pairs"
+        print(f"Judge {judge_slug}: {state} ({detail})")
 
 
 def cmd_review(args: argparse.Namespace) -> None:
@@ -1068,6 +1141,34 @@ def cmd_judge(args: argparse.Namespace) -> None:
     scored = [r["score"] for r in result["results"] if r.get("score") is not None]
     if scored:
         print(f"score: mean {sum(scored)/len(scored):.2f} over {len(scored)} judged artifacts")
+
+
+def cmd_revalidate(args: argparse.Namespace) -> None:
+    """Replay mechanical validators on stored artifacts — repairs the score axis."""
+    from orchestral.revalidate import revalidate_runs
+
+    result = revalidate_runs(
+        RunStore(args.runs_dir),
+        run_group=args.group, task_id=args.task,
+        orchestrator=args.orchestrator, worker=args.worker,
+        limit=args.limit, dry_run=args.dry_run,
+        tasks_dir=Path(args.tasks_dir),
+    )
+    if args.json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+    verb = "would repair" if args.dry_run else "repaired"
+    print(f"revalidated {result['runs']} runs: {verb} {result['repaired']}, "
+          f"unchanged {result['unchanged']}, skipped {result['skipped']}")
+    for r in result["results"]:
+        if r.get("unchanged") or r.get("skipped"):
+            continue
+        print(f"  {r['run_id'][:12]} {r.get('task_id','?')}: "
+              f"score {r.get('score_was')} -> {r.get('score')}, "
+              f"passes {r.get('passes_was')} -> {r.get('passes')}")
+    for r in result["results"]:
+        if r.get("skipped"):
+            print(f"  skipped {r['run_id'][:12]}: {r['skipped']}")
 
 
 def cmd_specaudit(args: argparse.Namespace) -> None:
@@ -1211,6 +1312,78 @@ def cmd_serve(args: argparse.Namespace) -> None:
         open_browser=args.open,
         allow_agent_exec=getattr(args, "allow_agent_exec", False),
     )
+
+
+def cmd_cards(args: argparse.Namespace) -> None:
+    """Batch-export X-ready PNGs: overview, leaderboard, and every
+    group/pairing card — the SPA's own markup, rendered headless."""
+    import re as _re
+    import threading
+    from http.server import ThreadingHTTPServer
+    from urllib.parse import quote
+
+    from orchestral.shots import ScreenshotUnavailable, browser_session, capture_page
+    from orchestral.web import state as wstate
+    from orchestral.web.server import Observatory, make_handler
+
+    store = RunStore(args.runs_dir)
+    obs = Observatory(Path(args.runs_dir), Path(args.tasks_dir), Path(args.models_dir))
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(obs))
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{httpd.server_address[1]}"
+    out_dir = Path(args.reports_dir) / "cards"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    def _fname(s: str) -> str:
+        return _re.sub(r"[^a-z0-9]+", "-", s.lower()).strip("-") or "card"
+
+    targets = [("/", "overview", None), ("/leaderboard", "leaderboard", None)]
+    groups = [g["group"] for g in wstate.groups_payload(store)]
+    if args.group:
+        groups = [g for g in groups if g == args.group]
+    for g in groups:
+        targets.append((f"/card?kind=group&target={quote(g, safe='')}",
+                        f"group-{_fname(g)}", ".xcard"))
+    if args.group:
+        # leaderboard_rows carries no group field — take the pairings the
+        # group card itself aggregates, and scope each pairing card to it.
+        seen: set[str] = set()
+        for g in groups:
+            d = wstate.card_payload(store, "group", g) or {}
+            for pr in d.get("pairing_rows") or []:
+                t = f"{pr['orchestrator']}|{pr['worker']}"
+                if t in seen:
+                    continue
+                seen.add(t)
+                targets.append((
+                    f"/card?kind=pairing&target={quote(t, safe='')}&group={quote(g, safe='')}",
+                    f"pairing-{_fname(t)}", ".xcard"))
+    else:
+        for r in wstate.leaderboard_rows(store):
+            t = f"{r['orchestrator']}|{r['worker']}"
+            targets.append((f"/card?kind=pairing&target={quote(t, safe='')}",
+                            f"pairing-{_fname(t)}", ".xcard"))
+
+    written = failed = 0
+    try:
+        with browser_session() as browser:
+            for route, name, element in targets:
+                try:
+                    png = capture_page(f"{base}/#{route}", element=element, browser=browser)
+                except ScreenshotUnavailable as exc:
+                    failed += 1
+                    if failed == 1:
+                        print(f"capture failed: {exc}")
+                    continue
+                (out_dir / f"{name}.png").write_bytes(png)
+                written += 1
+    except ScreenshotUnavailable as exc:
+        print(f"Screenshot unavailable: {exc}")
+        return
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+    print(f"cards: wrote {written} PNG(s) to {out_dir}" + (f", {failed} failed" if failed else ""))
 
 
 def cmd_shots(args: argparse.Namespace) -> None:
@@ -1371,11 +1544,21 @@ def _build_parser() -> argparse.ArgumentParser:
     shots.add_argument("--runs-dir", default="runs", help="Root directory for run data")
     shots.add_argument("--task", default=None, help="Only capture runs for this task id")
     shots.add_argument("--all", action="store_true", help="Re-capture even when screenshots are current")
+
+    cards = sub.add_parser("cards", help="Batch-export X-ready PNGs (leaderboard + every group/pairing card) via playwright")
+    cards.add_argument("--reports-dir", default="reports", help="Output root — writes <reports>/cards/")
+    cards.add_argument("--group", default=None, help="Only export cards scoped to this run_group")
+    cards.set_defaults(func=cmd_cards)
     shots.set_defaults(func=cmd_shots)
 
     calibrate = sub.add_parser("calibrate", help="Judge-vs-human agreement metrics from a labels file")
-    calibrate.add_argument("--labels", required=True, help="YAML labels file (labels: [{run_id, score, passed}])")
+    calibrate.add_argument("--labels", help="YAML labels file (labels: [{run_id, score, passed}])")
+    calibrate.add_argument("--emit", metavar="GROUP",
+                           help="Emit a labels skeleton for a run group's finished runs "
+                                "(or 'all') instead of computing metrics")
     calibrate.add_argument("--runs-dir", default="runs", help="Root directory for run data")
+    calibrate.add_argument("--reports-dir", default="reports",
+                           help="Where calibration reports and label skeletons persist")
     calibrate.add_argument("--json", action="store_true", help="Machine-readable output")
     calibrate.set_defaults(func=cmd_calibrate)
 
@@ -1404,6 +1587,16 @@ def _build_parser() -> argparse.ArgumentParser:
     judge.add_argument("--dry-run", action="store_true", help="Exercise the path without calling the provider or writing results")
     judge.add_argument("--json", action="store_true", help="Emit the full result as JSON")
     judge.set_defaults(func=cmd_judge)
+
+    reval = sub.add_parser("revalidate", help="Replay mechanical validators on stored artifacts — repairs score/passes on report.json + index (no model calls)")
+    reval.add_argument("--group", default=None, help="Only revalidate runs in this run_group")
+    reval.add_argument("--task", default=None, help="Only revalidate runs for this task")
+    reval.add_argument("--orchestrator", default=None)
+    reval.add_argument("--worker", default=None)
+    reval.add_argument("--limit", type=int, default=None, help="Cap the number of runs revalidated")
+    reval.add_argument("--dry-run", action="store_true", help="Report divergences without writing")
+    reval.add_argument("--json", action="store_true", help="Emit the full result as JSON")
+    reval.set_defaults(func=cmd_revalidate)
 
     specaudit = sub.add_parser("specaudit", help="Decisions-engine audit of the task suite — lowball/sound/difficulty/adversarial per spec")
     specaudit.add_argument("--judge", required=True, help="Decisions-model slug (e.g. '~typesafe/jev-latest' — quote it)")

@@ -87,7 +87,8 @@ orchestral dashboard               # reports/dashboard.html
 | `tui` | Interactive terminal UI — browse/inspect/launch runs (needs `[tui]` extra) |
 | `serve` | Local web observatory — same views in a browser, launch/cancel runs (localhost only) |
 | `scrub` | Redact secrets/paths from `runs/` into `runs-pub/` + `manifest.json` |
-| `calibrate` | Judge-vs-human agreement from a labels file (`--labels`, `--json`) |
+| `calibrate` | Judge-vs-human agreement; `--emit <group>` writes a label skeleton, `--labels` computes + persists (`--json`) |
+| `revalidate` | Replay mechanical validators on stored artifacts (no model calls) — repairs `score`/`passes`/`checks` on report + index, stamps `report.revalidated` with old values |
 | `review` | Frontier-model audit of run evidence — per-run `review.json` + `reports/review-*.md` (`--model`, `--group`, `--dry-run`) |
 
 Shared run flags (on `run`, `grid`, `batch`, `ablate`): `--planner raw|ce-plan`,
@@ -110,11 +111,19 @@ systemic issues. Reviewer output is hypotheses, not verdicts — every
 finding carries the evidence it claims. Runs already holding `review.json`
 are skipped unless `--force`; `--dry-run` writes stubs for plumbing tests.
 
-`calibrate --labels labels.yaml` measures how much to trust `--judge`: the
-labels file is `labels: [{run_id, score, passed}]` over runs the judge
-scored, and the report is score agreement (MAE, Pearson, Spearman) plus
-verdict agreement (accuracy, Cohen's kappa, confusion counts). See
-`labels.example.yaml`.
+`calibrate` measures how much to trust `--judge`. Two flows:
+
+- `calibrate --emit <group>` writes `reports/labels-<group>-<ts>.yaml` —
+  a skeleton over the group's *judged* finished runs (run_id, task_id,
+  artifact pointer, blank `score`/`passed`). Label ≥30 and re-run:
+- `calibrate --labels labels.yaml` joins human labels to judge verdicts
+  (only `report.judge` — mechanical verdicts never stand in), reports
+  score agreement (MAE, Pearson, Spearman) and verdict agreement
+  (accuracy, Cohen's kappa, confusion counts) overall and per judge/task,
+  and persists `reports/calibration-<ts>.json`. Cards and leaderboards
+  read the latest persisted report: κ ≥ 0.7 over ≥30 pairs marks a judge
+  "calibrated"; anything less renders "uncalibrated". See
+  `labels.example.yaml`.
 
 ### TUI
 

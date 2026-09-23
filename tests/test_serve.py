@@ -160,8 +160,43 @@ class TestPureLayer(unittest.TestCase):
             self.assertIn("pass_ci", gcard)
             self.assertEqual(gcard["judged"], 0)
             self.assertIn("verdict_line", card)
+            self.assertIn("judge_calibration", gcard)
+            # pre-made eval-set description + comparable rows
+            self.assertIn("1 tasks", gcard["description"])
+            self.assertIn("unjudged", gcard["description"])
+            self.assertEqual(len(gcard["pairing_rows"]), 1)
+            self.assertEqual(gcard["pairing_rows"][0]["pass_rate"], 1.0)
+            self.assertEqual(gcard["task_rows"][0]["task_id"], "t-task")
             self.assertIsNone(state.card_payload(store, "run", "ghost"))
             self.assertIsNone(state.card_payload(store, "group", "ghost"))
+
+    def test_card_payload_pairing_description_and_type_rows(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _seed_run(tmp, run_group="g1")
+            store = RunStore(tmp)
+            card = state.card_payload(store, "pairing", "o/model|w/model")
+            self.assertIsNotNone(card)
+            self.assertIn("plans", card["description"])
+            self.assertIn("mechanical pass", card["description"])
+            self.assertEqual(len(card["type_rows"]), 1)
+            self.assertEqual(card["type_rows"][0]["pass_rate"], 1.0)
+
+    def test_card_payload_judge_calibration(self):
+        """A judged run's card carries the judge's persisted calibration
+        state — uncalibrated when no labels exist yet."""
+        with tempfile.TemporaryDirectory() as tmp:
+            rid = _seed_run(tmp)
+            store = RunStore(tmp)
+            run_dir = Path(store.get_run(rid).run_dir)
+            report = json.loads((run_dir / "report.json").read_text())
+            report["judge"] = {"score": 0.9, "passed": True,
+                               "model": "j/judge", "engine": "chat"}
+            (run_dir / "report.json").write_text(json.dumps(report))
+            card = state.card_payload(store, "run", rid, reports_dir=tmp)
+            self.assertEqual(
+                card["judge_calibration"],
+                {"j/judge": {"calibrated": False, "kappa": None,
+                             "verdict_pairs": 0}})
 
     def test_wilson_interval_and_verdict_lines(self):
         # known binomial: 1/4 pass → wide honest interval
@@ -456,6 +491,47 @@ class TestHttpRoutes(unittest.TestCase):
         code, body = self._get("/api/models?role=worker")
         self.assertNotIn("~typesafe/jev-latest",
                          {r["slug"] for r in json.loads(body)})
+
+    def test_shot_png_rejects_bad_routes(self):
+        # protocol-relative and relative routes could steer the headless
+        # browser off-origin — only app paths are allowed
+        for route in ("//evil.example/x", "not-a-path"):
+            code, _ = self._get(f"/api/shot.png?route={urllib.parse.quote(route)}")
+            self.assertEqual(code, 400, route)
+
+    def test_shot_png_503_when_capture_unavailable(self):
+        from orchestral.shots import ScreenshotUnavailable
+        with unittest.mock.patch("orchestral.shots.capture_page",
+                                 side_effect=ScreenshotUnavailable("nope")):
+            code, body = self._get("/api/shot.png?route=/leaderboard")
+        self.assertEqual(code, 503)
+        self.assertIn("nope", body)
+
+    def test_shot_png_returns_png_and_picks_xcard_for_cards(self):
+        import re
+        from urllib.parse import quote
+
+        with unittest.mock.patch(
+                "orchestral.shots.capture_page",
+                return_value=b"\x89PNG-fake") as cap:
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{self.port}/api/shot.png"
+                f"?route={quote('/card?kind=pairing&target=o/m|w/m')}")
+            with urllib.request.urlopen(req) as r:
+                self.assertEqual(r.status, 200)
+                self.assertEqual(r.headers.get("Content-Type"), "image/png")
+                self.assertIn("filename=", r.headers.get("Content-Disposition", ""))
+                self.assertEqual(r.read(), b"\x89PNG-fake")
+        self.assertEqual(cap.call_args.kwargs["element"], ".xcard")
+        # non-card routes capture the settled view, not a card node
+        with unittest.mock.patch(
+                "orchestral.shots.capture_page",
+                return_value=b"\x89PNG-fake") as cap:
+            with urllib.request.urlopen(
+                    f"http://127.0.0.1:{self.port}/api/shot.png?route=/leaderboard") as r:
+                self.assertEqual(r.status, 200)
+                self.assertEqual(r.read(), b"\x89PNG-fake")
+        self.assertIsNone(cap.call_args.kwargs["element"])
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):

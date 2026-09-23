@@ -210,6 +210,11 @@ class OpenRouterClient:
         maps answer keys to ``{type: noul|choice|score, ...}``. Returns the
         raw response — answers carry calibrated probabilities, not text.
         """
+        if self.provider != "openrouter":
+            raise NotImplementedError(
+                f"the decisions endpoint is only supported for provider 'openrouter'; "
+                f"{self.provider!r} has no /api/alpha/decisions"
+            )
         base = urlparse(str(self.client.base_url))
         url = f"{base.scheme}://{base.netloc}/api/alpha/decisions"
         start = time.time()

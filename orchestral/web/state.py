@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from orchestral.agentexec import ExecutorPreflightError, launch_gate
+from orchestral.calibrate import calibration_status
 from orchestral.config import (
     ConfigError,
     find_task,
@@ -409,7 +410,7 @@ def groups_payload(store: RunStore) -> list[dict[str, Any]]:
         g = groups.setdefault(r.run_group or "(ungrouped)", {
             "group": r.run_group or "(ungrouped)",
             "runs": 0, "finished": 0, "passed": 0, "cost_usd": 0.0,
-            "scores": [], "tasks": set(), "pairings": set(),
+            "scores": [], "judge_scores": [], "tasks": set(), "pairings": set(),
             "latest": None,
         })
         g["runs"] += 1
@@ -419,6 +420,8 @@ def groups_payload(store: RunStore) -> list[dict[str, Any]]:
         g["cost_usd"] += r.total_cost_usd or 0.0
         if r.score is not None:
             g["scores"].append(r.score)
+        if r.judge_score is not None:
+            g["judge_scores"].append(r.judge_score)
         g["tasks"].add(r.task_id)
         g["pairings"].add((r.orchestrator, r.worker))
         if g["latest"] is None or (r.started_at or "") > (g["latest"] or ""):
@@ -426,13 +429,15 @@ def groups_payload(store: RunStore) -> list[dict[str, Any]]:
     out = []
     for g in groups.values():
         scores = sorted(g.pop("scores"))
-        n = len(scores)
+        judge_scores = sorted(g.pop("judge_scores"))
+        n, jn = len(scores), len(judge_scores)
         out.append({
             **g,
             "tasks": len(g["tasks"]),
             "pairings": len(g["pairings"]),
             "pass_rate": (g["passed"] / g["finished"]) if g["finished"] else None,
             "score_median": scores[n // 2] if n else None,
+            "judge_score_median": judge_scores[jn // 2] if jn else None,
         })
     out.sort(key=lambda x: x["latest"] or "", reverse=True)
     return out
@@ -513,6 +518,7 @@ def pairings_payload(
                 "pass_rate": (c["pass_rate"] if c else None),
                 "runs": (c["runs"] if c else 0),
                 "score_mean": (c["score_mean"] if c else None),
+                "low_sample": (c["low_sample"] if c else False),
             }
             for o in orchs for w in workers
             for c in [by_key.get((o, w))]
@@ -591,12 +597,76 @@ def _explainer(kind: str, card: dict[str, Any]) -> str:
     )
 
 
+def _eval_description(d: dict[str, Any], kind: str) -> str:
+    """Pre-made 'how the eval set did' line — composed deterministically
+    from the card's real numbers, so a card never needs a model call to
+    carry a one-sentence summary."""
+    def pct(x: float | None) -> str:
+        return f"{round(x * 100)}%" if x is not None else "—"
+    if kind == "group":
+        bits = [
+            f"{d['finished']}/{d['runs']} runs finished",
+            f"{pct(d['pass_rate'])} mechanical pass",
+        ]
+        if d.get("judged"):
+            jp = pct(d.get("judge_pass_rate"))
+            bits.append(f"{jp} judge-approved over {d['judged']} judged")
+        else:
+            bits.append("unjudged")
+        cost = d.get("cost_usd")
+        if cost is not None:
+            bits.append(f"${cost:.4f} total")
+        pr, jr = d.get("pass_rate"), d.get("judge_pass_rate")
+        note = ""
+        if pr is not None and jr is not None and pr - jr > 0.15:
+            note = " — the judge is stricter than the checks"
+        elif jr is not None and pr is not None and jr - pr > 0.05:
+            note = " — the judge rescues runs the checks reject"
+        return f"{d['tasks']} tasks, {len(d.get('pairings') or [])} pairing(s): " + ", ".join(bits) + note + "."
+    if kind == "pairing":
+        o = str(d.get("orchestrator", "?")).split("/")[-1]
+        w = str(d.get("worker", "?")).split("/")[-1]
+        bits = [
+            f"{d['finished']}/{d['runs']} runs finished",
+            f"{pct(d['pass_rate'])} mechanical pass",
+        ]
+        if d.get("judged"):
+            bits.append(f"judge mean {d.get('judge_score_mean')}")
+        cost = d.get("cost_usd")
+        if cost is not None:
+            bits.append(f"${cost:.4f} total")
+        tail = ""
+        best, worst = d.get("best_type"), d.get("worst_type")
+        if best and worst and best != worst:
+            tail = f" — strongest on {best}, weakest on {worst}"
+        return f"{o} plans, {w} executes, {d['tasks']} tasks: " + ", ".join(bits) + tail + "."
+    return ""
+
+
+def _calibration_map(
+    reports_dir: Path | str, judge_models: set[str],
+) -> dict[str, Any] | None:
+    """Judge slug -> persisted calibration state, minus local paths."""
+    if not judge_models:
+        return None
+    out = {}
+    for slug in sorted(judge_models):
+        s = calibration_status(reports_dir, slug)
+        out[slug] = {
+            "calibrated": s["calibrated"],
+            "kappa": s["kappa"],
+            "verdict_pairs": s["verdict_pairs"],
+        }
+    return out
+
+
 def card_payload(
     store: RunStore,
     kind: str,
     target: str,
     group: str | None = None,
     tasks_dir: Path | str | None = None,
+    reports_dir: Path | str | None = None,
 ) -> dict[str, Any] | None:
     """Share-card data — the engineered summary an X post needs: flagship
     numbers, both verdict axes, the annotation flag, and caveat inputs
@@ -606,6 +676,7 @@ def card_payload(
     """
     from orchestral import SUITE_VERSION
 
+    reports_dir = reports_dir or Path("reports")
     flags = {(a["kind"], a["target"]): a for a in store.annotations()}
     ann = flags.get((kind, target)) or {}
     if kind == "pairing":
@@ -623,9 +694,11 @@ def card_payload(
         lat = [m.latency_ms for m in finished if m.latency_ms]
         types = _task_types(store, tasks_dir)
         per_type: dict[str, list[int]] = {}
+        per_type_judge: dict[str, list[float]] = {}
         failures: dict[str, int] = {}
         judged_scores: list[float] = []
         judge_passed_n = 0
+        judge_models: set[str] = set()
         for m in cell:
             if m.failure_reason:
                 failures[m.failure_reason] = failures.get(m.failure_reason, 0) + 1
@@ -636,8 +709,11 @@ def card_payload(
                 j = (read_json(Path(m.run_dir) / "report.json") or {}).get("judge") or {}
                 if j.get("score") is not None:
                     judged_scores.append(float(j["score"]))
+                    per_type_judge.setdefault(types.get(m.task_id, "?"), []).append(float(j["score"]))
                 if j.get("passed"):
                     judge_passed_n += 1
+                if j.get("model"):
+                    judge_models.add(j["model"])
         judged_n = len(judged_scores)
         pr = passed / len(finished) if finished else None
         ci = _wilson(passed, len(finished))
@@ -658,13 +734,14 @@ def card_payload(
             line = f"{judged_n} runs judged — semantic axis active"
         else:
             line = "mechanical grading only — nothing judged yet"
-        return {
+        payload = {
             "kind": "pairing", "target": target, "suite": SUITE_VERSION,
             "orchestrator": orch, "worker": worker,
             "runs": len(cell), "finished": len(finished), "passed": passed,
             "pass_rate": pr, "pass_ci": ci, "verdict_line": line,
             "score_mean": round(sum(scores) / len(scores), 3) if scores else None,
             "judged": judged_n,
+            "judge_approved": judge_passed_n,
             "judge_pass_rate": judge_passed_n / judged_n if judged_n else None,
             "judge_score_mean": round(sum(judged_scores) / len(judged_scores), 3) if judged_scores else None,
             "cost_usd": round(sum(costs), 4),
@@ -672,13 +749,25 @@ def card_payload(
             "latency_median_ms": round(statistics.median(lat)) if lat else None,
             "tasks": len({m.task_id for m in cell}),
             "type_split": {t: {"passed": p, "finished": n} for t, (p, n) in per_type.items()},
+            "type_rows": [
+                {"type": t, "passed": p, "finished": n,
+                 "pass_rate": round(p / n, 3),
+                 "judge_score": (round(sum(per_type_judge[t]) / len(per_type_judge[t]), 3)
+                                 if per_type_judge.get(t) else None)}
+                for t, (p, n) in sorted(
+                    per_type.items(), key=lambda kv: (-(kv[1][0] / kv[1][1]), kv[0]))
+            ],
             "best_type": best[0] if best else None,
             "worst_type": worst[0] if worst else None,
             "top_failure": top_failure,
             "groups": groups,
+            "judge_models": sorted(judge_models),
+            "judge_calibration": _calibration_map(reports_dir, judge_models),
             "explainer": _explainer("pairing", {"orchestrator": orch, "worker": worker}),
             "flag": ann.get("flag", ""), "note": ann.get("note", ""),
         }
+        payload["description"] = _eval_description(payload, "pairing")
+        return payload
     if kind == "group":
         g = next((x for x in groups_payload(store) if x["group"] == target), None)
         if g is None:
@@ -692,20 +781,39 @@ def card_payload(
         judge_nouls: list[float] = []
         judge_models: set[str] = set()
         judge_passed_n = 0
+        # comparable rows — per-task split is always meaningful; per-pairing
+        # rows matter when the eval set ran more than one pairing
+        per_task: dict[str, list[int]] = {}
+        task_judge: dict[str, list[float]] = {}
+        per_pair: dict[tuple[str, str], list[int]] = {}
+        pair_judge: dict[tuple[str, str], list[float]] = {}
+        pair_jpassed: dict[tuple[str, str], int] = {}
+        pair_cost: dict[tuple[str, str], float] = {}
         for m in metas:
             if m.status != "finished":
                 continue
+            st = per_task.setdefault(m.task_id, [0, 0])
+            st[1] += 1
+            st[0] += 1 if m.passes else 0
+            key = (m.orchestrator, m.worker)
+            ps = per_pair.setdefault(key, [0, 0])
+            ps[1] += 1
+            ps[0] += 1 if m.passes else 0
+            pair_cost[key] = pair_cost.get(key, 0.0) + (m.total_cost_usd or 0.0)
             j = (read_json(Path(m.run_dir) / "report.json") or {}).get("judge") or {}
             if not j or (j.get("score") is None and j.get("noul") is None):
                 continue
             if j.get("score") is not None:
                 judge_scores.append(float(j["score"]))
+                pair_judge.setdefault(key, []).append(float(j["score"]))
+                task_judge.setdefault(m.task_id, []).append(float(j["score"]))
             if j.get("noul") is not None:
                 judge_nouls.append(float(j["noul"]))
             if j.get("model"):
                 judge_models.add(j["model"])
             if j.get("passed"):
                 judge_passed_n += 1
+                pair_jpassed[key] = pair_jpassed.get(key, 0) + 1
         judged_n = len(judge_scores) or len(judge_nouls)
         jp_rate = judge_passed_n / judged_n if judged_n else None
         ci = _wilson(g["passed"], g["finished"])
@@ -725,24 +833,50 @@ def card_payload(
             line = f"{judged_n} runs judged — semantic axis active"
         else:
             line = "mechanical grading only — nothing judged yet"
-        return {
+        payload = {
             "kind": "group", "target": target, "suite": SUITE_VERSION,
             "runs": g["runs"], "finished": g["finished"], "passed": g["passed"],
             "failed": failed_n, "running": running_n,
             "pass_rate": g["pass_rate"], "score_median": g["score_median"],
+            "judge_score_median": g["judge_score_median"],
             "pass_ci": ci, "verdict_line": line,
-            "judged": judged_n, "judge_pass_rate": jp_rate,
+            "judged": judged_n, "judge_approved": judge_passed_n,
+            "judge_pass_rate": jp_rate,
             "judge_score_mean": (round(sum(judge_scores) / len(judge_scores), 3)
                                  if judge_scores else None),
             "judge_noul_mean": (round(sum(judge_nouls) / len(judge_nouls), 3)
                                 if judge_nouls else None),
             "judge_models": sorted(judge_models),
+            "judge_calibration": _calibration_map(reports_dir, judge_models),
             "cost_usd": g["cost_usd"], "tasks": g["tasks"],
             "pairings": [{"orchestrator": o, "worker": w} for o, w in pairings],
+            "pairing_rows": [
+                {"orchestrator": o, "worker": w,
+                 "finished": n, "passed": p,
+                 "pass_rate": round(p / n, 3),
+                 "judged": len(pair_judge.get(key, [])),
+                 "judge_approved": pair_jpassed.get(key, 0),
+                 "judge_score_mean": (round(sum(pair_judge[key]) / len(pair_judge[key]), 3)
+                                      if pair_judge.get(key) else None),
+                 "cost_usd": round(pair_cost[key], 4)}
+                for (o, w), (p, n) in sorted(
+                    per_pair.items(), key=lambda kv: (-(kv[1][0] / kv[1][1]), kv[0][0]))
+                for key in [(o, w)]
+            ],
+            "task_rows": [
+                {"task_id": t, "passed": p, "finished": n,
+                 "pass_rate": round(p / n, 3),
+                 "judge_score": (round(sum(task_judge[t]) / len(task_judge[t]), 3)
+                                 if task_judge.get(t) else None)}
+                for t, (p, n) in sorted(
+                    per_task.items(), key=lambda kv: (-(kv[1][0] / kv[1][1]), kv[0]))
+            ],
             "latest": g["latest"],
             "explainer": _explainer("group", {}),
             "flag": ann.get("flag", ""), "note": ann.get("note", ""),
         }
+        payload["description"] = _eval_description(payload, "group")
+        return payload
     if kind == "run":
         meta = store.get_run(target)
         if meta is None:
@@ -770,6 +904,8 @@ def card_payload(
             "judge_engine": judge.get("engine"), "judge_noul": judge.get("noul"),
             "judge_passed": judge.get("passed"),
             "judge_model": judge.get("model"),
+            "judge_calibration": _calibration_map(
+                reports_dir, {judge["model"]} if judge.get("model") else set()),
             "judge_reasoning": judge_reason[:280],
             "description": description[:600],
             "description_by": description_by,

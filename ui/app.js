@@ -42,6 +42,17 @@ function fmtWhen(iso) {
     " " + d.toLocaleDateString([], { month: "short", day: "numeric" });
 }
 function slug(s) { return String(s || "").split("/").pop(); }
+// Judge-axis caveat text: calibrated judges earn "calibrated" language,
+// everything else stays advisory — provenance over thresholds.
+function calAxis(d) {
+  const cal = d.judge_calibration || {};
+  const bits = Object.entries(cal).map(([m, s]) =>
+    s.calibrated ? `${esc(slug(m))} κ=${Number(s.kappa).toFixed(2)}`
+                 : `${esc(slug(m))} uncalibrated (${s.verdict_pairs} pairs)`);
+  const calibrated = Object.values(cal).some(s => s.calibrated);
+  const axis = calibrated ? "calibrated semantic axis" : "advisory semantic axis";
+  return bits.length ? `${bits.join(" · ")} · ${axis}` : axis;
+}
 
 function stopPolling() {
   if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
@@ -129,7 +140,7 @@ async function viewOverview() {
           <span class="dim">${g.runs} runs ${flagWidget("group", g.group)}</span></div>
         <div class="gc-stats">
           <span>pass <b>${fmtPct(pass)}</b></span>
-          <span>judge <b class="judge-axis">${fmtScore(g.score_median)}</b></span>
+          <span>judge <b class="judge-axis">${fmtScore(g.judge_score_median)}</b></span>
           <span>cost <b>${fmtMoney(g.cost_usd)}</b></span>
         </div>
         <div class="gc-bar">
@@ -478,11 +489,15 @@ async function viewLeaderboard(params) {
   const sorters = {
     pass_rate: (a, b) => (b.pass_rate ?? -1) - (a.pass_rate ?? -1),
     cost_per_pass: (a, b) => (a.cost_per_pass ?? 1e9) - (b.cost_per_pass ?? 1e9),
-    score_mean: (a, b) => (b.score_mean ?? -1) - (a.score_mean ?? -1),
+    judge: (a, b) => (b.judge_score_median ?? -1) - (a.judge_score_median ?? -1),
     cost_total: (a, b) => (a.cost_total ?? 1e9) - (b.cost_total ?? 1e9),
     tasks: (a, b) => (b.tasks_covered ?? 0) - (a.tasks_covered ?? 0),
   };
-  const rows = [...d.rows].sort(sorters[sort] || sorters.pass_rate);
+  // low-n rows never rank: partition them to the tail whatever the sort
+  const rows = [...d.rows].sort((a, b) =>
+    (a.low_sample ? 1 : 0) - (b.low_sample ? 1 : 0)
+    || (sorters[sort] || sorters.pass_rate)(a, b));
+  let rank = 0;
   const mx = d.matrix;
   const maxPass = Math.max(0.01, ...mx.cells.map(c => c.pass_rate ?? 0));
   const cellOf = (o, w) => mx.cells.find(c => c.orchestrator === o && c.worker === w);
@@ -494,7 +509,8 @@ async function viewLeaderboard(params) {
     <div class="filters"><label class="f">sort by
       <select id="lb-sort">${Object.keys(sorters).map(s =>
         `<option value="${s}" ${s === sort ? "selected" : ""}>${s.replace(/_/g, " ")}</option>`).join("")}</select></label>
-      <label class="f">group<input id="lb-group" value="${esc(group)}" placeholder="all groups"></label></div>
+      <label class="f">group<input id="lb-group" value="${esc(group)}" placeholder="all groups"></label>
+      <a class="btn" href="/api/shot.png?route=${encodeURIComponent(`/leaderboard?sort=${sort}${group ? `&group=${encodeURIComponent(group)}` : ""}`)}" download>download png</a></div>
 
     <h2>matrix</h2>
     <div class="panel panel-pad"><table class="data mx">
@@ -506,7 +522,7 @@ async function viewLeaderboard(params) {
           const c = cellOf(o, w);
           const v = c && c.runs ? c.pass_rate : null;
           const a = v == null ? 0 : 0.12 + 0.7 * (v / maxPass);
-          return `<td class="mx-cell" title="${esc(o)} → ${esc(w)}${v != null ? ` · pass ${fmtPct(v)} · n=${c.runs}` : ""}"
+          return `<td class="mx-cell${c && c.low_sample ? " thin" : ""}" title="${esc(o)} → ${esc(w)}${v != null ? ` · pass ${fmtPct(v)} · n=${c.runs}${c.low_sample ? " · low-n" : ""}` : ""}"
             ${v != null ? `data-go="#/card?kind=pairing&target=${encodeURIComponent(o + "|" + w)}"` : ""}>
             ${v != null ? `<span class="mx-fill" style="opacity:${a.toFixed(2)}">${fmtPct(v)}</span>` : `<span class="dim">·</span>`}
           </td>`;
@@ -520,14 +536,14 @@ async function viewLeaderboard(params) {
       <th class="t-num">$/pass</th><th class="t-num">cost</th><th class="t-num">med latency</th>
       <th>why</th><th></th>
     </tr><tbody>` +
-    rows.map((r, i) => `<tr>
-      <td class="dim">${i + 1}</td>
+    rows.map((r, i) => `<tr${r.low_sample ? ' class="row-thin"' : ""}>
+      <td class="dim">${r.low_sample ? "—" : ++rank}</td>
       <td class="mono">${esc(slug(r.orchestrator))} <span class="dim">→</span> ${esc(slug(r.worker))}
         ${r.low_sample ? ' <span class="chip chip-dim">low-n</span>' : ""}</td>
       <td class="t-num">${r.finished ?? 0}/${r.runs ?? 0}</td>
       <td class="t-num mech-axis">${fmtPct(r.pass_rate)}</td>
       <td class="t-num dim">${r.pass_ci ? `${Math.round(r.pass_ci[0] * 100)}–${Math.round(r.pass_ci[1] * 100)}%` : "—"}</td>
-      <td class="t-num judge-axis">${fmtScore(r.score_mean ?? r.score_median)}</td>
+      <td class="t-num judge-axis">${fmtScore(r.judge_score_median)}</td>
       <td class="t-num">${r.cost_per_pass != null ? fmtMoney(r.cost_per_pass) : "—"}</td>
       <td class="t-num">${fmtMoney(r.cost_total)}</td>
       <td class="t-num">${fmtMs(r.duration_median_ms)}</td>
@@ -659,7 +675,7 @@ async function viewCards() {
     <div class="cardlist">${groups.map(g => `
       <a class="panel cl-row" href="#/card?kind=group&target=${encodeURIComponent(g.group)}">
         <span class="name">${esc(g.group)}</span>
-        <span class="dim">${g.runs} runs · pass ${fmtPct(g.pass_rate)} · judge ${fmtScore(g.score_median)}</span>
+        <span class="dim">${g.runs} runs · pass ${fmtPct(g.pass_rate)} · judge ${fmtScore(g.judge_score_median)}</span>
         ${flagWidget("group", g.group)}
       </a>`).join("") || `<div class="empty">no groups</div>`}</div>`;
   bindFlags($view);
@@ -673,69 +689,93 @@ async function viewCard(params) {
   const scopedGroup = kind === "pairing" ? (params.get("group") || "") : "";
   const d = await api(`/api/card?kind=${kind}&target=${encodeURIComponent(target)}${scopedGroup ? `&group=${encodeURIComponent(scopedGroup)}` : ""}`);
   const flag = flagOf(kind, target);
-  const flagCls = flag === "interesting" ? "interesting" : flag === "not" ? "not" : "unflagged";
-  const flagTxt = flag === "interesting" ? "★ interesting" : flag === "not" ? "∅ not interesting" : "unflagged";
+  // unflagged cards derive the verdict chip from the axes themselves —
+  // the chip slot belongs to the finding, not a workflow state
+  let flagCls = flag === "interesting" ? "interesting" : flag === "not" ? "not" : "unflagged";
+  let flagTxt = flag === "interesting" ? "★ interesting" : flag === "not" ? "∅ not interesting" : "";
+  if (!flagTxt) {
+    const pr = d.pass_rate, jp = d.judge_pass_rate;
+    if (d.judged && pr != null && jp != null) {
+      flagTxt = pr - jp > 0.15 ? "judge stricter" : jp - pr > 0.05 ? "judge lenient" : "axes agree";
+      flagCls = pr - jp > 0.15 || jp - pr > 0.05 ? "diverged" : "agree";
+    } else {
+      flagTxt = d.judged ? "judge active" : "mech only";
+      flagCls = "unflagged";
+    }
+  }
 
-  let hero, title, sub, kvs, barPct = 0, caveat;
+  let hero, title, sub, caveat, compare = "", mechPct = 0, judgePct = null;
   const vline = d.verdict_line ? `<div class="xc-vline">${esc(d.verdict_line)}</div>` : "";
+  const heroPair = (mechV, mechSub, judgeV, judgeSub) => `
+    <div class="xc-big mech"><span class="l">mechanical pass</span><span class="v">${mechV}</span><span class="subv">${mechSub}</span></div>
+    <div class="xc-big judge"><span class="l">judge approved</span><span class="v">${judgeV}</span><span class="subv">${judgeSub}</span></div>`;
+  const ciTxt = d.pass_ci ? ` · CI ${Math.round(d.pass_ci[0] * 100)}–${Math.round(d.pass_ci[1] * 100)}` : "";
   if (kind === "group") {
     const pairTxt = (d.pairings || []).slice(0, 3)
       .map(p => `${slug(p.orchestrator)}→${slug(p.worker)}`).join("  ·  ");
     title = esc(d.target);
     sub = `${(d.pairings || []).length} pairing${d.pairings.length === 1 ? "" : "s"} · ${esc(pairTxt)}${d.pairings.length > 3 ? " …" : ""}`;
-    const ci = d.pass_ci ? `<span class="xc-ci">95% CI ${Math.round(d.pass_ci[0] * 100)}–${Math.round(d.pass_ci[1] * 100)}%</span>` : "";
-    const judgeVal = d.judge_noul_mean != null ? Number(d.judge_noul_mean).toFixed(2)
-      : d.judge_pass_rate != null ? fmtPct(d.judge_pass_rate)
-      : fmtScore(d.score_median);
-    const judgeLbl = d.judged ? `judge · ${d.judged} judged` : "judge · unjudged";
-    hero = `
-      <div class="xc-big mech"><span class="v">${fmtPct(d.pass_rate)}</span><span class="l">mechanical pass</span>${ci}</div>
-      <div class="xc-big judge"><span class="v">${judgeVal}</span><span class="l">${judgeLbl}</span></div>`;
-    barPct = (d.pass_rate || 0) * 100;
-    const restBits = [];
-    if (d.failed) restBits.push(`${d.failed} failed`);
-    if (d.running) restBits.push(`${d.running} running`);
-    kvs = [
-      ["runs", `${d.finished}/${d.runs}${restBits.length ? ` (+${restBits.join(", ")})` : ""}`],
-      ["tasks", d.tasks],
-      ["cost", fmtMoney(d.cost_usd)],
-      ["latest", fmtWhen(d.latest)],
-    ];
-    const jm = (d.judge_models || []).map(m => slug(m)).join(", ");
-    caveat = `mechanical = execution truth · judge = ${jm ? `${esc(jm)} · ` : ""}advisory semantic axis · suite ${esc(d.suite)}`;
+    mechPct = (d.pass_rate || 0) * 100;
+    judgePct = d.judge_pass_rate != null ? d.judge_pass_rate * 100 : null;
+    hero = heroPair(
+      `${d.passed}/${d.finished}`,
+      `${fmtPct(d.pass_rate)}${ciTxt} · n=${d.finished}`,
+      d.judged ? `${d.judge_approved}/${d.judged}` : "—",
+      d.judged ? `score ${fmtScore(d.judge_score_mean ?? d.judge_score_median)} · ${d.judged} judged` : "nothing judged yet");
+    caveat = `execution truth · ${calAxis(d)} · ${fmtMoney(d.cost_usd)} · suite ${esc(d.suite)}`;
+    // divergence-first: rows where the axes disagree are the finding
+    const diverge = r => r.judge_score == null ? -1 : Math.abs((r.pass_rate || 0) - r.judge_score);
+    const cmpRows = (head, rows) => `<div class="xc-compare"><table><thead><tr>
+      ${head.map(h => `<th>${h}</th>`).join("")}</tr></thead><tbody>` +
+      rows.slice(0, 5).map(r => `<tr>${r.map(c => `<td>${esc(c)}</td>`).join("")}</tr>`).join("") +
+      (rows.length > 5 ? `<tr class="xc-more"><td colspan="${head.length}">… ${rows.length - 5} more</td></tr>` : "") +
+      `</tbody></table></div>`;
+    if ((d.pairing_rows || []).length > 1) {
+      compare = cmpRows(["pairing", "passed", "mech", "judge", "cost"],
+        d.pairing_rows.map(r => [`${slug(r.orchestrator)} → ${slug(r.worker)}`,
+          `${r.passed}/${r.finished}`, fmtPct(r.pass_rate),
+          r.judged ? `${r.judge_approved}/${r.judged} · ${fmtScore(r.judge_score_mean)}` : "—",
+          fmtMoney(r.cost_usd)]));
+    } else if ((d.task_rows || []).length) {
+      const sorted = [...d.task_rows].sort((a, b) => diverge(b) - diverge(a));
+      compare = cmpRows(["task", "passed", "mech", "judge"],
+        sorted.map(r => [r.task_id, `${r.passed}/${r.finished}`, fmtPct(r.pass_rate),
+          fmtScore(r.judge_score)]));
+    }
   } else if (kind === "pairing") {
     title = `${esc(slug(d.orchestrator))} <span class="arrow">→</span> ${esc(slug(d.worker))}`;
     sub = `${d.tasks} task${d.tasks === 1 ? "" : "s"} · ${esc((d.groups || []).join(", ") || "ungrouped")}`;
-    const ci = d.pass_ci ? `<span class="xc-ci">95% CI ${Math.round(d.pass_ci[0] * 100)}–${Math.round(d.pass_ci[1] * 100)}%</span>` : "";
-    const judgeVal = d.judge_score_mean != null ? fmtScore(d.judge_score_mean)
-      : d.judge_pass_rate != null ? fmtPct(d.judge_pass_rate) : "—";
-    hero = `
-      <div class="xc-big mech"><span class="v">${fmtPct(d.pass_rate)}</span><span class="l">mechanical pass</span>${ci}</div>
-      <div class="xc-big judge"><span class="v">${judgeVal}</span><span class="l">judge${d.judged ? ` · ${d.judged} judged` : " · unjudged"}</span></div>`;
-    barPct = (d.pass_rate || 0) * 100;
-    kvs = [
-      ["runs", `${d.finished}/${d.runs}`],
-      ["cost", fmtMoney(d.cost_usd)],
-      ["best", d.best_type || "—"],
-      ["worst", d.worst_type || "—"],
-      ["top failure", d.top_failure || "—"],
-    ];
-    caveat = `mechanical = execution truth · judge = advisory semantic axis · suite ${esc(d.suite)}`;
+    mechPct = (d.pass_rate || 0) * 100;
+    judgePct = d.judge_pass_rate != null ? d.judge_pass_rate * 100 : null;
+    hero = heroPair(
+      `${d.passed}/${d.finished}`,
+      `${fmtPct(d.pass_rate)}${ciTxt} · n=${d.finished}`,
+      d.judged ? `${d.judge_approved}/${d.judged}` : "—",
+      d.judged ? `score ${fmtScore(d.judge_score_mean)} · ${d.judged} judged` : "nothing judged yet");
+    caveat = `execution truth · ${calAxis(d)} · ${fmtMoney(d.cost_usd)} · suite ${esc(d.suite)}`;
+    if ((d.type_rows || []).length) {
+      const diverge = r => r.judge_score == null ? -1 : Math.abs((r.pass_rate || 0) - r.judge_score);
+      const sorted = [...d.type_rows].sort((a, b) => diverge(b) - diverge(a));
+      compare = `<div class="xc-compare"><table><thead><tr>
+        <th>task type</th><th>passed</th><th>mech</th><th>judge</th>
+        </tr></thead><tbody>` +
+        sorted.slice(0, 5).map(r => `<tr>
+          <td>${esc(r.type)}</td><td>${r.passed}/${r.finished}</td><td>${fmtPct(r.pass_rate)}</td><td>${fmtScore(r.judge_score)}</td>
+        </tr>`).join("") +
+        (sorted.length > 5 ? `<tr class="xc-more"><td colspan="4">… ${sorted.length - 5} more</td></tr>` : "") +
+        `</tbody></table></div>`;
+    }
   } else {
     title = esc(d.task_id);
     sub = `${esc(slug(d.orchestrator))} <span class="arrow">→</span> ${esc(slug(d.worker))}${d.run_group ? ` · ${esc(d.run_group)}` : ""}`;
     const verdict = d.status === "finished" ? (d.passes ? "PASS" : "FAIL") : String(d.status || "—").toUpperCase();
+    mechPct = d.passes ? 100 : 0;
+    const jn = d.judge_noul != null ? Number(d.judge_noul) : null;
+    judgePct = jn != null ? jn * 100 : (d.score != null ? d.score * 100 : null);
     hero = `
-      <div class="xc-big ${d.passes ? "mech" : "miss"}"><span class="v">${verdict}</span><span class="l">mechanical</span></div>
-      <div class="xc-big judge"><span class="v">${d.judge_noul != null ? Number(d.judge_noul).toFixed(2) : fmtScore(d.score)}</span><span class="l">judge ${d.judge_engine === "decisions" ? "noul" : "score"}${d.judge_model ? ` · ${esc(slug(d.judge_model))}` : ""}</span></div>`;
-    barPct = d.passes ? 100 : 0;
-    kvs = [
-      ["cost", fmtMoney(d.cost_usd)],
-      ["latency", fmtMs(d.latency_ms)],
-      ["failure", d.failure_reason || "—"],
-      ["when", fmtWhen(d.started_at)],
-    ];
-    caveat = `mechanical = execution truth · judge ${d.judge_engine === "decisions" ? "= jev decisions engine (calibrated noul)" : "= advisory semantic axis"}${d.judge_model ? ` · ${esc(d.judge_model)}` : ""} · suite ${esc(d.suite)}`;
+      <div class="xc-big ${d.passes ? "mech" : "miss"}"><span class="l">mechanical</span><span class="v">${verdict}</span><span class="subv">${d.failure_reason || fmtScore(d.score) || "—"}</span></div>
+      <div class="xc-big judge"><span class="l">judge ${d.judge_engine === "decisions" ? "noul" : "score"}</span><span class="v">${jn != null ? jn.toFixed(2) : fmtScore(d.score)}</span><span class="subv">${d.judge_model ? esc(slug(d.judge_model)) : "unjudged"}</span></div>`;
+    caveat = `execution truth · ${calAxis(d)} · ${fmtMoney(d.cost_usd)} · ${fmtMs(d.latency_ms)} · suite ${esc(d.suite)}`;
   }
 
   $view.innerHTML = `
@@ -744,12 +784,12 @@ async function viewCard(params) {
         ${flagWidget(kind, target)}
         <a class="btn" href="#/cards">all cards</a>
         <a class="btn" href="${kind === "group" ? `#/runs?group=${encodeURIComponent(target)}` : kind === "pairing" ? "#/leaderboard" : `#/run/${target}`}">inspect →</a>
-        <button class="btn" id="btn-dl">download</button>
+        <a class="btn" href="/api/shot.png?route=${encodeURIComponent(location.hash.slice(1))}" download>download png</a>
         <input id="thread-model" class="thread-model" placeholder="writer model (blank = template)" value="moonshotai/kimi-k2">
         <button class="btn primary" id="btn-thread">draft thread</button>
-        <span class="hint">1200×675 — screenshot the card region for X</span>
+        <span class="hint">1200×675 PNG — ready for X</span>
       </div>
-      <div class="xcard">
+      <div class="xcard${compare ? " with-compare" : ""}" style="--mech:${mechPct}%;--judge:${judgePct != null ? judgePct : 0}%">
         <div class="xc-top">
           <div class="xc-brand"><span class="mark">◆</span><span class="word">orchestral</span><span class="sub">observatory</span></div>
           <div class="xc-suite">suite ${esc(d.suite)} · eval harness</div>
@@ -759,12 +799,10 @@ async function viewCard(params) {
           <span class="xc-flag ${flagCls}">${flagTxt}</span>
         </div>
         ${vline}
-        ${kind === "run" && d.description ? `<div class="xc-desc">${esc(d.description)} <span class="xc-by">— ${esc(d.description_by)}${d.description_model ? ` · ${esc(slug(d.description_model))}` : ""}</span></div>` : ""}
-        <div class="xc-hero">${hero}
-          <div class="xc-side">${kvs.map(([k, v]) => `<div class="xc-kv"><span class="k">${esc(k)}</span><span class="v">${esc(v)}</span></div>`).join("")}</div>
-        </div>
-        <div class="xc-bar"><i class="b-pass" style="width:${barPct}%"></i><i class="b-fail" style="width:${kind === "group" ? ((d.finished - d.passed) / Math.max(d.runs, 1)) * 100 : (d.passes ? 0 : 100)}%"></i><i class="b-rest" style="width:${kind === "group" ? (1 - d.finished / Math.max(d.runs, 1)) * 100 : 0}%"></i></div>
-        ${d.explainer && kind !== "run" ? `<div class="xc-expl">${esc(d.explainer)}</div>` : ""}
+        ${d.description ? `<div class="xc-desc">${esc(d.description)}${kind === "run" && d.description_by ? ` <span class="xc-by">— ${esc(d.description_by)}${d.description_model ? ` · ${esc(slug(d.description_model))}` : ""}</span>` : ""}</div>` : ""}
+        <div class="xc-hero">${hero}</div>
+        ${compare}
+        ${d.explainer && kind !== "run" && !compare ? `<div class="xc-expl">${esc(d.explainer)}</div>` : ""}
         <div class="xc-footer">
           <span class="xc-caveat">${caveat}</span>
           <span>${new Date().toISOString().slice(0, 10)}</span>
@@ -801,18 +839,6 @@ async function viewCard(params) {
     btn.textContent = "draft thread";
   });
 
-  document.getElementById("btn-dl").addEventListener("click", async () => {
-    const css = await (await fetch("/static/app.css")).text();
-    const cardHtml = document.querySelector(".xcard").outerHTML;
-    const html = `<!doctype html><html><head><meta charset="utf-8"><title>orchestral card — ${esc(d.target)}</title><style>${css}</style>
-<style>body{background:#0b0e11;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}</style></head>
-<body>${cardHtml}</body></html>`;
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(new Blob([html], { type: "text/html" }));
-    a.download = `card-${d.kind}-${String(d.target).replace(/[^a-z0-9_-]+/gi, "_")}.html`;
-    a.click();
-    URL.revokeObjectURL(a.href);
-  });
   bindFlags($view);
 }
 
@@ -830,6 +856,7 @@ async function route() {
       a.dataset.route === "/" ? path === "/" : path.startsWith(a.dataset.route));
   });
 
+  delete $view.dataset.ready;
   try {
     if (path === "/") await viewOverview();
     else if (path === "/runs") await viewRuns(params);
@@ -843,6 +870,8 @@ async function route() {
   } catch (e) {
     $view.innerHTML = `<div class="empty">${esc(e.message)}</div>`;
   }
+  // settled marker for headless captures (/api/shot.png)
+  $view.dataset.ready = "1";
 }
 
 window.addEventListener("hashchange", route);

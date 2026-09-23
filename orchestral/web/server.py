@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import mimetypes
 import os
+import re
 import time
 import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -211,6 +212,8 @@ def make_handler(obs: Observatory) -> type[BaseHTTPRequestHandler]:
                 ))
             elif path == "/api/leaderboard":
                 self._json(state.leaderboard_rows(obs.store, self._q1(qs, "sort", "cost_per_pass") or "cost_per_pass"))
+            elif path == "/api/shot.png":
+                self._shot_png(qs)
             elif path == "/api/tasks":
                 self._json(state.task_choices(obs.tasks_dir))
             elif path == "/api/models":
@@ -219,6 +222,31 @@ def make_handler(obs: Observatory) -> type[BaseHTTPRequestHandler]:
                 self._api_run(path, qs)
             else:
                 self._json({"error": f"not found: {path}"}, 404)
+
+        def _shot_png(self, qs: dict[str, list[str]]) -> None:
+            """X-ready PNG of an SPA view — playwright screenshots the live
+            page this same server is hosting. Cards capture just the
+            ``.xcard`` node; other routes capture the settled ``#view``.
+            """
+            route = self._q1(qs, "route", "/") or "/"
+            if not route.startswith("/") or route.startswith("//"):
+                return self._json({"error": "route must be an app path like /card?kind=..."}, 400)
+            try:
+                from orchestral.shots import ScreenshotUnavailable, capture_page
+                element = ".xcard" if route.startswith("/card") else None
+                png = capture_page(
+                    f"http://127.0.0.1:{self.server.server_port}/#{route}",
+                    element=element,
+                )
+            except ScreenshotUnavailable as exc:
+                return self._json({"error": str(exc)}, 503)
+            name = "orchestral-" + re.sub(r"[^a-z0-9]+", "-", route.lower()).strip("-") + ".png"
+            self.send_response(200)
+            self.send_header("Content-Type", "image/png")
+            self.send_header("Content-Disposition", f'attachment; filename="{name}"')
+            self.send_header("Content-Length", str(len(png)))
+            self.end_headers()
+            self.wfile.write(png)
 
         def _api_run(self, path: str, qs: dict[str, list[str]]) -> None:
             parts = path.strip("/").split("/")  # api/run/<id>[/<sub>[/<member>]]

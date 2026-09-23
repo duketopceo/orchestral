@@ -60,6 +60,14 @@ class Provider(Protocol):
         seed: int | None = None,
     ) -> dict[str, Any]: ...
 
+    def decide(
+        self,
+        *,
+        model: str,
+        state: Any,
+        questions: dict[str, Any],
+    ) -> dict[str, Any]: ...
+
     def close(self) -> None: ...
 
 

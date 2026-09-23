@@ -784,11 +784,16 @@ async function viewCard(params) {
   let flagTxt = flag === "interesting" ? "★ interesting" : flag === "not" ? "∅ not interesting" : "";
   if (!flagTxt) {
     const pr = d.pass_rate, jp = d.judge_pass_rate;
-    if (d.judged && pr != null && jp != null) {
+    const judged = kind === "run" ? d.judge_state === "judged" : d.judged;
+    if (judged && kind === "run" && d.judge_passed != null) {
+      flagTxt = d.passes && !d.judge_passed ? "judge stricter"
+        : !d.passes && d.judge_passed ? "judge lenient" : "axes agree";
+      flagCls = flagTxt === "axes agree" ? "agree" : "diverged";
+    } else if (judged && pr != null && jp != null) {
       flagTxt = pr - jp > 0.15 ? "judge stricter" : jp - pr > 0.05 ? "judge lenient" : "axes agree";
       flagCls = pr - jp > 0.15 || jp - pr > 0.05 ? "diverged" : "agree";
     } else {
-      flagTxt = d.judged ? "judge active" : "mech only";
+      flagTxt = judged ? "judge active" : (d.judge_state === "inconclusive" ? "judge inconclusive" : "mech only");
       flagCls = "unflagged";
     }
   }
@@ -798,12 +803,17 @@ async function viewCard(params) {
   const heroPair = (mechV, mechSub, judgeV, judgeSub) => `
     <div class="xc-big mech"><span class="l">mechanical pass</span><span class="v">${mechV}</span><span class="subv">${mechSub}</span></div>
     <div class="xc-big judge"><span class="l">judge approved</span><span class="v">${judgeV}</span><span class="subv">${judgeSub}</span></div>`;
+  const cmpRows = (head, rows) => `<div class="xc-compare"><table><thead><tr>
+    ${head.map(h => `<th>${h}</th>`).join("")}</tr></thead><tbody>` +
+    rows.slice(0, 5).map(r => `<tr${r.self ? ' class="xc-self"' : ""}>${r.cells.map(c => `<td>${c}</td>`).join("")}</tr>`).join("") +
+    (rows.length > 5 ? `<tr class="xc-more"><td colspan="${head.length}">… ${rows.length - 5} more</td></tr>` : "") +
+    `</tbody></table></div>`;
   const ciTxt = d.pass_ci ? ` · CI ${Math.round(d.pass_ci[0] * 100)}–${Math.round(d.pass_ci[1] * 100)}` : "";
   if (kind === "group") {
     const pairTxt = (d.pairings || []).slice(0, 3)
       .map(p => `${slug(p.orchestrator)}→${slug(p.worker)}`).join("  ·  ");
-    title = esc(d.target);
-    sub = `${(d.pairings || []).length} pairing${d.pairings.length === 1 ? "" : "s"} · ${esc(pairTxt)}${d.pairings.length > 3 ? " …" : ""}`;
+    title = esc(d.group_label || d.target);
+    sub = `${d.group_label ? esc(d.target) + " · " : ""}${(d.pairings || []).length} pairing${d.pairings.length === 1 ? "" : "s"} · ${esc(pairTxt)}${d.pairings.length > 3 ? " …" : ""}`;
     mechPct = (d.pass_rate || 0) * 100;
     judgePct = d.judge_pass_rate != null ? d.judge_pass_rate * 100 : null;
     hero = heroPair(
@@ -814,22 +824,17 @@ async function viewCard(params) {
     caveat = `execution truth · ${calAxis(d)} · ${fmtMoney(d.cost_usd)} · suite ${esc(d.suite)}`;
     // divergence-first: rows where the axes disagree are the finding
     const diverge = r => r.judge_score == null ? -1 : Math.abs((r.pass_rate || 0) - r.judge_score);
-    const cmpRows = (head, rows) => `<div class="xc-compare"><table><thead><tr>
-      ${head.map(h => `<th>${h}</th>`).join("")}</tr></thead><tbody>` +
-      rows.slice(0, 5).map(r => `<tr>${r.map(c => `<td>${esc(c)}</td>`).join("")}</tr>`).join("") +
-      (rows.length > 5 ? `<tr class="xc-more"><td colspan="${head.length}">… ${rows.length - 5} more</td></tr>` : "") +
-      `</tbody></table></div>`;
     if ((d.pairing_rows || []).length > 1) {
       compare = cmpRows(["pairing", "passed", "mech", "judge", "cost"],
-        d.pairing_rows.map(r => [`${slug(r.orchestrator)} → ${slug(r.worker)}`,
+        d.pairing_rows.map(r => ({ cells: [esc(`${slug(r.orchestrator)} → ${slug(r.worker)}`),
           `${r.passed}/${r.finished}`, fmtPct(r.pass_rate),
           r.judged ? `${r.judge_approved}/${r.judged} · ${fmtScore(r.judge_score_mean)}` : "—",
-          fmtMoney(r.cost_usd)]));
+          fmtMoney(r.cost_usd)] })));
     } else if ((d.task_rows || []).length) {
       const sorted = [...d.task_rows].sort((a, b) => diverge(b) - diverge(a));
       compare = cmpRows(["task", "passed", "mech", "judge"],
-        sorted.map(r => [r.task_id, `${r.passed}/${r.finished}`, fmtPct(r.pass_rate),
-          fmtScore(r.judge_score)]));
+        sorted.map(r => ({ cells: [esc(r.task_title || r.task_id), `${r.passed}/${r.finished}`, fmtPct(r.pass_rate),
+          fmtScore(r.judge_score)] })));
     }
   } else if (kind === "pairing") {
     title = `${esc(slug(d.orchestrator))} <span class="arrow">→</span> ${esc(slug(d.worker))}`;
@@ -845,26 +850,28 @@ async function viewCard(params) {
     if ((d.type_rows || []).length) {
       const diverge = r => r.judge_score == null ? -1 : Math.abs((r.pass_rate || 0) - r.judge_score);
       const sorted = [...d.type_rows].sort((a, b) => diverge(b) - diverge(a));
-      compare = `<div class="xc-compare"><table><thead><tr>
-        <th>task type</th><th>passed</th><th>mech</th><th>judge</th>
-        </tr></thead><tbody>` +
-        sorted.slice(0, 5).map(r => `<tr>
-          <td>${esc(r.type)}</td><td>${r.passed}/${r.finished}</td><td>${fmtPct(r.pass_rate)}</td><td>${fmtScore(r.judge_score)}</td>
-        </tr>`).join("") +
-        (sorted.length > 5 ? `<tr class="xc-more"><td colspan="4">… ${sorted.length - 5} more</td></tr>` : "") +
-        `</tbody></table></div>`;
+      compare = cmpRows(["task type", "passed", "mech", "judge"],
+        sorted.map(r => ({ cells: [esc(r.type), `${r.passed}/${r.finished}`, fmtPct(r.pass_rate), fmtScore(r.judge_score)] })));
     }
   } else {
-    title = esc(d.task_id);
-    sub = `${esc(slug(d.orchestrator))} <span class="arrow">→</span> ${esc(slug(d.worker))}${d.run_group ? ` · ${esc(d.run_group)}` : ""}`;
+    title = esc(d.task_title || d.task_id);
+    sub = `${d.task_title ? esc(d.task_id) + " · " : ""}${esc(slug(d.orchestrator))} <span class="arrow">→</span> ${esc(slug(d.worker))}${d.run_group ? ` · ${esc(d.group_label || d.run_group)}` : ""}`;
     const verdict = d.status === "finished" ? (d.passes ? "PASS" : "FAIL") : String(d.status || "—").toUpperCase();
     mechPct = d.passes ? 100 : 0;
     const jn = d.judge_noul != null ? Number(d.judge_noul) : null;
-    judgePct = jn != null ? jn * 100 : (d.score != null ? d.score * 100 : null);
+    judgePct = jn != null ? jn * 100 : null;
+    const jstateTxt = { inconclusive: "inconclusive", not_judgeable: "not judgeable" }[d.judge_state] || "not judged";
     hero = `
       <div class="xc-big ${d.passes ? "mech" : "miss"}"><span class="l">mechanical</span><span class="v">${verdict}</span><span class="subv">${d.failure_reason || fmtScore(d.score) || "—"}</span></div>
-      <div class="xc-big judge"><span class="l">judge ${d.judge_engine === "decisions" ? "noul" : "score"}</span><span class="v">${jn != null ? jn.toFixed(2) : fmtScore(d.score)}</span><span class="subv">${d.judge_model ? esc(slug(d.judge_model)) : "unjudged"}</span></div>`;
+      <div class="xc-big judge"><span class="l">judge ${d.judge_engine === "decisions" ? "noul" : "score"}</span><span class="v">${jn != null ? jn.toFixed(2) : "—"}</span><span class="subv">${d.judge_model ? esc(slug(d.judge_model)) : jstateTxt}${d.judge_state_reason ? ` — ${esc(d.judge_state_reason)}` : ""}</span></div>`;
     caveat = `execution truth · ${calAxis(d)} · ${fmtMoney(d.cost_usd)} · ${fmtMs(d.latency_ms)} · suite ${esc(d.suite)}`;
+    if ((d.pair_rows || []).length > 1) {
+      compare = cmpRows(["pairing on this task", "runs", "mech", "judge"],
+        d.pair_rows.map(r => ({ self: r.self, cells: [
+          esc(`${slug(r.orchestrator)} → ${slug(r.worker)}`),
+          `${r.passed}/${r.finished} of ${r.n}`,
+          fmtPct(r.pass_rate), fmtScore(r.judge_score)] })));
+    }
   }
 
   $view.innerHTML = `

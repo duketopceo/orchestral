@@ -1017,9 +1017,34 @@ def card_payload(
             description, description_by = plan_summary, "orchestrator"
         else:
             description, description_by = "", ""
+        tm = _task_meta(store, tasks_dir).get(meta.task_id) or {}
+        gm = _groups_meta(groups_file).get(meta.run_group or "") or {}
+        jstate, jstate_reason = judge_state(meta)
+        # comparables: every pairing that has attempted this same task —
+        # the run's numbers mean more next to how others did on it
+        sib: dict[tuple[str, str], list] = {}
+        for r in store.list_runs(task_id=meta.task_id):
+            sib.setdefault((r.orchestrator, r.worker), []).append(r)
+        pair_rows = []
+        for (o, w), rs in sorted(sib.items()):
+            fin = [r for r in rs if r.status == "finished"]
+            js = [r.judge_score for r in fin if r.judge_score is not None]
+            pair_rows.append({
+                "orchestrator": o, "worker": w,
+                "n": len(rs), "finished": len(fin),
+                "passed": sum(1 for r in fin if r.passes),
+                "pass_rate": (sum(1 for r in fin if r.passes) / len(fin)) if fin else None,
+                "judge_score": mean(js) if js else None,
+                "cost_usd": sum(r.total_cost_usd or 0 for r in rs),
+                "self": (o, w) == (meta.orchestrator, meta.worker),
+            })
+        pair_rows.sort(key=lambda x: (-(x["pass_rate"] or -1), x["orchestrator"]))
         return {
             "kind": "run", "target": target, "suite": SUITE_VERSION,
             "task_id": meta.task_id, "orchestrator": meta.orchestrator,
+            "task_title": tm.get("title") or "", "task_blurb": tm.get("blurb") or "",
+            "group_label": gm.get("label") or "",
+            "judge_state": jstate, "judge_state_reason": jstate_reason,
             "worker": meta.worker, "status": meta.status,
             "passes": meta.passes, "score": meta.score,
             "cost_usd": meta.total_cost_usd, "latency_ms": meta.latency_ms,
@@ -1039,6 +1064,7 @@ def card_payload(
             "verdict_line": _verdict_line(
                 bool(meta.passes),
                 judge.get("passed") if judge else None, meta.status),
+            "pair_rows": pair_rows,
             "explainer": _explainer("run", {}),
             "flag": ann.get("flag", ""), "note": ann.get("note", ""),
         }

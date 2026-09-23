@@ -634,3 +634,6 @@ tr.row-thin td { opacity: .55; }
 .sc-pt.thin { fill-opacity: .3; stroke-dasharray: 2 2; stroke: var(--pass); }
 .sc-pt:hover { fill-opacity: 1; }
 .sc-pt-lab { fill: var(--text-3); font: 9px var(--mono); pointer-events: none; }
+
+.xc-self td { color: var(--accent); font-weight: 600; }
+.xc-self td:first-child::before { content: "▸ "; }

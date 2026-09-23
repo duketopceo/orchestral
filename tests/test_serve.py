@@ -268,6 +268,35 @@ class TestPureLayer(unittest.TestCase):
             ok.write_text("groups:\n  g:\n    label: L\n    extra: dropped\n")
             self.assertEqual(load_groups(ok), {"g": {"label": "L"}})
 
+    def test_task_matrix_payload(self):
+        """The tasks × pairings heatmap carries pass rate, n, judge mean,
+        and task metadata; cells are absent (not zero) when unattempted."""
+        with tempfile.TemporaryDirectory() as tmp:
+            _seed_run(tmp, run_group="g1")
+            store = RunStore(tmp)
+            m = state.task_matrix_payload(store)
+            self.assertEqual(len(m["tasks"]), 1)
+            self.assertEqual(len(m["pairings"]), 1)
+            t = m["tasks"][0]
+            self.assertEqual(t["task_id"], "t-task")
+            pair = next(iter(t["cells"].values()))
+            self.assertEqual(pair["n"], 1)
+            self.assertEqual(pair["pass_rate"], 1.0)
+            self.assertIsNone(pair["judge_mean"])
+
+    def test_pairing_aggregate_p90_and_judged_count(self):
+        from orchestral.stats import pairing_leaderboard
+        with tempfile.TemporaryDirectory() as tmp:
+            _seed_run(tmp, run_group="g1")
+            store = RunStore(tmp)
+            rid = store.list_runs()[0].run_id
+            meta = store.get_run(rid)
+            meta.judge_score = 0.7
+            store.update_meta(meta)
+            row = pairing_leaderboard(store.list_runs())[0]
+            self.assertEqual(row.judged, 1)
+            self.assertIn("duration_p90_ms", row.to_dict())
+
     def test_card_payload_pairing_description_and_type_rows(self):
         with tempfile.TemporaryDirectory() as tmp:
             _seed_run(tmp, run_group="g1")

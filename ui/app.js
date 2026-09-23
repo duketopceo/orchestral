@@ -121,7 +121,7 @@ setInterval(refreshJobs, 5000);
 /* ---------- views ---------- */
 
 async function viewOverview() {
-  const ov = await api("/api/overview");
+  const [ov, mx] = await Promise.all([api("/api/overview"), api("/api/matrix")]);
   await loadFlags();
   const live = (ov.jobs || []).filter(j => j.status === "running");
   const groups = ov.groups || [];
@@ -164,10 +164,35 @@ async function viewOverview() {
         <span class="tx-bar"><i style="width:${(n / taxMax) * 100}%"></i></span>
         <span class="tx-n">${n}</span></div>`).join("")}</div>` : ""}
 
+    ${(mx.tasks || []).length ? `<h2>Tasks × pairings</h2>
+    <p class="page-sub">Mechanical pass rate per cell. Click a cell to drill into its runs — a dash means the pairing never attempted that task.</p>
+    <div class="panel heat-wrap"><table class="data heat">
+      <tr><th class="heat-task">task</th>${mx.pairings.map(p =>
+        `<th class="heat-col"><div>${esc(slug(p.split(" → ")[0]))}</div><div class="dim">→ ${esc(slug(p.split(" → ")[1] || ""))}</div></th>`).join("")}</tr>
+      ${mx.tasks.map(t => `<tr>
+        <th class="heat-task"><a href="#/runs?task=${encodeURIComponent(t.task_id)}">${esc(t.task_title || t.task_id)}</a>
+          <div class="dim sm">${esc(t.task_id)}${t.task_type ? ` · ${esc(t.task_type)}` : ""}</div></th>
+        ${mx.pairings.map(p => {
+          const c = t.cells[p];
+          if (!c) return `<td class="heat-cell"><span class="dim">·</span></td>`;
+          const v = c.pass_rate;
+          const a = v == null ? 0.06 : 0.08 + 0.72 * v;
+          const jm = c.judge_mean != null ? ` · judge ${fmtScore(c.judge_mean)}` : "";
+          return `<td class="heat-cell${c.n < 3 ? " thin" : ""}" data-go="#/runs?task=${encodeURIComponent(t.task_id)}"
+            title="${esc(t.task_id)} · ${esc(p)} — pass ${v == null ? "—" : fmtPct(v)} over ${c.n} run${c.n === 1 ? "" : "s"}${jm}${c.n < 3 ? " · low-n" : ""}">
+            <span class="heat-fill" style="opacity:${a.toFixed(2)}">${v == null ? "—" : fmtPct(v)}</span>
+          </td>`;
+        }).join("")}</tr>`).join("")}
+    </table></div>` : ""}
+
     <h2>Recent runs</h2>
     <div class="panel"><table class="data">${RUN_HEAD}
       <tbody>${(ov.recent || []).map(runRow).join("") || `<tr><td colspan="9" class="empty">no runs</td></tr>`}</tbody>
     </table></div>`;
+  for (const td of $view.querySelectorAll("td.heat-cell[data-go]")) {
+    td.style.cursor = "pointer";
+    td.addEventListener("click", () => { location.hash = td.dataset.go; });
+  }
   bindFlags($view);
 }
 
@@ -493,6 +518,51 @@ async function renderCompare(a, b) {
 
 /* ----- leaderboard ----- */
 
+function lbScatter(rows) {
+  const pts = rows.filter(r => r.cost_per_pass != null && r.pass_rate != null);
+  if (pts.length < 2) return `<div class="empty">need ≥2 metered pairings to plot cost vs outcome</div>`;
+  const W = 720, H = 260, padL = 40, padR = 14, padT = 16, padB = 30;
+  const xs = pts.map(r => r.cost_per_pass);
+  const lo = Math.min(...xs), hi = Math.max(...xs);
+  const llo = Math.log10(lo), lhi = Math.log10(hi);
+  const px = v => padL + ((Math.log10(v) - llo) / ((lhi - llo) || 1)) * (W - padL - padR);
+  const py = v => padT + (1 - v) * (H - padT - padB);
+  const rMax = Math.max(...pts.map(r => r.finished || 1));
+  return `<svg class="scatter" viewBox="0 0 ${W} ${H}" role="img"
+    aria-label="cost per pass versus pass rate, one dot per pairing">
+    <line x1="${padL}" y1="${H - padB}" x2="${W - padR}" y2="${H - padB}" class="sc-axis"/>
+    <line x1="${padL}" y1="${padT}" x2="${padL}" y2="${H - padB}" class="sc-axis"/>
+    ${[0, 0.5, 1].map(v => `
+      <line x1="${padL}" y1="${py(v)}" x2="${W - padR}" y2="${py(v)}" class="sc-grid"/>
+      <text x="${padL - 6}" y="${py(v) + 3}" class="sc-lab" text-anchor="end">${v * 100}%</text>`).join("")}
+    <text x="${(W + padL - padR) / 2}" y="${H - 6}" class="sc-lab" text-anchor="middle">cost per pass (log) →</text>
+    ${(() => {
+      const placed = [];
+      const LW = 5.7; // approx char width at 9px mono
+      return pts.map(r => {
+        const rr = 4 + 8 * Math.sqrt((r.finished || 1) / rMax);
+        const short = s => slug(s).replace(/-\d{2,4}$/, "").slice(0, 14);
+        const label = `${short(r.orchestrator)}→${short(r.worker)}`;
+        const cx = px(r.cost_per_pass), cy = py(r.pass_rate);
+        const lx = Math.min(Math.max(cx, padL + label.length * LW / 2), W - padR - label.length * LW / 2);
+        let ty = cy - rr - 4;
+        // nudge down until the label box clears everything placed so far
+        for (let tries = 0; tries < 8; tries++) {
+          const box = { x0: lx - label.length * LW / 2, x1: lx + label.length * LW / 2, y0: ty - 9, y1: ty + 2 };
+          const hit = placed.some(p => box.x0 < p.x1 && box.x1 > p.x0 && box.y0 < p.y1 && box.y1 > p.y0);
+          if (!hit) { placed.push(box); break; }
+          ty += 12;
+        }
+        return `<circle cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="${rr.toFixed(1)}"
+          class="sc-pt${r.low_sample ? " thin" : ""}"
+          data-go="#/card?kind=pairing&target=${encodeURIComponent(r.orchestrator + "|" + r.worker)}">
+          <title>${esc(r.orchestrator)} → ${esc(r.worker)} — pass ${fmtPct(r.pass_rate)}, ${fmtMoney(r.cost_per_pass)}/pass, n=${r.finished}</title></circle>
+        <text x="${lx.toFixed(1)}" y="${ty.toFixed(1)}" class="sc-pt-lab" text-anchor="middle">${esc(label)}</text>`;
+      }).join("");
+    })()}
+  </svg>`;
+}
+
 async function viewLeaderboard(params) {
   const group = params.get("group") || "";
   const sort = params.get("sort") || "pass_rate";
@@ -541,11 +611,16 @@ async function viewLeaderboard(params) {
         }).join("")}</tr>`).join("")}
     </table></div>
 
+    <h2>cost vs outcome</h2>
+    <p class="page-sub">One dot per pairing — upper-left is the sweet spot (cheap and reliable). Dot size = finished runs; faded dots are low-n. Unmetered pairings can't plot here.</p>
+    <div class="panel panel-pad">${lbScatter(rows)}</div>
+
     <h2>pairings</h2>
     <div class="panel"><table class="data"><tr>
       <th>#</th><th>pairing</th><th class="t-num">runs</th>
       <th class="t-num">pass</th><th class="t-num">95% CI</th><th class="t-num">judge</th>
-      <th class="t-num">$/pass</th><th class="t-num">cost</th><th class="t-num">med latency</th>
+      <th class="t-num">fail</th><th class="t-num">$/pass</th><th class="t-num">cost</th>
+      <th class="t-num">p50</th><th class="t-num">p90</th>
       <th>why</th><th></th>
     </tr><tbody>` +
     rows.map((r, i) => `<tr${r.low_sample ? ' class="row-thin"' : ""}>
@@ -555,10 +630,12 @@ async function viewLeaderboard(params) {
       <td class="t-num">${r.finished ?? 0}/${r.runs ?? 0}</td>
       <td class="t-num mech-axis">${fmtPct(r.pass_rate)}</td>
       <td class="t-num dim">${r.pass_ci ? `${Math.round(r.pass_ci[0] * 100)}–${Math.round(r.pass_ci[1] * 100)}%` : "—"}</td>
-      <td class="t-num judge-axis">${fmtScore(r.judge_score_median)}</td>
+      <td class="t-num judge-axis" title="${r.judged ? `${r.judged} judged run${r.judged === 1 ? "" : "s"}` : "no judged runs"}">${fmtScore(r.judge_score_median)}${r.judged ? `<span class="dim sm">·${r.judged}</span>` : ""}</td>
+      <td class="t-num${(r.failure_rate ?? 0) > 0.15 ? ' e' : ''}">${r.failure_rate != null ? fmtPct(r.failure_rate) : "—"}</td>
       <td class="t-num">${r.cost_per_pass != null ? fmtMoney(r.cost_per_pass) : "—"}</td>
       <td class="t-num">${fmtMoney(r.cost_total)}</td>
       <td class="t-num">${fmtMs(r.duration_median_ms)}</td>
+      <td class="t-num">${fmtMs(r.duration_p90_ms)}</td>
       <td class="dim why-cell">${esc(r.why || "—")}</td>
       <td><a class="btn" href="#/card?kind=pairing&target=${encodeURIComponent(r.orchestrator + "|" + r.worker)}${group ? `&group=${encodeURIComponent(group)}` : ""}">card</a>
         ${flagWidget("pairing", `${r.orchestrator}|${r.worker}`)}</td>
@@ -571,9 +648,9 @@ async function viewLeaderboard(params) {
     const g = e.target.value.trim();
     location.hash = `#/leaderboard?sort=${sort}${g ? `&group=${encodeURIComponent(g)}` : ""}`;
   });
-  for (const td of $view.querySelectorAll("td.mx-cell[data-go]")) {
-    td.style.cursor = "pointer";
-    td.addEventListener("click", () => { location.hash = td.dataset.go; });
+  for (const el of $view.querySelectorAll("[data-go]")) {
+    el.style.cursor = "pointer";
+    el.addEventListener("click", () => { location.hash = el.dataset.go; });
   }
   await loadFlags();
   bindFlags($view);

@@ -608,3 +608,29 @@ tr.row-thin td { opacity: .55; }
   .ph-seg { flex: 1 1 45%; border-bottom: 1px solid var(--line); }
   #main { padding: 14px; }
 }
+
+/* tasks × pairings heatmap */
+.heat-wrap { overflow-x: auto; }
+.heat th, .heat td { border-bottom: 1px solid var(--line); }
+.heat-task { text-align: left; font-weight: 500; padding: 8px 12px 8px 14px; white-space: nowrap; }
+.heat-task a { color: var(--text); }
+.heat-task .sm { font: 10px var(--mono); font-weight: 400; }
+.heat-col { font: 10px var(--mono); font-weight: 500; color: var(--text-2); padding: 6px 8px; text-align: center; vertical-align: bottom; min-width: 92px; }
+.heat-cell { padding: 3px; text-align: center; }
+.heat-cell .heat-fill {
+  display: block; padding: 7px 4px; border-radius: 3px;
+  background: var(--pass); color: #06201c;
+  font: 11px var(--mono); font-weight: 600;
+}
+.heat-cell.thin .heat-fill { background: var(--warn); color: #241a02; }
+.heat-cell:hover .heat-fill { outline: 1px solid var(--text-2); }
+
+/* leaderboard scatter */
+.scatter { width: 100%; height: auto; display: block; }
+.sc-axis { stroke: var(--line-bright); stroke-width: 1; }
+.sc-grid { stroke: var(--line); stroke-width: 1; stroke-dasharray: 2 4; }
+.sc-lab { fill: var(--text-3); font: 10px var(--mono); }
+.sc-pt { fill: var(--pass); fill-opacity: .8; stroke: var(--bg); stroke-width: 1.5; }
+.sc-pt.thin { fill-opacity: .3; stroke-dasharray: 2 2; stroke: var(--pass); }
+.sc-pt:hover { fill-opacity: 1; }
+.sc-pt-lab { fill: var(--text-3); font: 9px var(--mono); pointer-events: none; }

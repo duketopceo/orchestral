@@ -168,9 +168,11 @@ class PairingAggregate:
     score_median: float | None = None
     score_mean: float | None = None
     judge_score_median: float | None = None
+    judged: int = 0
     cost_median: float = 0.0
     cost_total: float = 0.0
     duration_median_ms: float = 0.0
+    duration_p90_ms: float = 0.0
     failure_rate: float | None = None
     cost_per_pass: float | None = None
     failures: dict[str, int] = field(default_factory=dict)
@@ -188,9 +190,11 @@ class PairingAggregate:
             "score_median": self.score_median,
             "score_mean": self.score_mean,
             "judge_score_median": self.judge_score_median,
+            "judged": self.judged,
             "cost_median": self.cost_median,
             "cost_total": self.cost_total,
             "duration_median_ms": self.duration_median_ms,
+            "duration_p90_ms": self.duration_p90_ms,
             "failure_rate": self.failure_rate,
             "cost_per_pass": self.cost_per_pass,
             "failures": self.failures,
@@ -247,9 +251,11 @@ def pairing_leaderboard(
             score_median=statistics.median(scored) if scored else None,
             score_mean=mean(scored) if scored else None,
             judge_score_median=statistics.median(judged) if judged else None,
+            judged=len(judged),
             cost_median=statistics.median(costs) if costs else 0.0,
             cost_total=cost_total,
             duration_median_ms=statistics.median(latencies) if latencies else 0.0,
+            duration_p90_ms=percentile(latencies, 90) if latencies else 0.0,
             failure_rate=failed_n / n if n else None,
             cost_per_pass=(
                 None

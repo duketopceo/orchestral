@@ -31,7 +31,7 @@ from orchestral.config import (
 )
 from orchestral.judge import DEFAULT_JUDGE
 from orchestral.runner import Runner
-from orchestral.stats import aggregate, pairing_leaderboard
+from orchestral.stats import aggregate, mean, pairing_leaderboard
 from orchestral.storage import RunStore
 from orchestral.tui.state import (
     Job,
@@ -508,6 +508,43 @@ def groups_payload(
         })
     out.sort(key=lambda x: x["latest"] or "", reverse=True)
     return out
+
+
+def task_matrix_payload(
+    store: RunStore, tasks_dir: Path | str | None = None
+) -> dict[str, Any]:
+    """Tasks × pairings heatmap: pass rate + judge mean per cell over
+    finished runs. Cells with no runs are simply absent — sparse is honest."""
+    runs = store.list_runs(limit=None)
+    tmeta = _task_meta(store, tasks_dir)
+    cells: dict[tuple[str, str], list] = {}
+    for r in runs:
+        cells.setdefault((r.task_id, f"{r.orchestrator} → {r.worker}"), []).append(r)
+    pairings = sorted({p for _, p in cells})
+    rows = []
+    for task_id in sorted({t for t, _ in cells}):
+        tm = tmeta.get(task_id) or {}
+        row = {
+            "task_id": task_id,
+            "task_title": tm.get("title") or "",
+            "task_type": tm.get("type") or "",
+            "cells": {},
+        }
+        for p in pairings:
+            cell = cells.get((task_id, p))
+            if not cell:
+                continue
+            fin = [r for r in cell if r.status == "finished"]
+            judged = [r.judge_score for r in fin if r.judge_score is not None]
+            row["cells"][p] = {
+                "n": len(cell),
+                "pass_rate": (
+                    sum(1 for r in fin if r.passes) / len(fin) if fin else None
+                ),
+                "judge_mean": mean(judged) if judged else None,
+            }
+        rows.append(row)
+    return {"pairings": pairings, "tasks": rows}
 
 
 def _task_meta(store: RunStore, tasks_dir: Path | str | None) -> dict[str, dict[str, str]]:

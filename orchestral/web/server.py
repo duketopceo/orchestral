@@ -192,6 +192,8 @@ def make_handler(obs: Observatory) -> type[BaseHTTPRequestHandler]:
                 ))
             elif path == "/api/groups":
                 self._json(state.groups_payload(obs.store, obs.groups_file))
+            elif path == "/api/matrix":
+                self._json(state.task_matrix_payload(obs.store, obs.tasks_dir))
             elif path == "/api/compare":
                 a, b = self._q1(qs, "a", "") or "", self._q1(qs, "b", "") or ""
                 if not a or not b:

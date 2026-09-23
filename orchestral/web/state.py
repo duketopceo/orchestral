@@ -315,6 +315,7 @@ def runs_payload(
     task: str | None = None,
     status: str | None = None,
     q: str = "",
+    tasks_dir: Path | str | None = None,
 ) -> list[dict[str, Any]]:
     """Run rows for the filterable table. `status` accepts a lifecycle status
     or `passed`/`failed` (verdict filters)."""
@@ -327,7 +328,14 @@ def runs_payload(
         rows = [r for r in rows if r.status == "failed" or (r.status == "finished" and not r.passes)]
     elif status:
         rows = [r for r in rows if r.status == status]
-    return [r.to_dict() for r in rows]
+    tmeta = _task_meta(store, tasks_dir)
+    out = []
+    for r in rows:
+        d = r.to_dict()
+        tm = tmeta.get(r.task_id) or {}
+        d["task_title"] = tm.get("title") or ""
+        out.append(d)
+    return out
 
 
 _TIMELINE_PHASE_ORDER = ("plan", "delegate", "assemble", "validate", "judge", "review")
@@ -384,15 +392,26 @@ def artifact_info(run_dir: Path) -> dict[str, Any] | None:
     return info
 
 
-def run_detail_payload(store: RunStore, run_id: str) -> dict[str, Any] | None:
+def run_detail_payload(
+    store: RunStore,
+    run_id: str,
+    tasks_dir: Path | str | None = None,
+    groups_file: Path | str | None = None,
+) -> dict[str, Any] | None:
     """Everything the run detail view needs in one fetch."""
     meta = store.get_run(run_id)
     if meta is None:
         return None
     run_dir = Path(meta.run_dir)
     plan_path = run_dir / "plan.md"
+    tm = _task_meta(store, tasks_dir).get(meta.task_id) or {}
+    gm = _groups_meta(groups_file).get(meta.run_group or "") or {}
     return {
         "meta": meta.to_dict(),
+        "task_title": tm.get("title") or "",
+        "task_blurb": tm.get("blurb") or "",
+        "group_label": gm.get("label") or "",
+        "group_description": gm.get("description") or "",
         "calls": store.calls_for_run(run_id),
         "report": read_json(run_dir / "report.json"),
         "review": read_json(run_dir / "review.json"),
@@ -403,7 +422,9 @@ def run_detail_payload(store: RunStore, run_id: str) -> dict[str, Any] | None:
     }
 
 
-def groups_payload(store: RunStore) -> list[dict[str, Any]]:
+def groups_payload(
+    store: RunStore, groups_file: Path | str | None = None
+) -> list[dict[str, Any]]:
     """One summary row per run_group — the unit comparisons happen on."""
     groups: dict[str, dict[str, Any]] = {}
     for r in store.list_runs(limit=None):
@@ -427,12 +448,16 @@ def groups_payload(store: RunStore) -> list[dict[str, Any]]:
         if g["latest"] is None or (r.started_at or "") > (g["latest"] or ""):
             g["latest"] = r.started_at
     out = []
+    meta = _groups_meta(groups_file)
     for g in groups.values():
         scores = sorted(g.pop("scores"))
         judge_scores = sorted(g.pop("judge_scores"))
         n, jn = len(scores), len(judge_scores)
+        gm = meta.get(g["group"]) or {}
         out.append({
             **g,
+            "label": gm.get("label") or "",
+            "description": gm.get("description") or "",
             "tasks": len(g["tasks"]),
             "pairings": len(g["pairings"]),
             "pass_rate": (g["passed"] / g["finished"]) if g["finished"] else None,
@@ -443,20 +468,34 @@ def groups_payload(store: RunStore) -> list[dict[str, Any]]:
     return out
 
 
-def _task_types(store: RunStore, tasks_dir: Path | str | None) -> dict[str, str]:
-    """task_id → task type, resolved from specs on disk. Missing specs map to
-    '?' so the pairing breakdown never crashes on a pruned task."""
+def _task_meta(store: RunStore, tasks_dir: Path | str | None) -> dict[str, dict[str, str]]:
+    """task_id → {type, title, blurb}, resolved from specs on disk. Missing
+    specs are skipped so the pairing breakdown never crashes on a pruned task."""
     if not tasks_dir:
         return {}
     from orchestral.config import load_task
-    out: dict[str, str] = {}
+    out: dict[str, dict[str, str]] = {}
     for path in Path(tasks_dir).rglob("*.yaml"):
         try:
             spec = load_task(path)
-            out[spec.id] = spec.type
+            out[spec.id] = {"type": spec.type, "title": spec.title, "blurb": spec.blurb}
         except Exception:
             continue
     return out
+
+
+def _task_types(store: RunStore, tasks_dir: Path | str | None) -> dict[str, str]:
+    """task_id → task type only (see `_task_meta`)."""
+    return {tid: m["type"] for tid, m in _task_meta(store, tasks_dir).items()}
+
+
+def _groups_meta(path: Path | str | None = None) -> dict[str, dict[str, str]]:
+    """Run-group label/description from groups.yaml — empty map when absent."""
+    from orchestral.config import load_groups
+    try:
+        return load_groups(path or "groups.yaml")
+    except Exception:
+        return {}
 
 
 def pairings_payload(
@@ -667,6 +706,7 @@ def card_payload(
     group: str | None = None,
     tasks_dir: Path | str | None = None,
     reports_dir: Path | str | None = None,
+    groups_file: Path | str | None = None,
 ) -> dict[str, Any] | None:
     """Share-card data — the engineered summary an X post needs: flagship
     numbers, both verdict axes, the annotation flag, and caveat inputs
@@ -769,12 +809,13 @@ def card_payload(
         payload["description"] = _eval_description(payload, "pairing")
         return payload
     if kind == "group":
-        g = next((x for x in groups_payload(store) if x["group"] == target), None)
+        g = next((x for x in groups_payload(store, groups_file) if x["group"] == target), None)
         if g is None:
             return None
         metas = store.list_runs(run_group=target)
         cells = aggregate(metas)
         pairings = sorted({(c.orchestrator, c.worker) for c in cells})
+        tmeta = _task_meta(store, tasks_dir)
         # judge aggregates — read each finished run's report for the
         # semantic axis; unjudged runs contribute nothing, honestly
         judge_scores: list[float] = []
@@ -864,13 +905,18 @@ def card_payload(
                 for key in [(o, w)]
             ],
             "task_rows": [
-                {"task_id": t, "passed": p, "finished": n,
+                {"task_id": t,
+                 "title": (tmeta.get(t) or {}).get("title") or "",
+                 "blurb": (tmeta.get(t) or {}).get("blurb") or "",
+                 "passed": p, "finished": n,
                  "pass_rate": round(p / n, 3),
                  "judge_score": (round(sum(task_judge[t]) / len(task_judge[t]), 3)
                                  if task_judge.get(t) else None)}
                 for t, (p, n) in sorted(
                     per_task.items(), key=lambda kv: (-(kv[1][0] / kv[1][1]), kv[0]))
             ],
+            "group_label": g.get("label") or "",
+            "group_description": g.get("description") or "",
             "latest": g["latest"],
             "explainer": _explainer("group", {}),
             "flag": ann.get("flag", ""), "note": ann.get("note", ""),

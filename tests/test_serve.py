@@ -170,6 +170,63 @@ class TestPureLayer(unittest.TestCase):
             self.assertIsNone(state.card_payload(store, "run", "ghost"))
             self.assertIsNone(state.card_payload(store, "group", "ghost"))
 
+    def test_task_titles_and_group_labels_reach_payloads(self):
+        """title/blurb on specs + groups.yaml entries surface through every
+        payload — a stranger reads 'Expression parser', not a raw slug."""
+        with tempfile.TemporaryDirectory() as tmp:
+            rid = _seed_run(tmp, run_group="g-cards")
+            store = RunStore(tmp)
+            tasks = Path(tmp) / "tasks"
+            tasks.mkdir()
+            (tasks / "t-task.yaml").write_text(
+                'id: t-task\ntype: html\nprompt: p\n'
+                'title: "T Task"\nblurb: "one line"\n')
+            gfile = Path(tmp) / "groups.yaml"
+            gfile.write_text(
+                'groups:\n  g-cards:\n    label: G Cards\n    description: desc\n')
+            gcard = state.card_payload(
+                store, "group", "g-cards",
+                tasks_dir=tasks, groups_file=gfile)
+            self.assertEqual(gcard["task_rows"][0]["title"], "T Task")
+            self.assertEqual(gcard["task_rows"][0]["blurb"], "one line")
+            self.assertEqual(gcard["group_label"], "G Cards")
+            self.assertEqual(gcard["group_description"], "desc")
+            rows = state.runs_payload(store, tasks_dir=tasks)
+            self.assertEqual(rows[0]["task_title"], "T Task")
+            detail = state.run_detail_payload(
+                store, rid, tasks_dir=tasks, groups_file=gfile)
+            self.assertEqual(detail["task_title"], "T Task")
+            self.assertEqual(detail["task_blurb"], "one line")
+            self.assertEqual(detail["group_label"], "G Cards")
+            groups = state.groups_payload(store, gfile)
+            self.assertEqual(groups[0]["label"], "G Cards")
+
+    def test_unlabeled_specs_and_groups_fall_back_cleanly(self):
+        """Specs without title/blurb and groups without a groups.yaml entry
+        degrade to raw names — the explainability layer is additive."""
+        with tempfile.TemporaryDirectory() as tmp:
+            rid = _seed_run(tmp, run_group="g-bare")
+            store = RunStore(tmp)
+            gcard = state.card_payload(store, "group", "g-bare")
+            self.assertEqual(gcard["task_rows"][0]["title"], "")
+            self.assertEqual(gcard["group_label"], "")
+            detail = state.run_detail_payload(store, rid)
+            self.assertEqual(detail["task_title"], "")
+            self.assertEqual(detail["group_label"], "")
+
+    def test_load_groups_validates_shape(self):
+        from orchestral.config import load_groups, ConfigError
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = load_groups(Path(tmp) / "nope.yaml")
+            self.assertEqual(missing, {})
+            bad = Path(tmp) / "groups.yaml"
+            bad.write_text("groups:\n  g: not-a-mapping\n")
+            with self.assertRaises(ConfigError):
+                load_groups(bad)
+            ok = Path(tmp) / "ok.yaml"
+            ok.write_text("groups:\n  g:\n    label: L\n    extra: dropped\n")
+            self.assertEqual(load_groups(ok), {"g": {"label": "L"}})
+
     def test_card_payload_pairing_description_and_type_rows(self):
         with tempfile.TemporaryDirectory() as tmp:
             _seed_run(tmp, run_group="g1")

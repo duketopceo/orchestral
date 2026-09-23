@@ -30,6 +30,7 @@ from orchestral.config import (
     ModelConfig,
     TaskSpec,
     find_task,
+    load_groups,
     load_models,
     load_task,
     load_yaml,
@@ -383,11 +384,18 @@ def cmd_validate(args: argparse.Namespace) -> None:
             print(f"  FAIL {path.name}: missing metadata {', '.join(missing)}")
         else:
             print(f"  ok   {path.name} ({task.type})")
+        if not task.title or not task.blurb:
+            print(f"  warn {path.name}: no title/blurb — observatory shows the raw slug")
     try:
         load_models(args.models_dir)
     except Exception as exc:
         failures += 1
         print(f"  FAIL {args.models_dir}: {exc}")
+    try:
+        load_groups(Path(args.tasks_dir).parent / "groups.yaml")
+    except Exception as exc:
+        failures += 1
+        print(f"  FAIL groups.yaml: {exc}")
     print(f"{failures} spec problem(s)" if failures else "All specs valid")
     sys.exit(1 if failures else 0)
 

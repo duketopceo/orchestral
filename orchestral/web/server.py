@@ -57,6 +57,7 @@ class Observatory:
         )
         self.tasks_dir = Path(tasks_dir)
         self.models_dir = Path(models_dir)
+        self.groups_file = Path(tasks_dir).parent / "groups.yaml"
 
     def run_dir(self, run_id: str) -> Path | None:
         meta = self.store.get_run(run_id)
@@ -185,9 +186,10 @@ def make_handler(obs: Observatory) -> type[BaseHTTPRequestHandler]:
                     task=self._q1(qs, "task"),
                     status=self._q1(qs, "status"),
                     q=self._q1(qs, "q", "") or "",
+                    tasks_dir=obs.tasks_dir,
                 ))
             elif path == "/api/groups":
-                self._json(state.groups_payload(obs.store))
+                self._json(state.groups_payload(obs.store, obs.groups_file))
             elif path == "/api/compare":
                 a, b = self._q1(qs, "a", "") or "", self._q1(qs, "b", "") or ""
                 if not a or not b:
@@ -201,6 +203,7 @@ def make_handler(obs: Observatory) -> type[BaseHTTPRequestHandler]:
                 payload = state.card_payload(
                     obs.store, kind, target,
                     group=self._q1(qs, "group"), tasks_dir=obs.tasks_dir,
+                    groups_file=obs.groups_file,
                 )
                 if payload is None:
                     return self._json({"error": f"no {kind} '{target}'"}, 404)
@@ -259,7 +262,10 @@ def make_handler(obs: Observatory) -> type[BaseHTTPRequestHandler]:
             meta = obs.store.get_run(run_id)
 
             if len(parts) == 3:
-                payload = state.run_detail_payload(obs.store, run_id)
+                payload = state.run_detail_payload(
+                    obs.store, run_id,
+                    tasks_dir=obs.tasks_dir, groups_file=obs.groups_file,
+                )
                 if payload is None:
                     return self._json({"error": f"unknown run {run_id}"}, 404)
                 payload["cancellable"] = bool(
@@ -380,6 +386,7 @@ def make_handler(obs: Observatory) -> type[BaseHTTPRequestHandler]:
             card = state.card_payload(
                 obs.store, kind, target,
                 group=form.get("group") or None, tasks_dir=obs.tasks_dir,
+                groups_file=obs.groups_file,
             )
             if card is None:
                 return self._json({"error": f"no {kind} '{target}'"}, 404)

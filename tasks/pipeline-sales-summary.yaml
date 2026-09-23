@@ -1,4 +1,6 @@
 id: pipeline-sales-summary
+title: "Sales-summary chain"
+blurb: "Decompose a sales report into an ordered pipeline where each step consumes the last."
 type: pipeline
 prompt: |
   Decompose into an ordered chain (each step needs the previous step's output):

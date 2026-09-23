@@ -57,6 +57,8 @@ class TaskSpec:
     id: str
     type: str  # one of TASK_TYPES — enforced by load_task
     prompt: str
+    title: str = ""  # human label, e.g. "Expression parser"
+    blurb: str = ""  # one-line "what this task asks" for the observatory
     validation: list[str] = field(default_factory=list)
     assets: list[str] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -164,6 +166,30 @@ def load_task(path: Path | str) -> TaskSpec:
             f"— expected one of {', '.join(sorted(TASK_TYPES))}"
         )
     return task
+
+
+def load_groups(path: Path | str = "groups.yaml") -> dict[str, dict[str, str]]:
+    """Run-group display metadata — ``{group_name: {label, description}}``.
+
+    Groups are named at launch time (``--group``) and their raw names age
+    badly (``rep-20260918-151333-f6db99``); this file lets a reader see
+    "what experiment was this" without decoding the slug. Missing file
+    yields an empty map so the file is optional for cloned repos.
+    """
+    p = Path(path)
+    if not p.exists():
+        return {}
+    data = load_yaml(p)
+    if not isinstance(data, dict):
+        raise ConfigError(f"{p} must be a YAML mapping")
+    out: dict[str, dict[str, str]] = {}
+    for name, meta in (data.get("groups") or {}).items():
+        if not isinstance(meta, dict):
+            raise ConfigError(f"{p}: group '{name}' must be a mapping")
+        out[str(name)] = {
+            k: str(v) for k, v in meta.items() if k in ("label", "description")
+        }
+    return out
 
 
 def find_task(task_id: str, root: Path | str = "tasks") -> Path | None:

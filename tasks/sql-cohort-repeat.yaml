@@ -1,4 +1,6 @@
 id: sql-cohort-repeat
+title: "Cohort repeat-purchase SQL"
+blurb: "SQL: repeat-purchase rate grouped by each customer's first-purchase month."
 type: sql
 prompt: >
   Write a single read-only SQL query (SQLite dialect) that reports purchase

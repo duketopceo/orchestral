@@ -1,4 +1,6 @@
 id: landing-page-coffee
+title: "Landing page"
+blurb: "Build a responsive landing page for a premium coffee subscription."
 type: html
 prompt: |
   Build a responsive landing page for a premium coffee subscription service.

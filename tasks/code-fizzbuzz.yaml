@@ -1,4 +1,6 @@
 id: code-fizzbuzz
+title: "FizzBuzz module"
+blurb: "Implement fizzbuzz(n) — the classic screening task."
 type: code
 prompt: |
   Implement a Python module `fizzbuzz.py` with a single function

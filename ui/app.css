@@ -134,6 +134,7 @@ h2 {
 
 .muted { color: var(--text-2); }
 .dim { color: var(--text-3); }
+.sm { font-size: 11px; }
 .num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
 
 /* ---------- chips & dots ---------- */

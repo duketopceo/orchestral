@@ -214,6 +214,47 @@ class TestPureLayer(unittest.TestCase):
             self.assertEqual(detail["task_title"], "")
             self.assertEqual(detail["group_label"], "")
 
+    def test_judge_state_taxonomy(self):
+        """The four judge states derive correctly — unjudged is never
+        rendered as a bare dash again."""
+        with tempfile.TemporaryDirectory() as tmp:
+            rid = _seed_run(tmp)
+            store = RunStore(tmp)
+            meta = store.get_run(rid)
+            run_dir = Path(meta.run_dir)
+
+            # fresh seed (dry-run): artifact exists, judge never ran
+            st, why = state.judge_state(meta)
+            self.assertEqual(st, "not_judged")
+            self.assertTrue(why)
+
+            # inconclusive: judge block exists with no verdict
+            report = json.loads((run_dir / "report.json").read_text() or "{}")
+            report["judge"] = {"inconclusive": True, "model": "j/x",
+                               "reasoning": "no usable verdict"}
+            (run_dir / "report.json").write_text(json.dumps(report))
+            self.assertEqual(state.judge_state(store.get_run(rid))[0],
+                             "inconclusive")
+
+            # conclusive judge result → judged
+            report["judge"] = {"score": 0.9, "passed": True, "model": "j/x"}
+            (run_dir / "report.json").write_text(json.dumps(report))
+            m = store.get_run(rid)
+            m.judge_score, m.judge_passed = 0.9, True
+            store.update_meta(m)
+            self.assertEqual(state.judge_state(store.get_run(rid))[0], "judged")
+
+    def test_judge_state_not_judgeable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rid = _seed_run(tmp)
+            store = RunStore(tmp)
+            run_dir = Path(store.get_run(rid).run_dir)
+            for a in run_dir.glob("artifact.*"):
+                a.unlink()
+            st, why = state.judge_state(store.get_run(rid))
+            self.assertEqual(st, "not_judgeable")
+            self.assertIn("no artifact", why)
+
     def test_load_groups_validates_shape(self):
         from orchestral.config import load_groups, ConfigError
         with tempfile.TemporaryDirectory() as tmp:

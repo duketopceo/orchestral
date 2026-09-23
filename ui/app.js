@@ -72,15 +72,22 @@ function statusChip(r) {
 }
 
 function judgeChip(r) {
-  return r.score == null
-    ? `<span class="chip chip-dim">judge —</span>`
-    : `<span class="chip chip-info">judge ${fmtScore(r.score)}</span>`;
+  // judge_score is the semantic axis — `score` is mechanical (don't mislabel)
+  if (r.judge_score != null)
+    return `<span class="chip chip-info" title="semantic quality score from the judge model">judge ${fmtScore(r.judge_score)}</span>`;
+  const st = r.judge_state || "not_judged";
+  const why = esc(r.judge_reason || "");
+  if (st === "inconclusive")
+    return `<span class="chip chip-warn" title="${why}">judge inconclusive</span>`;
+  if (st === "not_judgeable")
+    return `<span class="chip chip-dim" title="${why}">not judgeable</span>`;
+  return `<span class="chip chip-dim" title="${why || "judge wasn't run for this run"}">not judged</span>`;
 }
 
 function runRow(r) {
   return `<tr>
     <td>${statusChip(r)} ${flagWidget("run", r.run_id)}</td>
-    <td><a href="#/run/${esc(r.run_id)}">${esc(r.task_id)}</a></td>
+    <td><a href="#/run/${esc(r.run_id)}">${esc(r.task_title || r.task_id)}</a>${r.task_title ? `<div class="dim sm">${esc(r.task_id)}</div>` : ""}</td>
     <td class="mono">${esc(slug(r.orchestrator))} <span class="dim">→</span> ${esc(slug(r.worker))}</td>
     <td>${judgeChip(r)}</td>
     <td class="t-num">${fmtMoney(r.total_cost_usd)}</td>
@@ -136,8 +143,9 @@ async function viewOverview() {
       const pass = g.pass_rate, fail = g.finished ? (1 - (pass ?? 0)) : 0;
       const rest = g.runs - (g.finished || 0);
       return `<a class="panel group-card" href="#/runs?group=${encodeURIComponent(g.group)}">
-        <div class="split"><span class="gc-name">${esc(g.group)}</span>
+        <div class="split"><span class="gc-name">${esc(g.label || g.group)}</span>
           <span class="dim">${g.runs} runs ${flagWidget("group", g.group)}</span></div>
+        ${g.label ? `<div class="dim sm">${esc(g.description || g.group)}</div>` : ""}
         <div class="gc-stats">
           <span>pass <b>${fmtPct(pass)}</b></span>
           <span>judge <b class="judge-axis">${fmtScore(g.judge_score_median)}</b></span>
@@ -238,12 +246,13 @@ async function viewRun(runId, params) {
   $view.innerHTML = `
     <div class="run-head">
       <div class="rh-title">
-        <h1>${esc(m.task_id)}</h1>
+        <h1>${esc(d.task_title || m.task_id)}</h1>
+        ${d.task_title ? `<div class="rh-pair dim">${esc(m.task_id)}${d.task_blurb ? ` — ${esc(d.task_blurb)}` : ""}</div>` : ""}
         <div class="rh-pair">${esc(m.orchestrator)} <span class="arrow">→</span> ${esc(m.worker)}</div>
-        <div class="rh-pair dim">${esc(m.run_group || "")} ${m.replicate ? `· rep ${m.replicate}` : ""} · ${esc(runId)}</div>
+        <div class="rh-pair dim">${esc(d.group_label || m.run_group || "")}${d.group_label ? ` <span class="dim">(${esc(m.run_group)})</span>` : ""} ${m.replicate ? `· rep ${m.replicate}` : ""} · run ${esc(runId.slice(0, 12))}</div>
       </div>
       <div class="run-stats">
-        ${statusChip(m)} ${judgeChip(m)}
+        ${statusChip(m)} ${judgeChip({ ...m, judge_state: d.judge_state, judge_reason: d.judge_reason })}
         ${kv("cost", fmtMoney(m.total_cost_usd))}
         ${kv("tokens", fmtTok((m.total_input_tokens || 0) + (m.total_output_tokens || 0)))}
         ${kv("time", fmtMs(m.latency_ms))}
@@ -505,7 +514,8 @@ async function viewLeaderboard(params) {
   $view.innerHTML = `
     <h1>Leaderboard</h1>
     <p class="page-sub">Orchestrator × worker pairings across all runs${group ? ` in <b>${esc(group)}</b>` : ""}.
-    pass = mechanical gate · score = judge axis · CI = Wilson 95% — thin samples stay honest.</p>
+    pass = mechanical gate · score = judge axis · CI = Wilson 95% — thin samples stay honest.
+    <a href="#/about">what do these mean?</a></p>
     <div class="filters"><label class="f">sort by
       <select id="lb-sort">${Object.keys(sorters).map(s =>
         `<option value="${s}" ${s === sort ? "selected" : ""}>${s.replace(/_/g, " ")}</option>`).join("")}</select></label>
@@ -842,6 +852,80 @@ async function viewCard(params) {
   bindFlags($view);
 }
 
+/* ---------- about ---------- */
+
+async function viewAbout() {
+  $view.innerHTML = `
+    <h1>What am I looking at?</h1>
+    <p class="page-sub">orchestral runs the same task through two models — an
+    <b>orchestrator</b> that plans and delegates, and a <b>worker</b> that
+    executes — then grades the result twice, on two independent axes.</p>
+
+    <div class="panel panel-pad">
+      <h2>The two axes</h2>
+      <table class="data">
+        <tr><th>axis</th><th>what it means</th><th>how it's graded</th></tr>
+        <tr><td><b>mechanical</b></td>
+            <td>Did it work? Binary, deterministic, no opinions.</td>
+            <td>Code runs its own tests · SQL output is diffed against a
+            reference · pages are checked for required elements.</td></tr>
+        <tr><td><b>judge</b></td>
+            <td>Is it good? A separate model scores quality 0–1.</td>
+            <td>A judge model reads the actual artifact (code, HTML, SQL)
+            and scores it. <span class="dim">Score ≥ the configured bar
+            counts as judge-approved.</span></td></tr>
+      </table>
+      <p class="dim">They can disagree — a run can pass every check and still
+      be mediocre work. Divergence between the axes is the interesting part,
+      not noise.</p>
+    </div>
+
+    <div class="panel panel-pad">
+      <h2>Judge states</h2>
+      <table class="data">
+        <tr><th>state</th><th>meaning</th></tr>
+        <tr><td><span class="chip chip-info">judge 0.83</span></td>
+            <td>Scored — the number is the judge's verdict.</td></tr>
+        <tr><td><span class="chip chip-dim">not judged</span></td>
+            <td>No judge was run for this run (older batches predate the
+            judge axis, or it wasn't configured).</td></tr>
+        <tr><td><span class="chip chip-warn">judge inconclusive</span></td>
+            <td>A verdict was attempted but couldn't be parsed — retryable,
+            never counts as a rejection.</td></tr>
+        <tr><td><span class="chip chip-dim">not judgeable</span></td>
+            <td>No artifact survives to score — nothing to show the judge.</td></tr>
+      </table>
+    </div>
+
+    <div class="panel panel-pad">
+      <h2>Naming</h2>
+      <table class="data">
+        <tr><th>you see</th><th>it's</th></tr>
+        <tr><td class="mono">code-expr-parser</td>
+            <td>A task: <code>&lt;type&gt;-&lt;slug&gt;</code>. The type says
+            what's being graded (code, sql, html…), the slug names the
+            exercise. Titles like "Expression parser" are the same task.</td></tr>
+        <tr><td class="mono">grok47-eval</td>
+            <td>A run group — one experiment batch. Runs launched together
+            share it so they can be compared as a set.</td></tr>
+        <tr><td class="mono">0013278fbaa0</td>
+            <td>A run id — hash prefix identifying one single attempt.</td></tr>
+        <tr><td class="mono">deepseek-v4-pro → gemma-4-31b-it</td>
+            <td>A pairing: orchestrator plans → worker executes. The
+            leaderboard ranks pairings, not individual models.</td></tr>
+      </table>
+    </div>
+
+    <div class="panel panel-pad">
+      <h2>Reading the numbers</h2>
+      <p><b>pass %</b> is the mechanical pass rate. <b>judge</b> is the mean
+      judge score or the count approved. <b>CI</b> is the Wilson 95%
+      interval — wide on small samples, by design. Rows under the minimum
+      sample size are dimmed and sorted below full-evidence rows.
+      <b>cost</b> is metered provider spend for that cell.</p>
+    </div>`;
+}
+
 /* ---------- router ---------- */
 
 async function route() {
@@ -866,6 +950,7 @@ async function route() {
     else if (path === "/cards") await viewCards();
     else if (path === "/card") await viewCard(params);
     else if (path === "/new") await viewNew();
+    else if (path === "/about") await viewAbout();
     else $view.innerHTML = `<div class="empty">unknown view ${esc(path)}</div>`;
   } catch (e) {
     $view.innerHTML = `<div class="empty">${esc(e.message)}</div>`;

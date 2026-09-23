@@ -232,7 +232,12 @@ def leaderboard_rows(store: RunStore, sort: str = "cost_per_pass") -> list[dict[
     return [r.to_dict() for r in sort_leaderboard(rows, sort)]
 
 
-def overview_payload(store: RunStore, registry: JobRegistry) -> dict[str, Any]:
+def overview_payload(
+    store: RunStore,
+    registry: JobRegistry,
+    tasks_dir: Path | str | None = None,
+    groups_file: Path | str | None = None,
+) -> dict[str, Any]:
     """Mission-control data: live jobs, leaderboard top rows, recent runs,
     group summaries, and the failure taxonomy — the SPA's landing view."""
     runs = store.list_runs(limit=None)
@@ -241,6 +246,13 @@ def overview_payload(store: RunStore, registry: JobRegistry) -> dict[str, Any]:
     for r in runs:
         if r.failure_reason:
             taxonomy[r.failure_reason] = taxonomy.get(r.failure_reason, 0) + 1
+    tmeta = _task_meta(store, tasks_dir)
+    recent = []
+    for r in runs[:10]:
+        d = r.to_dict()
+        d["task_title"] = (tmeta.get(r.task_id) or {}).get("title") or ""
+        d["judge_state"], d["judge_reason"] = judge_state(r)
+        recent.append(d)
     return {
         "jobs": [
             {
@@ -250,8 +262,8 @@ def overview_payload(store: RunStore, registry: JobRegistry) -> dict[str, Any]:
             for j in registry.jobs
         ],
         "leaderboard": [r.to_dict() for r in lb[:10]],
-        "recent": [r.to_dict() for r in runs[:10]],
-        "groups": groups_payload(store)[:8],
+        "recent": recent,
+        "groups": groups_payload(store, groups_file)[:8],
         "taxonomy": dict(sorted(taxonomy.items(), key=lambda kv: -kv[1])),
     }
 
@@ -309,6 +321,32 @@ def model_choices(models_dir: Path, role: str | None) -> list[dict[str, Any]]:
 # SPA API payloads — the rebuilt observatory reads everything through these.
 
 
+def judge_state(meta) -> tuple[str, str]:
+    """Closed taxonomy for the judge axis — (state, one-line reason).
+
+    "Unjudged" was four different situations rendered identically; the UI
+    needs to say which: ``judged`` | ``inconclusive`` (a verdict was attempted
+    but couldn't be parsed) | ``not_judged`` (never attempted, or the run
+    never finished) | ``not_judgeable`` (no artifact survives to score).
+    """
+    if meta.judge_score is not None:
+        return "judged", ""
+    report = read_json(Path(meta.run_dir) / "report.json") or {}
+    j = report.get("judge")
+    if j:
+        reason = str(j.get("reasoning") or "").strip()
+        if j.get("inconclusive"):
+            return "inconclusive", reason or "the judge returned no usable verdict"
+        return "not_judged", reason or "judge ran without a verdict"
+    if meta.status != "finished":
+        return "not_judged", f"run never finished ({meta.status})"
+    if not any(Path(meta.run_dir).glob("artifact.*")):
+        return "not_judgeable", "no artifact survives to judge"
+    if meta.dry_run:
+        return "not_judged", "dry run — nothing real to judge"
+    return "not_judged", "judge wasn't run for this run"
+
+
 def runs_payload(
     store: RunStore,
     group: str | None = None,
@@ -334,6 +372,7 @@ def runs_payload(
         d = r.to_dict()
         tm = tmeta.get(r.task_id) or {}
         d["task_title"] = tm.get("title") or ""
+        d["judge_state"], d["judge_reason"] = judge_state(r)
         out.append(d)
     return out
 
@@ -406,8 +445,11 @@ def run_detail_payload(
     plan_path = run_dir / "plan.md"
     tm = _task_meta(store, tasks_dir).get(meta.task_id) or {}
     gm = _groups_meta(groups_file).get(meta.run_group or "") or {}
+    jstate, jreason = judge_state(meta)
     return {
         "meta": meta.to_dict(),
+        "judge_state": jstate,
+        "judge_reason": jreason,
         "task_title": tm.get("title") or "",
         "task_blurb": tm.get("blurb") or "",
         "group_label": gm.get("label") or "",

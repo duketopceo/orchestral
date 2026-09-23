@@ -49,7 +49,7 @@ models:
     input_price_per_mtok: 0.075
     output_price_per_mtok: 0.25
     context: 1048576
-    max_tokens: 8192
+    max_tokens: 32768
     retry_limit: 2
 
   - slug: "google/gemma-4-31b-it"
@@ -58,7 +58,7 @@ models:
     input_price_per_mtok: 0.10
     output_price_per_mtok: 0.34
     context: 262144
-    max_tokens: 8192
+    max_tokens: 32768
     retry_limit: 2
 
   - slug: "qwen/qwen3-coder-flash"

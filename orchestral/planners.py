@@ -142,11 +142,15 @@ def _llm_call(
     client: OpenRouterClient | None,
     dry_run: bool,
     expect_json: bool = True,
-    max_tokens: int = 4096,
+    max_tokens: int | None = None,
     temperature: float = 0.4,
     system_override: str | None = None,
     attempt: int | None = None,
 ) -> tuple[str, dict[str, Any]]:
+    if max_tokens is None:
+        # honor the model's configured output ceiling — a hardcoded 4096
+        # truncates file-set worker payloads (finish_reason=length mid-JSON)
+        max_tokens = int(getattr(model_cfg, "max_tokens", None) or 4096)
     if dry_run:
         # deterministic fake output so the harness still exercises the path
         fake_output = _fake_output(input_data, phase)

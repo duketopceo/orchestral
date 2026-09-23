@@ -32,3 +32,9 @@ groups:
   mainstream-sweep:
     label: Mainstream worker sweep
     description: Grok 4.7 orchestrating six mainstream/beyond workers (GPT 5.6 Luna, Gemini 3.8 Flash, Kimi K2.7 Code, MiniMax M2.7, MiMo V2.6 Flash, Nemotron 3 Ultra) over 6 text/code tasks ×2 replicates, judged by jev. Qwen 3.8 Flash was attempted but its only provider (alibaba) is outside this account's allowlist — its failed runs are preserved as provider-error evidence.
+  v2-suite:
+    label: v2 orchestration benchmark
+    description: Real-orchestration suite — 9 new specs (cross-file invariants, fan-out aggregation, repair, context partition, injection resistance, multi-source synthesis, adaptive diagnosis, budget planning, SQL cohorts) plus code-expr-parser as calibration anchor. Designed from the spec critique to measure delegation quality, not just worker skill.
+  v2-probe:
+    label: v2 wave-A probe
+    description: Coverage probe — small task slice across candidate orchestrator×worker pairings to select the wave-B matrix.

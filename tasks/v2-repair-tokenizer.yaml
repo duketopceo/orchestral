@@ -1,0 +1,84 @@
+id: v2-repair-tokenizer
+title: "Repair: quoted-string tokenizer"
+blurb: "A shipped tokenizer drops characters inside quotes. Find the off-by-one and fix it — tests are hidden."
+type: bugfix
+prompt: |
+  A shipped CSV tokenizer has a bug: fields wrapped in double quotes lose
+  their first character after the opening quote — `"alice"` parses as
+  `lice`. Users also report the parser crashes on a completely empty field
+  at end of line (`a,b,`).
+
+  The broken module ships in `broken_files` — `tokenizer.py` with
+  `parse_line(line: str) -> list[str]`. Repair it and return the complete
+  corrected file set. Keep the public signature; handle quoted fields,
+  escaped quotes (`""` inside quotes = a literal quote), and empty fields.
+
+  Return a JSON object {"files": [{"path": "tokenizer.py", "content": "..."}]}.
+metadata:
+  module: tokenizer.py
+  expected_paths: [tokenizer.py]
+  timeout_seconds: 30
+  max_code_lines: 200
+  no_unsafe: true
+  no_external_deps: true
+  files:
+    tokenizer.py: |
+      def parse_line(line: str) -> list[str]:
+          """Parse one CSV line into fields. Quoted fields may contain
+          commas; "" inside quotes is a literal quote."""
+          fields = []
+          buf = []
+          in_quotes = False
+          i = 0
+          while i < len(line):
+              ch = line[i]
+              if in_quotes:
+                  if ch == '"':
+                      if i + 1 < len(line) and line[i + 1] == '"':
+                          buf.append('"')
+                          i += 1
+                      else:
+                          in_quotes = False
+                  else:
+                      buf.append(ch)
+              else:
+                  if ch == '"':
+                      in_quotes = True
+                      i += 1  # BUG: skips the first char inside quotes
+                  elif ch == ',':
+                      fields.append(''.join(buf))
+                      buf = []
+                  else:
+                      buf.append(ch)
+              i += 1
+          if buf:
+              fields.append(''.join(buf))
+          return fields
+  tests: |
+    import unittest
+    from tokenizer import parse_line
+
+    class TestTokenizer(unittest.TestCase):
+        def test_plain(self):
+            self.assertEqual(parse_line("a,b,c"), ["a", "b", "c"])
+
+        def test_quoted_field(self):
+            self.assertEqual(parse_line('"alice",x'), ["alice", "x"])
+
+        def test_quoted_comma(self):
+            self.assertEqual(parse_line('"a,b",c'), ["a,b", "c"])
+
+        def test_escaped_quote(self):
+            self.assertEqual(parse_line('"say ""hi""",z'), ['say "hi"', "z"])
+
+        def test_trailing_empty(self):
+            self.assertEqual(parse_line("a,b,"), ["a", "b", ""])
+
+        def test_empty_line(self):
+            self.assertEqual(parse_line(""), [""])
+
+        def test_quoted_then_text(self):
+            self.assertEqual(parse_line('"one"two,x'), ["onetwo", "x"])
+
+        def test_leading_empty(self):
+            self.assertEqual(parse_line(",a"), ["", "a"])

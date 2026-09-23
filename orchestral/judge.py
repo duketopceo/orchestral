@@ -716,7 +716,7 @@ def backfill_judgments(
             orchestrator=orchestrator, worker=worker,
             task_id=task_id, run_group=run_group,
         )
-        if m.status == "finished"
+        if m.status == "finished" and not m.dry_run
     ]
     spec_cache: dict[str, TaskSpec] = {}
 

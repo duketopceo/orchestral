@@ -45,11 +45,16 @@ class TestBackfill(unittest.TestCase):
         self.runs = self.root / "runs"
         self.judge = _model("j/model", "judge")
 
-    def _seed(self) -> str:
+    def _seed(self, dry_run_meta: bool = False) -> str:
         meta = Runner(dry_run=True, runs_dir=str(self.runs),
                       store=RunStore(self.runs)).run(
             TaskSpec(id="t-task", type="html", prompt="make a page"),
             _model("o/model", "orchestrator"), _model("w/model", "worker"))
+        # the Runner only produces artifacts in dry-run mode; flip the index
+        # flag so backfill treats the seed as a real finished run
+        if not dry_run_meta:
+            meta.dry_run = False
+            RunStore(self.runs).update_meta(meta)
         return meta.run_id
 
     def test_backfill_writes_judge_and_score(self):
@@ -100,6 +105,8 @@ class TestBackfill(unittest.TestCase):
             meta = Runner(dry_run=True, runs_dir=tmp, store=store).run(
                 TaskSpec(id="t-task", type="html", prompt="p"),
                 _model("o/model", "orchestrator"), _model("w/model", "worker"))
+            meta.dry_run = False
+            store.update_meta(meta)
             for a in Path(meta.run_dir).glob("artifact.*"):
                 a.unlink()
             res = backfill_judgments(store, self.judge, FakeJudgeClient(),
@@ -149,6 +156,16 @@ class TestBackfill(unittest.TestCase):
         res2 = backfill_judgments(RunStore(self.runs), self.judge,
                                   FakeJudgeClient(0.6), tasks_dir=self.root / "tasks")
         self.assertEqual(res2["judged"], 1)
+
+    def test_dry_run_runs_never_reach_the_judge(self):
+        """Dry-run stub artifacts are synthetic — spending real judge calls on
+        them would pollute the corpus with verdicts on fake data."""
+        self._seed(dry_run_meta=True)
+        client = FakeJudgeClient()
+        res = backfill_judgments(RunStore(self.runs), self.judge, client,
+                                 tasks_dir=self.root / "tasks")
+        self.assertEqual(res["runs_seen"], 0)
+        self.assertEqual(client.calls, 0)
 
     def test_dry_run_writes_nothing(self):
         run_id = self._seed()

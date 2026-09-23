@@ -29,3 +29,6 @@ groups:
   v3-rep3:
     label: v3 replicate ×3
     description: Three-replicate pass over the v3 task sweep.
+  mainstream-sweep:
+    label: Mainstream worker sweep
+    description: Grok 4.7 orchestrating six mainstream/beyond workers (GPT 5.6 Luna, Gemini 3.8 Flash, Kimi K2.7 Code, Qwen 3.8 Flash, MiMo V2.6 Flash, Nemotron 3 Ultra) over 6 text/code tasks ×2 replicates, judged by jev.

@@ -157,6 +157,27 @@ class TestBackfill(unittest.TestCase):
                                   FakeJudgeClient(0.6), tasks_dir=self.root / "tasks")
         self.assertEqual(res2["judged"], 1)
 
+    def test_skip_reconciles_index_with_report_verdict(self):
+        """A run judged before the index had judge columns carries its verdict
+        in report.json only — skipping it must still mirror the score into the
+        index so aggregates can see it."""
+        run_id = self._seed()
+        store = RunStore(self.runs)
+        run_dir = Path(store.get_run(run_id).run_dir)  # type: ignore[union-attr]
+        report_path = run_dir / "report.json"
+        report = json.loads(report_path.read_text())
+        report["judge"] = {"score": 0.66, "passed": True, "reasoning": "pre-index"}
+        report_path.write_text(json.dumps(report))
+
+        client = FakeJudgeClient()
+        res = backfill_judgments(store, self.judge, client,
+                                 tasks_dir=self.root / "tasks")
+        self.assertEqual(res["judged"], 0)
+        self.assertEqual(client.calls, 0)
+        meta = store.get_run(run_id)
+        self.assertEqual(meta.judge_score, 0.66)
+        self.assertTrue(meta.judge_passed)
+
     def test_dry_run_runs_never_reach_the_judge(self):
         """Dry-run stub artifacts are synthetic — spending real judge calls on
         them would pollute the corpus with verdicts on fake data."""

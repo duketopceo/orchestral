@@ -728,21 +728,28 @@ def backfill_judgments(
             spec_cache[tid] = load_task(path)
         return spec_cache[tid]
 
-    def _already_judged(run_dir: Path) -> bool:
+    def _existing_verdict(run_dir: Path) -> dict[str, Any] | None:
         # only a conclusive verdict locks the run — an inconclusive record
         # is a transient no-answer and must retry on the next pass
         report_path = run_dir / "report.json"
         if not report_path.exists():
-            return False
+            return None
         try:
             j = json.loads(report_path.read_text()).get("judge")
         except Exception:
-            return False
-        return bool(j) and not j.get("inconclusive")
+            return None
+        return j if j and not j.get("inconclusive") else None
 
     def _one(meta: Any) -> dict[str, Any]:
         run_dir = Path(meta.run_dir)
-        if not force and _already_judged(run_dir):
+        existing = _existing_verdict(run_dir)
+        if not force and existing is not None:
+            # reconcile the index with verdicts that predate the judge
+            # columns — report.json is truth, the index just mirrors it
+            if meta.judge_score is None and existing.get("score") is not None:
+                meta.judge_score = existing.get("score")
+                meta.judge_passed = existing.get("passed")
+                store.update_meta(meta)
             return {"run_id": meta.run_id, "skipped": "already judged"}
         try:
             image_bytes, text, language = _judge_input(run_dir)

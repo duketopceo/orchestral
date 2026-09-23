@@ -908,6 +908,7 @@ class Runner:
                 else:
                     ledger.add_many(judge_costs)
                     report["judge"] = judge_result
+                    report.setdefault("judges", {})[judge.slug] = judge_result
                     # KTD14: the judge never mutates `passes` or `score` — the
                     # stored verdict is mechanical-only; judge evidence lives
                     # on the judge_* fields and report.judge.

@@ -728,27 +728,35 @@ def backfill_judgments(
             spec_cache[tid] = load_task(path)
         return spec_cache[tid]
 
-    def _existing_verdict(run_dir: Path) -> dict[str, Any] | None:
-        # only a conclusive verdict locks the run — an inconclusive record
-        # is a transient no-answer and must retry on the next pass
-        report_path = run_dir / "report.json"
-        if not report_path.exists():
-            return None
+    def _report(run_dir: Path) -> dict[str, Any]:
         try:
-            j = json.loads(report_path.read_text()).get("judge")
+            return json.loads((run_dir / "report.json").read_text())
         except Exception:
-            return None
+            return {}
+
+    def _verdict_for(report: dict[str, Any], slug: str) -> dict[str, Any] | None:
+        """This judge's own prior verdict on the run — the `judges` map first,
+        then the primary `judge` block when it names this slug. A legacy block
+        with no model can't be attributed, so it doesn't lock other judges."""
+        j = (report.get("judges") or {}).get(slug)
+        if j is None:
+            primary = report.get("judge") or {}
+            if primary.get("model") == slug:
+                j = primary
         return j if j and not j.get("inconclusive") else None
 
     def _one(meta: Any) -> dict[str, Any]:
         run_dir = Path(meta.run_dir)
-        existing = _existing_verdict(run_dir)
+        report = _report(run_dir)
+        existing = _verdict_for(report, judge.slug)
+        primary = report.get("judge")
+        primary_live = bool(primary) and not primary.get("inconclusive")
         if not force and existing is not None:
             # reconcile the index with verdicts that predate the judge
             # columns — report.json is truth, the index just mirrors it
-            if meta.judge_score is None and existing.get("score") is not None:
-                meta.judge_score = existing.get("score")
-                meta.judge_passed = existing.get("passed")
+            if primary_live and meta.judge_score is None and primary.get("score") is not None:
+                meta.judge_score = primary.get("score")
+                meta.judge_passed = primary.get("passed")
                 store.update_meta(meta)
             return {"run_id": meta.run_id, "skipped": "already judged"}
         try:
@@ -780,13 +788,18 @@ def backfill_judgments(
             if dry_run:
                 return {"run_id": meta.run_id, "judged": "dry-run", "score": result.get("score")}
             report_path = run_dir / "report.json"
-            report = json.loads(report_path.read_text()) if report_path.exists() else {}
-            report["judge"] = result
-            report["judge_backfill"] = True
-            report_path.write_text(json.dumps(report, indent=2, default=str))
-            if not result.get("inconclusive"):
+            report = _report(run_dir)
+            report.setdefault("judges", {})[judge.slug] = result
+            # the primary axis is the first conclusive verdict — a second
+            # judge lands under `judges` without displacing it, and the
+            # index mirrors the primary only
+            is_primary_judge = (report.get("judge") or {}).get("model") == judge.slug
+            if not result.get("inconclusive") and (not primary_live or is_primary_judge):
+                report["judge"] = result
                 meta.judge_score = result.get("score")
                 meta.judge_passed = result.get("passed")
+            report["judge_backfill"] = True
+            report_path.write_text(json.dumps(report, indent=2, default=str))
             meta.total_cost_usd += sum(c.get("cost_usd") or 0.0 for c in costs)
             store.update_meta(meta)
             return {"run_id": meta.run_id, "judged": judge.slug, "score": result.get("score"),

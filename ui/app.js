@@ -282,6 +282,11 @@ async function viewRun(runId, params) {
       </div>
       <div class="run-stats">
         ${statusChip(m)} ${judgeChip({ ...m, judge_state: d.judge_state, judge_reason: d.judge_reason })}
+        ${(() => {
+          const js = (d.report && d.report.judges) || {};
+          const extra = Object.entries(js).filter(([s]) => s !== (d.report.judge || {}).model);
+          return extra.length ? `<span class="chip chip-dim" title="secondary judge verdicts — the primary axis is ${esc((d.report.judge || {}).model || "unknown")}">${extra.map(([s, j]) => `${esc(slug(s))} ${j && j.score != null ? Number(j.score).toFixed(2) : "—"}`).join(" · ")}</span>` : "";
+        })()}
         ${kv("cost", fmtMoney(m.total_cost_usd))}
         ${kv("tokens", fmtTok((m.total_input_tokens || 0) + (m.total_output_tokens || 0)))}
         ${kv("time", fmtMs(m.latency_ms))}
@@ -579,6 +584,7 @@ async function viewLeaderboard(params) {
     (a.low_sample ? 1 : 0) - (b.low_sample ? 1 : 0)
     || (sorters[sort] || sorters.pass_rate)(a, b));
   let rank = 0;
+  const ranked = rows.filter(r => !r.low_sample).length;
   const mx = d.matrix;
   const maxPass = Math.max(0.01, ...mx.cells.map(c => c.pass_rate ?? 0));
   const cellOf = (o, w) => mx.cells.find(c => c.orchestrator === o && c.worker === w);
@@ -624,7 +630,7 @@ async function viewLeaderboard(params) {
       <th>why</th><th></th>
     </tr><tbody>` +
     rows.map((r, i) => `<tr${r.low_sample ? ' class="row-thin"' : ""}>
-      <td class="dim">${r.low_sample ? "—" : ++rank}</td>
+      <td class="dim">${r.low_sample ? "—" : `${++rank}<span class="dim sm"> / top ${Math.max(1, Math.round(rank / ranked * 100))}%</span>`}</td>
       <td class="mono">${esc(slug(r.orchestrator))} <span class="dim">→</span> ${esc(slug(r.worker))}
         ${r.low_sample ? ' <span class="chip chip-dim">low-n</span>' : ""}</td>
       <td class="t-num">${r.finished ?? 0}/${r.runs ?? 0}</td>

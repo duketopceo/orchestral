@@ -84,6 +84,32 @@ class ValidationError(Exception):
 
 # task types whose assembly is "orchestrator picks the best candidate":
 # type -> (artifact filename, result key to read, validator method name)
+def _plan_self_output(plan: dict[str, Any]) -> tuple[dict[str, str], str]:
+    """Extract a self-executed artifact from a zero-subtask plan.
+
+    Orchestrators sometimes answer the task directly instead of delegating:
+    code/multi-file plans carry {"files": [{path, content}, ...]} (or a
+    {path: content} map); text tasks carry a {"content"|"answer"|"query"|
+    "output"|"response"|"text": str} payload. Returns (files, text) —
+    both empty when the plan has no self-executed output.
+    """
+    files: dict[str, str] = {}
+    raw_files = plan.get("files")
+    if isinstance(raw_files, dict):
+        files = {str(k): str(v) for k, v in raw_files.items() if str(v).strip()}
+    elif isinstance(raw_files, list):
+        for f in raw_files:
+            if isinstance(f, dict) and f.get("path") and str(f.get("content") or "").strip():
+                files[str(f["path"])] = str(f["content"])
+    text = ""
+    for key in ("content", "answer", "query", "output", "response", "text"):
+        v = plan.get(key)
+        if isinstance(v, str) and v.strip():
+            text = v
+            break
+    return files, text
+
+
 _CANDIDATE_TASKS: dict[str, tuple[str, str, str]] = {
     "needle": ("artifact.txt", "content", "_validate"),
     "constraint": ("artifact.txt", "content", "_validate"),
@@ -398,6 +424,32 @@ class Runner:
                 subtasks=len(subtasks),
                 subtask_ids=[(s.get("id") if isinstance(s, dict) else i) for i, s in enumerate(subtasks)],
             )
+            # Zero-delegation plans: some orchestrators answer the task
+            # themselves ({"files": ...} or {"content"/"answer": ...})
+            # instead of producing subtasks. That is real
+            # delegation-vs-self-execution signal — accept the plan's own
+            # payload as the artifact source so the run is judged on merit,
+            # and mark it `delegated: false` so aggregates can filter it.
+            self_executed = False
+            if not subtasks:
+                self_files, self_text = _plan_self_output(plan)
+                if self_files or self_text:
+                    self_executed = True
+                    logger.lifecycle(
+                        "orchestrator.self_executed", phase="delegate",
+                        role="orchestrator",
+                        files=len(self_files), chars=len(self_text),
+                    )
+                    results.append({
+                        "subtask_id": "orchestrator",
+                        "content": self_text or files_listing_with_content(self_files, total_chars=JUDGE_CHAT_ARTIFACT_CAP),
+                        "query": self_text,
+                        "self_executed": True,
+                    })
+                    (run_dir / "worker-self.json").write_text(
+                        json.dumps({"files": self_files, "content": self_text}, indent=2, default=str))
+                    if self_files:
+                        file_sets.append(("orchestrator", self_files))
             for i, sub in enumerate(subtasks):
                 self._check_cancelled()
                 # models sometimes return a list of strings; normalize to dicts
@@ -840,6 +892,9 @@ class Runner:
                 logger.lifecycle("evaluation.started", phase="validate")
                 passes, report = self._validate(task, artifact)
                 judge_text = artifact
+
+            report["delegated"] = not self_executed
+            report["subtasks"] = len(subtasks)
 
             # the judge reads the harvested diff for executor runs — the
             # real change under test, agent-controlled text and all (the

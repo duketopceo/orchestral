@@ -33,7 +33,7 @@ _CALL_EVENT_TYPES = ("llm_call", "worker_error")
 LIFECYCLE_EVENTS = frozenset({
     "run.created", "task.loaded", "run.started",
     "orchestrator.started", "orchestrator.completed",
-    "delegation.created",
+    "delegation.created", "orchestrator.self_executed",
     "worker.started", "worker.progress", "worker.completed", "worker.failed",
     "synthesis.started", "synthesis.completed",
     "evaluation.started", "evaluation.completed",

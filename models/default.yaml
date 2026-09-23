@@ -322,12 +322,12 @@ models:
     max_tokens: 32768
     retry_limit: 2
 
-  - slug: "qwen/qwen3.8-flash"
-    name: "Qwen 3.8 Flash"
+  - slug: "minimax/minimax-m2.7"
+    name: "MiniMax M2.7"
     role: worker
-    input_price_per_mtok: 0.15
-    output_price_per_mtok: 0.47
-    context: 1000000
+    input_price_per_mtok: 0.30
+    output_price_per_mtok: 1.20
+    context: 204800
     max_tokens: 32768
     retry_limit: 2
 

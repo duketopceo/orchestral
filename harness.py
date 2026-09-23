@@ -620,7 +620,8 @@ def cmd_batch(args: argparse.Namespace) -> None:
     if n_reps > 1:
         for cell in aggregate(store.list_runs(run_group=group)):
             score = f"{cell.score_mean:.2f}±{cell.score_sd:.2f}" if cell.score_mean is not None else "-"
-            print(f"[{group}] {cell.task_id}: n={cell.runs} pass={cell.pass_rate:.0%} score={score} cost=${cell.cost_mean:.6f}±${cell.cost_sd:.6f}")
+            cost = f"${cell.cost_mean:.6f}±${cell.cost_sd:.6f}" if cell.cost_mean is not None else "-"
+            print(f"[{group}] {cell.task_id}: n={cell.runs} pass={cell.pass_rate:.0%} score={score} cost={cost}")
 
     if args.json:
         print(json.dumps(results, indent=2, default=str))

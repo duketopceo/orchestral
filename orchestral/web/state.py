@@ -14,9 +14,11 @@ import json
 import statistics
 import threading
 import uuid
+import zipfile
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from orchestral.agentexec import ExecutorPreflightError, launch_gate
 from orchestral.calibrate import calibration_status
@@ -51,6 +53,43 @@ from orchestral.tui.state import (
 LAUNCH_FIELDS = frozenset({
     "task", "orchestrator", "worker", "judge", "replicates", "seed", "dry_run",
 })
+
+CARD_LENSES: tuple[dict[str, str], ...] = (
+    {
+        "id": "overall",
+        "label": "Best overall",
+        "description": "Best observed mechanical outcome; cost breaks ties.",
+    },
+    {
+        "id": "high_cost",
+        "label": "Best code · high spend",
+        "description": "Best result within the upper half of measured cohort spend.",
+    },
+    {
+        "id": "low_cost",
+        "label": "Best code · low spend",
+        "description": "Best result within the lower half of measured cost per pass.",
+    },
+    {
+        "id": "sweet_spot",
+        "label": "Quality / cost sweet spot",
+        "description": "Nearest the leading pass rate at the lowest measured cost per pass.",
+    },
+    {
+        "id": "divergence",
+        "label": "Interesting divergence",
+        "description": "Largest gap between mechanical and judge-approved rates.",
+    },
+)
+CARD_LENS_IDS = frozenset(lens["id"] for lens in CARD_LENSES)
+
+_CODE_EXTENSIONS = frozenset({
+    ".c", ".cc", ".cpp", ".css", ".diff", ".go", ".html", ".java", ".js",
+    ".json", ".jsx", ".kt", ".md", ".patch", ".php", ".py", ".rb", ".rs",
+    ".scss", ".sh", ".sql", ".toml", ".ts", ".tsx", ".txt", ".vue", ".yaml", ".yml",
+})
+_IMAGE_EXTENSIONS = frozenset({".gif", ".jpeg", ".jpg", ".png", ".svg", ".webp"})
+_VIDEO_EXTENSIONS = frozenset({".mp4", ".mov", ".webm"})
 
 
 class JobRegistry:
@@ -184,6 +223,11 @@ def read_json(path: Path) -> Any | None:
         return None
 
 
+def _mapping(value: Any) -> dict[str, Any]:
+    """Return a mapping-shaped JSON value without trusting its shape."""
+    return value if isinstance(value, dict) else {}
+
+
 def live_payload(run_dir: Path, after: int, started_at: str | None = None,
                  meta: Any = None) -> dict[str, Any]:
     """Poll payload for the live view.
@@ -229,8 +273,20 @@ def run_sections(run_dir: Path) -> dict[str, Any]:
 
 
 def leaderboard_rows(store: RunStore, sort: str = "cost_per_pass") -> list[dict[str, Any]]:
-    rows = pairing_leaderboard(store.list_runs(limit=None))
+    rows = pairing_leaderboard(
+        store.list_runs(limit=None),
+        unmetered_workers=store.unmetered_workers(),
+    )
     return [r.to_dict() for r in sort_leaderboard(rows, sort)]
+
+
+def _runs_for_group(store: RunStore, group: str | None) -> list[Any]:
+    """Resolve a UI group selector to runs; ``(ungrouped)`` means all unlabelled runs."""
+    if not group:
+        return store.list_runs(limit=None)
+    if group == "(ungrouped)":
+        return [r for r in store.list_runs(limit=None) if not r.run_group]
+    return store.list_runs(run_group=group)
 
 
 def overview_payload(
@@ -242,7 +298,7 @@ def overview_payload(
     """Mission-control data: live jobs, leaderboard top rows, recent runs,
     group summaries, and the failure taxonomy — the SPA's landing view."""
     runs = store.list_runs(limit=None)
-    lb = pairing_leaderboard(runs)
+    lb = pairing_leaderboard(runs, unmetered_workers=store.unmetered_workers())
     taxonomy: dict[str, int] = {}
     for r in runs:
         if r.failure_reason:
@@ -332,12 +388,14 @@ def judge_state(meta) -> tuple[str, str]:
     """
     if meta.judge_score is not None:
         return "judged", ""
-    report = read_json(Path(meta.run_dir) / "report.json") or {}
-    j = report.get("judge")
+    report = _mapping(read_json(Path(meta.run_dir) / "report.json"))
+    j = _mapping(report.get("judge"))
     if j:
         reason = str(j.get("reasoning") or "").strip()
         if j.get("inconclusive"):
             return "inconclusive", reason or "the judge returned no usable verdict"
+        if any(j.get(key) is not None for key in ("score", "noul", "passed")):
+            return "judged", ""
         return "not_judged", reason or "judge ran without a verdict"
     if meta.status != "finished":
         return "not_judged", f"run never finished ({meta.status})"
@@ -578,6 +636,117 @@ def _groups_meta(path: Path | str | None = None) -> dict[str, dict[str, str]]:
         return {}
 
 
+def _pairing_dict(row: Any) -> dict[str, Any]:
+    return row if isinstance(row, dict) else row.to_dict()
+
+
+def _pairing_target(row: dict[str, Any]) -> str:
+    return f"{row.get('orchestrator', '')}|{row.get('worker', '')}"
+
+
+def _pairing_quality_key(row: dict[str, Any]) -> tuple[Any, ...]:
+    """Existing leaderboard semantics: pass, then cost, then judge as a tie-break."""
+    cost = row.get("cost_per_pass")
+    return (
+        -(row.get("pass_rate") if row.get("pass_rate") is not None else -1.0),
+        cost if cost is not None else float("inf"),
+        -(row.get("judge_score_median") if row.get("judge_score_median") is not None else -1.0),
+        -int(row.get("finished") or 0),
+        str(row.get("orchestrator") or ""),
+        str(row.get("worker") or ""),
+    )
+
+
+def _lens_judge_rate(row: dict[str, Any]) -> float:
+    value = row.get("judge_pass_rate")
+    if value is not None:
+        return float(value)
+    score = row.get("judge_score_median")
+    return float(score) if score is not None else 0.0
+
+
+def _lens_payloads(rows: list[Any]) -> list[dict[str, Any]]:
+    """Return deterministic named lens selections over existing pairing rows.
+
+    Lenses are filters/rankings, never a new composite score. Thin-sample rows
+    never enter a ranking, and unmetered rows never enter a cost lens.
+    """
+    dict_rows = [_pairing_dict(row) for row in rows]
+    eligible = [row for row in dict_rows if not row.get("low_sample") and row.get("finished")]
+    measured = [row for row in eligible if row.get("cost_total", 0) > 0]
+    cost_per_pass = [float(row["cost_per_pass"]) for row in eligible if row.get("cost_per_pass") is not None]
+    out: list[dict[str, Any]] = []
+
+    def ranked(candidates: list[dict[str, Any]], key=_pairing_quality_key) -> list[dict[str, Any]]:
+        return sorted(candidates, key=key)
+
+    def result(lens: dict[str, str], candidates: list[dict[str, Any]], reason: str,
+               empty_reason: str, key=_pairing_quality_key) -> None:
+        ordered = ranked(candidates, key)
+        selected = ordered[0] if ordered else None
+        out.append({
+            **lens,
+            "selected_target": _pairing_target(selected) if selected else "",
+            "ranking": [_pairing_target(row) for row in ordered],
+            "eligible": len(ordered),
+            "reason": reason.format(**selected) if selected and reason else "",
+            "empty_reason": "" if selected else empty_reason,
+        })
+
+    result(
+        CARD_LENSES[0], eligible,
+        "{orchestrator} → {worker} leads on observed pass rate; cost breaks ties.",
+        "no pairing has three finished runs yet",
+    )
+
+    high_spend = [row for row in measured if row.get("cost_total", 0) >= statistics.median(
+        [float(r.get("cost_total") or 0) for r in measured]
+    )] if measured else []
+    result(
+        CARD_LENSES[1], high_spend,
+        "{orchestrator} → {worker} is strongest in the upper measured-spend half.",
+        "no metered pairing has enough finished evidence",
+    )
+
+    low_spend = [row for row in eligible if row.get("cost_per_pass") is not None and
+                 float(row["cost_per_pass"]) <= statistics.median(cost_per_pass)] if cost_per_pass else []
+    result(
+        CARD_LENSES[2], low_spend,
+        "{orchestrator} → {worker} is strongest in the lower measured-cost half.",
+        "no measured cost per pass is available",
+    )
+
+    best_pass = max((float(row.get("pass_rate") or 0) for row in eligible), default=0.0)
+    sweet = [row for row in eligible if row.get("cost_per_pass") is not None and
+             float(row.get("pass_rate") or 0) >= best_pass - 0.10]
+    result(
+        CARD_LENSES[3], sweet,
+        "{orchestrator} → {worker} is within 10 points of the pass leader at the lowest measured cost.",
+        "no metered pairing is within 10 points of the leading pass rate",
+        key=lambda row: (
+            float(row.get("cost_per_pass") or float("inf")),
+            -(float(row.get("pass_rate") or 0)),
+            str(row.get("orchestrator") or ""),
+            str(row.get("worker") or ""),
+        ),
+    )
+
+    divergent = [row for row in eligible if row.get("judged") and row.get("pass_rate") is not None and
+                 (row.get("judge_score_median") is not None or row.get("judge_pass_rate") is not None)]
+    result(
+        CARD_LENSES[4], divergent,
+        "{orchestrator} → {worker} has the largest mechanical-versus-judge gap.",
+        "no pairing has a judged semantic axis to compare",
+        key=lambda row: (
+            -abs(float(row.get("pass_rate") or 0) - _lens_judge_rate(row)),
+            -int(row.get("finished") or 0),
+            str(row.get("orchestrator") or ""),
+            str(row.get("worker") or ""),
+        ),
+    )
+    return out
+
+
 def pairings_payload(
     store: RunStore,
     tasks_dir: Path | str | None = None,
@@ -586,8 +755,8 @@ def pairings_payload(
     """Heavy leaderboard data: per-pairing stats with honest uncertainty,
     per-task-type strength/weakness, the dominant failure class, the groups
     each pairing appears in, and an orchestrator×worker matrix."""
-    metas = store.list_runs(run_group=group) if group else store.list_runs(limit=None)
-    rows = pairing_leaderboard(metas)
+    metas = _runs_for_group(store, group)
+    rows = pairing_leaderboard(metas, unmetered_workers=store.unmetered_workers())
     types = _task_types(store, tasks_dir)
 
     by_pair: dict[tuple[str, str], list[Any]] = {}
@@ -615,6 +784,7 @@ def pairings_payload(
         groups = sorted({m.run_group for m in cell if m.run_group})
         d = r.to_dict()
         d.update({
+            "target": f"{r.orchestrator}|{r.worker}",
             "pass_ci": _wilson(r.passed, r.finished),
             "top_failure": top_failure,
             "groups": groups,
@@ -643,7 +813,7 @@ def pairings_payload(
             for c in [by_key.get((o, w))]
         ],
     }
-    return {"rows": enriched, "matrix": matrix}
+    return {"rows": enriched, "matrix": matrix, "lenses": _lens_payloads(enriched)}
 
 
 def _pairing_why(r: Any, best: Any, worst: Any, top_failure: str | None) -> str:
@@ -779,6 +949,534 @@ def _calibration_map(
     return out
 
 
+def _cohort_payload(metas: list[Any]) -> dict[str, Any]:
+    """Composition facts for a card's originating scope, never a synthetic score."""
+    finished = [m for m in metas if m.status == "finished"]
+    orchestrators = sorted({m.orchestrator for m in metas})
+    workers = sorted({m.worker for m in metas})
+    tasks = sorted({m.task_id for m in metas})
+    pairings = sorted({(m.orchestrator, m.worker) for m in metas})
+    return {
+        "runs": len(metas),
+        "finished": len(finished),
+        "orchestrators": len(orchestrators),
+        "workers": len(workers),
+        "tasks": len(tasks),
+        "pairings": len(pairings),
+        "repeats": sum(1 for m in metas if m.replicate is not None),
+        "dry_runs": sum(1 for m in metas if m.dry_run),
+        "latest": max((m.started_at or "" for m in metas), default=""),
+        "models": {"orchestrators": orchestrators, "workers": workers},
+        "pairing_list": [{"orchestrator": o, "worker": w} for o, w in pairings],
+    }
+
+
+def _media_kind(ext: str) -> str:
+    ext = "." + ext.lower().lstrip(".")
+    if ext in _IMAGE_EXTENSIONS:
+        return "image"
+    if ext in _VIDEO_EXTENSIONS:
+        return "video"
+    if ext in _CODE_EXTENSIONS:
+        return "code" if ext not in {".html", ".json", ".md", ".txt", ".yaml", ".yml"} else "text"
+    return "binary"
+
+
+def _preferred_artifact_member(names: list[str]) -> str | None:
+    """Prefer a small, inspectable source member over archive boilerplate."""
+    def safe(name: str) -> bool:
+        normalized = name.replace("\\", "/")
+        return (
+            bool(name)
+            and "\x00" not in name
+            and not normalized.startswith("/")
+            and ".." not in Path(normalized).parts
+        )
+
+    candidates = [name for name in names if safe(name) and not name.endswith("/") and "__MACOSX" not in name]
+    for extension in (".diff", ".patch", ".py", ".ts", ".tsx", ".js", ".jsx", ".html", ".css", ".sql", ".json"):
+        for name in candidates:
+            if name.lower().endswith(extension):
+                return name
+    return sorted(candidates)[0] if candidates else None
+
+
+def _artifact_reference(run_dir: Path, run_id: str) -> dict[str, Any] | None:
+    """Reference-only artifact metadata; bytes are loaded by the evidence endpoint."""
+    artifacts = sorted(run_dir.glob("artifact.*"))
+    if not artifacts:
+        return None
+    artifact = artifacts[0]
+    if artifact.suffix.lower() == ".zip":
+        try:
+            with zipfile.ZipFile(artifact) as archive:
+                infos = archive.infolist()
+                member = _preferred_artifact_member([i.filename for i in infos])
+                member_info = archive.getinfo(member) if member else None
+        except (OSError, zipfile.BadZipFile):
+            member_info = None
+            member = None
+        if not member or member_info is None or member_info.is_dir():
+            return None
+        ext = Path(member).suffix.lstrip(".").lower()
+        return {
+            "name": member,
+            "ext": ext,
+            "kind": _media_kind(ext),
+            "media_type": "archive",
+            "bytes": max(0, int(member_info.file_size)),
+            "url": f"/api/run/{quote(run_id, safe='')}/artifact/{quote(member, safe='')}",
+        }
+    ext = artifact.suffix.lstrip(".").lower()
+    try:
+        size = artifact.stat().st_size
+    except OSError:
+        size = 0
+    return {
+        "name": artifact.name,
+        "ext": ext,
+        "kind": _media_kind(ext),
+        "media_type": _media_kind(ext),
+        "bytes": size,
+        "url": f"/api/run/{quote(run_id, safe='')}/artifact",
+    }
+
+
+def _bounded_text(text: str, *, max_bytes: int, max_lines: int, tail: bool = True) -> str:
+    """Bound untrusted evidence before it enters a card or API response."""
+    text = str(text or "").replace("\x00", "")
+    lines = text.splitlines()
+    if len(lines) > max_lines:
+        lines = lines[-max_lines:] if tail else lines[:max_lines]
+    bounded = "\n".join(lines)
+    encoded = bounded.encode("utf-8", errors="replace")
+    if len(encoded) > max_bytes:
+        encoded = encoded[-max_bytes:] if tail else encoded[:max_bytes]
+        bounded = encoded.decode("utf-8", errors="ignore")
+    return bounded
+
+
+def _event_transcript(run_dir: Path) -> str:
+    """Render a short terminal-like view from lifecycle events, never raw prompts."""
+    events, _ = tail_events(run_dir / "events.jsonl", 0)
+    wanted = {
+        "evaluation.completed", "worker_error", "worker.failed", "worker_retry",
+        "artifact.saved", "run.completed", "run.failed", "run.cancelled",
+    }
+    rows: list[str] = []
+    for event in events:
+        if not isinstance(event, dict) or event.get("type") not in wanted:
+            continue
+        output = event.get("output")
+        output = output if isinstance(output, dict) else {}
+        safe_event = dict(event)
+        safe_event["output"] = output
+        timestamp, event_type, worker, detail = event_row(safe_event)
+        if event_type == "artifact.saved":
+            artifact_name = str(output.get("name") or output.get("path") or "")
+            artifact_name = Path(artifact_name).name if artifact_name else ""
+            detail = f"artifact {artifact_name}" if artifact_name else "artifact saved"
+        extra = ""
+        if event_type == "evaluation.completed":
+            extra = f" passes={output.get('passes')} score={output.get('score')}"
+        elif event_type == "worker_error":
+            extra = f" {str(event.get('error') or '')[:160]}"
+        row = f"{timestamp} {event_type:<22} {worker:<10} {detail}{extra}".rstrip()
+        # Event records occasionally carry an absolute harness path. Keep
+        # the evidence endpoint useful without returning local filesystem
+        # layout to the browser or a writer prompt.
+        row = row.replace(str(run_dir), "[run]").replace(str(run_dir.resolve()), "[run]")
+        rows.append(row)
+    return "\n".join(rows)
+
+
+def _proof_reference(meta: Any) -> dict[str, Any]:
+    """Bounded-proof status and links for one run, with no local paths."""
+    run_dir = Path(meta.run_dir)
+    report = _mapping(read_json(run_dir / "report.json"))
+    execution = _mapping(report.get("execution"))
+    output = str(execution.get("output_tail") or "")
+    transcript_text = _bounded_text(output, max_bytes=6000, max_lines=80) if output else ""
+    transcript_label = "test transcript" if transcript_text else "event transcript"
+    if not transcript_text:
+        transcript_text = _bounded_text(_event_transcript(run_dir), max_bytes=6000, max_lines=80)
+    artifact = _artifact_reference(run_dir, meta.run_id)
+    has_transcript = bool(transcript_text)
+    has_artifact = bool(artifact and int(artifact.get("bytes") or 0) > 0)
+    status = "available" if has_transcript and has_artifact else "partial" if has_transcript or has_artifact else "unavailable"
+    return {
+        "status": status,
+        "run_id": meta.run_id,
+        "task_id": meta.task_id,
+        "inspect_url": f"/#/run/{quote(meta.run_id, safe='')}",
+        "evidence_url": f"/api/run/{quote(meta.run_id, safe='')}/evidence",
+        "transcript": {
+            "available": has_transcript,
+            "label": transcript_label,
+            "url": f"/api/run/{quote(meta.run_id, safe='')}/evidence",
+        } if has_transcript else None,
+        "artifact": artifact,
+    }
+
+
+def _representative_run(metas: list[Any], signals: list[dict[str, Any]] | None = None) -> Any | None:
+    """Pick stable evidence: complete proof first, then the most informative run."""
+    if not metas:
+        return None
+    preferred_tasks = {
+        str(signal.get("evidence", {}).get("task_id"))
+        for signal in (signals or [])
+        if signal.get("evidence", {}).get("task_id")
+    }
+
+    def key(meta: Any) -> tuple[Any, ...]:
+        proof = _proof_reference(meta)
+        divergence = (
+            meta.passes is not None and meta.judge_passed is not None
+            and bool(meta.passes) != bool(meta.judge_passed)
+        )
+        return (
+            meta.task_id in preferred_tasks,
+            proof["status"] == "available",
+            proof["status"] != "unavailable",
+            meta.status == "finished",
+            bool(meta.passes),
+            divergence,
+            meta.judge_score is not None,
+            meta.started_at or "",
+            meta.run_id,
+        )
+
+    return max(metas, key=key)
+
+
+def _task_evidence_refs(
+    metas: list[Any], tasks_meta: dict[str, dict[str, str]],
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    cells: dict[str, list[Any]] = {}
+    for meta in metas:
+        if meta.status == "finished":
+            cells.setdefault(meta.task_id, []).append(meta)
+    if not cells:
+        return None, None
+    rows: list[dict[str, Any]] = []
+    for task_id, cell in cells.items():
+        judge_scores = [m.judge_score for m in cell if m.judge_score is not None]
+        representative = _representative_run(cell)
+        rows.append({
+            "task_id": task_id,
+            "title": (tasks_meta.get(task_id) or {}).get("title") or task_id,
+            "passed": sum(1 for m in cell if m.passes),
+            "finished": len(cell),
+            "pass_rate": sum(1 for m in cell if m.passes) / len(cell),
+            "judge_score": mean(judge_scores) if judge_scores else None,
+            "run_id": representative.run_id if representative else None,
+            "inspect_url": f"/#/run/{quote(representative.run_id, safe='')}" if representative else "",
+        })
+    best = sorted(rows, key=lambda row: (-row["pass_rate"], -row["finished"], row["task_id"]))[0]
+    worst = sorted(rows, key=lambda row: (row["pass_rate"], -row["finished"], row["task_id"]))[0]
+    return best, worst
+
+
+def _confidence_level(n: int, ci: list[float] | None) -> str:
+    width = (ci[1] - ci[0]) if ci else 1.0
+    if n < 3 or width >= 0.5:
+        return "low"
+    if n < 10 or width >= 0.25:
+        return "medium"
+    return "strong"
+
+
+def _confidence_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    if payload.get("kind") == "run":
+        mechanical_n = 1 if payload.get("status") == "finished" else 0
+        mechanical = {
+            "n": mechanical_n,
+            "point": 1.0 if payload.get("passes") else 0.0 if payload.get("passes") is not None else None,
+            "ci": _wilson(1, 1) if mechanical_n else None,
+            "level": "low" if mechanical_n else "unavailable",
+        }
+        judge = {
+            "n": 1 if payload.get("judge_state") == "judged" else 0,
+            "point": payload.get("judge_score") if payload.get("judge_state") == "judged" else payload.get("judge_noul"),
+            "ci": None,
+            "level": "low" if payload.get("judge_state") == "judged" else "unavailable",
+        }
+    else:
+        finished = int(payload.get("finished") or 0)
+        ci = payload.get("pass_ci")
+        mechanical = {
+            "n": finished,
+            "point": payload.get("pass_rate"),
+            "ci": ci,
+            "level": _confidence_level(finished, ci),
+        }
+        judge = {
+            "n": int(payload.get("judged") or 0),
+            "point": payload.get("judge_score_mean") if payload.get("judged") else None,
+            "ci": None,
+            "level": _confidence_level(int(payload.get("judged") or 0), None) if payload.get("judged") else "unavailable",
+        }
+    return {"mechanical": mechanical, "judge": judge}
+
+
+def _story_signals(
+    payload: dict[str, Any],
+    metas: list[Any],
+    selected_row: dict[str, Any] | None,
+    peer_rows: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """Compute the shared, deterministic finding set used by card and thread."""
+    signals: list[dict[str, Any]] = []
+    if payload.get("kind") == "run":
+        if payload.get("passes") is not None and payload.get("judge_passed") is not None and bool(payload["passes"]) != bool(payload["judge_passed"]):
+            signals.append({
+                "id": "axis_divergence",
+                "label": "axis divergence",
+                "tone": "info",
+                "claim": "The mechanical gate and judge disagree on this run.",
+                "evidence": {"mechanical": bool(payload.get("passes")), "judge": bool(payload.get("judge_passed"))},
+            })
+        if payload.get("passes") and (payload.get("judge_score") or 0) >= 0.8:
+            signals.append({
+                "id": "high_quality",
+                "label": "high quality",
+                "tone": "pass",
+                "claim": "The run passed its mechanical gate with a strong judge score.",
+                "evidence": {"judge_score": payload.get("judge_score")},
+            })
+        if payload.get("judge_state") != "judged":
+            signals.append({
+                "id": "weak_confidence",
+                "label": "weak confidence",
+                "tone": "warn",
+                "claim": "Only the mechanical axis is available; no usable judge verdict is present.",
+                "evidence": {"judge_state": payload.get("judge_state")},
+            })
+        return signals
+
+    pr = payload.get("pass_rate")
+    jp = payload.get("judge_pass_rate")
+    if pr is not None and jp is not None and (float(pr) - float(jp) > 0.15 or float(jp) - float(pr) > 0.05):
+        signals.append({
+            "id": "axis_divergence",
+            "label": "axis divergence",
+            "tone": "info",
+            "claim": f"Checks pass {round(float(pr) * 100)}% while the judge approves {round(float(jp) * 100)}%.",
+            "evidence": {"mechanical": pr, "judge": jp},
+        })
+
+    split = payload.get("type_split") or {}
+    if split:
+        split_rows = [
+            (task, values, task)
+            for task, values in split.items()
+            if values.get("finished", 0) >= 2 and values.get("finished", 0)
+        ]
+    else:
+        split_rows = [
+            (row.get("task_id", ""), row, row.get("title") or row.get("task_title") or row.get("task_id", ""))
+            for row in payload.get("task_rows") or []
+            if row.get("finished", 0) >= 2
+        ]
+    typed = [(label, values, task_id) for task_id, values, label in split_rows]
+    if len(typed) >= 2:
+        best_type, best_values, best_task_id = max(
+            typed, key=lambda item: item[1]["passed"] / item[1]["finished"])
+        worst_type, worst_values, _ = min(
+            typed, key=lambda item: item[1]["passed"] / item[1]["finished"])
+        best_rate = best_values["passed"] / best_values["finished"]
+        worst_rate = worst_values["passed"] / worst_values["finished"]
+        if best_rate - worst_rate >= 0.20:
+            signals.append({
+                "id": "task_specialist",
+                "label": "task specialist",
+                "tone": "info",
+                "claim": f"Task types split: {round(best_rate * 100)}% on {best_type} versus {round(worst_rate * 100)}% on {worst_type}.",
+                "evidence": {"best_type": best_type, "worst_type": worst_type, "task_id": best_task_id},
+            })
+
+    if selected_row and selected_row.get("cost_per_pass") is not None:
+        peer_dicts = peer_rows or [selected_row]
+        peer_passes = [float(row.get("pass_rate") or 0) for row in peer_dicts
+                       if row.get("pass_rate") is not None]
+        peer_costs = [float(row["cost_per_pass"]) for row in peer_dicts
+                      if row.get("cost_per_pass") is not None]
+        selected_pass = float(selected_row.get("pass_rate") or 0)
+        selected_cost = float(selected_row["cost_per_pass"])
+        if (peer_passes and peer_costs and selected_pass >= max(peer_passes) - 0.10
+                and selected_cost <= statistics.median(peer_costs)):
+            signals.append({
+                "id": "cost_frontier",
+                "label": "cost frontier",
+                "tone": "pass",
+                "claim": f"The selected setup is at ${selected_cost:.4f} per successful finish.",
+                "evidence": {"cost_per_pass": selected_cost, "pass_rate": selected_pass},
+            })
+
+    if pr is not None and int(payload.get("finished") or 0) >= 3 and float(pr) >= 0.80:
+        signals.append({
+            "id": "high_quality",
+            "label": "high quality",
+            "tone": "pass",
+            "claim": f"Observed mechanical pass is {round(float(pr) * 100)}% across {payload.get('finished')} finished runs.",
+            "evidence": {"pass_rate": pr, "n": payload.get("finished")},
+        })
+
+    ci = payload.get("pass_ci") or []
+    wide = len(ci) == 2 and float(ci[1]) - float(ci[0]) >= 0.40
+    if int(payload.get("finished") or 0) < 3 or wide or not payload.get("judged"):
+        reason = "the sample is thin" if int(payload.get("finished") or 0) < 3 else "the confidence interval is wide" if wide else "no judge verdicts are available"
+        signals.append({
+            "id": "weak_confidence",
+            "label": "weak confidence",
+            "tone": "warn",
+            "claim": f"Treat this as directional evidence: {reason}.",
+            "evidence": {"finished": payload.get("finished"), "ci": payload.get("pass_ci")},
+        })
+    return signals
+
+
+def _story_caption(payload: dict[str, Any], claim: str) -> str:
+    if payload.get("kind") == "run":
+        context = f"Status {payload.get('status') or 'unknown'} · ${float(payload.get('cost_usd') or 0):.4f} · {payload.get('latency_ms') or 0:.0f}ms"
+    else:
+        ci = payload.get("pass_ci")
+        context = f"{payload.get('finished', 0)}/{payload.get('runs', 0)} finished"
+        if ci:
+            context += f" · 95% CI {round(float(ci[0]) * 100)}–{round(float(ci[1]) * 100)}%"
+        context += f" · {payload.get('judged', 0)} judge-reviewed"
+    return _bounded_text(f"{claim} {context}.", max_bytes=270, max_lines=4)
+
+
+def _attach_story(
+    payload: dict[str, Any],
+    metas: list[Any],
+    *,
+    lens: str = "overall",
+    peer_rows: list[Any] | None = None,
+    tasks_meta: dict[str, dict[str, str]] | None = None,
+    representative: bool = True,
+) -> dict[str, Any]:
+    """Attach one shared story envelope to any card scope."""
+    tasks_meta = tasks_meta or {}
+    requested = lens if lens in CARD_LENS_IDS else "overall"
+    peer_dicts = [_pairing_dict(row) for row in (peer_rows or [])]
+    lens_rows = _lens_payloads(peer_dicts)
+    lens_info = next((item for item in lens_rows if item["id"] == requested), lens_rows[0])
+    if payload.get("kind") == "group":
+        selected_target = lens_info["selected_target"]
+    elif payload.get("kind") == "pairing":
+        selected_target = payload.get("target", "")
+    else:
+        selected_target = payload.get("target", "")
+    selected_row = next((row for row in peer_dicts if _pairing_target(row) == selected_target), None)
+    if payload.get("kind") == "run":
+        selected_row = None
+    signals = _story_signals(payload, metas, selected_row, peer_dicts)
+    proof_metas = metas
+    if payload.get("kind") == "group" and selected_target:
+        selected_pair = selected_target.split("|", 1)
+        proof_metas = [
+            meta for meta in metas
+            if (meta.orchestrator, meta.worker) == tuple(selected_pair)
+        ] or metas
+    representative_meta = _representative_run(proof_metas, signals) if proof_metas else None
+    proof = _proof_reference(representative_meta) if representative_meta else {
+        "status": "unavailable", "run_id": None, "task_id": payload.get("task_id"),
+        "inspect_url": "", "evidence_url": "", "transcript": None, "artifact": None,
+    }
+    proof["representative"] = representative
+    best_task, worst_task = _task_evidence_refs(metas, tasks_meta)
+    confidence = _confidence_payload(payload)
+    claim = signals[0]["claim"] if signals else str(payload.get("verdict_line") or "Evidence is still incomplete.")
+    caveats: list[str] = []
+    if representative and proof.get("run_id"):
+        caveats.append("Proof is one representative stored run, not the aggregate result.")
+    elif representative:
+        caveats.append("No representative stored proof is available for this scope.")
+    if confidence["mechanical"]["level"] == "low":
+        caveats.append("Mechanical confidence is low because the sample is thin or the interval is wide.")
+    if not payload.get("judged") and payload.get("kind") != "run":
+        caveats.append("No judge verdicts are present in this scope.")
+    payload["lens"] = {
+        "id": requested,
+        "label": lens_info["label"],
+        "description": lens_info["description"],
+        "selected_target": selected_target,
+        "reason": (
+            "Direct run evidence; the selected lens is retained for continuity."
+            if payload.get("kind") == "run"
+            else lens_info.get("reason", "") if selected_target == lens_info.get("selected_target")
+            else f"This card was opened directly; {lens_info['label']} currently selects {lens_info.get('selected_target') or 'no eligible row'}."
+        ),
+    }
+    payload["story"] = {
+        "scope": payload.get("kind"),
+        "claim": claim,
+        "caption": _story_caption(payload, claim),
+        "lens": payload["lens"],
+        "cohort": _cohort_payload(metas),
+        "confidence": confidence,
+        "signals": signals,
+        "metrics": _story_metrics(payload),
+        "proof": proof,
+        "best_task": best_task,
+        "worst_task": worst_task,
+        "caveats": caveats,
+        "provenance": {
+            "suite": payload.get("suite"),
+            "source": "orchestral observatory",
+            "group": (
+                payload.get("run_group") or next(iter(payload.get("groups") or []), None)
+                if payload.get("kind") == "pairing"
+                else payload.get("run_group")
+            ),
+        },
+    }
+    return payload
+
+
+def _story_metrics(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    if payload.get("kind") == "run":
+        verdict = "PASS" if payload.get("passes") else "FAIL" if payload.get("passes") is False else "—"
+        judge_value = (
+            f"{float(payload['judge_noul']):.2f}" if payload.get("judge_noul") is not None
+            else f"{float(payload['judge_score']):.2f}" if payload.get("judge_score") is not None
+            else "—"
+        )
+        return [
+            {"id": "mechanical", "label": "mechanical", "value": verdict, "detail": payload.get("failure_reason") or "execution gate", "tone": "mech"},
+            {"id": "judge", "label": "judge axis", "value": judge_value, "detail": payload.get("judge_state") or "not judged", "tone": "judge"},
+            {"id": "cost", "label": "cost", "value": f"${float(payload.get('cost_usd') or 0):.4f}", "detail": f"{payload.get('latency_ms') or 0:.0f}ms", "tone": "cost"},
+        ]
+    judged = int(payload.get("judged") or 0)
+    judge_value = f"{payload.get('judge_approved', 0)}/{judged}" if judged else "—"
+    return [
+        {
+            "id": "mechanical",
+            "label": "mechanical pass",
+            "value": f"{payload.get('passed', 0)}/{payload.get('finished', 0)}",
+            "detail": f"{round(float(payload['pass_rate']) * 100) if payload.get('pass_rate') is not None else '—'}% observed",
+            "tone": "mech",
+        },
+        {
+            "id": "judge",
+            "label": "judge approved",
+            "value": judge_value,
+            "detail": f"{payload.get('judged', 0)} judged" if judged else "no judge evidence",
+            "tone": "judge",
+        },
+        {
+            "id": "cost",
+            "label": "metered spend",
+            "value": f"${float(payload.get('cost_usd') or 0):.4f}",
+            "detail": "observed provider cost",
+            "tone": "cost",
+        },
+    ]
+
+
 def card_payload(
     store: RunStore,
     kind: str,
@@ -787,6 +1485,7 @@ def card_payload(
     tasks_dir: Path | str | None = None,
     reports_dir: Path | str | None = None,
     groups_file: Path | str | None = None,
+    lens: str = "overall",
 ) -> dict[str, Any] | None:
     """Share-card data — the engineered summary an X post needs: flagship
     numbers, both verdict axes, the annotation flag, and caveat inputs
@@ -803,7 +1502,8 @@ def card_payload(
         if "|" not in target:
             return None
         orch, worker = target.split("|", 1)
-        metas = store.list_runs(run_group=group) if group else store.list_runs(limit=None)
+        scope_metas = _runs_for_group(store, group)
+        metas = [m for m in scope_metas if m.orchestrator == orch and m.worker == worker]
         cell = [m for m in metas if m.orchestrator == orch and m.worker == worker]
         if not cell:
             return None
@@ -817,6 +1517,7 @@ def card_payload(
         per_type_judge: dict[str, list[float]] = {}
         failures: dict[str, int] = {}
         judged_scores: list[float] = []
+        judged_n = 0
         judge_passed_n = 0
         judge_models: set[str] = set()
         for m in cell:
@@ -826,15 +1527,17 @@ def card_payload(
                 st = per_type.setdefault(types.get(m.task_id, "?"), [0, 0])
                 st[1] += 1
                 st[0] += 1 if m.passes else 0
-                j = (read_json(Path(m.run_dir) / "report.json") or {}).get("judge") or {}
+                report = _mapping(read_json(Path(m.run_dir) / "report.json"))
+                j = _mapping(report.get("judge"))
+                if any(j.get(key) is not None for key in ("score", "noul", "passed")):
+                    judged_n += 1
                 if j.get("score") is not None:
                     judged_scores.append(float(j["score"]))
                     per_type_judge.setdefault(types.get(m.task_id, "?"), []).append(float(j["score"]))
-                if j.get("passed"):
+                if j.get("passed") is True:
                     judge_passed_n += 1
                 if j.get("model"):
                     judge_models.add(j["model"])
-        judged_n = len(judged_scores)
         pr = passed / len(finished) if finished else None
         ci = _wilson(passed, len(finished))
         top_failure = max(failures.items(), key=lambda kv: kv[1])[0] if failures else None
@@ -856,6 +1559,7 @@ def card_payload(
             line = "mechanical grading only — nothing judged yet"
         payload = {
             "kind": "pairing", "target": target, "suite": SUITE_VERSION,
+            "target_pair": target,
             "orchestrator": orch, "worker": worker,
             "runs": len(cell), "finished": len(finished), "passed": passed,
             "pass_rate": pr, "pass_ci": ci, "verdict_line": line,
@@ -887,12 +1591,18 @@ def card_payload(
             "flag": ann.get("flag", ""), "note": ann.get("note", ""),
         }
         payload["description"] = _eval_description(payload, "pairing")
-        return payload
+        return _attach_story(
+            payload,
+            cell,
+            lens=lens,
+            peer_rows=pairing_leaderboard(scope_metas, unmetered_workers=store.unmetered_workers()),
+            tasks_meta=_task_meta(store, tasks_dir),
+        )
     if kind == "group":
         g = next((x for x in groups_payload(store, groups_file) if x["group"] == target), None)
         if g is None:
             return None
-        metas = store.list_runs(run_group=target)
+        metas = _runs_for_group(store, target)
         cells = aggregate(metas)
         pairings = sorted({(c.orchestrator, c.worker) for c in cells})
         tmeta = _task_meta(store, tasks_dir)
@@ -901,6 +1611,7 @@ def card_payload(
         judge_scores: list[float] = []
         judge_nouls: list[float] = []
         card_judge_models: set[str] = set()
+        judged_n = 0
         judge_passed_n = 0
         # comparable rows — per-task split is always meaningful; per-pairing
         # rows matter when the eval set ran more than one pairing
@@ -909,6 +1620,7 @@ def card_payload(
         per_pair: dict[tuple[str, str], list[int]] = {}
         pair_judge: dict[tuple[str, str], list[float]] = {}
         pair_jpassed: dict[tuple[str, str], int] = {}
+        pair_judged: dict[tuple[str, str], int] = {}
         pair_cost: dict[tuple[str, str], float] = {}
         for m in metas:
             if m.status != "finished":
@@ -921,9 +1633,12 @@ def card_payload(
             ps[1] += 1
             ps[0] += 1 if m.passes else 0
             pair_cost[key] = pair_cost.get(key, 0.0) + (m.total_cost_usd or 0.0)
-            j = (read_json(Path(m.run_dir) / "report.json") or {}).get("judge") or {}
-            if not j or (j.get("score") is None and j.get("noul") is None):
-                continue
+            report = _mapping(read_json(Path(m.run_dir) / "report.json"))
+            j = _mapping(report.get("judge"))
+            has_judge = any(j.get(key) is not None for key in ("score", "noul", "passed"))
+            if has_judge:
+                judged_n += 1
+                pair_judged[key] = pair_judged.get(key, 0) + 1
             if j.get("score") is not None:
                 judge_scores.append(float(j["score"]))
                 pair_judge.setdefault(key, []).append(float(j["score"]))
@@ -932,10 +1647,9 @@ def card_payload(
                 judge_nouls.append(float(j["noul"]))
             if j.get("model"):
                 card_judge_models.add(j["model"])
-            if j.get("passed"):
+            if j.get("passed") is True:
                 judge_passed_n += 1
                 pair_jpassed[key] = pair_jpassed.get(key, 0) + 1
-        judged_n = len(judge_scores) or len(judge_nouls)
         jp_rate = judge_passed_n / judged_n if judged_n else None
         ci = _wilson(g["passed"], g["finished"])
         failed_n = sum(1 for m in metas if m.status == "failed")
@@ -975,7 +1689,7 @@ def card_payload(
                 {"orchestrator": o, "worker": w,
                  "finished": n, "passed": p,
                  "pass_rate": round(p / n, 3),
-                 "judged": len(pair_judge.get(key, [])),
+                 "judged": pair_judged.get(key, 0),
                  "judge_approved": pair_jpassed.get(key, 0),
                  "judge_score_mean": (round(sum(pair_judge[key]) / len(pair_judge[key]), 3)
                                       if pair_judge.get(key) else None),
@@ -987,6 +1701,7 @@ def card_payload(
             "task_rows": [
                 {"task_id": t,
                  "title": (tmeta.get(t) or {}).get("title") or "",
+                 "task_title": (tmeta.get(t) or {}).get("title") or "",
                  "blurb": (tmeta.get(t) or {}).get("blurb") or "",
                  "passed": p, "finished": n,
                  "pass_rate": round(p / n, 3),
@@ -1002,14 +1717,20 @@ def card_payload(
             "flag": ann.get("flag", ""), "note": ann.get("note", ""),
         }
         payload["description"] = _eval_description(payload, "group")
-        return payload
+        return _attach_story(
+            payload,
+            metas,
+            lens=lens,
+            peer_rows=pairing_leaderboard(metas, unmetered_workers=store.unmetered_workers()),
+            tasks_meta=tmeta,
+        )
     if kind == "run":
         meta = store.get_run(target)
         if meta is None:
             return None
-        report = read_json(Path(meta.run_dir) / "report.json") or {}
-        judge = report.get("judge") or {}
-        plan = read_json(Path(meta.run_dir) / "plan.json") or {}
+        report = _mapping(read_json(Path(meta.run_dir) / "report.json"))
+        judge = _mapping(report.get("judge"))
+        plan = _mapping(read_json(Path(meta.run_dir) / "plan.json"))
         plan_summary = str(plan.get("plan") or "").strip() if isinstance(plan, dict) else ""
         judge_reason = str(judge.get("reasoning") or "").strip()
         if judge_reason:
@@ -1040,7 +1761,7 @@ def card_payload(
                 "self": (o, w) == (meta.orchestrator, meta.worker),
             })
         pair_rows.sort(key=lambda x: (-float(x["pass_rate"] or -1), x["orchestrator"]))
-        return {
+        payload = {
             "kind": "run", "target": target, "suite": SUITE_VERSION,
             "task_id": meta.task_id, "orchestrator": meta.orchestrator,
             "task_title": tm.get("title") or "", "task_blurb": tm.get("blurb") or "",
@@ -1069,7 +1790,148 @@ def card_payload(
             "explainer": _explainer("run", {}),
             "flag": ann.get("flag", ""), "note": ann.get("note", ""),
         }
+        return _attach_story(
+            payload,
+            [meta],
+            lens=lens,
+            tasks_meta={meta.task_id: tm},
+            representative=False,
+        )
     return None
+
+
+def run_evidence_payload(
+    store: RunStore,
+    run_id: str,
+    *,
+    max_bytes: int = 6000,
+    max_lines: int = 80,
+) -> dict[str, Any] | None:
+    """Return bounded terminal and artifact previews for the card proof panel."""
+    meta = store.get_run(run_id)
+    if meta is None:
+        return None
+    max_bytes = max(256, min(int(max_bytes), 16000))
+    max_lines = max(4, min(int(max_lines), 160))
+    run_dir = Path(meta.run_dir)
+    report = _mapping(read_json(run_dir / "report.json"))
+    execution = _mapping(report.get("execution"))
+    output = str(execution.get("output_tail") or "")
+    raw_transcript = output or _event_transcript(run_dir)
+    transcript_text = _bounded_text(raw_transcript, max_bytes=max_bytes, max_lines=max_lines)
+    proof = _proof_reference(meta)
+    transcript = proof.get("transcript")
+    if transcript:
+        transcript = {
+            **transcript,
+            "text": transcript_text,
+            "truncated": len(raw_transcript) > len(transcript_text),
+        }
+    artifact = proof.get("artifact")
+    if artifact:
+        artifact = dict(artifact)
+        artifact["preview"] = None
+        full_size = int(artifact.get("bytes") or 0)
+        if artifact.get("kind") not in {"image", "video"}:
+            member = artifact.get("name") if artifact.get("media_type") == "archive" else None
+            body = b""
+            try:
+                if member:
+                    with zipfile.ZipFile(run_dir / "artifact.zip") as archive:
+                        info = archive.getinfo(member)
+                        full_size = max(0, int(info.file_size))
+                        if (
+                            not info.is_dir()
+                            and not Path(member.replace("\\", "/")).is_absolute()
+                            and ".." not in Path(member.replace("\\", "/")).parts
+                        ):
+                            with archive.open(info) as source_file:
+                                body = source_file.read(max_bytes * 4)
+                else:
+                    artifact_path = run_dir / str(artifact["name"])
+                    if artifact_path.is_file():
+                        full_size = artifact_path.stat().st_size
+                        with artifact_path.open("rb") as source_file:
+                            body = source_file.read(max_bytes * 4)
+            except (OSError, KeyError, ValueError, zipfile.BadZipFile):
+                body = b""
+            artifact["bytes"] = full_size
+            if body:
+                preview = body.decode("utf-8", errors="replace")
+                artifact["preview"] = _bounded_text(
+                    preview, max_bytes=max_bytes, max_lines=max_lines, tail=False,
+                )
+                artifact["truncated"] = (
+                    full_size > len(body) or len(preview) > len(artifact["preview"])
+                )
+            else:
+                artifact["truncated"] = False
+    proof["transcript"] = transcript
+    proof["artifact"] = artifact
+    return proof
+
+
+def card_catalog_payload(
+    store: RunStore,
+    *,
+    tasks_dir: Path | str | None = None,
+    reports_dir: Path | str | None = None,
+    groups_file: Path | str | None = None,
+    group: str | None = None,
+    scope: str = "all",
+    lens: str = "overall",
+    flagged: bool = False,
+) -> dict[str, Any]:
+    """Build a bounded gallery of card previews from the same payloads as cards."""
+    if scope not in {"all", "group", "pairing"}:
+        scope = "all"
+    groups = groups_payload(store, groups_file)
+    if group:
+        groups = [row for row in groups if row["group"] == group]
+    cards: list[dict[str, Any]] = []
+    if scope in {"all", "group"}:
+        for row in groups:
+            card = card_payload(
+                store, "group", row["group"], lens=lens,
+                tasks_dir=tasks_dir, reports_dir=reports_dir, groups_file=groups_file,
+            )
+            if card:
+                cards.append(card)
+    if scope in {"all", "pairing"}:
+        pairings = pairings_payload(store, tasks_dir=tasks_dir, group=group or None)
+        seen: set[str] = set()
+        for row in pairings["rows"]:
+            target = row["target"]
+            if target in seen:
+                continue
+            seen.add(target)
+            card = card_payload(
+                store, "pairing", target, group=group or None, lens=lens,
+                tasks_dir=tasks_dir, reports_dir=reports_dir, groups_file=groups_file,
+            )
+            if card:
+                cards.append(card)
+    if flagged:
+        cards = [card for card in cards if card.get("flag")]
+    # Recency is the default within each annotation state; flagged stories
+    # remain pinned above unflagged stories without hiding newer evidence.
+    cards.sort(
+        key=lambda card: (card.get("story") or {}).get("cohort", {}).get("latest", "")
+        or card.get("latest") or "",
+        reverse=True,
+    )
+    cards.sort(key=lambda card: {"interesting": 0, "not": 1}.get(card.get("flag", ""), 2))
+    return {
+        "cards": cards[:60],
+        "groups": groups_payload(store, groups_file),
+        "lenses": list(CARD_LENSES),
+        "scopes": [
+            {"id": "all", "label": "All stories"},
+            {"id": "group", "label": "Run groups"},
+            {"id": "pairing", "label": "Pairings"},
+        ],
+        "filters": {"group": group or "", "scope": scope, "lens": lens, "flagged": flagged},
+    }
 
 
 def compare_payload(store: RunStore, group_a: str, group_b: str) -> dict[str, Any]:

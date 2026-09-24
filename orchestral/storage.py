@@ -372,10 +372,10 @@ class RunStore:
     ) -> dict[str, Any]:
         """Upsert a user annotation — the observatory's stateful layer.
 
-        ``kind`` is ``run`` or ``group``; ``flag`` is ``interesting``,
+        ``kind`` is ``run``, ``group``, or ``pairing``; ``flag`` is ``interesting``,
         ``not``, or ``''`` (clears the flag but keeps the row for the note)."""
-        if kind not in ("run", "group"):
-            raise ValueError(f"annotation kind must be run|group, got {kind!r}")
+        if kind not in ("run", "group", "pairing"):
+            raise ValueError(f"annotation kind must be run|group|pairing, got {kind!r}")
         if flag not in ("interesting", "not", ""):
             raise ValueError(f"flag must be interesting|not|'', got {flag!r}")
         with self._connect() as conn:

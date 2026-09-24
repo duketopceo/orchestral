@@ -34,7 +34,7 @@ class TestBrowserSmoke(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.tmp = tempfile.mkdtemp()
-        Runner(dry_run=True, runs_dir=cls.tmp, store=RunStore(cls.tmp)).run(
+        Runner(dry_run=True, runs_dir=cls.tmp, store=RunStore(cls.tmp), run_group="browser-group").run(
             TaskSpec(id="t-task", type="html", prompt="p"),
             _model("o/model", "orchestrator"), _model("w/model", "worker"),
         )
@@ -61,6 +61,45 @@ class TestBrowserSmoke(unittest.TestCase):
                 pg.goto(f"http://127.0.0.1:{self.port}/#/new")
                 pg.wait_for_selector("button.primary")
                 self.assertIn("launch", pg.inner_text("body"))
+            finally:
+                browser.close()
+
+    def test_cards_studio_filters_and_opens_universal_card(self):
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch()
+            try:
+                pg = browser.new_page(viewport={"width": 390, "height": 844})
+                pg.goto(f"http://127.0.0.1:{self.port}/#/cards")
+                pg.wait_for_selector("#view[data-ready='1']")
+                self.assertIn("Cards", pg.inner_text("h1"))
+                self.assertIn("shareable card", pg.inner_text("body").lower())
+                self.assertGreaterEqual(pg.locator(".gallery-card").count(), 1)
+                self.assertEqual(pg.locator("body").evaluate("e => e.scrollWidth"), 390)
+
+                pg.select_option("#cards-lens", "divergence")
+                pg.wait_for_selector("#view[data-ready='1']")
+                self.assertIn("lens=divergence", pg.url)
+                pg.locator(".gallery-card-title").first.click()
+                pg.wait_for_selector(".xcard")
+                self.assertIn("run group", pg.inner_text("body").lower())
+                self.assertGreaterEqual(pg.locator(".xc-proof-panel").count(), 2)
+            finally:
+                browser.close()
+
+    def test_card_is_usable_at_mobile_width(self):
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch()
+            try:
+                pg = browser.new_page(viewport={"width": 390, "height": 844})
+                pg.goto(
+                    f"http://127.0.0.1:{self.port}/#/card?kind=group&target=browser-group",
+                )
+                pg.wait_for_selector(".xcard")
+                pg.wait_for_selector("#view[data-ready='1']")
+                self.assertEqual(pg.locator("body").evaluate("e => e.scrollWidth"), 390)
+                card = pg.locator(".xcard")
+                self.assertLessEqual(card.evaluate("e => e.scrollWidth"), 390)
+                self.assertGreater(card.evaluate("e => e.getBoundingClientRect().height"), 675)
             finally:
                 browser.close()
 

@@ -11,6 +11,7 @@ import time
 import unittest
 import urllib.error
 import urllib.request
+import zipfile
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -493,6 +494,39 @@ class TestHttpRoutes(unittest.TestCase):
         payload = json.loads(body)
         self.assertIn("timeline", payload)
         self.assertIn("artifact", payload)
+
+    def test_card_catalog_story_and_evidence_routes(self):
+        code, body = self._get("/api/cards?scope=pairing&lens=overall")
+        self.assertEqual(code, 200)
+        catalog = json.loads(body)
+        self.assertTrue(catalog["cards"])
+        self.assertIn("story", catalog["cards"][0])
+        self.assertIn("lenses", catalog)
+
+        code, body = self._get(f"/api/card?kind=run&target={self.rid}&lens=divergence")
+        self.assertEqual(code, 200)
+        card = json.loads(body)
+        self.assertEqual(card["lens"]["id"], "divergence")
+        self.assertIn("claim", card["story"])
+
+        code, body = self._get(f"/api/run/{self.rid}/evidence?max_bytes=300&max_lines=8")
+        self.assertEqual(code, 200)
+        evidence = json.loads(body)
+        self.assertIn(evidence["status"], {"available", "partial", "unavailable"})
+        if evidence["transcript"]:
+            self.assertLessEqual(len(evidence["transcript"]["text"].encode()), 300)
+
+    def test_nested_archive_member_url_is_readable(self):
+        store = RunStore(self.tmp)
+        run_id, run_dir = store.new_run(
+            "o/model", "t-task", "w/model", {"dry_run": True},
+        )
+        with zipfile.ZipFile(Path(run_dir) / "artifact.zip", "w") as archive:
+            archive.writestr("src/worker.py", "print('nested')\n")
+
+        code, body = self._get(f"/api/run/{run_id}/artifact/src%2Fworker.py")
+        self.assertEqual(code, 200)
+        self.assertEqual(body, "print('nested')\n")
 
     def test_flags_and_card_api(self):
         # set a flag through the API, read it back through /api/flags + /api/card

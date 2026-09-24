@@ -523,7 +523,7 @@ async function renderCompare(a, b) {
 
 /* ----- leaderboard ----- */
 
-function lbScatter(rows) {
+function lbScatter(rows, cardHref, selectedTarget) {
   const pts = rows.filter(r => r.cost_per_pass != null && r.pass_rate != null);
   if (pts.length < 2) return `<div class="empty">need ≥2 metered pairings to plot cost vs outcome</div>`;
   const W = 720, H = 260, padL = 40, padR = 14, padT = 16, padB = 30;
@@ -544,11 +544,17 @@ function lbScatter(rows) {
     ${(() => {
       const placed = [];
       const LW = 5.7; // approx char width at 9px mono
-      return pts.map(r => {
+      return pts.map((r, index) => {
         const rr = 4 + 8 * Math.sqrt((r.finished || 1) / rMax);
         const short = s => slug(s).replace(/-\d{2,4}$/, "").slice(0, 14);
         const label = `${short(r.orchestrator)}→${short(r.worker)}`;
         const cx = px(r.cost_per_pass), cy = py(r.pass_rate);
+        const selected = r.target === selectedTarget;
+        const showLabel = selected || index < 6;
+        if (!showLabel) return `<circle cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="${rr.toFixed(1)}"
+          class="sc-pt${r.low_sample ? " thin" : ""}${selected ? " selected" : ""}"
+          data-go="${cardHref("pairing", r.orchestrator + "|" + r.worker)}">
+          <title>${esc(r.orchestrator)} → ${esc(r.worker)} — pass ${fmtPct(r.pass_rate)}, ${fmtMoney(r.cost_per_pass)}/pass, n=${r.finished}</title></circle>`;
         const lx = Math.min(Math.max(cx, padL + label.length * LW / 2), W - padR - label.length * LW / 2);
         let ty = cy - rr - 4;
         // nudge down until the label box clears everything placed so far
@@ -559,8 +565,8 @@ function lbScatter(rows) {
           ty += 12;
         }
         return `<circle cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="${rr.toFixed(1)}"
-          class="sc-pt${r.low_sample ? " thin" : ""}"
-          data-go="#/card?kind=pairing&target=${encodeURIComponent(r.orchestrator + "|" + r.worker)}">
+          class="sc-pt${r.low_sample ? " thin" : ""}${selected ? " selected" : ""}"
+          data-go="${cardHref("pairing", r.orchestrator + "|" + r.worker)}">
           <title>${esc(r.orchestrator)} → ${esc(r.worker)} — pass ${fmtPct(r.pass_rate)}, ${fmtMoney(r.cost_per_pass)}/pass, n=${r.finished}</title></circle>
         <text x="${lx.toFixed(1)}" y="${ty.toFixed(1)}" class="sc-pt-lab" text-anchor="middle">${esc(label)}</text>`;
       }).join("");
@@ -569,38 +575,81 @@ function lbScatter(rows) {
 }
 
 async function viewLeaderboard(params) {
-  const group = params.get("group") || "";
-  const sort = params.get("sort") || "pass_rate";
+  const groups = await api("/api/groups");
+  const requestedGroup = params.get("group");
+  // A run group is the default story boundary; all-runs remains an explicit choice.
+  const group = requestedGroup !== null ? requestedGroup : (groups[0] && groups[0].group) || "";
+  const requestedLens = params.get("lens") || "overall";
   const d = await api("/api/pairings" + (group ? `?group=${encodeURIComponent(group)}` : ""));
-  const sorters = {
-    pass_rate: (a, b) => (b.pass_rate ?? -1) - (a.pass_rate ?? -1),
-    cost_per_pass: (a, b) => (a.cost_per_pass ?? 1e9) - (b.cost_per_pass ?? 1e9),
-    judge: (a, b) => (b.judge_score_median ?? -1) - (a.judge_score_median ?? -1),
-    cost_total: (a, b) => (a.cost_total ?? 1e9) - (b.cost_total ?? 1e9),
-    tasks: (a, b) => (b.tasks_covered ?? 0) - (a.tasks_covered ?? 0),
+  const lens = d.lenses.find(item => item.id === requestedLens) || d.lenses[0] || {
+    id: "overall", label: "Best overall", description: "No eligible pairing yet.",
+    selected_target: "", ranking: [], reason: "", empty_reason: "no pairing has three finished runs yet",
   };
-  // low-n rows never rank: partition them to the tail whatever the sort
-  const rows = [...d.rows].sort((a, b) =>
-    (a.low_sample ? 1 : 0) - (b.low_sample ? 1 : 0)
-    || (sorters[sort] || sorters.pass_rate)(a, b));
+  const order = new Map(lens.ranking.map((target, index) => [target, index]));
+  const rows = [...d.rows].sort((a, b) => {
+    const ai = order.has(a.target) ? order.get(a.target) : Number.MAX_SAFE_INTEGER;
+    const bi = order.has(b.target) ? order.get(b.target) : Number.MAX_SAFE_INTEGER;
+    return ai - bi || Number(a.low_sample) - Number(b.low_sample) ||
+      (b.pass_rate ?? -1) - (a.pass_rate ?? -1) ||
+      (a.cost_per_pass ?? 1e9) - (b.cost_per_pass ?? 1e9);
+  });
   let rank = 0;
-  const ranked = rows.filter(r => !r.low_sample).length;
+  const ranked = lens.ranking.length;
   const mx = d.matrix;
   const maxPass = Math.max(0.01, ...mx.cells.map(c => c.pass_rate ?? 0));
   const cellOf = (o, w) => mx.cells.find(c => c.orchestrator === o && c.worker === w);
+  const cardHref = (kind, target) => {
+    const query = new URLSearchParams({ kind, target, lens: lens.id });
+    if (group) query.set("group", group);
+    return `#/card?${query.toString()}`;
+  };
+  const leaderboardHash = () => {
+    const query = new URLSearchParams({ lens: lens.id });
+    if (group) query.set("group", group);
+    return `#/leaderboard?${query.toString()}`;
+  };
+  const lensHref = id => {
+    const query = new URLSearchParams({ lens: id });
+    if (group) query.set("group", group);
+    return `#/leaderboard?${query.toString()}`;
+  };
+  const selectedHref = lens.selected_target ? cardHref("pairing", lens.selected_target) : "";
 
   $view.innerHTML = `
     <h1>Leaderboard</h1>
-    <p class="page-sub">Orchestrator × worker pairings across all runs${group ? ` in <b>${esc(group)}</b>` : ""}.
-    pass = mechanical gate · score = judge axis · CI = Wilson 95% — thin samples stay honest.
-    <a href="#/about">what do these mean?</a></p>
-    <div class="filters"><label class="f">sort by
-      <select id="lb-sort">${Object.keys(sorters).map(s =>
-        `<option value="${s}" ${s === sort ? "selected" : ""}>${s.replace(/_/g, " ")}</option>`).join("")}</select></label>
-      <label class="f">group<input id="lb-group" value="${esc(group)}" placeholder="all groups"></label>
-      <a class="btn" href="/api/shot.png?route=${encodeURIComponent(`/leaderboard?sort=${sort}${group ? `&group=${encodeURIComponent(group)}` : ""}`)}" download>download png</a></div>
+    <p class="page-sub">Choose a run group, then choose the story lens that makes the evidence useful.
+    Mechanical pass and judge interpretation stay separate; thin samples stay below the line.</p>
 
-    <h2>matrix</h2>
+    <div class="story-controls panel">
+      <div class="story-control-head">
+        <div>
+          <div class="eyebrow">story scope</div>
+          <label class="f">run group
+            <select id="lb-group"><option value="">all groups</option>${groups.map(g =>
+              `<option value="${esc(g.group)}" ${g.group === group ? "selected" : ""}>${esc(g.label || g.group)} · ${g.runs} runs</option>`).join("")}</select>
+          </label>
+        </div>
+        <div class="story-control-actions">
+          <a class="btn" href="/api/shot.png?route=${encodeURIComponent(leaderboardHash().slice(1))}" download>download view</a>
+          ${group ? `<a class="btn" href="${cardHref("group", group)}">cohort card</a>` : ""}
+        </div>
+      </div>
+      <div class="lens-strip" role="tablist" aria-label="Story lenses">
+        ${d.lenses.map(item => `<a class="lens-tab${item.id === lens.id ? " active" : ""}${item.selected_target ? "" : " empty"}"
+          href="${lensHref(item.id)}" role="tab" aria-selected="${item.id === lens.id}">
+          <span>${esc(item.label)}</span><small>${item.selected_target ? esc(item.selected_target.replace("|", " → ")) : "no eligible row"}</small>
+        </a>`).join("")}
+      </div>
+      <div class="story-selection">
+        <div>
+          <div class="eyebrow">${esc(lens.label)}</div>
+          <p>${esc(lens.selected_target ? lens.reason : lens.empty_reason)}</p>
+        </div>
+        ${selectedHref ? `<a class="btn primary" href="${selectedHref}">make selected card →</a>` : `<span class="chip chip-dim">no eligible card yet</span>`}
+      </div>
+    </div>
+
+    <h2>pairing matrix</h2>
     <div class="panel panel-pad"><table class="data mx">
       <tr><th class="dim">orch ↓ worker →</th>${mx.workers.map(w =>
         `<th class="mx-h">${esc(slug(w))}</th>`).join("")}</tr>
@@ -610,18 +659,20 @@ async function viewLeaderboard(params) {
           const c = cellOf(o, w);
           const v = c && c.runs ? c.pass_rate : null;
           const a = v == null ? 0 : 0.12 + 0.7 * (v / maxPass);
-          return `<td class="mx-cell${c && c.low_sample ? " thin" : ""}" title="${esc(o)} → ${esc(w)}${v != null ? ` · pass ${fmtPct(v)} · n=${c.runs}${c.low_sample ? " · low-n" : ""}` : ""}"
-            ${v != null ? `data-go="#/card?kind=pairing&target=${encodeURIComponent(o + "|" + w)}"` : ""}>
+          const target = `${o}|${w}`;
+          return `<td class="mx-cell${c && c.low_sample ? " thin" : ""}${target === lens.selected_target ? " selected" : ""}"
+            title="${esc(o)} → ${esc(w)}${v != null ? ` · pass ${fmtPct(v)} · n=${c.runs}${c.low_sample ? " · low-n" : ""}` : ""}"
+            ${v != null ? `data-go="${cardHref("pairing", target)}"` : ""}>
             ${v != null ? `<span class="mx-fill" style="opacity:${a.toFixed(2)}">${fmtPct(v)}</span>` : `<span class="dim">·</span>`}
           </td>`;
         }).join("")}</tr>`).join("")}
     </table></div>
 
     <h2>cost vs outcome</h2>
-    <p class="page-sub">One dot per pairing — upper-left is the sweet spot (cheap and reliable). Dot size = finished runs; faded dots are low-n. Unmetered pairings can't plot here.</p>
-    <div class="panel panel-pad">${lbScatter(rows)}</div>
+    <p class="page-sub">One dot per pairing — upper-left is cheap and reliable. Dot size = finished runs; faded dots are low-n. Unmetered pairings do not plot.</p>
+    <div class="panel panel-pad">${lbScatter(rows, cardHref, lens.selected_target)}</div>
 
-    <h2>pairings</h2>
+    <h2>pairings · ${esc(lens.label)}</h2>
     <div class="panel"><table class="data"><tr>
       <th>#</th><th>pairing</th><th class="t-num">runs</th>
       <th class="t-num">pass</th><th class="t-num">95% CI</th><th class="t-num">judge</th>
@@ -629,30 +680,31 @@ async function viewLeaderboard(params) {
       <th class="t-num">p50</th><th class="t-num">p90</th>
       <th>why</th><th></th>
     </tr><tbody>` +
-    rows.map((r, i) => `<tr${r.low_sample ? ' class="row-thin"' : ""}>
-      <td class="dim">${r.low_sample ? "—" : `${++rank}<span class="dim sm"> / top ${Math.max(1, Math.round(rank / ranked * 100))}%</span>`}</td>
-      <td class="mono">${esc(slug(r.orchestrator))} <span class="dim">→</span> ${esc(slug(r.worker))}
-        ${r.low_sample ? ' <span class="chip chip-dim">low-n</span>' : ""}</td>
-      <td class="t-num">${r.finished ?? 0}/${r.runs ?? 0}</td>
-      <td class="t-num mech-axis">${fmtPct(r.pass_rate)}</td>
-      <td class="t-num dim">${r.pass_ci ? `${Math.round(r.pass_ci[0] * 100)}–${Math.round(r.pass_ci[1] * 100)}%` : "—"}</td>
-      <td class="t-num judge-axis" title="${r.judged ? `${r.judged} judged run${r.judged === 1 ? "" : "s"}` : "no judged runs"}">${fmtScore(r.judge_score_median)}${r.judged ? `<span class="dim sm">·${r.judged}</span>` : ""}</td>
-      <td class="t-num${(r.failure_rate ?? 0) > 0.15 ? ' e' : ''}">${r.failure_rate != null ? fmtPct(r.failure_rate) : "—"}</td>
-      <td class="t-num">${r.cost_per_pass != null ? fmtMoney(r.cost_per_pass) : "—"}</td>
-      <td class="t-num">${fmtMoney(r.cost_total)}</td>
-      <td class="t-num">${fmtMs(r.duration_median_ms)}</td>
-      <td class="t-num">${fmtMs(r.duration_p90_ms)}</td>
-      <td class="dim why-cell">${esc(r.why || "—")}</td>
-      <td><a class="btn" href="#/card?kind=pairing&target=${encodeURIComponent(r.orchestrator + "|" + r.worker)}${group ? `&group=${encodeURIComponent(group)}` : ""}">card</a>
-        ${flagWidget("pairing", `${r.orchestrator}|${r.worker}`)}</td>
-    </tr>`).join("") + `</tbody></table></div>`;
+    rows.map(r => {
+      const rowRank = !r.low_sample && order.has(r.target) ? ++rank : null;
+      return `<tr class="${r.low_sample ? "row-thin" : ""}${r.target === lens.selected_target ? "story-selected" : ""}">
+        <td class="dim">${rowRank == null ? "—" : `${rowRank}<span class="dim sm"> / ${ranked}</span>`}</td>
+        <td class="mono">${esc(slug(r.orchestrator))} <span class="dim">→</span> ${esc(slug(r.worker))}
+          ${r.low_sample ? ' <span class="chip chip-dim">low-n</span>' : ""}${r.target === lens.selected_target ? ' <span class="chip chip-acc">selected</span>' : ""}</td>
+        <td class="t-num">${r.finished ?? 0}/${r.runs ?? 0}</td>
+        <td class="t-num mech-axis">${fmtPct(r.pass_rate)}</td>
+        <td class="t-num dim">${r.pass_ci ? `${Math.round(r.pass_ci[0] * 100)}–${Math.round(r.pass_ci[1] * 100)}%` : "—"}</td>
+        <td class="t-num judge-axis" title="${r.judged ? `${r.judged} judged run${r.judged === 1 ? "" : "s"}` : "no judged runs"}">${fmtScore(r.judge_score_median)}${r.judged ? `<span class="dim sm">·${r.judged}</span>` : ""}</td>
+        <td class="t-num${(r.failure_rate ?? 0) > 0.15 ? ' e' : ''}">${r.failure_rate != null ? fmtPct(r.failure_rate) : "—"}</td>
+        <td class="t-num">${r.cost_per_pass != null ? fmtMoney(r.cost_per_pass) : "—"}</td>
+        <td class="t-num">${fmtMoney(r.cost_total)}</td>
+        <td class="t-num">${fmtMs(r.duration_median_ms)}</td>
+        <td class="t-num">${fmtMs(r.duration_p90_ms)}</td>
+        <td class="dim why-cell">${esc(r.why || "—")}</td>
+        <td><a class="btn" href="${cardHref("pairing", r.target)}">card</a>
+          ${flagWidget("pairing", r.target)}</td>
+      </tr>`;
+    }).join("") + `</tbody></table></div>`;
 
-  document.getElementById("lb-sort").addEventListener("input", e => {
-    location.hash = `#/leaderboard?sort=${e.target.value}${group ? `&group=${encodeURIComponent(group)}` : ""}`;
-  });
   document.getElementById("lb-group").addEventListener("change", e => {
-    const g = e.target.value.trim();
-    location.hash = `#/leaderboard?sort=${sort}${g ? `&group=${encodeURIComponent(g)}` : ""}`;
+    const query = new URLSearchParams({ lens: lens.id });
+    if (e.target.value) query.set("group", e.target.value);
+    location.hash = `#/leaderboard?${query.toString()}`;
   });
   for (const el of $view.querySelectorAll("[data-go]")) {
     el.style.cursor = "pointer";
@@ -743,205 +795,293 @@ function bindFlags(root) {
 
 /* ---------- X showcase cards ---------- */
 
-async function viewCards() {
-  const [groups, flags, pairings] = await Promise.all([
-    api("/api/groups"), api("/api/flags"), api("/api/pairings"),
+function galleryCardHref(card, lens, group) {
+  const query = new URLSearchParams({ kind: card.kind, target: card.target, lens });
+  if (group) query.set("group", group);
+  return `#/card?${query.toString()}`;
+}
+
+function galleryCard(card, lens, group) {
+  const story = card.story || {};
+  const cohort = story.cohort || {};
+  const href = galleryCardHref(card, lens, group);
+  const proof = story.proof || {};
+  const title = card.kind === "group"
+    ? (card.group_label || card.target)
+    : card.kind === "pairing"
+      ? `${slug(card.orchestrator)} → ${slug(card.worker)}`
+      : (card.task_title || card.task_id || card.target);
+  const context = card.kind === "group"
+    ? `${cohort.runs || card.runs || 0} runs · ${cohort.tasks || card.tasks || 0} tasks · ${cohort.pairings || 0} pairings`
+    : card.kind === "pairing"
+      ? `${card.finished || 0}/${card.runs || 0} finished · ${card.tasks || 0} tasks`
+      : `${card.task_id || "run"} · ${card.run_group || "ungrouped"}`;
+  const metrics = (story.metrics || []).slice(0, 3);
+  const flags = card.flag
+    ? `<span class="chip ${card.flag === "interesting" ? "chip-acc" : "chip-fail"}">${card.flag === "not" ? "not interesting" : "flagged"}</span>`
+    : "";
+  const proofLabel = proof.status === "available" ? "proof ready" : proof.status === "partial" ? "partial proof" : "no stored proof";
+  return `<article class="gallery-card panel${card.flag === "interesting" ? " story-selected" : ""}">
+    <div class="gallery-card-top"><span class="chip chip-dim">${esc(card.kind)}</span><span class="gallery-card-flags">${flags}${flagWidget(card.kind, card.target)}</span></div>
+    <a class="gallery-card-title" href="${href}">${esc(title)}</a>
+    <div class="gallery-card-context">${esc(context)}</div>
+    <p class="gallery-card-claim">${esc(story.claim || card.verdict_line || "Evidence is still incomplete.")}</p>
+    <div class="gallery-card-metrics">${metrics.map(metric => `<span><b>${esc(metric.value)}</b><small>${esc(metric.label)}</small></span>`).join("")}</div>
+    <div class="gallery-card-foot"><span class="proof-status ${proof.status || "unavailable"}">${esc(proofLabel)}</span>
+      <span class="gallery-card-actions"><a class="btn" href="${href}">open</a><a class="btn" href="/api/shot.png?route=${encodeURIComponent(href.slice(1))}" download>png</a></span>
+    </div>
+  </article>`;
+}
+
+async function viewCards(params) {
+  const groups = await api("/api/groups");
+  const requestedGroup = params.get("group");
+  const group = requestedGroup !== null
+    ? requestedGroup
+    : (groups[0] && groups[0].group) || "";
+  const scope = params.get("scope") || "group";
+  const lens = params.get("lens") || "overall";
+  const flagged = params.get("flagged") === "1";
+  const query = new URLSearchParams({ scope, lens });
+  if (group) query.set("group", group);
+  if (flagged) query.set("flagged", "1");
+  const [catalog, flags] = await Promise.all([
+    api(`/api/cards?${query.toString()}`), api("/api/flags"),
   ]);
   FLAGS = {};
   for (const a of flags) FLAGS[`${a.kind}:${a.target}`] = a;
-  const flagged = flags.filter(f => f.flag);
+  const lenses = catalog.lenses || [];
+  const activeLens = lenses.find(item => item.id === lens) || lenses[0] || { id: lens, label: lens };
+  const cards = catalog.cards || [];
+  const cardHash = () => {
+    const next = new URLSearchParams({ scope, lens: activeLens.id });
+    if (group) next.set("group", group);
+    if (flagged) next.set("flagged", "1");
+    return `#/cards?${next.toString()}`;
+  };
   $view.innerHTML = `
     <h1>Cards</h1>
-    <p class="page-sub">Screenshot-ready showcase cards for X — one post per pairing or group.
-    Flag it, open the card, capture the image, then draft the follow-up thread from real numbers.</p>
-    ${flagged.length ? `<h2>flagged</h2><div class="cardlist">` +
-      flagged.map(f => `<a class="panel cl-row" href="#/card?kind=${esc(f.kind)}&target=${encodeURIComponent(f.target)}">
-        <span class="xc-flag ${esc(f.flag)}">${esc(f.flag === "not" ? "not interesting" : f.flag)}</span>
-        <span class="name">${esc(f.target)}</span><span class="dim">${esc(f.kind)}</span></a>`).join("") +
-      `</div>` : ""}
-    <h2>pairings</h2>
-    <div class="cardlist">${pairings.rows.map(r => `
-      <a class="panel cl-row" href="#/card?kind=pairing&target=${encodeURIComponent(r.orchestrator + "|" + r.worker)}">
-        <span class="name">${esc(slug(r.orchestrator))} → ${esc(slug(r.worker))}</span>
-        <span class="dim">${r.finished}/${r.runs} runs · pass ${fmtPct(r.pass_rate)}${r.pass_ci ? ` (CI ${Math.round(r.pass_ci[0] * 100)}–${Math.round(r.pass_ci[1] * 100)}%)` : ""} · ${esc(r.why)}</span>
-        ${flagWidget("pairing", `${r.orchestrator}|${r.worker}`)}
-      </a>`).join("") || `<div class="empty">no pairings</div>`}</div>
-    <h2>groups</h2>
-    <div class="cardlist">${groups.map(g => `
-      <a class="panel cl-row" href="#/card?kind=group&target=${encodeURIComponent(g.group)}">
-        <span class="name">${esc(g.group)}</span>
-        <span class="dim">${g.runs} runs · pass ${fmtPct(g.pass_rate)} · judge ${fmtScore(g.judge_score_median)}</span>
-        ${flagWidget("group", g.group)}
-      </a>`).join("") || `<div class="empty">no groups</div>`}</div>`;
+    <p class="page-sub">Choose a cohort, select a lens, and open a shareable card with its real proof.
+    Cards are local exports; nothing is posted automatically.</p>
+    <div class="gallery-controls panel">
+      <div class="gallery-control-row">
+        <label class="f">run group<select id="cards-group"><option value="">all groups</option>${groups.map(g =>
+          `<option value="${esc(g.group)}" ${g.group === group ? "selected" : ""}>${esc(g.label || g.group)} · ${g.runs} runs</option>`).join("")}</select></label>
+        <label class="f">scope<select id="cards-scope">${(catalog.scopes || []).map(item =>
+          `<option value="${esc(item.id)}" ${item.id === scope ? "selected" : ""}>${esc(item.label)}</option>`).join("")}</select></label>
+        <label class="f">lens<select id="cards-lens">${lenses.map(item =>
+          `<option value="${esc(item.id)}" ${item.id === activeLens.id ? "selected" : ""}>${esc(item.label)}</option>`).join("")}</select></label>
+        <label class="check-line gallery-flag-filter"><input id="cards-flagged" type="checkbox" ${flagged ? "checked" : ""}> flagged only</label>
+      </div>
+      <div class="gallery-current"><span class="eyebrow">${esc(activeLens.label)}</span>
+        <span>${cards.length} card${cards.length === 1 ? "" : "s"}${group ? ` · ${esc(group)}` : " · all groups"}</span>
+        <a class="btn" href="#/leaderboard?${new URLSearchParams({ group, lens: activeLens.id }).toString()}">open leaderboard →</a></div>
+    </div>
+    <div class="gallery-grid">${cards.map(card => galleryCard(card, activeLens.id, group)).join("") ||
+      `<div class="empty gallery-empty">no cards match this view.<br><a href="${cardHash()}">clear filters</a></div>`}</div>`;
+  for (const [id, key] of [["cards-group", "group"], ["cards-scope", "scope"], ["cards-lens", "lens"]]) {
+    document.getElementById(id).addEventListener("change", e => {
+      const next = new URLSearchParams({ scope, lens: activeLens.id });
+      const value = e.target.value;
+      if (key !== "group" && group) next.set("group", group);
+      if (value) next.set(key, value);
+      if (flagged) next.set("flagged", "1");
+      location.hash = `#/cards?${next.toString()}`;
+    });
+  }
+  document.getElementById("cards-flagged").addEventListener("change", e => {
+    const next = new URLSearchParams({ scope, lens: activeLens.id });
+    if (group) next.set("group", group);
+    if (e.target.checked) next.set("flagged", "1");
+    location.hash = `#/cards?${next.toString()}`;
+  });
   bindFlags($view);
+}
+
+function cardMetric(metric) {
+  return `<div class="xc-metric ${esc(metric.tone || "cost")}">
+    <span class="xc-metric-label">${esc(metric.label)}</span>
+    <strong>${esc(metric.value)}</strong>
+    <span class="xc-metric-detail">${esc(metric.detail || "")}</span>
+  </div>`;
+}
+
+function cardProof(proof, evidence) {
+  const resolved = evidence || proof || {};
+  const transcript = resolved.transcript || proof?.transcript;
+  const artifact = resolved.artifact || proof?.artifact;
+  const artifactBytes = artifact && artifact.bytes != null ? Number(artifact.bytes) : null;
+  const hasArtifact = !!artifact && artifactBytes !== 0;
+  const transcriptText = transcript && transcript.text ? transcript.text : "";
+  const proofStatus = resolved.status || proof?.status || "unavailable";
+  const runId = resolved.run_id || proof?.run_id;
+  const left = transcriptText
+    ? `<pre class="xc-proof-code">${esc(transcriptText)}</pre>`
+    : `<div class="xc-proof-empty"><span class="proof-mark">—</span><p>No terminal or test transcript stored for this run.</p></div>`;
+  let right;
+  if (!hasArtifact) {
+    right = `<div class="xc-proof-empty"><span class="proof-mark">∅</span><p>No artifact survives in this run. The transcript is the available proof.</p></div>`;
+  } else if (artifact.media_type === "image" || artifact.kind === "image") {
+    right = `<img class="xc-proof-media" src="${esc(artifact.url)}" alt="${esc(artifact.name)} stored artifact">`;
+  } else if (artifact.media_type === "video" || artifact.kind === "video") {
+    right = `<video class="xc-proof-media" src="${esc(artifact.url)}" controls muted></video>`;
+  } else if (artifact.preview) {
+    right = `<pre class="xc-proof-code artifact">${esc(artifact.preview)}</pre>`;
+  } else {
+    right = `<div class="xc-proof-empty"><span class="proof-mark">↗</span><p><a href="${esc(artifact.url)}">Open ${esc(artifact.name)}</a> in the run inspector.</p></div>`;
+  }
+  return `<div class="xc-proof-grid">
+    <section class="xc-proof-panel">
+      <div class="xc-proof-head"><span>terminal / tests</span><span class="proof-status ${proofStatus}">${transcriptText ? "stored" : "unavailable"}</span></div>
+      ${left}
+    </section>
+    <section class="xc-proof-panel">
+      <div class="xc-proof-head"><span>code / artifact</span><span class="proof-status ${hasArtifact ? "stored" : "unavailable"}">${hasArtifact ? esc(artifact.name) : "unavailable"}</span></div>
+      ${right}
+    </section>
+  </div>${runId ? `<div class="xc-proof-foot">representative evidence · <a href="#/run/${esc(runId)}">inspect run ${esc(runId.slice(0, 12))}</a></div>` : ""}`;
+}
+
+function cardTitle(d, kind) {
+  if (kind === "pairing") return `${esc(slug(d.orchestrator))} <span class="arrow">→</span> ${esc(slug(d.worker))}`;
+  if (kind === "run") return esc(d.task_title || d.task_id || d.target);
+  return esc(d.group_label || d.target);
+}
+
+function cardContext(d, kind, cohort) {
+  cohort = cohort || {};
+  if (kind === "group") {
+    const repeats = cohort.repeats ? ` · ${cohort.repeats} repeats` : "";
+    return `${cohort.runs ?? 0} runs · ${cohort.finished ?? 0} finished · ${cohort.tasks ?? 0} tasks · ${cohort.pairings ?? 0} pairings · ${cohort.orchestrators ?? 0} orchestrators / ${cohort.workers ?? 0} workers${repeats}`;
+  }
+  if (kind === "pairing") {
+    return `${d.runs} runs · ${d.tasks} tasks · ${(d.groups || []).map(esc).join(", ") || "ungrouped"}`;
+  }
+  return `${esc(d.task_id || "")} · ${esc(d.group_label || d.run_group || "ungrouped")} · run ${esc((d.target || "").slice(0, 12))}`;
+}
+
+async function waitForCardAssets() {
+  const images = [...document.querySelectorAll(".xcard img")];
+  await Promise.all(images.map(image => image.complete
+    ? Promise.resolve()
+    : new Promise(resolve => { image.addEventListener("load", resolve, { once: true }); image.addEventListener("error", resolve, { once: true }); })));
+  if (document.fonts && document.fonts.ready) await document.fonts.ready;
 }
 
 async function viewCard(params) {
   const kind = params.get("kind") || (params.get("run") ? "run" : "group");
   const target = params.get("target") || params.get("run") || params.get("group") || "";
   if (!target) { location.hash = "#/cards"; return; }
+  const scopedGroup = params.get("group") || "";
+  const lens = params.get("lens") || "overall";
+  const query = new URLSearchParams({ kind, target, lens });
+  if (scopedGroup) query.set("group", scopedGroup);
+  const d = await api(`/api/card?${query.toString()}`);
+  const proof = d.story?.proof;
+  let evidence = proof;
+  if (proof?.run_id) {
+    try {
+      evidence = await api(`/api/run/${encodeURIComponent(proof.run_id)}/evidence?max_bytes=6000&max_lines=80`);
+    } catch {
+      evidence = proof;
+    }
+  }
   await loadFlags();
-  const scopedGroup = kind === "pairing" ? (params.get("group") || "") : "";
-  const d = await api(`/api/card?kind=${kind}&target=${encodeURIComponent(target)}${scopedGroup ? `&group=${encodeURIComponent(scopedGroup)}` : ""}`);
+  const story = d.story || {
+    claim: d.verdict_line || "Evidence is still incomplete.",
+    caption: d.description || "",
+    lens: { id: lens, label: lens, reason: "" },
+    cohort: { runs: d.runs ?? 1, finished: d.finished ?? 0, tasks: d.tasks ?? 1, pairings: d.pairings?.length ?? 1, orchestrators: 1, workers: 1 },
+    metrics: [],
+    signals: [],
+    caveats: [],
+  };
+  const metrics = story.metrics?.length ? story.metrics : [
+    { id: "mechanical", label: "mechanical", value: d.passes == null ? "—" : d.passes ? "PASS" : "FAIL", detail: "execution gate", tone: "mech" },
+    { id: "judge", label: "judge axis", value: fmtScore(d.judge_score), detail: d.judge_state || "not judged", tone: "judge" },
+    { id: "cost", label: "cost", value: fmtMoney(d.cost_usd), detail: "observed spend", tone: "cost" },
+  ];
+  const signals = story.signals || [];
   const flag = flagOf(kind, target);
-  // unflagged cards derive the verdict chip from the axes themselves —
-  // the chip slot belongs to the finding, not a workflow state
-  let flagCls = flag === "interesting" ? "interesting" : flag === "not" ? "not" : "unflagged";
-  let flagTxt = flag === "interesting" ? "★ interesting" : flag === "not" ? "∅ not interesting" : "";
-  if (!flagTxt) {
-    const pr = d.pass_rate, jp = d.judge_pass_rate;
-    const judged = kind === "run" ? d.judge_state === "judged" : d.judged;
-    if (judged && kind === "run" && d.judge_passed != null) {
-      flagTxt = d.passes && !d.judge_passed ? "judge stricter"
-        : !d.passes && d.judge_passed ? "judge lenient" : "axes agree";
-      flagCls = flagTxt === "axes agree" ? "agree" : "diverged";
-    } else if (judged && pr != null && jp != null) {
-      flagTxt = pr - jp > 0.15 ? "judge stricter" : jp - pr > 0.05 ? "judge lenient" : "axes agree";
-      flagCls = pr - jp > 0.15 || jp - pr > 0.05 ? "diverged" : "agree";
-    } else {
-      flagTxt = judged ? "judge active" : (d.judge_state === "inconclusive" ? "judge inconclusive" : "mech only");
-      flagCls = "unflagged";
-    }
-  }
+  const signalHtml = signals.length
+    ? `<div class="xc-signal-row">${signals.map(signal => `<span class="xc-signal ${esc(signal.tone || "info")}">${esc(signal.label)}</span>`).join("")}</div>`
+    : `<div class="xc-signal-row"><span class="xc-signal neutral">no escalation signal</span></div>`;
+  const caveats = (story.caveats || []).slice(0, 2).join(" · ");
+  const inspectHref = kind === "group"
+    ? `#/runs?group=${encodeURIComponent(target)}`
+    : kind === "pairing"
+      ? `#/leaderboard?${new URLSearchParams({ group: scopedGroup, lens }).toString()}`
+      : `#/run/${encodeURIComponent(target)}`;
 
-  let hero, title, sub, caveat, compare = "", mechPct = 0, judgePct = null;
-  const vline = d.verdict_line ? `<div class="xc-vline">${esc(d.verdict_line)}</div>` : "";
-  const heroPair = (mechV, mechSub, judgeV, judgeSub) => `
-    <div class="xc-big mech"><span class="l">mechanical pass</span><span class="v">${mechV}</span><span class="subv">${mechSub}</span></div>
-    <div class="xc-big judge"><span class="l">judge approved</span><span class="v">${judgeV}</span><span class="subv">${judgeSub}</span></div>`;
-  const cmpRows = (head, rows) => `<div class="xc-compare"><table><thead><tr>
-    ${head.map(h => `<th>${h}</th>`).join("")}</tr></thead><tbody>` +
-    rows.slice(0, 5).map(r => `<tr${r.self ? ' class="xc-self"' : ""}>${r.cells.map(c => `<td>${c}</td>`).join("")}</tr>`).join("") +
-    (rows.length > 5 ? `<tr class="xc-more"><td colspan="${head.length}">… ${rows.length - 5} more</td></tr>` : "") +
-    `</tbody></table></div>`;
-  const ciTxt = d.pass_ci ? ` · CI ${Math.round(d.pass_ci[0] * 100)}–${Math.round(d.pass_ci[1] * 100)}` : "";
-  if (kind === "group") {
-    const pairTxt = (d.pairings || []).slice(0, 3)
-      .map(p => `${slug(p.orchestrator)}→${slug(p.worker)}`).join("  ·  ");
-    title = esc(d.group_label || d.target);
-    sub = `${d.group_label ? esc(d.target) + " · " : ""}${(d.pairings || []).length} pairing${d.pairings.length === 1 ? "" : "s"} · ${esc(pairTxt)}${d.pairings.length > 3 ? " …" : ""}`;
-    mechPct = (d.pass_rate || 0) * 100;
-    judgePct = d.judge_pass_rate != null ? d.judge_pass_rate * 100 : null;
-    hero = heroPair(
-      `${d.passed}/${d.finished}`,
-      `${fmtPct(d.pass_rate)}${ciTxt} · n=${d.finished}`,
-      d.judged ? `${d.judge_approved}/${d.judged}` : "—",
-      d.judged ? `score ${fmtScore(d.judge_score_mean ?? d.judge_score_median)} · ${d.judged} judged` : "nothing judged yet");
-    caveat = `execution truth · ${calAxis(d)} · ${fmtMoney(d.cost_usd)} · suite ${esc(d.suite)}`;
-    // divergence-first: rows where the axes disagree are the finding
-    const diverge = r => r.judge_score == null ? -1 : Math.abs((r.pass_rate || 0) - r.judge_score);
-    if ((d.pairing_rows || []).length > 1) {
-      compare = cmpRows(["pairing", "passed", "mech", "judge", "cost"],
-        d.pairing_rows.map(r => ({ cells: [esc(`${slug(r.orchestrator)} → ${slug(r.worker)}`),
-          `${r.passed}/${r.finished}`, fmtPct(r.pass_rate),
-          r.judged ? `${r.judge_approved}/${r.judged} · ${fmtScore(r.judge_score_mean)}` : "—",
-          fmtMoney(r.cost_usd)] })));
-    } else if ((d.task_rows || []).length) {
-      const sorted = [...d.task_rows].sort((a, b) => diverge(b) - diverge(a));
-      compare = cmpRows(["task", "passed", "mech", "judge"],
-        sorted.map(r => ({ cells: [esc(r.task_title || r.task_id), `${r.passed}/${r.finished}`, fmtPct(r.pass_rate),
-          fmtScore(r.judge_score)] })));
-    }
-  } else if (kind === "pairing") {
-    title = `${esc(slug(d.orchestrator))} <span class="arrow">→</span> ${esc(slug(d.worker))}`;
-    sub = `${d.tasks} task${d.tasks === 1 ? "" : "s"} · ${esc((d.groups || []).join(", ") || "ungrouped")}`;
-    mechPct = (d.pass_rate || 0) * 100;
-    judgePct = d.judge_pass_rate != null ? d.judge_pass_rate * 100 : null;
-    hero = heroPair(
-      `${d.passed}/${d.finished}`,
-      `${fmtPct(d.pass_rate)}${ciTxt} · n=${d.finished}`,
-      d.judged ? `${d.judge_approved}/${d.judged}` : "—",
-      d.judged ? `score ${fmtScore(d.judge_score_mean)} · ${d.judged} judged` : "nothing judged yet");
-    caveat = `execution truth · ${calAxis(d)} · ${fmtMoney(d.cost_usd)} · suite ${esc(d.suite)}`;
-    if ((d.type_rows || []).length) {
-      const diverge = r => r.judge_score == null ? -1 : Math.abs((r.pass_rate || 0) - r.judge_score);
-      const sorted = [...d.type_rows].sort((a, b) => diverge(b) - diverge(a));
-      compare = cmpRows(["task type", "passed", "mech", "judge"],
-        sorted.map(r => ({ cells: [esc(r.type), `${r.passed}/${r.finished}`, fmtPct(r.pass_rate), fmtScore(r.judge_score)] })));
-    }
-  } else {
-    title = esc(d.task_title || d.task_id);
-    sub = `${d.task_title ? esc(d.task_id) + " · " : ""}${esc(slug(d.orchestrator))} <span class="arrow">→</span> ${esc(slug(d.worker))}${d.run_group ? ` · ${esc(d.group_label || d.run_group)}` : ""}`;
-    const verdict = d.status === "finished" ? (d.passes ? "PASS" : "FAIL") : String(d.status || "—").toUpperCase();
-    mechPct = d.passes ? 100 : 0;
-    const jn = d.judge_noul != null ? Number(d.judge_noul) : null;
-    judgePct = jn != null ? jn * 100 : null;
-    const jstateTxt = { inconclusive: "inconclusive", not_judgeable: "not judgeable" }[d.judge_state] || "not judged";
-    hero = `
-      <div class="xc-big ${d.passes ? "mech" : "miss"}"><span class="l">mechanical</span><span class="v">${verdict}</span><span class="subv">${d.failure_reason || fmtScore(d.score) || "—"}</span></div>
-      <div class="xc-big judge"><span class="l">judge ${d.judge_engine === "decisions" ? "noul" : "score"}</span><span class="v">${jn != null ? jn.toFixed(2) : "—"}</span><span class="subv">${d.judge_model ? esc(slug(d.judge_model)) : jstateTxt}${d.judge_state_reason ? ` — ${esc(d.judge_state_reason)}` : ""}</span></div>`;
-    caveat = `execution truth · ${calAxis(d)} · ${fmtMoney(d.cost_usd)} · ${fmtMs(d.latency_ms)} · suite ${esc(d.suite)}`;
-    if ((d.pair_rows || []).length > 1) {
-      compare = cmpRows(["pairing on this task", "runs", "mech", "judge"],
-        d.pair_rows.map(r => ({ self: r.self, cells: [
-          esc(`${slug(r.orchestrator)} → ${slug(r.worker)}`),
-          `${r.passed}/${r.finished} of ${r.n}`,
-          fmtPct(r.pass_rate), fmtScore(r.judge_score)] })));
-    }
-  }
-
-  $view.innerHTML = `
-    <div class="card-stage">
-      <div class="card-toolbar">
-        ${flagWidget(kind, target)}
-        <a class="btn" href="#/cards">all cards</a>
-        <a class="btn" href="${kind === "group" ? `#/runs?group=${encodeURIComponent(target)}` : kind === "pairing" ? "#/leaderboard" : `#/run/${target}`}">inspect →</a>
-        <a class="btn" href="/api/shot.png?route=${encodeURIComponent(location.hash.slice(1))}" download>download png</a>
-        <input id="thread-model" class="thread-model" placeholder="writer model (blank = template)" value="moonshotai/kimi-k2">
-        <button class="btn primary" id="btn-thread">draft thread</button>
-        <span class="hint">1200×675 PNG — ready for X</span>
+  $view.innerHTML = `<div class="card-stage">
+    <div class="card-toolbar">
+      ${flagWidget(kind, target)}
+      <a class="btn" href="#/cards">all cards</a>
+      <a class="btn" href="${inspectHref}">inspect →</a>
+      <a class="btn" href="/api/shot.png?route=${encodeURIComponent(location.hash.slice(1))}" download>download png</a>
+      <button class="btn" id="copy-context">copy context</button>
+      <input id="thread-model" class="thread-model" placeholder="writer model (blank = template)" value="moonshotai/kimi-k2">
+      <button class="btn primary" id="btn-thread">write follow-up</button>
+      <span class="hint">1200×675 PNG · ${flag === "interesting" ? "flagged story" : "local export"}</span>
+    </div>
+    <div class="xcard" data-card-scope="${esc(kind)}" data-card-lens="${esc(story.lens?.id || lens)}">
+      <div class="xc-top">
+        <div class="xc-brand"><span class="mark">◆</span><span class="word">orchestral</span><span class="sub">observatory</span></div>
+        <div class="xc-suite">${esc(kind)} card · suite ${esc(d.suite || "—")}</div>
       </div>
-      <div class="xcard${compare ? " with-compare" : ""}" style="--mech:${mechPct}%;--judge:${judgePct != null ? judgePct : 0}%">
-        <div class="xc-top">
-          <div class="xc-brand"><span class="mark">◆</span><span class="word">orchestral</span><span class="sub">observatory</span></div>
-          <div class="xc-suite">suite ${esc(d.suite)} · eval harness</div>
+      <div class="xc-story-head">
+        <div class="xc-story-title">
+          <div class="xc-scope">${esc(kind === "group" ? "run group" : kind === "pairing" ? "orchestrator → worker" : "individual run")}</div>
+          <div class="xc-title">${cardTitle(d, kind)}</div>
+          <div class="xc-sub">${cardContext(d, kind, story.cohort)}</div>
         </div>
-        <div class="xc-headline">
-          <div><div class="xc-title">${title}</div><div class="xc-sub">${sub}</div></div>
-          <span class="xc-flag ${flagCls}">${flagTxt}</span>
-        </div>
-        ${vline}
-        ${d.description ? `<div class="xc-desc">${esc(d.description)}${kind === "run" && d.description_by ? ` <span class="xc-by">— ${esc(d.description_by)}${d.description_model ? ` · ${esc(slug(d.description_model))}` : ""}</span>` : ""}</div>` : ""}
-        <div class="xc-hero">${hero}</div>
-        ${compare}
-        ${d.explainer && kind !== "run" && !compare ? `<div class="xc-expl">${esc(d.explainer)}</div>` : ""}
-        <div class="xc-footer">
-          <span class="xc-caveat">${caveat}</span>
-          <span>${new Date().toISOString().slice(0, 10)}</span>
-        </div>
+        <div class="xc-lens"><span>${esc(story.lens?.label || lens)}</span><small>${esc(story.lens?.reason || "")}</small></div>
       </div>
-      <div id="thread-panel"></div>
-    </div>`;
+      <div class="xc-claim">${esc(story.claim)}</div>
+      ${signalHtml}
+      <div class="xc-metrics">${metrics.map(cardMetric).join("")}</div>
+      ${cardProof(proof, evidence)}
+      <div class="xc-footer">
+        <span>${esc(caveats || "mechanical and judge axes remain separate")}</span>
+        <span>${esc(d.suite || "suite —")} · ${esc((story.provenance?.source || "orchestral observatory"))}</span>
+      </div>
+    </div>
+    <div id="thread-panel"></div>
+  </div>`;
 
+  document.getElementById("copy-context").addEventListener("click", async e => {
+    const button = e.currentTarget;
+    const text = story.caption || d.description || story.claim;
+    try { await navigator.clipboard?.writeText(text); button.textContent = "copied"; }
+    catch { button.textContent = "copy failed"; }
+  });
   document.getElementById("btn-thread").addEventListener("click", async e => {
     const btn = e.currentTarget;
     btn.disabled = true;
-    btn.textContent = "drafting…";
+    btn.textContent = "writing…";
     try {
-      const body = new URLSearchParams({ kind, target, model: document.getElementById("thread-model").value.trim() });
-      if (d.kind === "pairing" && params.get("group")) body.set("group", params.get("group"));
+      const body = new URLSearchParams({ kind, target, lens, model: document.getElementById("thread-model").value.trim() });
+      if (scopedGroup) body.set("group", scopedGroup);
       const out = await api("/api/thread", { method: "POST", body });
-      document.getElementById("thread-panel").innerHTML = `
-        <div class="panel panel-pad thread">
-          <h3>follow-up thread ${out.templated ? '<span class="chip chip-dim">template</span>' : `<span class="chip">by ${esc(slug(out.model))}</span>`}</h3>
-          ${out.posts.map((p, i) => `<div class="tpost"><span class="tnum">${i + 2}/${out.posts.length + 1}</span>
-            <p>${esc(p)}</p><button class="btn copy" data-p="${esc(p)}">copy</button></div>`).join("")}
-          ${out.error ? `<div class="dim">writer fell back to template: ${esc(out.error)}</div>` : ""}
-        </div>`;
+      document.getElementById("thread-panel").innerHTML = `<div class="panel panel-pad thread">
+        <h3>follow-up thread ${out.templated ? '<span class="chip chip-dim">template</span>' : `<span class="chip">by ${esc(slug(out.model))}</span>`}</h3>
+        ${out.posts.map((p, i) => `<div class="tpost"><span class="tnum">${i + 2}/${out.posts.length + 1}</span><p>${esc(p)}</p><button class="btn copy" data-p="${esc(p)}">copy</button></div>`).join("")}
+        ${out.error ? `<div class="dim">writer fell back to template: ${esc(out.error)}</div>` : ""}
+      </div>`;
       for (const b of $view.querySelectorAll("button.copy")) {
-        b.addEventListener("click", () => {
-          navigator.clipboard?.writeText(b.dataset.p);
-          b.textContent = "copied";
+        b.addEventListener("click", async () => {
+          try { await navigator.clipboard?.writeText(b.dataset.p); b.textContent = "copied"; }
+          catch { b.textContent = "copy failed"; }
         });
       }
     } catch (ex) {
       document.getElementById("thread-panel").innerHTML = `<div class="panel panel-pad dim">thread failed: ${esc(ex.message)}</div>`;
     }
     btn.disabled = false;
-    btn.textContent = "draft thread";
+    btn.textContent = "write follow-up";
   });
-
   bindFlags($view);
+  await waitForCardAssets();
 }
 
 /* ---------- about ---------- */
@@ -1039,7 +1179,7 @@ async function route() {
     else if (path.startsWith("/run/")) await viewRun(path.split("/")[2], params);
     else if (path === "/compare") await viewCompare(params);
     else if (path === "/leaderboard") await viewLeaderboard(params);
-    else if (path === "/cards") await viewCards();
+    else if (path === "/cards") await viewCards(params);
     else if (path === "/card") await viewCard(params);
     else if (path === "/new") await viewNew();
     else if (path === "/about") await viewAbout();

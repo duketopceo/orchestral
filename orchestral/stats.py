@@ -169,6 +169,8 @@ class PairingAggregate:
     score_mean: float | None = None
     judge_score_median: float | None = None
     judged: int = 0
+    judge_approved: int = 0
+    judge_pass_rate: float | None = None
     cost_median: float = 0.0
     cost_total: float = 0.0
     duration_median_ms: float = 0.0
@@ -191,6 +193,8 @@ class PairingAggregate:
             "score_mean": self.score_mean,
             "judge_score_median": self.judge_score_median,
             "judged": self.judged,
+            "judge_approved": self.judge_approved,
+            "judge_pass_rate": self.judge_pass_rate,
             "cost_median": self.cost_median,
             "cost_total": self.cost_total,
             "duration_median_ms": self.duration_median_ms,
@@ -231,7 +235,9 @@ def pairing_leaderboard(
         finished = [r for r in cell if r.status == "finished"]
         passed = sum(1 for r in cell if r.passes)
         scored = [r.score for r in finished if r.score is not None]
-        judged = [r.judge_score for r in finished if r.judge_score is not None]
+        judge_scored = [r for r in finished if r.judge_score is not None]
+        judged = [r for r in finished if r.judge_score is not None or r.judge_passed is not None]
+        judge_approved = sum(1 for r in judged if r.judge_passed is True)
         costs = [r.total_cost_usd for r in finished]
         latencies = [r.latency_ms for r in finished if r.latency_ms]
         cost_total = sum(r.total_cost_usd for r in cell)
@@ -250,8 +256,10 @@ def pairing_leaderboard(
             pass_rate=passed / len(finished) if finished else None,
             score_median=statistics.median(scored) if scored else None,
             score_mean=mean(scored) if scored else None,
-            judge_score_median=statistics.median(judged) if judged else None,
+            judge_score_median=statistics.median([r.judge_score for r in judge_scored]) if judge_scored else None,
             judged=len(judged),
+            judge_approved=judge_approved,
+            judge_pass_rate=(judge_approved / len(judged)) if judged else None,
             cost_median=statistics.median(costs) if costs else 0.0,
             cost_total=cost_total,
             duration_median_ms=statistics.median(latencies) if latencies else 0.0,

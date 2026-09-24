@@ -21,7 +21,7 @@ import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, cast
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 from orchestral.storage import RunStore
 from orchestral.web import render, state
@@ -81,7 +81,13 @@ def _provider_ready(slug: str) -> bool:
 
 def _safe_member(name: str) -> str | None:
     """Reject zip members that would escape the archive (../, absolute)."""
-    if not name or name.startswith("/") or ".." in Path(name).parts:
+    normalized = name.replace("\\", "/")
+    if (
+        not name
+        or "\x00" in name
+        or normalized.startswith("/")
+        or ".." in Path(normalized).parts
+    ):
         return None
     return name
 
@@ -201,6 +207,17 @@ def make_handler(obs: Observatory) -> type[BaseHTTPRequestHandler]:
                 self._json(state.compare_payload(obs.store, a, b))
             elif path == "/api/flags":
                 self._json(obs.store.annotations())
+            elif path == "/api/cards":
+                flagged = (self._q1(qs, "flagged", "0") or "0").lower() in {"1", "true", "yes"}
+                self._json(state.card_catalog_payload(
+                    obs.store,
+                    tasks_dir=obs.tasks_dir,
+                    groups_file=obs.groups_file,
+                    group=self._q1(qs, "group"),
+                    scope=self._q1(qs, "scope", "all") or "all",
+                    lens=self._q1(qs, "lens", "overall") or "overall",
+                    flagged=flagged,
+                ))
             elif path == "/api/card":
                 kind = self._q1(qs, "kind", "group") or "group"
                 target = self._q1(qs, "target", "") or ""
@@ -208,6 +225,7 @@ def make_handler(obs: Observatory) -> type[BaseHTTPRequestHandler]:
                     obs.store, kind, target,
                     group=self._q1(qs, "group"), tasks_dir=obs.tasks_dir,
                     groups_file=obs.groups_file,
+                    lens=self._q1(qs, "lens", "overall") or "overall",
                 )
                 if payload is None:
                     return self._json({"error": f"no {kind} '{target}'"}, 404)
@@ -287,8 +305,23 @@ def make_handler(obs: Observatory) -> type[BaseHTTPRequestHandler]:
                 job = obs.registry.job_for_run(run_id)
                 payload["cancellable"] = bool(job and job.active)
                 return self._json(payload)
+            if parts[3] == "evidence" and len(parts) == 4:
+                try:
+                    max_bytes = int((qs.get("max_bytes") or ["6000"])[0])
+                except ValueError:
+                    max_bytes = 6000
+                try:
+                    max_lines = int((qs.get("max_lines") or ["80"])[0])
+                except ValueError:
+                    max_lines = 80
+                payload = state.run_evidence_payload(
+                    obs.store, run_id, max_bytes=max_bytes, max_lines=max_lines,
+                )
+                if payload is None:
+                    return self._json({"error": f"unknown run {run_id}"}, 404)
+                return self._json(payload)
             if parts[3] == "artifact":
-                member = "/".join(parts[4:]) if len(parts) > 4 else None
+                member = unquote("/".join(parts[4:])) if len(parts) > 4 else None
                 return self._artifact(run_dir, member)
             self._json({"error": f"not found: {path}"}, 404)
 
@@ -391,6 +424,7 @@ def make_handler(obs: Observatory) -> type[BaseHTTPRequestHandler]:
                 obs.store, kind, target,
                 group=form.get("group") or None, tasks_dir=obs.tasks_dir,
                 groups_file=obs.groups_file,
+                lens=form.get("lens") or "overall",
             )
             if card is None:
                 return self._json({"error": f"no {kind} '{target}'"}, 404)

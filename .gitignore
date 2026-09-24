@@ -3,6 +3,7 @@ __pycache__/
 .venv/
 .env
 runs/
+runs-v1/
 runs-pub/
 reports/
 *.db

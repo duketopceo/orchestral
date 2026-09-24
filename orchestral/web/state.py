@@ -301,7 +301,7 @@ def model_choices(models_dir: Path, role: str | None) -> list[dict[str, Any]]:
     if role in (None, "judge") and DEFAULT_JUDGE not in {m.slug for m in models}:
         out.append({"slug": DEFAULT_JUDGE, "executor": False,
                     "capabilities": [], "modalities": ["text"], "default": True})
-    out.sort(key=lambda d: d["slug"])
+    out.sort(key=lambda d: str(d["slug"]))
     return out
 
 
@@ -779,7 +779,7 @@ def card_payload(
         # semantic axis; unjudged runs contribute nothing, honestly
         judge_scores: list[float] = []
         judge_nouls: list[float] = []
-        judge_models: set[str] = set()
+        card_judge_models: set[str] = set()
         judge_passed_n = 0
         # comparable rows — per-task split is always meaningful; per-pairing
         # rows matter when the eval set ran more than one pairing
@@ -810,7 +810,7 @@ def card_payload(
             if j.get("noul") is not None:
                 judge_nouls.append(float(j["noul"]))
             if j.get("model"):
-                judge_models.add(j["model"])
+                card_judge_models.add(j["model"])
             if j.get("passed"):
                 judge_passed_n += 1
                 pair_jpassed[key] = pair_jpassed.get(key, 0) + 1
@@ -819,8 +819,8 @@ def card_payload(
         ci = _wilson(g["passed"], g["finished"])
         failed_n = sum(1 for m in metas if m.status == "failed")
         running_n = sum(1 for m in metas if m.status == "running")
-        if not judge_models and judged_n:
-            judge_models = set(store.judge_slugs({m.task_id for m in metas}))
+        if not card_judge_models and judged_n:
+            card_judge_models = set(store.judge_slugs({m.task_id for m in metas}))
         if judged_n and jp_rate is not None and g["pass_rate"] is not None:
             mech_pct, jp_pct = round(g["pass_rate"] * 100), round(jp_rate * 100)
             if g["pass_rate"] - jp_rate > 0.15:
@@ -846,8 +846,8 @@ def card_payload(
                                  if judge_scores else None),
             "judge_noul_mean": (round(sum(judge_nouls) / len(judge_nouls), 3)
                                 if judge_nouls else None),
-            "judge_models": sorted(judge_models),
-            "judge_calibration": _calibration_map(reports_dir, judge_models),
+            "card_judge_models": sorted(card_judge_models),
+            "judge_calibration": _calibration_map(reports_dir, card_judge_models),
             "cost_usd": g["cost_usd"], "tasks": g["tasks"],
             "pairings": [{"orchestrator": o, "worker": w} for o, w in pairings],
             "pairing_rows": [

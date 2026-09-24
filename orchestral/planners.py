@@ -1410,7 +1410,7 @@ def delegate_agentic(
 
     # tripwire 1: the repo tree changed during the attempt — the agent wrote
     # outside its workspace (or a stray process did)
-    if baseline is not None:
+    if baseline is not None and repo_root is not None:
         touched = sorted(_repo_status(repo_root) - baseline)
         if touched:
             logger.log(

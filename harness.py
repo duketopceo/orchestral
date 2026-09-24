@@ -1337,7 +1337,7 @@ def cmd_cards(args: argparse.Namespace) -> None:
     def _fname(s: str) -> str:
         return _re.sub(r"[^a-z0-9]+", "-", s.lower()).strip("-") or "card"
 
-    targets = [("/", "overview", None), ("/leaderboard", "leaderboard", None)]
+    targets: list[tuple[str, str, str | None]] = [("/", "overview", None), ("/leaderboard", "leaderboard", None)]
     groups = [g["group"] for g in wstate.groups_payload(store)]
     if args.group:
         groups = [g for g in groups if g == args.group]

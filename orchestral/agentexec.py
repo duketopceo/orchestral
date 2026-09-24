@@ -305,6 +305,7 @@ def launch_gate(
     requires = bool(task is not None and (task.metadata or {}).get("requires_executor"))
     if not name:
         if requires:
+            assert task is not None  # requires implies it
             raise ExecutorPreflightError(
                 f"task {task.id} declares metadata.requires_executor but "
                 f"worker {worker.slug} is not an executor worker"
@@ -578,7 +579,7 @@ def harvest_diff(
     excludes = HARVEST_EXCLUDES
     current: dict[str, bytes] = {}
     walked = 0
-    for root, dirs, files in os.walk(workspace):
+    for root, dirs, names in os.walk(workspace):
         root_p = Path(root)
         rel_root = root_p.relative_to(workspace)
         # prune excluded dirs in place so os.walk never descends
@@ -587,7 +588,7 @@ def harvest_diff(
             if str((rel_root / d).as_posix()) not in excludes
             and d not in excludes
         ]
-        for name in files:
+        for name in names:
             walked += 1
             if walked > MAX_HARVEST_FILES:
                 raise WorkspaceError(
@@ -615,7 +616,7 @@ def harvest_diff(
         changed.append(rel)
         if new is None:
             deleted.append(rel)
-            old_text = old.decode("utf-8", errors="strict")
+            old_text = (old or b"").decode("utf-8", errors="strict")
             old_lines = old_text.splitlines()
             hunks.append(
                 "\n".join(

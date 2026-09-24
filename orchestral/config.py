@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 
 @dataclass
@@ -138,13 +138,13 @@ def resolve_model(
 
 
 def resolve_judge(
-    slug: str,
+    slug: str | None,
     path: Path | str = "models",
     known: dict[str, ModelConfig] | None = None,
 ) -> ModelConfig:
     """``resolve_model`` with the judge role — the variant every launch
     surface uses so a ``~typesafe/...`` slug resolves identically."""
-    return resolve_model(slug, path, known, role="judge")
+    return resolve_model(cast(str, slug), path, known, role="judge")
 
 
 def load_task(path: Path | str) -> TaskSpec:

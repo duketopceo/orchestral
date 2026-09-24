@@ -20,7 +20,7 @@ import time
 import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from urllib.parse import parse_qs, urlparse
 
 from orchestral.storage import RunStore
@@ -235,7 +235,7 @@ def make_handler(obs: Observatory) -> type[BaseHTTPRequestHandler]:
                 from orchestral.shots import ScreenshotUnavailable, capture_page
                 element = ".xcard" if route.startswith("/card") else None
                 png = capture_page(
-                    f"http://127.0.0.1:{self.server.server_port}/#{route}",
+                    f"http://127.0.0.1:{cast(ThreadingHTTPServer, self.server).server_port}/#{route}",
                     element=element,
                 )
             except ScreenshotUnavailable as exc:
@@ -327,7 +327,7 @@ def make_handler(obs: Observatory) -> type[BaseHTTPRequestHandler]:
             if o.scheme not in ("http", "https") or (o.hostname or "").lower() not in self._LOCAL_HOSTS:
                 return False
             port = o.port or (443 if o.scheme == "https" else 80)
-            return port == self.server.server_port
+            return port == cast(ThreadingHTTPServer, self.server).server_port
 
         def do_POST(self) -> None:
             url = urlparse(self.path)

@@ -254,7 +254,7 @@ def agreement_metrics(pairs: list[dict[str, Any]]) -> dict[str, Any]:
     metrics = _metrics_block(pairs)
     for axis, key in (("by_judge", "judge_model"), ("by_task", "task_id")):
         slices: dict[str, Any] = {}
-        for value in {p.get(key) for p in pairs if p.get(key)}:
+        for value in {str(p.get(key)) for p in pairs if p.get(key)}:
             slices[value] = _metrics_block(
                 [p for p in pairs if p.get(key) == value]
             )
@@ -322,7 +322,7 @@ def persist_calibration(
     payload = {
         "created_at": created_at.isoformat(timespec="seconds"),
         "labels_sha256": labels_sha256,
-        "judge_models": sorted({p.get("judge_model") for p in pairs if p.get("judge_model")}),
+        "judge_models": sorted({str(p.get("judge_model")) for p in pairs if p.get("judge_model")}),
         "pairs": len(pairs),
         "score_pairs": sum(
             1 for p in pairs

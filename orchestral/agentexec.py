@@ -409,7 +409,7 @@ class _WaitResult:
     group_survivors: bool
 
 
-def _stream_reader(proc: subprocess.Popen, chunks: "queue.Queue[bytes | None]") -> None:
+def _stream_reader(proc: subprocess.Popen, chunks: queue.Queue[bytes | None]) -> None:
     """Daemon thread: drain stdout+stderr into a queue so the wait loop can
     enforce the transcript cap and poll cancel/deadline without blocking."""
     try:
@@ -466,7 +466,7 @@ def _wait_or_kill(
     proc: subprocess.Popen,
     pgid: int,
     transcript_path: Path,
-    chunks: "queue.Queue[bytes | None]",
+    chunks: queue.Queue[bytes | None],
     *,
     timeout: float,
     cancel_event: threading.Event | None,
@@ -632,7 +632,7 @@ def harvest_diff(
         try:
             new_text = new.decode("utf-8")
         except UnicodeDecodeError:
-            raise WorkspaceError(f"Undecodable (non-UTF-8) file in workspace: {rel}")
+            raise WorkspaceError(f"Undecodable (non-UTF-8) file in workspace: {rel}") from None
         old_text = old.decode("utf-8") if old is not None else ""
         if _is_binary(old or b""):
             raise WorkspaceError(f"Binary seed file: {rel}")
@@ -765,7 +765,7 @@ def run_attempt(
                 daemon=True,
             ).start()
 
-        chunks: "queue.Queue[bytes | None]" = queue.Queue()
+        chunks: queue.Queue[bytes | None] = queue.Queue()
         reader = threading.Thread(target=_stream_reader, args=(proc, chunks), daemon=True)
         reader.start()
 

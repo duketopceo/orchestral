@@ -19,7 +19,6 @@ from typing import Any
 
 from orchestral.agentexec import (
     ExecutorCancelled,
-    ExecutorPreflightError,
     launch_gate,
     preflight,
 )
@@ -51,7 +50,6 @@ from orchestral.logger import EventLogger
 from orchestral.manifest import build_manifest, finalize_manifest, write_manifest
 from orchestral.metrics import build_metrics
 from orchestral.openrouter import OpenRouterVideoSubmittedError
-from orchestral.privacy import scrub_text
 from orchestral.planners import (
     assemble_ce,
     assemble_media,
@@ -71,6 +69,7 @@ from orchestral.planners import (
     plan_ce,
     plan_raw,
 )
+from orchestral.privacy import scrub_text
 from orchestral.providers import provider_for, provider_key
 from orchestral.sqlexec import run_sql_check
 from orchestral.storage import RunMeta, RunStore

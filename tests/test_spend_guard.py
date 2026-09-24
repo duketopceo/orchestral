@@ -109,7 +109,7 @@ class TestBudgetCheck(unittest.TestCase):
                                     orchestrator="o/z", worker="w/z"))
         self.store.index_meta(_meta(run_id="cheap", total_cost_usd=0.01,
                                     orchestrator="o/x", worker="w/y"))
-        # 10 launches × scoped mean $0.01 = $0.10 < $0.50 → passes
+        # 10 launches x scoped mean $0.01 = $0.10 < $0.50 → passes
         harness._budget_check(_args(max_cost=0.50), self.store, 10,
                               orchestrator="o/x", worker="w/y")
         # the same launch count at the ~$5 global mean → blocked
@@ -191,10 +191,10 @@ class TestPerCellRecheck(unittest.TestCase):
             verbose=False, group=None, replicate=None, seed=None,
             allow_agent_exec=False,
         )
-        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "x"}):
-            with patch.object(harness, "Runner", SpendyRunner):
-                with self.assertRaises(SystemExit):
-                    harness.cmd_grid(args)
+        with (patch.dict(os.environ, {"OPENROUTER_API_KEY": "x"}),
+              patch.object(harness, "Runner", SpendyRunner),
+              self.assertRaises(SystemExit)):
+            harness.cmd_grid(args)
         self.assertEqual(calls, [1])  # cell 2 never launched
 
 

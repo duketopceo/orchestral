@@ -1073,7 +1073,7 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
         print("\nNo overlapping pairs — label runs that have judge scores/verdicts.")
         print("Labels file format:")
         print("  labels:\n    - run_id: <prefix>\n      score: 0.8\n      passed: true")
-        print(f"\nOr emit a skeleton:  python3 harness.py calibrate --emit <group>")
+        print("\nOr emit a skeleton:  python3 harness.py calibrate --emit <group>")
     print(f"\nReport: {report_path}")
     for judge_slug in sorted({p.get("judge_model") for p in result["pairs"] if p.get("judge_model")}):
         status = calibration_status(args.reports_dir, judge_slug)

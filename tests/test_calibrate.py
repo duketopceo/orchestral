@@ -400,8 +400,8 @@ class TestCalibrateCLI(unittest.TestCase):
 
     def _args(self, tmp: str, **kw):
         import harness
-        defaults = dict(labels=None, emit=None, runs_dir=tmp,
-                        reports_dir=str(Path(tmp) / "reports"), json=False)
+        defaults = {"labels": None, "emit": None, "runs_dir": tmp,
+                    "reports_dir": str(Path(tmp) / "reports"), "json": False}
         defaults.update(kw)
         return harness.argparse.Namespace(**defaults)
 
@@ -441,9 +441,8 @@ class TestCalibrateCLI(unittest.TestCase):
 
     def test_no_labels_no_emit_exits(self):
         import harness
-        with tempfile.TemporaryDirectory() as tmp:
-            with self.assertRaises(SystemExit):
-                harness.cmd_calibrate(self._args(tmp))
+        with tempfile.TemporaryDirectory() as tmp, self.assertRaises(SystemExit):
+            harness.cmd_calibrate(self._args(tmp))
 
 
 if __name__ == "__main__":

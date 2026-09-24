@@ -27,7 +27,7 @@ import contextlib
 import hashlib
 import json
 import math
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -315,7 +315,7 @@ def persist_calibration(
     """Write ``reports/calibration-<ts>.json`` and return its path."""
     reports_dir = Path(reports_dir)
     reports_dir.mkdir(parents=True, exist_ok=True)
-    created_at = datetime.now(timezone.utc)
+    created_at = datetime.now(UTC)
     labels_sha256 = None
     if labels_path is not None:
         labels_sha256 = hashlib.sha256(Path(labels_path).read_bytes()).hexdigest()

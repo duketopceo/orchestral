@@ -36,7 +36,6 @@ class TestJudgeCacheTable(unittest.TestCase):
     def test_pre_schema_record_goes_cold(self):
         """v1 rows (bare result dicts, pre-inconclusive rule) must not be
         served — a rubric change replays the call, not the stale payload."""
-        import sqlite3
         with tempfile.TemporaryDirectory() as tmp:
             store = RunStore(tmp)
             legacy = {"score": 0.9, "passed": True, "reasoning": "v1"}

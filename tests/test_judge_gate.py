@@ -188,7 +188,6 @@ class TestScoreAxesStaySeparate(unittest.TestCase):
             "def fizzbuzz(n):\n    return n\n",  # passes 1 of 2 tests
             json.dumps({"score": 0.9, "passed": True, "reasoning": "fine"}))
         with tempfile.TemporaryDirectory() as tmp:
-            store = RunStore(tmp)
             meta = Runner(
                 runs_dir=tmp, planner="raw",
                 clients={"orchestrator": fake, "worker": fake, "judge": fake},
@@ -205,7 +204,7 @@ class TestScoreAxesStaySeparate(unittest.TestCase):
     def test_inconclusive_writes_no_judge_fields(self):
         judge = _model("j/m", "judge")
         with tempfile.TemporaryDirectory() as tmp:
-            meta, report, store = _run(
+            meta, report, _ = _run(
                 tmp, judge, _judge_client("this is not json"))
             self.assertTrue(report["judge"]["inconclusive"])
             self.assertIsNone(meta.judge_score)
@@ -256,7 +255,7 @@ class TestInconclusiveRule(unittest.TestCase):
             judge = _model("j/model", "judge")
             task = TaskSpec(id="t1", type="html", prompt="make a page",
                             validation=["non_empty"])
-            meta, _, store = _run(tmp, judge, _judge_client("garbage"), task=task)
+            _, _, store = _run(tmp, judge, _judge_client("garbage"), task=task)
             sha = hashlib.sha256(task.prompt.encode() + b"\0" + GOOD_HTML.encode()).hexdigest()
             self.assertIsNone(store.get_judge_result(task.id, judge.slug, sha))
 

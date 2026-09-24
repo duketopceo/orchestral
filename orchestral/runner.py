@@ -144,6 +144,8 @@ class Runner:
         cancel_event: threading.Event | None = None,
         on_run_created: Any = None,
         allow_agent_exec: bool = False,
+        sandbox: str = "local",
+        sandbox_image: str | None = None,
     ):
         self.dry_run = dry_run
         self.planner = planner
@@ -161,6 +163,12 @@ class Runner:
         # (e.g. the TUI) map a job to its in-flight run before run() returns
         self.on_run_created = on_run_created
         self.use_judge_cache = use_judge_cache
+        # Library callers historically received local execution. Production
+        # launch surfaces pass Docker explicitly; keeping the old default
+        # avoids turning existing mock/test callers into Docker-dependent
+        # tests while the CLI/TUI/web surfaces fail closed on isolation.
+        self.sandbox = sandbox
+        self.sandbox_image = sandbox_image
         self.store = store or RunStore(runs_dir)
         # role ("orchestrator"/"worker"/"judge") -> Provider, injected for tests
         self._injected_clients = dict(clients or {})
@@ -265,6 +273,8 @@ class Runner:
             "seed": self.seed,
             "orchestrator": orchestrator.to_dict(),
             "worker": worker.to_dict(),
+            "sandbox": self.sandbox,
+            "sandbox_image": self.sandbox_image,
         }
         try:
             run_id, run_dir = self.store.new_run(
@@ -1465,6 +1475,8 @@ class Runner:
             files,
             str(task.metadata.get("tests") or ""),
             timeout_seconds=float(task.metadata.get("timeout_seconds", DEFAULT_TIMEOUT_SECONDS)),
+            sandbox=self.sandbox,
+            sandbox_image=self.sandbox_image,
         )
         report["execution"] = suite
         checks["tests_pass"] = bool(suite.get("ok"))
@@ -1575,6 +1587,8 @@ class Runner:
             patched,
             str(task.metadata.get("tests") or ""),
             timeout_seconds=float(task.metadata.get("timeout_seconds", DEFAULT_TIMEOUT_SECONDS)),
+            sandbox=self.sandbox,
+            sandbox_image=self.sandbox_image,
         )
         report["execution"] = suite
         checks["tests_pass"] = bool(suite.get("ok"))

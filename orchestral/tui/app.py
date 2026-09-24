@@ -357,6 +357,7 @@ class OrchestralApp(App):
                     cancel_event=job.cancel_event,
                     on_run_created=job.run_ids.append,
                     allow_agent_exec=self.allow_agent_exec,
+                    sandbox="docker",
                 ).run(task, orchestrator, worker, judge)
                 job.run_ids.append(meta.run_id)
                 job.run_ids = list(dict.fromkeys(job.run_ids))

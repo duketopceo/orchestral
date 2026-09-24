@@ -80,6 +80,8 @@ def revalidate_runs(
     limit: int | None = None,
     dry_run: bool = False,
     tasks_dir: Path | str = "tasks",
+    sandbox: str = "local",
+    sandbox_image: str | None = None,
 ) -> dict[str, Any]:
     """Re-run mechanical validators on finished runs' stored artifacts.
 
@@ -96,7 +98,12 @@ def revalidate_runs(
     ]
     if limit is not None:
         metas = metas[:limit]
-    runner = Runner(dry_run=False, store=store)
+    runner = Runner(
+        dry_run=False,
+        store=store,
+        sandbox=sandbox,
+        sandbox_image=sandbox_image,
+    )
     spec_cache: dict[str, TaskSpec] = {}
 
     def _spec(tid: str) -> TaskSpec:

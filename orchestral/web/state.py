@@ -160,6 +160,7 @@ class JobRegistry:
                     cancel_event=job.cancel_event,
                     on_run_created=job.run_ids.append,
                     allow_agent_exec=self.allow_agent_exec,
+                    sandbox="docker",
                 ).run(task, orchestrator, worker, judge)
                 if meta.run_id not in job.run_ids:
                     job.run_ids.append(meta.run_id)

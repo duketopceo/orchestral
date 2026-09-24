@@ -270,6 +270,8 @@ def _runner_kwargs(args: argparse.Namespace, store: RunStore, **extra: Any) -> d
         "seed": getattr(args, "seed", None),
         "verbose": getattr(args, "verbose", False),
         "allow_agent_exec": getattr(args, "allow_agent_exec", False),
+        "sandbox": getattr(args, "sandbox", "docker"),
+        "sandbox_image": getattr(args, "sandbox_image", None),
         "store": store,
         **extra,
     }
@@ -1162,6 +1164,8 @@ def cmd_revalidate(args: argparse.Namespace) -> None:
         orchestrator=args.orchestrator, worker=args.worker,
         limit=args.limit, dry_run=args.dry_run,
         tasks_dir=Path(args.tasks_dir),
+        sandbox=getattr(args, "sandbox", "docker"),
+        sandbox_image=getattr(args, "sandbox_image", None),
     )
     if args.json:
         print(json.dumps(result, indent=2, default=str))
@@ -1459,6 +1463,10 @@ def _build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--allow-agent-exec", action="store_true",
                         default=_env_flag("ORCHESTRAL_ALLOW_AGENT_EXEC"),
                         help="Opt in to executor workers (agent CLIs run with your OS privileges; env ORCHESTRAL_ALLOW_AGENT_EXEC)")
+        sp.add_argument("--sandbox", choices=("docker", "local"), default="docker",
+                        help="Execution backend for generated code (default: docker; local is trusted-host mode)")
+        sp.add_argument("--sandbox-image", default=os.environ.get("ORCHESTRAL_DOCKER_IMAGE"),
+                        help="Docker image for --sandbox docker (prefer an immutable image digest)")
 
     run = sub.add_parser("run", help="Run one orchestrator × worker pairing")
     run.add_argument("--task", required=True, help="Task id or path")
@@ -1604,6 +1612,10 @@ def _build_parser() -> argparse.ArgumentParser:
     reval.add_argument("--worker", default=None)
     reval.add_argument("--limit", type=int, default=None, help="Cap the number of runs revalidated")
     reval.add_argument("--dry-run", action="store_true", help="Report divergences without writing")
+    reval.add_argument("--sandbox", choices=("docker", "local"), default="docker",
+                       help="Execution backend for generated code (default: docker)")
+    reval.add_argument("--sandbox-image", default=os.environ.get("ORCHESTRAL_DOCKER_IMAGE"),
+                       help="Docker image for --sandbox docker")
     reval.add_argument("--json", action="store_true", help="Emit the full result as JSON")
     reval.set_defaults(func=cmd_revalidate)
 

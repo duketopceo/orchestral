@@ -12,7 +12,6 @@ import os
 import shutil
 import stat
 import subprocess
-import sys
 import tempfile
 import threading
 import time
@@ -417,9 +416,8 @@ class TestContainment(AgentexecTestBase):
 
     def test_seed_traversal_rejected(self):
         for bad in ("../escape.py", "/etc/abs.py", "a/../../b.py"):
-            with self.subTest(bad=bad):
-                with self.assertRaises(WorkspaceError):
-                    agentexec.seed_workspace({bad: "x"}, Path(self.tmp.name) / "ws")
+            with self.subTest(bad=bad), self.assertRaises(WorkspaceError):
+                agentexec.seed_workspace({bad: "x"}, Path(self.tmp.name) / "ws")
 
     def test_missing_binary_is_preflight(self):
         adapter = _adapter(binary="definitely-not-a-real-binary-xyz")

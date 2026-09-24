@@ -199,7 +199,10 @@ def judge_artifact(
     artifact_section = (
         "The artifact is the attached image."
         if image_bytes is not None
-        else f"```{language}\n{artifact[:JUDGE_CHAT_ARTIFACT_CAP]}\n```"
+        else (
+            f"```{language}\n{artifact[:JUDGE_CHAT_ARTIFACT_CAP]}\n```"
+            + ("\n[artifact truncated for review]" if len(artifact) > JUDGE_CHAT_ARTIFACT_CAP else "")
+        )
     )
     prompt_text = JUDGE_PROMPT.format(prompt=task.prompt, artifact_section=artifact_section)
 
@@ -284,7 +287,7 @@ def judge_artifact(
             raise ValueError("Judge did not return a JSON object")
         if "score" not in result or "passed" not in result:
             raise ValueError("Judge JSON missing score or passed")
-    except Exception:
+    except (TypeError, ValueError):
         result = {
             "score": None,
             "passed": None,
@@ -749,7 +752,7 @@ def backfill_judgments(
         run_dir = Path(meta.run_dir)
         report = _report(run_dir)
         existing = _verdict_for(report, judge.slug)
-        primary = report.get("judge")
+        primary = report.get("judge") or {}
         primary_live = bool(primary) and not primary.get("inconclusive")
         if not force and existing is not None:
             # reconcile the index with verdicts that predate the judge

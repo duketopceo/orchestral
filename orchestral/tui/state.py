@@ -15,7 +15,6 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
-
 # Fields a launch spec may carry — must equal web.state.LAUNCH_FIELDS
 # (the parity test asserts it; divergence fails in CI, not production).
 # Executor opt-in is deliberately absent: it is a launch-context flag,

@@ -28,6 +28,7 @@ from orchestral.fileset import read_zip
 from orchestral.logger import EventLogger
 from orchestral.runner import _CANDIDATE_TASKS, Runner, _artifact_ext
 
+
 # artifact filename per task type when the type is not in _CANDIDATE_TASKS —
 # mirrors the runner's dispatch: media bytes, zips for file-set tasks, the
 # generic artifact for everything else

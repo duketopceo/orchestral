@@ -27,7 +27,7 @@ import contextlib
 import hashlib
 import json
 import math
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -113,6 +113,7 @@ def collect_pairs(store: RunStore, labels: list[dict[str, Any]]) -> dict[str, An
     unjudged: list[str] = []
     duplicates: list[str] = []
     seen: set[str] = set()
+    corrupt = 0
     for label in labels:
         meta = _resolve_run(metas, str(label["run_id"]))
         if meta is None:
@@ -126,8 +127,12 @@ def collect_pairs(store: RunStore, labels: list[dict[str, Any]]) -> dict[str, An
         report: dict[str, Any] = {}
         report_path = run_dir / "report.json"
         if report_path.exists():
-            with contextlib.suppress(json.JSONDecodeError, OSError):
+            try:
                 report = json.loads(report_path.read_text())
+            except (json.JSONDecodeError, OSError):
+                # a corrupt judge report must not silently contaminate the
+                # agreement metrics — count it so the gap is visible
+                corrupt += 1
         judge = report.get("judge")
         if not isinstance(judge, dict) or not judge:
             unjudged.append(str(label["run_id"]))
@@ -154,6 +159,7 @@ def collect_pairs(store: RunStore, labels: list[dict[str, Any]]) -> dict[str, An
         "unmatched": unmatched,
         "unjudged": unjudged,
         "duplicates": duplicates,
+        "corrupt": corrupt,
         "score_pairs": sum(1 for p in pairs if p.get("human_score") is not None and p.get("judge_score") is not None),
         "verdict_pairs": sum(1 for p in pairs if p.get("human_passed") is not None and p.get("judge_passed") is not None),
     }
@@ -254,7 +260,7 @@ def agreement_metrics(pairs: list[dict[str, Any]]) -> dict[str, Any]:
     metrics = _metrics_block(pairs)
     for axis, key in (("by_judge", "judge_model"), ("by_task", "task_id")):
         slices: dict[str, Any] = {}
-        for value in {p.get(key) for p in pairs if p.get(key)}:
+        for value in {str(p.get(key)) for p in pairs if p.get(key)}:
             slices[value] = _metrics_block(
                 [p for p in pairs if p.get(key) == value]
             )
@@ -315,14 +321,14 @@ def persist_calibration(
     """Write ``reports/calibration-<ts>.json`` and return its path."""
     reports_dir = Path(reports_dir)
     reports_dir.mkdir(parents=True, exist_ok=True)
-    created_at = datetime.now(timezone.utc)
+    created_at = datetime.now(UTC)
     labels_sha256 = None
     if labels_path is not None:
         labels_sha256 = hashlib.sha256(Path(labels_path).read_bytes()).hexdigest()
     payload = {
         "created_at": created_at.isoformat(timespec="seconds"),
         "labels_sha256": labels_sha256,
-        "judge_models": sorted({p.get("judge_model") for p in pairs if p.get("judge_model")}),
+        "judge_models": sorted({str(p.get("judge_model")) for p in pairs if p.get("judge_model")}),
         "pairs": len(pairs),
         "score_pairs": sum(
             1 for p in pairs

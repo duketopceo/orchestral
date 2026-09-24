@@ -619,6 +619,11 @@ def cmd_batch(args: argparse.Namespace) -> None:
         rep = f"{r['replicate']:>4} " if n_reps > 1 else ""
         print(f"{r['task_id']:<30} {rep}${r['cost']:.6f} {r['tokens']:>8} {r['passes']!s:>6} {score:>6}")
 
+    total_cost = sum(r["cost"] for r in results)
+    n_pass = sum(1 for r in results if r["passes"])
+    rate = f"{n_pass / len(results):.0%}" if results else "-"
+    print(f"TOTAL: {n_pass}/{len(results)} passed ({rate}) | ${total_cost:.6f} | {failures} failures")
+
     if n_reps > 1:
         for cell in aggregate(store.list_runs(run_group=group)):
             score = f"{cell.score_mean:.2f}±{cell.score_sd:.2f}" if cell.score_mean is not None else "-"
@@ -838,7 +843,7 @@ def _print_pairing_table(runs: list[Any]) -> None:
         # a partial score set would hide unscored runs' pass results
         avg_score = sum(scored) / len(scored) if len(scored) == len(group) and scored else None
         quality = avg_score if avg_score is not None else passed / len(group)
-        qpd = quality / cost if cost > 0 else float("inf")
+        qpd = quality / cost if cost > 0 else (float("inf") if quality > 0 else 0.0)
         rows.append((orch, work, len(group), passed, avg_score, cost, tokens, qpd))
 
     rows.sort(key=lambda r: -r[7])
@@ -975,11 +980,20 @@ def cmd_export(args: argparse.Namespace) -> None:
         if meta is None:
             print(f"No run found with id {args.run}", file=sys.stderr)
             sys.exit(1)
+        if args.format == "csv":
+            print("error: --format csv exports all runs; use --format md or jsonl with --run", file=sys.stderr)
+            sys.exit(2)
         if args.format == "jsonl":
             src = Path(meta.run_dir) / "events.jsonl"
-            content = src.read_text(encoding="utf-8") if src.exists() else ""
+            if not src.exists():
+                print(f"error: no events.jsonl for run {args.run} ({meta.run_dir}); nothing to export", file=sys.stderr)
+                sys.exit(1)
+            content = src.read_text(encoding="utf-8")
         else:
             content = run_audit_markdown(meta.run_dir)
+    elif args.format in ("md", "jsonl"):
+        print("error: --format md/jsonl require --run; plain exports are CSV only", file=sys.stderr)
+        sys.exit(2)
     elif args.leaderboard:
         rows = pairing_leaderboard(store.list_runs(limit=None), min_samples=args.min_samples)
         content = leaderboard_csv(rows)
@@ -1084,7 +1098,7 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
         print("\nNo overlapping pairs — label runs that have judge scores/verdicts.")
         print("Labels file format:")
         print("  labels:\n    - run_id: <prefix>\n      score: 0.8\n      passed: true")
-        print(f"\nOr emit a skeleton:  python3 harness.py calibrate --emit <group>")
+        print("\nOr emit a skeleton:  python3 harness.py calibrate --emit <group>")
     print(f"\nReport: {report_path}")
     for judge_slug in sorted({p.get("judge_model") for p in result["pairs"] if p.get("judge_model")}):
         status = calibration_status(args.reports_dir, judge_slug)
@@ -1350,7 +1364,7 @@ def cmd_cards(args: argparse.Namespace) -> None:
     def _fname(s: str) -> str:
         return _re.sub(r"[^a-z0-9]+", "-", s.lower()).strip("-") or "card"
 
-    targets = [("/", "overview", None), ("/leaderboard", "leaderboard", None)]
+    targets: list[tuple[str, str, str | None]] = [("/", "overview", None), ("/leaderboard", "leaderboard", None)]
     groups = [g["group"] for g in wstate.groups_payload(store)]
     if args.group:
         groups = [g for g in groups if g == args.group]
@@ -1513,7 +1527,7 @@ def _build_parser() -> argparse.ArgumentParser:
     report.add_argument("--orchestrator", help="Filter by orchestrator")
     report.add_argument("--worker", help="Filter by worker")
     report.add_argument("--sort", default="started_at", help="Column to sort by")
-    report.add_argument("--desc", action="store_true", default=True, help="Sort descending")
+    report.add_argument("--desc", action=argparse.BooleanOptionalAction, default=True, help="Sort descending (use --no-desc for ascending)")
     report.add_argument("--pairings", action="store_true", help="Aggregate by orchestrator × worker, sorted by quality per dollar")
     report.add_argument("--leaderboard", action="store_true", help="Pairing leaderboard: pass rate, medians, cost per pass, failure rate")
     report.add_argument("--min-samples", type=int, default=MIN_LEADERBOARD_SAMPLES, help="Leaderboard sample-size floor for the low-evidence flag")

@@ -256,7 +256,7 @@ class TestPureLayer(unittest.TestCase):
             self.assertIn("no artifact", why)
 
     def test_load_groups_validates_shape(self):
-        from orchestral.config import load_groups, ConfigError
+        from orchestral.config import ConfigError, load_groups
         with tempfile.TemporaryDirectory() as tmp:
             missing = load_groups(Path(tmp) / "nope.yaml")
             self.assertEqual(missing, {})
@@ -635,7 +635,6 @@ class TestHttpRoutes(unittest.TestCase):
         self.assertIn("nope", body)
 
     def test_shot_png_returns_png_and_picks_xcard_for_cards(self):
-        import re
         from urllib.parse import quote
 
         with unittest.mock.patch(
@@ -653,11 +652,10 @@ class TestHttpRoutes(unittest.TestCase):
         # non-card routes capture the settled view, not a card node
         with unittest.mock.patch(
                 "orchestral.shots.capture_page",
-                return_value=b"\x89PNG-fake") as cap:
-            with urllib.request.urlopen(
-                    f"http://127.0.0.1:{self.port}/api/shot.png?route=/leaderboard") as r:
-                self.assertEqual(r.status, 200)
-                self.assertEqual(r.read(), b"\x89PNG-fake")
+                return_value=b"\x89PNG-fake") as cap, urllib.request.urlopen(
+                f"http://127.0.0.1:{self.port}/api/shot.png?route=/leaderboard") as r:
+            self.assertEqual(r.status, 200)
+            self.assertEqual(r.read(), b"\x89PNG-fake")
         self.assertIsNone(cap.call_args.kwargs["element"])
 
 

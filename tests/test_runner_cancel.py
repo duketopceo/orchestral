@@ -177,7 +177,7 @@ class TestReplicatesBudget(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             args.runs_dir = tmp
             store = RunStore(tmp)
-            # seed one finished run so mean_run_cost = $0.01; 10×$0.01 > $0.05
+            # seed one finished run so mean_run_cost = $0.01; 10x$0.01 > $0.05
             from orchestral.storage import RunMeta
             store.index_meta(RunMeta(
                 run_id="seed", orchestrator="o/m", task_id="t", worker="w/m",
@@ -185,10 +185,10 @@ class TestReplicatesBudget(unittest.TestCase):
                 total_cost_usd=0.01,
             ))
             err = io.StringIO()
-            with patch.dict(os.environ, {"OPENROUTER_API_KEY": "fake"}):
-                with redirect_stderr(err), redirect_stdout(io.StringIO()):
-                    with self.assertRaises(SystemExit):
-                        harness.cmd_run(args)
+            with (patch.dict(os.environ, {"OPENROUTER_API_KEY": "fake"}),
+                  redirect_stderr(err), redirect_stdout(io.StringIO()),
+                  self.assertRaises(SystemExit)):
+                harness.cmd_run(args)
             self.assertIn("exceeds --max-cost", err.getvalue())
             self.assertEqual(len(store.list_runs(limit=None)), 1)  # nothing launched
 

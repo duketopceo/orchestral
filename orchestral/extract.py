@@ -54,6 +54,21 @@ def extract_json(text: str) -> Any:
     return None
 
 
+def _strict_eq(a: Any, b: Any) -> bool:
+    """Equality that keeps bool distinct from int/float (True == 1 in Python).
+
+    Nested containers are compared element-wise so a bool hiding inside a
+    list/dict cannot silently match an int.
+    """
+    if isinstance(a, bool) != isinstance(b, bool):
+        return False
+    if isinstance(a, dict) and isinstance(b, dict):
+        return a.keys() == b.keys() and all(_strict_eq(a[k], b[k]) for k in a)
+    if isinstance(a, list) and isinstance(b, list):
+        return len(a) == len(b) and all(_strict_eq(x, y) for x, y in zip(a, b, strict=True))
+    return a == b
+
+
 def _type_ok(declared: str, value: Any) -> bool:
     types = _TYPES.get(str(declared))
     if types is None:
@@ -99,7 +114,7 @@ def check_extraction(metadata: dict[str, Any], artifact_text: str) -> dict[str, 
         if name in obj:
             if "type" in spec and not _type_ok(str(spec["type"]), obj[name]):
                 type_errors.append(f"{name}: expected {spec['type']}, got {type(obj[name]).__name__}")
-            if "enum" in spec and obj[name] not in spec["enum"]:
+            if "enum" in spec and not any(_strict_eq(obj[name], choice) for choice in spec["enum"]):
                 type_errors.append(f"{name}: {obj[name]!r} not in enum {spec['enum']!r}")
     report["missing_required"] = missing
     report["checks"]["required_present"] = not missing
@@ -109,7 +124,7 @@ def check_extraction(metadata: dict[str, Any], artifact_text: str) -> dict[str, 
     if expected:
         matched = 0
         for name, want in expected.items():
-            ok = name in obj and obj[name] == want
+            ok = name in obj and _strict_eq(obj[name], want)
             report["field_results"][name] = ok
             matched += int(ok)
             if not ok:

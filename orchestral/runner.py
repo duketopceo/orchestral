@@ -19,7 +19,6 @@ from typing import Any
 
 from orchestral.agentexec import (
     ExecutorCancelled,
-    ExecutorPreflightError,
     launch_gate,
     preflight,
 )
@@ -51,7 +50,6 @@ from orchestral.logger import EventLogger
 from orchestral.manifest import build_manifest, finalize_manifest, write_manifest
 from orchestral.metrics import build_metrics
 from orchestral.openrouter import OpenRouterVideoSubmittedError
-from orchestral.privacy import scrub_text
 from orchestral.planners import (
     assemble_ce,
     assemble_media,
@@ -71,6 +69,7 @@ from orchestral.planners import (
     plan_ce,
     plan_raw,
 )
+from orchestral.privacy import scrub_text
 from orchestral.providers import provider_for, provider_key
 from orchestral.sqlexec import run_sql_check
 from orchestral.storage import RunMeta, RunStore
@@ -414,7 +413,7 @@ class Runner:
             is_media = is_image or is_video
             results: list[dict[str, Any]] = []
             media_paths: list[Path | None] = []
-            file_sets: list[tuple[int, dict[str, str]]] = []
+            file_sets: list[tuple[Any, dict[str, str]]] = []
             media_ext = _artifact_ext(task.type)
             subtasks = plan.get("subtasks") or plan.get("sections", {}).get("subtasks", [])
             if not isinstance(subtasks, list):
@@ -429,11 +428,6 @@ class Runner:
                 raise ValidationError(
                     f"Plan produced {len(subtasks)} subtasks, over max_subtasks {max_subtasks}"
                 )
-            logger.lifecycle(
-                "delegation.created", phase="delegate",
-                subtasks=len(subtasks),
-                subtask_ids=[(s.get("id") if isinstance(s, dict) else i) for i, s in enumerate(subtasks)],
-            )
             # Zero-delegation plans: some orchestrators answer the task
             # themselves ({"files": ...} or {"content"/"answer": ...})
             # instead of producing subtasks. That is real
@@ -460,6 +454,19 @@ class Runner:
                         json.dumps({"files": self_files, "content": self_text}, indent=2, default=str))
                     if self_files:
                         file_sets.append(("orchestrator", self_files))
+                else:
+                    # Raw/none planners may emit no subtasks; every task
+                    # type's delegate paths are single-shot over one subtask
+                    # (extract, sql, api, needle, constraint, media, multi).
+                    # With zero subtasks the loop would run zero times and the
+                    # assembly branches would write empty artifacts — fall
+                    # back to one default subtask so the worker still runs.
+                    subtasks = [{"id": "s0", "description": task.prompt}]
+            logger.lifecycle(
+                "delegation.created", phase="delegate",
+                subtasks=len(subtasks),
+                subtask_ids=[(s.get("id") if isinstance(s, dict) else i) for i, s in enumerate(subtasks)],
+            )
             for i, sub in enumerate(subtasks):
                 self._check_cancelled()
                 # models sometimes return a list of strings; normalize to dicts
@@ -730,7 +737,7 @@ class Runner:
                             "delegate", "empty worker output; retrying",
                             subtask_id=sub.get("id", i), attempt=attempt + 1,
                         )
-                if out is None:
+                if not out:  # None or exhausted-empty dict must not reach assembly
                     logger.lifecycle(
                         "worker.failed", phase="delegate", role="worker",
                         worker_id=wid, subtask_id=sub.get("id", i),
@@ -991,20 +998,23 @@ class Runner:
                 if artifact_path.exists():
                     try:
                         from orchestral.shots import capture_html
-
-                        capture_html(artifact_path, run_dir / "screenshot.png")
-                    except Exception as exc:
-                        # observability garnish, never a run outcome
-                        logger.log(
-                            phase="shots",
-                            step=assembly_step + 5,
-                            event_type="screenshot_skipped",
-                            model="",
-                            role="harness",
-                            input_data={"artifact": str(artifact_path)},
-                            output_data={"reason": str(exc)},
-                            reasoning="Screenshot capture failed or unavailable; skipped.",
-                        )
+                    except ImportError:
+                        pass  # shots extras not installed — screenshot degrades cleanly
+                    else:
+                        try:
+                            capture_html(artifact_path, run_dir / "screenshot.png")
+                        except Exception as exc:
+                            # observability garnish, never a run outcome
+                            logger.log(
+                                phase="shots",
+                                step=assembly_step + 5,
+                                event_type="screenshot_skipped",
+                                model="",
+                                role="harness",
+                                input_data={"artifact": str(artifact_path)},
+                                output_data={"reason": str(exc)},
+                                reasoning="Screenshot capture failed or unavailable; skipped.",
+                            )
 
             # 6. Final accounting
             total_cost, total_input, total_output = _flush_ledger(run_dir, ledger)

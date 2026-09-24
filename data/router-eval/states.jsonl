@@ -1,0 +1,10 @@
+{"id": "re-001", "utterance": "open the terminal", "focused_app": "browser", "options": ["browser", "terminal", "files", "vscode"], "expected": "terminal"}
+{"id": "re-002", "utterance": "i need to edit the config file", "focused_app": "terminal", "options": ["browser", "terminal", "files", "vscode"], "expected": "vscode"}
+{"id": "re-003", "utterance": "pull up that article about GPUs", "focused_app": "files", "options": ["browser", "terminal", "files", "vscode"], "expected": "browser"}
+{"id": "re-004", "utterance": "show me the downloads folder", "focused_app": "browser", "options": ["browser", "terminal", "files", "vscode"], "expected": "files"}
+{"id": "re-005", "utterance": "git commit the changes", "focused_app": "vscode", "options": ["browser", "terminal", "files", "vscode"], "expected": "terminal"}
+{"id": "re-006", "utterance": "search for that rust docs page", "focused_app": "terminal", "options": ["browser", "terminal", "files", "vscode"], "expected": "browser"}
+{"id": "re-007", "utterance": "open the project readme", "focused_app": "terminal", "options": ["browser", "terminal", "files", "vscode"], "expected": "vscode"}
+{"id": "re-008", "utterance": "launch a shell", "focused_app": "browser", "options": ["browser", "terminal", "files", "vscode"], "expected": "terminal"}
+{"id": "re-009", "utterance": "browse to youtube", "focused_app": "files", "options": ["browser", "terminal", "files", "vscode"], "expected": "browser"}
+{"id": "re-010", "utterance": "find the report pdf", "focused_app": "vscode", "options": ["browser", "terminal", "files", "vscode"], "expected": "files"}

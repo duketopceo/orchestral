@@ -10,12 +10,11 @@ per-request field, so it must NOT appear in the shared field set.
 from __future__ import annotations
 
 import argparse
-import os
 import tempfile
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import harness
 from orchestral.agentexec import (
@@ -24,7 +23,7 @@ from orchestral.agentexec import (
     ExecutorPreflightError,
     launch_gate,
 )
-from orchestral.config import ModelConfig, TaskSpec, resolve_judge, resolve_model
+from orchestral.config import ModelConfig, TaskSpec, resolve_judge
 from orchestral.judge import DEFAULT_JUDGE, is_decisions_model
 from orchestral.storage import RunStore
 from orchestral.tui.state import LAUNCH_SPEC_FIELDS, JobStatus
@@ -189,10 +188,9 @@ class TestExecutorLaunchGate(unittest.TestCase):
 
     def test_executor_missing_binary_fails_naming_it(self):
         stub = AgentAdapter(name="stub-cli", binary="definitely-missing-cli")
-        with patch.dict(ADAPTERS, {"stub-cli": stub}):
-            with self.assertRaises(ExecutorPreflightError) as ctx:
-                launch_gate(self._exec_worker(), self._exec_task(),
-                            allow_agent_exec=True)
+        with patch.dict(ADAPTERS, {"stub-cli": stub}), self.assertRaises(ExecutorPreflightError) as ctx:
+            launch_gate(self._exec_worker(), self._exec_task(),
+                        allow_agent_exec=True)
         self.assertIn("definitely-missing-cli", str(ctx.exception))
 
     def test_executor_ready_returns_adapter(self):
@@ -232,12 +230,11 @@ class TestRegistryExecutorGate(unittest.TestCase):
             reg = state.JobRegistry(Path(tmp) / "runs", tasks, models,
                                     RunStore(Path(tmp) / "runs"),
                                     allow_agent_exec=True)
-            with patch.dict(ADAPTERS, {"stub-cli": stub}):
-                with self.assertRaises(ValueError) as ctx:
-                    reg.launch({
-                        "task": "t-exec", "orchestrator": "o/model",
-                        "worker": "agent-opencode+x", "replicates": 1,
-                    })
+            with patch.dict(ADAPTERS, {"stub-cli": stub}), self.assertRaises(ValueError) as ctx:
+                reg.launch({
+                    "task": "t-exec", "orchestrator": "o/model",
+                    "worker": "agent-opencode+x", "replicates": 1,
+                })
             self.assertIn("definitely-missing-cli", str(ctx.exception))
 
     def test_executor_pairing_errors_rejected_at_launch(self):
@@ -248,12 +245,11 @@ class TestRegistryExecutorGate(unittest.TestCase):
             reg = state.JobRegistry(Path(tmp) / "runs", tasks, models,
                                     RunStore(Path(tmp) / "runs"),
                                     allow_agent_exec=True)
-            with patch.dict(ADAPTERS, {"stub-cli": stub}):
-                with self.assertRaises(ValueError) as ctx:
-                    reg.launch({
-                        "task": "t-task", "orchestrator": "o/model",
-                        "worker": "agent-opencode+x", "replicates": 1,
-                    })
+            with patch.dict(ADAPTERS, {"stub-cli": stub}), self.assertRaises(ValueError) as ctx:
+                reg.launch({
+                    "task": "t-task", "orchestrator": "o/model",
+                    "worker": "agent-opencode+x", "replicates": 1,
+                })
             self.assertIn("requires_executor", str(ctx.exception))
 
     def test_executor_dry_run_skips_binary_probe_but_keeps_optin(self):
@@ -308,9 +304,8 @@ class TestCliEnvCheckExecutor(unittest.TestCase):
         stub = AgentAdapter(name="stub-cli", binary="definitely-missing-cli")
         args = argparse.Namespace(dry_run=False, allow_agent_exec=True)
         worker = _model("agent/x", metadata={"executor": "stub-cli"})
-        with patch.dict(ADAPTERS, {"stub-cli": stub}):
-            with self.assertRaises(SystemExit):
-                harness._check_provider_envs(args, worker)
+        with patch.dict(ADAPTERS, {"stub-cli": stub}), self.assertRaises(SystemExit):
+            harness._check_provider_envs(args, worker)
 
     def test_missing_optin_fails_fast(self):
         args = argparse.Namespace(dry_run=False, allow_agent_exec=False)

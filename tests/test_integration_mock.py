@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 from orchestral.config import ModelConfig, TaskSpec
+from orchestral.fileset import FilesetError
 from orchestral.runner import Runner
 from orchestral.storage import RunStore
 
@@ -70,7 +71,7 @@ class TestSelfExecutedPlan(unittest.TestCase):
             self.assertTrue((run_dir / "artifact.zip").exists())
             self.assertTrue((run_dir / "worker-self.json").exists())
 
-    def test_zero_subtask_plan_without_output_still_fails(self):
+    def test_zero_subtask_plan_without_output_falls_back_to_worker(self):
         orch = _chat_client(json.dumps({"reasoning": "no plan"}))
         worker = _chat_client("x")
 
@@ -85,7 +86,9 @@ class TestSelfExecutedPlan(unittest.TestCase):
                 metadata={"module": "solution.py", "expected_paths": ["solution.py"],
                           "tests": "import unittest\n\nclass T(unittest.TestCase):\n    def test_x(self): pass\n"},
             )
-            with self.assertRaises(Exception):
+            # s0 fallback delegates the whole task to the worker —
+            # the run then fails on worker output, not on the empty plan
+            with self.assertRaises(FilesetError):
                 runner.run(task, _model("o/m", "orchestrator"), _model("w/m", "worker"), None)
             metas = [m for m in store.list_runs() if m.task_id == "t-code2"]
             self.assertEqual(metas[0].status, "failed")

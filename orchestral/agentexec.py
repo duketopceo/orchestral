@@ -305,6 +305,7 @@ def launch_gate(
     requires = bool(task is not None and (task.metadata or {}).get("requires_executor"))
     if not name:
         if requires:
+            assert task is not None  # requires implies it
             raise ExecutorPreflightError(
                 f"task {task.id} declares metadata.requires_executor but "
                 f"worker {worker.slug} is not an executor worker"
@@ -409,7 +410,7 @@ class _WaitResult:
     group_survivors: bool
 
 
-def _stream_reader(proc: subprocess.Popen, chunks: "queue.Queue[bytes | None]") -> None:
+def _stream_reader(proc: subprocess.Popen, chunks: queue.Queue[bytes | None]) -> None:
     """Daemon thread: drain stdout+stderr into a queue so the wait loop can
     enforce the transcript cap and poll cancel/deadline without blocking."""
     try:
@@ -466,7 +467,7 @@ def _wait_or_kill(
     proc: subprocess.Popen,
     pgid: int,
     transcript_path: Path,
-    chunks: "queue.Queue[bytes | None]",
+    chunks: queue.Queue[bytes | None],
     *,
     timeout: float,
     cancel_event: threading.Event | None,
@@ -578,7 +579,7 @@ def harvest_diff(
     excludes = HARVEST_EXCLUDES
     current: dict[str, bytes] = {}
     walked = 0
-    for root, dirs, files in os.walk(workspace):
+    for root, dirs, names in os.walk(workspace):
         root_p = Path(root)
         rel_root = root_p.relative_to(workspace)
         # prune excluded dirs in place so os.walk never descends
@@ -587,7 +588,7 @@ def harvest_diff(
             if str((rel_root / d).as_posix()) not in excludes
             and d not in excludes
         ]
-        for name in files:
+        for name in names:
             walked += 1
             if walked > MAX_HARVEST_FILES:
                 raise WorkspaceError(
@@ -615,7 +616,7 @@ def harvest_diff(
         changed.append(rel)
         if new is None:
             deleted.append(rel)
-            old_text = old.decode("utf-8", errors="strict")
+            old_text = (old or b"").decode("utf-8", errors="strict")
             old_lines = old_text.splitlines()
             hunks.append(
                 "\n".join(
@@ -632,7 +633,7 @@ def harvest_diff(
         try:
             new_text = new.decode("utf-8")
         except UnicodeDecodeError:
-            raise WorkspaceError(f"Undecodable (non-UTF-8) file in workspace: {rel}")
+            raise WorkspaceError(f"Undecodable (non-UTF-8) file in workspace: {rel}") from None
         old_text = old.decode("utf-8") if old is not None else ""
         if _is_binary(old or b""):
             raise WorkspaceError(f"Binary seed file: {rel}")
@@ -765,7 +766,7 @@ def run_attempt(
                 daemon=True,
             ).start()
 
-        chunks: "queue.Queue[bytes | None]" = queue.Queue()
+        chunks: queue.Queue[bytes | None] = queue.Queue()
         reader = threading.Thread(target=_stream_reader, args=(proc, chunks), daemon=True)
         reader.start()
 

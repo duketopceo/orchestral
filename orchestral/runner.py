@@ -415,7 +415,15 @@ class Runner:
             media_paths: list[Path | None] = []
             file_sets: list[tuple[Any, dict[str, str]]] = []
             media_ext = _artifact_ext(task.type)
-            subtasks = plan.get("subtasks") or plan.get("sections", {}).get("subtasks", [])
+            # schema variants: canonical {"subtasks": [...]}, nested
+            # {"sections": {"subtasks": [...]}}, or a steps-style
+            # {"plan": [...]} — models legitimately emit all three
+            subtasks = (
+                plan.get("subtasks")
+                or plan.get("sections", {}).get("subtasks", [])
+                or plan.get("plan")
+                or []
+            )
             if not isinstance(subtasks, list):
                 raise ValidationError(
                     f"Plan subtasks must be a list, got {type(subtasks).__name__}"

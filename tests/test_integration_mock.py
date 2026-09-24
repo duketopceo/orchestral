@@ -114,6 +114,28 @@ class TestSelfExecutedPlan(unittest.TestCase):
             self.assertTrue(report["delegated"])
             self.assertEqual(report["subtasks"], 1)
 
+    def test_plan_key_schema_variant_delegates(self):
+        # kimi-style {"plan": [steps]} — same content, different envelope
+        plan = {"plan": [{"step": 1, "title": "hero", "description": "hero"}]}
+        orch = _chat_client("")
+        orch.chat.side_effect = [
+            {"content": json.dumps(plan), "usage": {"prompt_tokens": 1, "completion_tokens": 1}, "latency_ms": 1, "id": "p"},
+            {"content": "<html><body>ok</body></html>", "usage": {"prompt_tokens": 1, "completion_tokens": 1}, "latency_ms": 1, "id": "a"},
+        ]
+        worker = _chat_client("<section>hero</section>")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = RunStore(tmp)
+            runner = Runner(
+                runs_dir=tmp, store=store,
+                clients={"orchestrator": orch, "worker": worker},
+            )
+            meta = runner.run(TaskSpec(id="t4", type="html", prompt="page"),
+                              _model("o/m", "orchestrator"), _model("w/m", "worker"), None)
+            report = json.loads((Path(meta.run_dir) / "report.json").read_text())
+            self.assertTrue(report["delegated"])
+            self.assertEqual(report["subtasks"], 1)
+
 
 class TestEndToEndMockedProviders(unittest.TestCase):
     def test_full_run_with_judge(self):

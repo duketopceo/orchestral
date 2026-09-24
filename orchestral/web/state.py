@@ -646,11 +646,13 @@ def _pairing_target(row: dict[str, Any]) -> str:
 
 def _pairing_quality_key(row: dict[str, Any]) -> tuple[Any, ...]:
     """Existing leaderboard semantics: pass, then cost, then judge as a tie-break."""
+    pass_rate = row.get("pass_rate")
+    judge_score = row.get("judge_score_median")
     cost = row.get("cost_per_pass")
     return (
-        -(row.get("pass_rate") if row.get("pass_rate") is not None else -1.0),
+        -(float(pass_rate) if pass_rate is not None else -1.0),
         cost if cost is not None else float("inf"),
-        -(row.get("judge_score_median") if row.get("judge_score_median") is not None else -1.0),
+        -(float(judge_score) if judge_score is not None else -1.0),
         -int(row.get("finished") or 0),
         str(row.get("orchestrator") or ""),
         str(row.get("worker") or ""),

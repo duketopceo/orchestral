@@ -235,7 +235,10 @@ def pairing_leaderboard(
         finished = [r for r in cell if r.status == "finished"]
         passed = sum(1 for r in cell if r.passes)
         scored = [r.score for r in finished if r.score is not None]
-        judge_scored = [r for r in finished if r.judge_score is not None]
+        judge_scores: list[float] = []
+        for r in finished:
+            if r.judge_score is not None:
+                judge_scores.append(r.judge_score)
         judged = [r for r in finished if r.judge_score is not None or r.judge_passed is not None]
         judge_approved = sum(1 for r in judged if r.judge_passed is True)
         costs = [r.total_cost_usd for r in finished]
@@ -256,7 +259,7 @@ def pairing_leaderboard(
             pass_rate=passed / len(finished) if finished else None,
             score_median=statistics.median(scored) if scored else None,
             score_mean=mean(scored) if scored else None,
-            judge_score_median=statistics.median([r.judge_score for r in judge_scored]) if judge_scored else None,
+            judge_score_median=statistics.median(judge_scores) if judge_scores else None,
             judged=len(judged),
             judge_approved=judge_approved,
             judge_pass_rate=(judge_approved / len(judged)) if judged else None,

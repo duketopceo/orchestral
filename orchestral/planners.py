@@ -665,7 +665,8 @@ def delegate_multi(
         },
         expect_json=True,
     )
-    completion = client.chat(model=worker.slug, messages=messages)
+    completion = client.chat(model=worker.slug, messages=messages,
+                             max_tokens=int(getattr(worker, "max_tokens", None) or 8192))
     content = completion["content"]
     check_response_size(content)
     try:

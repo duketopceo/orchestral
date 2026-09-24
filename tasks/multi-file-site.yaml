@@ -9,6 +9,7 @@ validation:
   - non_empty
   - zip_signature
   - has_paths
+  - member_required
 assets: []
 metadata:
   difficulty: medium
@@ -16,3 +17,9 @@ metadata:
   expected_paths:
     - index.html
     - style.css
+  member_required:
+    index.html:
+      - coffee
+      - pricing
+    style.css:
+      - pricing

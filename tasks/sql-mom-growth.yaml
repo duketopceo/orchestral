@@ -1,0 +1,36 @@
+id: sql-mom-growth
+type: sql
+prompt: >
+  Write a single read-only SQL query (SQLite dialect) that reports month-over-
+  month revenue growth. For each calendar month with at least one shipped
+  order return: month (YYYY-MM), revenue (total shipped order-line revenue,
+  rounded to 2 decimals), mom_pct (percentage change in revenue versus the
+  PREVIOUS month in the result, rounded to 2 decimals; NULL for the first
+  month). Only order_lines whose order status is 'shipped' count. One row per
+  month, ordered by month ascending.
+  The database has tables: orders(id, placed_on DATE, status),
+  order_lines(id, order_id, qty, unit_price).
+validation: []
+assets: []
+metadata:
+  ordered: true
+  schema:
+    - "CREATE TABLE orders (id INTEGER PRIMARY KEY, placed_on DATE NOT NULL, status TEXT NOT NULL)"
+    - "CREATE TABLE order_lines (id INTEGER PRIMARY KEY, order_id INTEGER NOT NULL, qty INTEGER NOT NULL, unit_price REAL NOT NULL)"
+  seed:
+    - "INSERT INTO orders VALUES (1, '2025-01-05', 'shipped'), (2, '2025-02-10', 'shipped'), (3, '2025-02-20', 'pending'), (4, '2025-03-02', 'shipped')"
+    - "INSERT INTO order_lines VALUES (1, 1, 2, 30.0), (2, 1, 1, 40.0), (3, 2, 1, 30.0), (4, 3, 1, 25.0), (5, 4, 2, 40.0)"
+  reference_sql: |
+    WITH monthly AS (
+      SELECT strftime('%Y-%m', o.placed_on) AS month,
+             ROUND(SUM(ol.qty * ol.unit_price), 2) AS revenue
+      FROM order_lines ol
+      JOIN orders o ON o.id = ol.order_id
+      WHERE o.status = 'shipped'
+      GROUP BY month
+    )
+    SELECT month, revenue,
+           ROUND((revenue - LAG(revenue) OVER (ORDER BY month))
+                 / LAG(revenue) OVER (ORDER BY month) * 100, 2) AS mom_pct
+    FROM monthly
+    ORDER BY month

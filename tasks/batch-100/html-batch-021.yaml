@@ -6,3 +6,7 @@ prompt: Create a landing page for a personal CRM targeted at small business owne
   CSS.
 validation:
 - html
+- has_required
+metadata:
+  required:
+  - crm

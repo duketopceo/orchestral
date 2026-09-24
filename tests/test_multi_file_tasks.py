@@ -186,7 +186,10 @@ class TestMultiFileLivePath(unittest.TestCase):
                 ).run(_task(), _model("org/x", "orchestrator"), _model("wrk/text", "worker"))
             self.assertIn("escape.txt", str(ctx.exception))
 
-    def test_judge_prompt_carries_listing_not_contents(self):
+    def test_judge_prompt_carries_bounded_member_bodies(self):
+        """The judge reads real member content — a name-only listing let
+        verdicts be computed blind. report.json and worker records stay
+        paths-only; the judge prompt is the single place bodies surface."""
         with tempfile.TemporaryDirectory() as tmp:
             client = _FakeClient(file_sets=[
                 {"files": [{"path": "index.html", "content": "UNIQUE_BODY_MARKER"}]},
@@ -199,8 +202,6 @@ class TestMultiFileLivePath(unittest.TestCase):
 
             run_dir = Path(meta.run_dir)
             events = (run_dir / "events.jsonl").read_text()
-            # the judge prompt is logged with the messages — assert on its content
-            self.assertNotIn("UNIQUE_BODY_MARKER", events)
             judge_events = [
                 json.loads(line) for line in events.splitlines()
                 if json.loads(line).get("phase") == "judge"
@@ -208,10 +209,12 @@ class TestMultiFileLivePath(unittest.TestCase):
             self.assertTrue(judge_events, "no judge event recorded")
             prompts = json.dumps(judge_events)
             self.assertIn("index.html", prompts)
-            self.assertNotIn("UNIQUE_BODY_MARKER", prompts)
+            self.assertIn("UNIQUE_BODY_MARKER", prompts)
             self.assertNotIn("```html", prompts)
+            # scrub boundary holds: bodies never reach report or worker records
             report = json.loads((run_dir / "report.json").read_text())
             self.assertNotIn("UNIQUE_BODY_MARKER", json.dumps(report))
+            self.assertNotIn("UNIQUE_BODY_MARKER", (run_dir / "worker-0.json").read_text())
 
 
 class TestMultiFileValidation(unittest.TestCase):
@@ -265,6 +268,80 @@ class TestMultiFileValidation(unittest.TestCase):
         )
         self.assertFalse(passes)
         self.assertTrue(report["checks"]["zip_signature"])
+
+    def test_member_required_passes_when_tokens_present(self):
+        passes, report = self._check(
+            ["non_empty", "zip_signature", "member_required"],
+            self._zip({"index.html": "<h1>Coffee Plans</h1>", "style.css": ".pricing{}"}),
+            {"member_required": {"index.html": ["coffee"], "style.css": ["pricing"]}},
+        )
+        self.assertTrue(passes)
+        self.assertTrue(report["checks"]["member_required"])
+
+    def test_member_required_fails_on_missing_token(self):
+        passes, report = self._check(
+            ["non_empty", "zip_signature", "member_required"],
+            self._zip({"index.html": "<h1>SaaS</h1>"}),
+            {"member_required": {"index.html": ["coffee"]}},
+        )
+        self.assertFalse(passes)
+        self.assertFalse(report["checks"]["member_required"])
+        self.assertTrue(any("coffee" in e for e in report["errors"]))
+
+    def test_member_required_fails_on_absent_member(self):
+        passes, report = self._check(
+            ["non_empty", "zip_signature", "member_required"],
+            self._zip({"index.html": "coffee"}),
+            {"member_required": {"index.html": ["coffee"], "style.css": ["pricing"]}},
+        )
+        self.assertFalse(passes)
+        self.assertTrue(any("style.css" in e for e in report["errors"]))
+
+    def test_member_required_fails_without_metadata(self):
+        passes, report = self._check(
+            ["non_empty", "zip_signature", "member_required"],
+            self._zip({"index.html": "x"}),
+            {},
+        )
+        self.assertFalse(passes)
+        self.assertTrue(any("member_required" in e for e in report["errors"]))
+
+    def test_member_required_fails_on_binary_member(self):
+        passes, _ = self._check(
+            ["non_empty", "zip_signature", "member_required"],
+            self._zip({"logo.bin": "\xff\xfe\x00\x01"}),
+            {"member_required": {"logo.bin": ["x"]}},
+        )
+        self.assertFalse(passes)
+
+    def test_member_required_fails_on_non_zip_without_zip_signature(self):
+        # a spec asking only for member_required must still fail closed on a
+        # non-zip artifact — the check may not pass silently
+        passes, report = self._check(
+            ["non_empty", "member_required"],
+            b"not-a-zip",
+            {"member_required": {"index.html": ["x"]}},
+        )
+        self.assertFalse(passes)
+        self.assertFalse(report["checks"]["member_required"])
+
+    def test_member_required_bare_string_is_one_token(self):
+        # {"index.html": "coffee"} must mean one token, not per-character
+        passes, _ = self._check(
+            ["non_empty", "zip_signature", "member_required"],
+            self._zip({"index.html": "<h1>hello</h1>"}),
+            {"member_required": {"index.html": "coffee"}},
+        )
+        self.assertFalse(passes)
+
+    def test_member_required_member_names_are_sanitized(self):
+        # "./Index.HTML" canonicalizes like expected_paths does
+        passes, _ = self._check(
+            ["non_empty", "zip_signature", "member_required"],
+            self._zip({"index.html": "coffee"}),
+            {"member_required": {"./index.html": ["coffee"]}},
+        )
+        self.assertTrue(passes)
 
 
 if __name__ == "__main__":

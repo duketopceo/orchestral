@@ -53,6 +53,8 @@ class CellAggregate:
     pass_rate: float | None = None
     score_mean: float | None = None
     score_sd: float = 0.0
+    judge_score_mean: float | None = None
+    judge_score_sd: float = 0.0
     cost_mean: float = 0.0
     cost_sd: float = 0.0
     cost_total: float = 0.0
@@ -74,6 +76,8 @@ class CellAggregate:
             "pass_rate": self.pass_rate,
             "score_mean": self.score_mean,
             "score_sd": self.score_sd,
+            "judge_score_mean": self.judge_score_mean,
+            "judge_score_sd": self.judge_score_sd,
             "cost_mean": self.cost_mean,
             "cost_sd": self.cost_sd,
             "cost_total": self.cost_total,
@@ -108,6 +112,7 @@ def aggregate(runs: Iterable[RunMeta], *, by_group: bool = True) -> list[CellAgg
         finished = [r for r in cell if r.status == "finished"]
         passed = sum(1 for r in cell if r.passes)
         scored = [r.score for r in finished if r.score is not None]
+        judged = [r.judge_score for r in finished if r.judge_score is not None]
         costs = [r.total_cost_usd for r in cell]
         latencies = [r.latency_ms for r in cell if r.latency_ms]
         tokens = [r.total_input_tokens + r.total_output_tokens for r in cell]
@@ -124,9 +129,13 @@ def aggregate(runs: Iterable[RunMeta], *, by_group: bool = True) -> list[CellAgg
             runs=n,
             finished=len(finished),
             passed=passed,
-            pass_rate=passed / n if n else None,
+            # capability axis: crashed/infra-failed runs are noise, not
+            # evidence against the pairing — pass rate is over finished runs
+            pass_rate=passed / len(finished) if finished else None,
             score_mean=mean(scored) if scored else None,
             score_sd=stdev(scored),
+            judge_score_mean=mean(judged) if judged else None,
+            judge_score_sd=stdev(judged),
             cost_mean=mean(costs),
             cost_sd=stdev(costs),
             cost_total=cost_total,
@@ -142,7 +151,7 @@ def aggregate(runs: Iterable[RunMeta], *, by_group: bool = True) -> list[CellAgg
 
 # Below this a pairing needs repeated evidence before a ranking means
 # anything — one lucky run is anecdote, not a benchmark result.
-MIN_LEADERBOARD_SAMPLES = 10
+MIN_LEADERBOARD_SAMPLES = 3
 
 
 @dataclass
@@ -158,6 +167,7 @@ class PairingAggregate:
     pass_rate: float | None = None
     score_median: float | None = None
     score_mean: float | None = None
+    judge_score_median: float | None = None
     cost_median: float = 0.0
     cost_total: float = 0.0
     duration_median_ms: float = 0.0
@@ -177,6 +187,7 @@ class PairingAggregate:
             "pass_rate": self.pass_rate,
             "score_median": self.score_median,
             "score_mean": self.score_mean,
+            "judge_score_median": self.judge_score_median,
             "cost_median": self.cost_median,
             "cost_total": self.cost_total,
             "duration_median_ms": self.duration_median_ms,
@@ -188,14 +199,24 @@ class PairingAggregate:
 
 
 def pairing_leaderboard(
-    runs: Iterable[RunMeta], *, min_samples: int = MIN_LEADERBOARD_SAMPLES
+    runs: Iterable[RunMeta],
+    *,
+    min_samples: int = MIN_LEADERBOARD_SAMPLES,
+    unmetered_workers: Iterable[str] | None = None,
 ) -> list[PairingAggregate]:
     """Aggregate runs into leaderboard rows keyed on (orchestrator, worker).
 
-    Medians over finished runs only — unfinished runs distort cost/latency
-    downward. `low_sample` marks pairings under `min_samples` so a caller can
-    refuse to crown a "best" on anecdotal evidence.
+    Medians, pass_rate, and `low_sample` are over finished runs only —
+    a crashed run is infra noise, not evidence about the pairing, so three
+    crashes and zero finishes cannot rank. `failure_rate` stays over all
+    runs: infra fragility is real signal, just a different axis.
+
+    `unmetered_workers` carries worker slugs whose calls are declared
+    unmetered (free/local agent CLIs). A $0 total must not read as a free
+    `cost_per_pass` — measured-zero and unmetered rows get None and sort
+    last, since "the meter read nothing" is not "this costs nothing".
     """
+    unmetered = set(unmetered_workers or ())
     cells: dict[tuple[str, str], list[RunMeta]] = {}
     for r in runs:
         cells.setdefault((r.orchestrator, r.worker), []).append(r)
@@ -206,6 +227,7 @@ def pairing_leaderboard(
         finished = [r for r in cell if r.status == "finished"]
         passed = sum(1 for r in cell if r.passes)
         scored = [r.score for r in finished if r.score is not None]
+        judged = [r.judge_score for r in finished if r.judge_score is not None]
         costs = [r.total_cost_usd for r in finished]
         latencies = [r.latency_ms for r in finished if r.latency_ms]
         cost_total = sum(r.total_cost_usd for r in cell)
@@ -221,19 +243,30 @@ def pairing_leaderboard(
             finished=len(finished),
             passed=passed,
             tasks_covered=len({r.task_id for r in cell}),
-            pass_rate=passed / n if n else None,
+            pass_rate=passed / len(finished) if finished else None,
             score_median=statistics.median(scored) if scored else None,
             score_mean=mean(scored) if scored else None,
+            judge_score_median=statistics.median(judged) if judged else None,
             cost_median=statistics.median(costs) if costs else 0.0,
             cost_total=cost_total,
             duration_median_ms=statistics.median(latencies) if latencies else 0.0,
             failure_rate=failed_n / n if n else None,
-            cost_per_pass=cost_total / passed if passed else None,
+            cost_per_pass=(
+                None
+                if worker in unmetered or not passed or cost_total <= 0
+                else cost_total / passed
+            ),
             failures=failures,
-            low_sample=n < min_samples,
+            low_sample=len(finished) < min_samples,
         ))
+    # thin samples never rank: low_sample rows always tail, whatever the
+    # metric — a 1-run 100% pairing is anecdote, not a placement.
+    # The headline order answers "which pairing performs best": pass rate
+    # first, cost per pass breaks ties.
     out.sort(key=lambda p: (
+        p.low_sample,
+        -(p.pass_rate or 0.0),
         p.cost_per_pass is None, p.cost_per_pass or 0.0,
-        -(p.pass_rate or 0.0), p.orchestrator, p.worker,
+        p.orchestrator, p.worker,
     ))
     return out

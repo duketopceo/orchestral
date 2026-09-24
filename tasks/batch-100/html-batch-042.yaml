@@ -6,3 +6,7 @@ prompt: Create a landing page for a dev-ops observability platform targeted at o
   inline CSS.
 validation:
 - html
+- has_required
+metadata:
+  required:
+  - observability

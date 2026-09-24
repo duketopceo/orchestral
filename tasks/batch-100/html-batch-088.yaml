@@ -6,3 +6,7 @@ prompt: Create a landing page for a open-source fonts library targeted at produc
   inline CSS.
 validation:
 - html
+- has_required
+metadata:
+  required:
+  - font

@@ -6,3 +6,7 @@ prompt: Create a landing page for a electric bike targeted at climate-conscious 
   CSS.
 validation:
 - html
+- has_required
+metadata:
+  required:
+  - bike

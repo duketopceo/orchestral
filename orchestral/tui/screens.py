@@ -25,7 +25,9 @@ from textual.widgets import (
     TabPane,
 )
 
+from orchestral.calibrate import calibration_status
 from orchestral.export import leaderboard_csv, run_audit_markdown
+from orchestral.judge import DEFAULT_JUDGE
 from orchestral.stats import aggregate, pairing_leaderboard
 from orchestral.storage import RunStore
 from orchestral.tui.state import (
@@ -382,6 +384,7 @@ class LeaderboardScreen(Screen):
         self._min_samples = min_samples
         self._sort_i = 0
         self._rows: list[Any] = []
+        self._judge_bits: list[str] = []
 
     def compose(self) -> ComposeResult:
         yield Static("Leaderboard — loading…", id="lb-header")
@@ -391,24 +394,35 @@ class LeaderboardScreen(Screen):
     def on_mount(self) -> None:
         table = self.query_one("#lb-table", DataTable)
         table.add_columns(
-            "orchestrator", "worker", "n", "tasks", "pass%", "med score",
+            "orchestrator", "worker", "n", "tasks", "pass%", "judge",
             "med cost", "med dur", "fail%", "$/pass", "conf",
         )
         self.app.run_worker(self._load, thread=True, name="leaderboard")
 
     def _load(self) -> None:
-        rows = pairing_leaderboard(self._store.list_runs(limit=None), min_samples=self._min_samples)
-        self.app.call_from_thread(self._populate, rows)
+        metas = self._store.list_runs(limit=None)
+        rows = pairing_leaderboard(metas, min_samples=self._min_samples)
+        judge_bits = []
+        for slug in self._store.judge_slugs({m.task_id for m in metas}):
+            st = calibration_status(self._reports_dir, slug)
+            if st["calibrated"]:
+                judge_bits.append(f"{slug} κ={st['kappa']:.2f}")
+            else:
+                judge_bits.append(f"{slug} uncalibrated")
+        self.app.call_from_thread(self._populate, rows, judge_bits)
 
-    def _populate(self, rows: list[Any]) -> None:
+    def _populate(self, rows: list[Any], judge_bits: list[str] | None = None) -> None:
         self._rows = rows
+        self._judge_bits = judge_bits or []
         key = LB_SORTS[self._sort_i]
         header = self.query_one("#lb-header", Static)
         low = sum(1 for r in rows if r.low_sample)
+        judge_note = f" · judge {'; '.join(judge_bits)}" if judge_bits else ""
         header.update(
             f"Pairing leaderboard — sort {key} (s cycles) · "
             f"{len(rows)} pairings · {low} below {self._min_samples} samples "
             "[dim](low-sample ranks are anecdote, not evidence)[/dim]"
+            f"{judge_note}"
         )
         table = self.query_one("#lb-table", DataTable)
         table.clear()
@@ -416,7 +430,7 @@ class LeaderboardScreen(Screen):
             table.add_row(
                 r.orchestrator, r.worker, str(r.runs), str(r.tasks_covered),
                 f"{(r.pass_rate or 0) * 100:.0f}%",
-                f"{r.score_median:.2f}" if r.score_median is not None else "-",
+                f"{r.judge_score_median:.2f}" if r.judge_score_median is not None else "-",
                 fmt_cost(r.cost_median),
                 fmt_ms(r.duration_median_ms),
                 f"{(r.failure_rate or 0) * 100:.0f}%",
@@ -427,7 +441,7 @@ class LeaderboardScreen(Screen):
     def action_cycle_sort(self) -> None:
         self._sort_i = (self._sort_i + 1) % len(LB_SORTS)
         if self._rows:
-            self._populate(self._rows)
+            self._populate(self._rows, self._judge_bits)
 
     def action_export_csv(self) -> None:
         try:
@@ -501,8 +515,12 @@ class LaunchScreen(ModalScreen):
             yield Select([(m, m) for m in self._orchestrators], id="launch-orch", allow_blank=not self._orchestrators)
             yield Label("Worker")
             yield Select([(m, m) for m in self._workers], id="launch-worker", allow_blank=not self._workers)
-            yield Label("Judge (optional)")
-            yield Select([("(none)", ""), *[(m, m) for m in self._judges]], id="launch-judge", value="")
+            yield Label("Judge (optional — default is the decisions engine)")
+            yield Select(
+                [("(none)", ""), *[(m, m) for m in self._judges]],
+                id="launch-judge",
+                value=DEFAULT_JUDGE if DEFAULT_JUDGE in self._judges else "",
+            )
             yield Label("Replicates")
             yield Input(value="1", id="launch-reps", type="integer")
             yield Label("Seed (optional)")
@@ -536,7 +554,7 @@ class LaunchScreen(ModalScreen):
             self.app.notify("seed must be an integer", severity="error")
             return
         self.dismiss({
-            "task_id": task,
+            "task": task,
             "orchestrator": orch,
             "worker": worker,
             "judge": judge,

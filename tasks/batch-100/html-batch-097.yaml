@@ -6,3 +6,7 @@ prompt: Create a landing page for a smart home dashboard targeted at indie hacke
   CSS.
 validation:
 - html
+- has_required
+metadata:
+  required:
+  - smart home

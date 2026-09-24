@@ -16,6 +16,7 @@ def run_tui(
     models_dir: str | Path = "models",
     reports_dir: str | Path = "reports",
     refresh: bool = False,
+    allow_agent_exec: bool = False,
 ) -> None:
     try:
         from orchestral.tui.app import OrchestralApp
@@ -28,5 +29,6 @@ def run_tui(
         tasks_dir=Path(tasks_dir),
         models_dir=Path(models_dir),
         reports_dir=Path(reports_dir),
+        allow_agent_exec=allow_agent_exec,
     )
     app.run()

@@ -30,6 +30,11 @@ from typing import Any
 RUNS_DIR = Path("runs")
 DB_NAME = "index.db"
 
+# Judge-cache payload version — bump when the result shape or the input
+# contract changes so stale records go cold on read instead of being
+# trusted. v1 was the bare result dict (pre-inconclusive rule).
+JUDGE_CACHE_SCHEMA = 2
+
 
 @dataclass
 class RunMeta:
@@ -52,6 +57,9 @@ class RunMeta:
     env: dict[str, Any] = field(default_factory=dict)
     run_group: str | None = None
     replicate: int | None = None
+    dry_run: bool = False
+    judge_score: float | None = None
+    judge_passed: bool | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -99,7 +107,8 @@ class RunStore:
                     failure_reason TEXT,
                     env TEXT,
                     run_group TEXT,
-                    replicate INTEGER
+                    replicate INTEGER,
+                    dry_run INTEGER
                 )
                 """
             )
@@ -165,6 +174,18 @@ class RunStore:
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS annotations (
+                    kind TEXT NOT NULL,
+                    target TEXT NOT NULL,
+                    flag TEXT NOT NULL DEFAULT '',
+                    note TEXT NOT NULL DEFAULT '',
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (kind, target)
+                )
+                """
+            )
 
     def new_run(
         self,
@@ -201,6 +222,9 @@ class RunStore:
             run_group=run_group,
             replicate=replicate,
             env=env or {},
+            # indexed so spend meters can exclude dry runs without parsing
+            # the config blob on every query
+            dry_run=bool((config or {}).get("dry_run")),
         )
         self._write_meta_file(run_dir, meta)
         self.index_meta(meta)
@@ -218,9 +242,9 @@ class RunStore:
                     started_at, finished_at, total_cost_usd,
                     total_input_tokens, total_output_tokens, score, passes,
                     run_dir, config, latency_ms, failure_reason, env,
-                    run_group, replicate
+                    run_group, replicate, dry_run, judge_score, judge_passed
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     meta.run_id,
@@ -242,6 +266,9 @@ class RunStore:
                     json.dumps(meta.env, default=str),
                     meta.run_group,
                     meta.replicate,
+                    int(meta.dry_run),
+                    meta.judge_score,
+                    int(meta.judge_passed) if meta.judge_passed is not None else None,
                 ),
             )
 
@@ -326,6 +353,53 @@ class RunStore:
             ).fetchall()
         return [dict(r) for r in rows]
 
+    def unmetered_workers(self) -> set[str]:
+        """Model slugs whose calls are declared `pricing_source="unmetered"`.
+
+        Leaderboards must not read a $0 total as a free `cost_per_pass` —
+        unmetered is detected here, never inferred from `cost_total == 0`
+        (a legitimately cheap run is not unmetered). Dry-run rows excluded.
+        """
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT model FROM calls "
+                "WHERE pricing_source = 'unmetered' AND dry_run = 0 AND model IS NOT NULL"
+            ).fetchall()
+        return {r[0] for r in rows}
+
+    def set_annotation(
+        self, kind: str, target: str, flag: str, note: str = ""
+    ) -> dict[str, Any]:
+        """Upsert a user annotation — the observatory's stateful layer.
+
+        ``kind`` is ``run`` or ``group``; ``flag`` is ``interesting``,
+        ``not``, or ``''`` (clears the flag but keeps the row for the note)."""
+        if kind not in ("run", "group"):
+            raise ValueError(f"annotation kind must be run|group, got {kind!r}")
+        if flag not in ("interesting", "not", ""):
+            raise ValueError(f"flag must be interesting|not|'', got {flag!r}")
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO annotations (kind, target, flag, note, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT (kind, target) DO UPDATE SET
+                    flag = excluded.flag,
+                    note = excluded.note,
+                    updated_at = excluded.updated_at
+                """,
+                (kind, target, flag, note, datetime.now(UTC).isoformat()),
+            )
+        return {"kind": kind, "target": target, "flag": flag, "note": note}
+
+    def annotations(self) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT kind, target, flag, note, updated_at FROM annotations"
+            ).fetchall()
+        return [dict(r) for r in rows]
+
     def debug_log(self, component: str, message: str, **fields: Any) -> None:
         """Append to the root-level runs/debug.jsonl for events that happen
         before a run directory exists (e.g. provider resolution failures)."""
@@ -396,13 +470,39 @@ class RunStore:
                 "SELECT result_json FROM judge_cache WHERE task_id = ? AND judge_slug = ? AND artifact_sha256 = ?",
                 (task_id, judge_slug, artifact_sha256),
             ).fetchone()
-        return json.loads(row[0]) if row else None
+        if not row:
+            return None
+        try:
+            data = json.loads(row[0])
+        except json.JSONDecodeError:
+            return None
+        # pre-schema rows carry a bare result dict — a rubric/format change
+        # must replay the call, not trust the old payload (e.g. records
+        # written when parse failures were coerced into passed=false)
+        if not isinstance(data, dict) or data.get("schema") != JUDGE_CACHE_SCHEMA:
+            return None
+        result = data.get("result")
+        return result if isinstance(result, dict) else None
+
+    def judge_slugs(self, task_ids: set[str]) -> list[str]:
+        """Distinct judge models seen in the cache for these tasks — provenance
+        fallback for runs judged before report.json recorded judge.model."""
+        if not task_ids:
+            return []
+        marks = ",".join("?" for _ in task_ids)
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"SELECT DISTINCT judge_slug FROM judge_cache WHERE task_id IN ({marks})",
+                sorted(task_ids),
+            ).fetchall()
+        return [r[0] for r in rows]
 
     def put_judge_result(self, task_id: str, judge_slug: str, artifact_sha256: str, result: dict[str, Any]) -> None:
+        payload = {"schema": JUDGE_CACHE_SCHEMA, "result": result}
         with self._connect() as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO judge_cache VALUES (?, ?, ?, ?, ?)",
-                (task_id, judge_slug, artifact_sha256, json.dumps(result, default=str), datetime.now(UTC).isoformat()),
+                (task_id, judge_slug, artifact_sha256, json.dumps(payload, default=str), datetime.now(UTC).isoformat()),
             )
 
     def summary(self) -> dict[str, Any]:
@@ -420,6 +520,38 @@ class RunStore:
             "worker_counts": dict(workers),
         }
 
+    def spend_today(self) -> float:
+        """Recorded cost of all runs started today (UTC) — the spend-guard meter."""
+        today = datetime.now(UTC).date().isoformat()
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT COALESCE(SUM(total_cost_usd), 0) FROM runs "
+                "WHERE started_at >= ? AND COALESCE(dry_run, 0) = 0",
+                (today,),
+            ).fetchone()
+        return float(row[0] or 0.0)
+
+    def mean_run_cost(self, *, orchestrator: str | None = None,
+                      worker: str | None = None) -> float | None:
+        """Mean cost per finished run, optionally scoped to a pairing.
+
+        Used to estimate grid cost before launching. Returns None when no
+        finished runs match (caller falls back to the global mean or a
+        conservative default)."""
+        where = "status = 'finished' AND COALESCE(dry_run, 0) = 0"
+        params: list[Any] = []
+        if orchestrator:
+            where += " AND orchestrator = ?"
+            params.append(orchestrator)
+        if worker:
+            where += " AND worker = ?"
+            params.append(worker)
+        with self._connect() as conn:
+            row = conn.execute(
+                f"SELECT AVG(total_cost_usd) FROM runs WHERE {where}", params,
+            ).fetchone()
+        return float(row[0]) if row and row[0] is not None else None
+
 
 _SORTABLE_COLUMNS = {"run_id", "started_at", "finished_at", "status", "orchestrator", "worker", "task_id", "total_cost_usd", "score", "latency_ms", "failure_reason", "run_group", "replicate"}
 
@@ -431,6 +563,9 @@ _RUN_COLUMNS_V2 = (
     ("env", "TEXT"),
     ("run_group", "TEXT"),
     ("replicate", "INTEGER"),
+    ("dry_run", "INTEGER"),
+    ("judge_score", "REAL"),
+    ("judge_passed", "INTEGER"),
 )
 
 _CALL_COLUMNS_V2 = (
@@ -471,4 +606,7 @@ def _row_to_meta(row: sqlite3.Row) -> RunMeta:
         env=env,
         run_group=row[17] if len(row) > 17 else None,
         replicate=row[18] if len(row) > 18 else None,
+        dry_run=bool(row[19]) if len(row) > 19 else False,
+        judge_score=row[20] if len(row) > 20 else None,
+        judge_passed=bool(row[21]) if len(row) > 21 and row[21] is not None else None,
     )

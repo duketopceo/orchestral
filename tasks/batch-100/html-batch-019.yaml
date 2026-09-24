@@ -6,3 +6,7 @@ prompt: Create a landing page for a electric bike targeted at data engineering t
   CSS.
 validation:
 - html
+- has_required
+metadata:
+  required:
+  - bike

@@ -59,7 +59,9 @@ class TestEndToEndMockedProviders(unittest.TestCase):
 
             self.assertEqual(meta.status, "finished")
             self.assertTrue(meta.passes)
-            self.assertEqual(meta.score, 9)
+            self.assertIsNone(meta.score)        # html has no mechanical score
+            self.assertEqual(meta.judge_score, 9)
+            self.assertTrue(meta.judge_passed)
             self.assertGreater(meta.total_input_tokens + meta.total_output_tokens, 0)
             self.assertGreater(meta.total_cost_usd, 0)
 

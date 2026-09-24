@@ -232,6 +232,13 @@ def check_code_quality(
                 if rx.search(line):
                     totals["unsafe_hits"].append({"file": rel, "line": lineno, "pattern": name})
 
+    # imports that resolve to a sibling module in the file set are local,
+    # not external — a multi-module submission isn't pulling a dependency
+    local_modules = {
+        Path(rel).stem for rel in files if rel.endswith(".py")
+    } | {rel.split("/")[0] for rel in files if "/" in rel}
+    all_external -= local_modules
+
     totals["imports"] = sorted(all_imports)
     totals["external_imports"] = sorted(all_external)
 

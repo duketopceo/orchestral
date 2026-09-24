@@ -6,3 +6,7 @@ prompt: Create a landing page for a smart home dashboard targeted at remote-firs
   inline CSS.
 validation:
 - html
+- has_required
+metadata:
+  required:
+  - smart home

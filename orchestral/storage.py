@@ -355,7 +355,13 @@ class RunStore:
         """
         events_path = Path(meta.run_dir) / "events.jsonl"
         if not events_path.exists():
-            return 0
+            # archived corpus (e.g. runs/ moved to runs-v1/): rebase the
+            # recorded orch/task/worker/run_id tail under this store's root
+            tail = Path(meta.run_dir).parts[-4:]
+            rebased = self.root.joinpath(*tail) / "events.jsonl"
+            if not rebased.exists():
+                return 0
+            events_path = rebased
         call_types = {"llm_call", "worker_error"}
         events: list[dict[str, Any]] = []
         with events_path.open() as fh:

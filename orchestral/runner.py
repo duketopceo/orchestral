@@ -1041,6 +1041,7 @@ class Runner:
             meta.total_output_tokens = total_output
             meta.passes = passes
             meta.score = report.get("score")
+            meta.delegated = report.get("delegated")
             judge_result = report.get("judge") or {}
             if not judge_result.get("inconclusive"):
                 meta.judge_score = judge_result.get("score")

@@ -60,6 +60,7 @@ class RunMeta:
     dry_run: bool = False
     judge_score: float | None = None
     judge_passed: bool | None = None
+    delegated: bool | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -151,7 +152,7 @@ class RunStore:
             # calls v2: worker_id + sequence so live views can order calls and
             # group them per worker without re-parsing events.jsonl
             call_cols = {r[1] for r in conn.execute("PRAGMA table_info(calls)")}
-            for name, decl in _CALL_COLUMNS_V2:
+            for name, decl in _CALL_COLUMNS_V2 + _CALL_COLUMNS_V3:
                 if name not in call_cols:
                     try:
                         conn.execute(f"ALTER TABLE calls ADD COLUMN {name} {decl}")
@@ -242,9 +243,10 @@ class RunStore:
                     started_at, finished_at, total_cost_usd,
                     total_input_tokens, total_output_tokens, score, passes,
                     run_dir, config, latency_ms, failure_reason, env,
-                    run_group, replicate, dry_run, judge_score, judge_passed
+                    run_group, replicate, dry_run, judge_score, judge_passed,
+                    delegated
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     meta.run_id,
@@ -269,6 +271,7 @@ class RunStore:
                     int(meta.dry_run),
                     meta.judge_score,
                     int(meta.judge_passed) if meta.judge_passed is not None else None,
+                    int(meta.delegated) if meta.delegated is not None else None,
                 ),
             )
 
@@ -292,6 +295,9 @@ class RunStore:
         dry_run: bool = False,
         worker_id: str | None = None,
         sequence: int | None = None,
+        input_json: str | None = None,
+        output_json: str | None = None,
+        finish_reason: str | None = None,
     ) -> None:
         """Index one call-level event (llm_call or worker_error)."""
         with self._connect() as conn:
@@ -315,6 +321,15 @@ class RunStore:
             if "sequence" in cols:
                 names.append("sequence")
                 values.append(sequence)
+            if "input_json" in cols:
+                names.append("input_json")
+                values.append(input_json)
+            if "output_json" in cols:
+                names.append("output_json")
+                values.append(output_json)
+            if "finish_reason" in cols:
+                names.append("finish_reason")
+                values.append(finish_reason)
             conn.execute(
                 f"INSERT INTO calls ({', '.join(names)}) "
                 f"VALUES ({', '.join('?' for _ in names)})",
@@ -328,6 +343,65 @@ class RunStore:
                 "SELECT * FROM calls WHERE run_id = ? ORDER BY call_id", (run_id,)
             ).fetchall()
         return [dict(r) for r in rows]
+
+    def backfill_calls(self, meta: RunMeta) -> int:
+        """Rebuild a run's `calls` rows from its events.jsonl, payloads and all.
+
+        Call rows written before the payload columns existed (or runs indexed
+        before the calls table existed at all) carry no prompt/completion —
+        events.jsonl is authoritative, so this replays it. Rows for the run
+        are deleted and reinserted in event order; safe to re-run. Returns the
+        number of call events indexed.
+        """
+        events_path = Path(meta.run_dir) / "events.jsonl"
+        if not events_path.exists():
+            return 0
+        call_types = {"llm_call", "worker_error"}
+        events: list[dict[str, Any]] = []
+        with events_path.open() as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    ev = json.loads(line)
+                except json.JSONDecodeError:
+                    continue  # truncated tail of a killed run — skip, not fatal
+                if ev.get("type") in call_types:
+                    events.append(ev)
+        rows = []
+        for ev in events:
+            cost = ev.get("cost") or {}
+            out = ev.get("output") or {}
+            rows.append((
+                meta.run_id, ev.get("phase"), ev.get("step"), ev.get("role"),
+                ev.get("model"), cost.get("input_tokens") or 0,
+                cost.get("output_tokens") or 0, cost.get("usd") or 0.0,
+                cost.get("api_cost_usd"), cost.get("pricing_source"),
+                ev.get("latency_ms") or 0.0, out.get("attempt"),
+                (ev.get("metadata") or {}).get("error_category"),
+                (ev.get("error") or "")[:500] or None, int(meta.dry_run),
+                datetime.now(UTC).isoformat(), ev.get("worker_id"),
+                ev.get("sequence"),
+                json.dumps(ev.get("input") or {}, default=str),
+                json.dumps(out, default=str),
+                out.get("finish_reason"),
+            ))
+        with self._connect() as conn:
+            conn.execute("DELETE FROM calls WHERE run_id = ?", (meta.run_id,))
+            conn.executemany(
+                """
+                INSERT INTO calls (
+                    run_id, phase, step, role, model, input_tokens,
+                    output_tokens, cost_usd, api_cost_usd, pricing_source,
+                    latency_ms, attempt, error_category, error, dry_run,
+                    created_at, worker_id, sequence, input_json, output_json,
+                    finish_reason
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                rows,
+            )
+        return len(rows)
 
     def calls_pricing_summary(self) -> list[dict[str, Any]]:
         """Per-(model, pricing_source) aggregates for pricing-drift analysis.
@@ -566,11 +640,20 @@ _RUN_COLUMNS_V2 = (
     ("dry_run", "INTEGER"),
     ("judge_score", "REAL"),
     ("judge_passed", "INTEGER"),
+    ("delegated", "INTEGER"),
 )
 
 _CALL_COLUMNS_V2 = (
     ("worker_id", "TEXT"),
     ("sequence", "INTEGER"),
+)
+
+# calls v3: full step payloads so the index is a self-contained RL/telemetry
+# store — prompt messages, raw completion, and provider finish_reason per call
+_CALL_COLUMNS_V3 = (
+    ("input_json", "TEXT"),
+    ("output_json", "TEXT"),
+    ("finish_reason", "TEXT"),
 )
 
 
@@ -609,4 +692,5 @@ def _row_to_meta(row: sqlite3.Row) -> RunMeta:
         dry_run=bool(row[19]) if len(row) > 19 else False,
         judge_score=row[20] if len(row) > 20 else None,
         judge_passed=bool(row[21]) if len(row) > 21 and row[21] is not None else None,
+        delegated=bool(row[22]) if len(row) > 22 and row[22] is not None else None,
     )

@@ -168,6 +168,9 @@ class EventLogger:
                 dry_run=self._dry_run,
                 worker_id=event.get("worker_id"),
                 sequence=event.get("sequence"),
+                input_json=json.dumps(event.get("input") or {}, default=str),
+                output_json=json.dumps(event.get("output") or {}, default=str),
+                finish_reason=(event.get("output") or {}).get("finish_reason"),
             )
         except Exception as exc:  # pragma: no cover - defensive
             with contextlib.suppress(Exception):

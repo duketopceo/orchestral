@@ -67,33 +67,55 @@ as release evidence.
   (`https://user:pass@host`), internal hostnames (`.internal`, `.corp`, `.lan`,
   `.local`, `.home`, `.intranet`), emails, phone numbers, `/Users/…`,
   `/home/…`, `C:\Users\…` paths, and IPv4 addresses.
-- **Archives are omitted**: `artifact.zip` and other archive members are
-  skipped, because redaction cannot see inside an archive — a generated file
-  could carry a secret straight into `runs-pub/`. Each omission is recorded in
-  the run's manifest entry under `scrub_omissions`, with a warning naming the
-  run. Publishing multi-file results needs inner-file redaction first.
-- **Video runs**: `artifact.mp4`/`worker-*.mp4` copy verbatim; `events.jsonl`
-  records the prompt and job id but never the video payload or job URLs.
-- **Copies verbatim**: known binary artifacts (`.png`, `.mp4`, fonts,
-  databases, or anything with NUL bytes) — except archives, which are omitted
-  as described above.
+- **Fails closed for opaque content**: archives (`.zip`, `.gz`, `.tar`, `.7z`,
+  `.bz2`, `.xz`, and `.rar`), archive signatures even when renamed, database
+  files (`.db`, `.sqlite`, `.sqlite3`, `.mdb`, `.accdb`, and `.dbf`), unknown
+  binary data, and non-text data are omitted rather than copied. Each blocked
+  file is listed in the run's `scrub_blocked` and `scrub_omissions` entries
+  with a reason and `status: "blocked"`.
+- **Copies approved media and fonts verbatim**: images, videos, and font files
+  remain byte-identical. This is an explicit exception, not a general binary
+  allowance. `scrub_run` uses this same policy as `orchestral scrub`; use
+  `orchestral scrub` when the manifest evidence is required.
 - **Copies only allowlisted names**: `run.json`, `events.jsonl`, `plan.json`,
   `cost.json`, `report.json`, `metrics.json`, `worker-*`, `artifact.*`,
-  `screenshot.*`,
-  `judge*`. Random files you dropped into a run dir stay behind.
+  `screenshot.*`, and `judge*`. Random files you dropped into a run directory
+  stay behind.
 - **Writes `manifest.json`**: one entry per run with run_id, orchestrator,
   task_id, worker, status, score, passes, cost, token totals, and the
-  `runs-pub` path — enough to build a gallery or results table.
+  `runs-pub` path. Every entry sets `scrub_policy` to `fail_closed` and records
+  `publication_review.manual_inspection_required` and
+  `publication_review.second_scanner_required`.
+
+## Publication gate
+
+Do not publish `runs-pub/` immediately after scrubbing.
+
+1. Inspect the complete output, including allowed media metadata.
+2. Run a second, independent scanner over the output.
+3. Confirm the manifest's blocked-file list and review requirements are
+   understood by the publisher.
+4. Publish only after the review is complete and the output is stored at the
+   intended destination.
+
+A clean `scrub` result is not proof that the output is safe to publish. The
+manifest makes the required review visible; it does not replace it. `scrub`
+rebuilds its destination so a blocked file from an earlier run cannot remain in
+the publication tree.
 
 ## Caveats — read before publishing
 
-- **Eyeball the output.** Patterns cover common shapes; your custom env vars or
-  internal URLs may not match. Extend `PATTERNS` in `orchestral/privacy.py` for
-  your own sensitive data.
-- **Binary metadata passes through.** PNG `tEXt`/`iTXt` chunks and EXIF data
-  are not scrubbed. If your image pipeline embeds prompts or paths in metadata,
-  strip it first (`exiftool -all= runs-pub/**/*.png`).
+- **Patterns are not exhaustive.** They cover common credential, endpoint, and
+  path shapes. Extend `PATTERNS` in `orchestral/privacy.py` for your own data.
+- **Approved media metadata passes through.** PNG `tEXt`/`iTXt` chunks, EXIF
+  data, and equivalent metadata in other media are not scrubbed. Strip metadata
+  before review when your pipeline can write it.
+- **Omitted content is not scanned.** Archives, databases, and unknown binary
+  content are intentionally excluded because opening or rewriting opaque files
+  can change them or expose their contents. Do not copy them into the
+  publication tree by hand.
 - **`runs-pub/` is gitignored** in this repo — publish it deliberately, to
   wherever the results should live.
 - **Malformed JSON** degrades to text-mode scrubbing rather than aborting, so a
-  truncated `run.json` can't silently skip the rest of the tree.
+  truncated `run.json` cannot silently skip the rest of the tree. Unreadable or
+  non-UTF-8 content is blocked instead.

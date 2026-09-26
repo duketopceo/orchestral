@@ -15,7 +15,13 @@ from typing import Any, Literal
 
 from orchestral.apistub import parse_plan
 from orchestral.config import ModelConfig, TaskSpec
-from orchestral.costs import compute_cost, compute_image_cost, compute_video_cost, token_usage_from_raw
+from orchestral.costs import (
+    compute_cost,
+    compute_image_cost,
+    compute_video_cost,
+    pricing_source_for,
+    token_usage_from_raw,
+)
 from orchestral.fileset import (
     FilesetError,
     check_response_size,
@@ -184,7 +190,9 @@ def _llm_call(
     usage = token_usage_from_raw(completion["usage"])
     cost_usd, _ = compute_cost(usage, model_cfg)
     content = completion["content"]
-    api_cost = completion.get("api_cost_usd")
+    api_cost_usd = completion.get("api_cost_usd")
+    api_cost_usd = api_cost_usd if isinstance(api_cost_usd, (int, float)) else None
+    pricing_source = pricing_source_for(api_cost_usd)
 
     logger.log_llm_call(
         phase=phase,
@@ -203,8 +211,8 @@ def _llm_call(
         output_tokens=usage.completion_tokens,
         cost_usd=cost_usd,
         latency_ms=completion["latency_ms"],
-        pricing_source="configured",
-        api_cost_usd=api_cost if isinstance(api_cost, (int, float)) else None,
+        pricing_source=pricing_source,
+        api_cost_usd=api_cost_usd,
         attempt=attempt,
     )
 
@@ -214,8 +222,8 @@ def _llm_call(
         "input_tokens": usage.prompt_tokens,
         "output_tokens": usage.completion_tokens,
         "cost_usd": cost_usd,
-        "pricing_source": "configured",
-        "api_cost_usd": api_cost if isinstance(api_cost, (int, float)) else None,
+        "pricing_source": pricing_source,
+        "api_cost_usd": api_cost_usd,
         "usage": usage.to_dict(),
     }
 
@@ -556,7 +564,9 @@ def delegate_image(
     image_bytes = completion["image_bytes"]
     usage = token_usage_from_raw(completion["usage"])
     cost_usd = compute_image_cost(worker, usage, 1)
-    api_cost = completion.get("api_cost_usd")
+    api_cost_usd = completion.get("api_cost_usd")
+    api_cost_usd = api_cost_usd if isinstance(api_cost_usd, (int, float)) else None
+    pricing_source = pricing_source_for(api_cost_usd)
 
     logger.log_llm_call(
         phase="delegate",
@@ -574,8 +584,8 @@ def delegate_image(
         output_tokens=usage.completion_tokens,
         cost_usd=cost_usd,
         latency_ms=completion["latency_ms"],
-        pricing_source="configured",
-        api_cost_usd=api_cost if isinstance(api_cost, (int, float)) else None,
+        pricing_source=pricing_source,
+        api_cost_usd=api_cost_usd,
         attempt=attempt,
     )
     return {"subtask_id": subtask.get("id"), "prompt": prompt}, image_bytes, [{
@@ -584,8 +594,8 @@ def delegate_image(
         "input_tokens": usage.prompt_tokens,
         "output_tokens": usage.completion_tokens,
         "cost_usd": cost_usd,
-        "pricing_source": "configured",
-        "api_cost_usd": api_cost if isinstance(api_cost, (int, float)) else None,
+        "pricing_source": pricing_source,
+        "api_cost_usd": api_cost_usd,
         "usage": usage.to_dict(),
     }]
 
@@ -665,7 +675,8 @@ def delegate_video(
     )
     # the async API reports an authoritative usage.cost on the completed job;
     # anything else is a configured rate-card estimate
-    pricing_source = "api_reported" if isinstance(api_cost, (int, float)) else "configured_estimate"
+    api_cost_usd = api_cost if isinstance(api_cost, (int, float)) else None
+    pricing_source = pricing_source_for(api_cost_usd)
 
     logger.log_llm_call(
         phase="delegate",
@@ -684,7 +695,7 @@ def delegate_video(
         cost_usd=cost_usd,
         latency_ms=completion["latency_ms"],
         pricing_source=pricing_source,
-        api_cost_usd=api_cost if isinstance(api_cost, (int, float)) else None,
+        api_cost_usd=api_cost_usd,
         attempt=attempt,
     )
     return {"subtask_id": subtask.get("id"), "prompt": prompt}, video_bytes, [{
@@ -694,7 +705,7 @@ def delegate_video(
         "output_tokens": 0,
         "cost_usd": cost_usd,
         "pricing_source": pricing_source,
-        "api_cost_usd": api_cost if isinstance(api_cost, (int, float)) else None,
+        "api_cost_usd": api_cost_usd,
         "usage": usage,
     }]
 
@@ -779,7 +790,9 @@ def delegate_multi(
 
     usage = token_usage_from_raw(completion["usage"])
     cost_usd, _ = compute_cost(usage, worker)
-    api_cost = completion.get("api_cost_usd")
+    api_cost_usd = completion.get("api_cost_usd")
+    api_cost_usd = api_cost_usd if isinstance(api_cost_usd, (int, float)) else None
+    pricing_source = pricing_source_for(api_cost_usd)
     summary = summarize_fileset(files)
     logger.log_llm_call(
         phase="delegate",
@@ -800,8 +813,8 @@ def delegate_multi(
         output_tokens=usage.completion_tokens,
         cost_usd=cost_usd,
         latency_ms=completion["latency_ms"],
-        pricing_source="configured",
-        api_cost_usd=api_cost if isinstance(api_cost, (int, float)) else None,
+        pricing_source=pricing_source,
+        api_cost_usd=api_cost_usd,
         attempt=attempt,
     )
     notes = data.get("notes") if isinstance(data, dict) else None
@@ -815,8 +828,8 @@ def delegate_multi(
         "input_tokens": usage.prompt_tokens,
         "output_tokens": usage.completion_tokens,
         "cost_usd": cost_usd,
-        "pricing_source": "configured",
-        "api_cost_usd": api_cost if isinstance(api_cost, (int, float)) else None,
+        "pricing_source": pricing_source,
+        "api_cost_usd": api_cost_usd,
         "usage": usage.to_dict(),
     }]
 

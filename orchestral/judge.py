@@ -12,7 +12,7 @@ import random
 from typing import Any
 
 from orchestral.config import ModelConfig, TaskSpec
-from orchestral.costs import compute_cost, token_usage_from_raw
+from orchestral.costs import compute_cost, pricing_source_for, token_usage_from_raw
 from orchestral.logger import EventLogger
 from orchestral.openrouter import OpenRouterClient
 from orchestral.planners import _extract_json
@@ -129,7 +129,9 @@ def judge_artifact(
     content = completion["content"]
     usage = token_usage_from_raw(completion["usage"])
     cost_usd, _ = compute_cost(usage, judge)
-    api_cost = completion.get("api_cost_usd")
+    api_cost_usd = completion.get("api_cost_usd")
+    api_cost_usd = api_cost_usd if isinstance(api_cost_usd, (int, float)) else None
+    pricing_source = pricing_source_for(api_cost_usd)
 
     try:
         result = _extract_json(content)
@@ -171,8 +173,8 @@ def judge_artifact(
         output_tokens=usage.completion_tokens,
         cost_usd=cost_usd,
         latency_ms=completion["latency_ms"],
-        pricing_source="configured",
-        api_cost_usd=api_cost if isinstance(api_cost, (int, float)) else None,
+        pricing_source=pricing_source,
+        api_cost_usd=api_cost_usd,
     )
 
     return result, [{
@@ -181,8 +183,8 @@ def judge_artifact(
         "input_tokens": usage.prompt_tokens,
         "output_tokens": usage.completion_tokens,
         "cost_usd": cost_usd,
-        "pricing_source": "configured",
-        "api_cost_usd": api_cost if isinstance(api_cost, (int, float)) else None,
+        "pricing_source": pricing_source,
+        "api_cost_usd": api_cost_usd,
         "usage": usage.to_dict(),
     }]
 

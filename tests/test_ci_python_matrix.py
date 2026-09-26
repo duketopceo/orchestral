@@ -52,8 +52,23 @@ def _declared_floor() -> tuple[int, ...]:
     return (int(match.group("floor")), int(match.group("patch")))
 
 
+def _uncommented(path: Path) -> str:
+    """The file's own lines, with `#` comments dropped.
+
+    ci.yml documents its matrix four lines above the matrix, and a bracketed
+    `python-version: [...]` example in that comment is indistinguishable from the
+    real row to a regex over the raw text. Matching one would let a comment
+    satisfy the guard while the row it documents is gone.
+    """
+    return "\n".join(
+        line
+        for line in path.read_text().splitlines()
+        if not line.lstrip().startswith("#")
+    )
+
+
 def _matrix_versions() -> list[str]:
-    match = _MATRIX.search(CI_WORKFLOW.read_text())
+    match = _MATRIX.search(_uncommented(CI_WORKFLOW))
     if match is None:
         raise AssertionError(
             "ci.yml pins a single python-version and has no matrix.\n"
@@ -107,9 +122,7 @@ class TestCiPythonMatrix(unittest.TestCase):
         passes. That reports success for a range measured only at the bottom,
         and the top goes unverified silently.
 
-        This is the trade the paid-eval guard below makes in the same file: a
-        pinned constant standing in for a fact the repository cannot derive. It
-        trips when the matrix shrinks. It does not know whether 3.15 has
+        It trips when the matrix shrinks. It does not know whether 3.15 has
         shipped, so a constant left stale here is still an untested claim, just
         one that now fails loudly instead of passing quietly.
         """
@@ -119,8 +132,8 @@ class TestCiPythonMatrix(unittest.TestCase):
             versions,
             f"the top of the range went unverified: ci.yml's newest row is "
             f"{max(versions, key=_version_key) if versions else 'absent'}, but "
-            f"{_NEWEST_SUPPORTED_MINOR} is the newest minor this project claims "
-            f"to support. requires-python is "
+            f"{_NEWEST_SUPPORTED_MINOR} is the newest minor this project has run "
+            f"the suite on. requires-python is "
             f"'>={'.'.join(str(part) for part in _declared_floor())}' with no "
             f"ceiling, so {_NEWEST_SUPPORTED_MINOR} is claimed whether or not "
             f"ci.yml runs it. Put the row back. To widen the range instead, "
@@ -128,6 +141,41 @@ class TestCiPythonMatrix(unittest.TestCase):
             f'the version, since a bare "{_NEWEST_SUPPORTED_MINOR}" silently '
             f"becomes the next minor.",
         )
+
+    def test_matrix_skips_no_minor_inside_its_own_range(self) -> None:
+        """The interior of the range. The ends are owned by the tests above.
+
+        Pinning the top and the floor leaves the middle unconstrained:
+        `["3.11", "3.14"]` satisfies both ends and leaves 3.12 and 3.13 untested,
+        which is the `textual` trap one level in again — the file would report
+        the range covered while a hole sits in the middle of it.
+
+        The bound is the highest row the matrix itself carries, not
+        `_NEWEST_SUPPORTED_MINOR`, so the interior stays guarded while the pin
+        is stale. A hole is a hole whichever end declared it, and a matrix that
+        runs ahead of the pin is contiguous or it is not; there is no reason to
+        let a stale pin decide this.
+        """
+        versions = _matrix_versions()
+        floor = _declared_floor()
+        same_major = [v for v in versions if _version_key(v)[0] == floor[0]]
+        self.assertTrue(
+            same_major,
+            f"ci.yml runs no {floor[0]}.x interpreter, so the declared range "
+            f"from {'.'.join(str(part) for part in floor)} up is unverified",
+        )
+        newest = max(same_major, key=_version_key)
+        gaps = [
+            f"{floor[0]}.{minor}"
+            for minor in range(floor[1] + 1, _version_key(newest)[1] + 1)
+            if f"{floor[0]}.{minor}" not in versions
+        ]
+        if gaps:
+            self.fail(
+                f"ci.yml runs up to {newest} but skips {', '.join(gaps)}, so those "
+                f"minors are support claims with no run behind them. Put the rows "
+                f"back, or drop the rows above them."
+            )
 
     def test_workflow_expands_the_matrix_in_setup_python(self) -> None:
         text = CI_WORKFLOW.read_text()

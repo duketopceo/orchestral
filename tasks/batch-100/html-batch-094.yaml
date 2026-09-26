@@ -6,3 +6,10 @@ prompt: Create a landing page for a smart home dashboard targeted at remote-firs
   inline CSS.
 validation:
 - html
+- has_required
+- matches_pattern
+metadata:
+  required:
+  - dashboard
+  pattern: remote[ -]?first|distributed|async|remote team|work from anywhere|hybrid|global
+    team|timezone|time zone|hire anywhere

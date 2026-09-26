@@ -232,6 +232,7 @@ metadata: {}                  # optional free-form map (video tasks read generat
 | `non_empty` | the artifact has bytes |
 | `zip_signature` | the archive opens as a zip |
 | `has_paths` | every path in `metadata.expected_paths` is present as a non-empty regular file |
+| `has_content` | every token in `metadata.required_content[path]` appears in that file's body (case-insensitive); scoped per path, so one file cannot vouch for another |
 
 `code` tasks ignore `validation:` — the check is execution:
 
@@ -253,7 +254,13 @@ Each fails closed when requested but its metadata key is missing:
 | `no_pattern` | the regex does not match | `forbidden_pattern` |
 
 Unknown check names fail the run — including in a list that also contains known
-checks.
+checks. This holds for `html`, `constraint`, `needle`, `image`, `video`, and
+`multi-file`. The `code`, `sql`, `extract`, and `api` types never read
+`validation:` at all: they compute a fixed check set from `metadata`, so
+anything declared there is a phantom gate and the run still reports a pass.
+`python harness.py audit --strict` is the gate for that case and for the first —
+it fails CI on a spec that asks for a check which cannot run. See
+[docs/task-audit.md](task-audit.md).
 
 ## Example
 
@@ -267,14 +274,19 @@ validation: [html, has_cta, has_form, has_viewport, no_placeholder]
 ```
 
 A multi-file task declares the files it expects, so `has_paths` can check the
-archive against the brief:
+archive against the brief. `has_paths` alone accepts a one-byte file per name,
+so a spec that wants the artifact graded on content adds `has_content` and maps
+each path to the tokens that file must contain:
 
 ```yaml
 id: multi-file-site
 type: multi-file
 prompt: |
   Build a small static site: a landing page and the stylesheet it depends on.
-validation: [non_empty, zip_signature, has_paths]
+validation: [non_empty, zip_signature, has_paths, has_content]
 metadata:
   expected_paths: [index.html, style.css]
+  required_content:
+    index.html: [hero, pricing, email]
+    style.css: [pricing, form]
 ```

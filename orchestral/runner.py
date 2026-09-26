@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from orchestral.apistub import check_api
+from orchestral.audit import VALIDATION_CHECKS
 from orchestral.codeexec import (
     DEFAULT_TIMEOUT_SECONDS,
     check_code_quality,
@@ -33,6 +34,7 @@ from orchestral.fileset import (
     expected_paths,
     manifest_listing,
     merge_filesets,
+    required_content,
 )
 from orchestral.judge import judge_artifact
 from orchestral.logger import EventLogger
@@ -1087,7 +1089,11 @@ class Runner:
                     checks["no_pattern"] = False
                     errors.append(f"metadata.forbidden_pattern is not a valid regex: {exc}.")
 
-        return _validation_report(task, checks, errors, len(artifact))
+        unknown = sorted(requested - VALIDATION_CHECKS["html"])
+        if unknown:
+            errors.append(f"Unknown validation check(s): {', '.join(unknown)}.")
+        passes, report = _validation_report(task, checks, errors, len(artifact))
+        return passes and not unknown, report
 
     def _validate_image(self, task: TaskSpec, artifact: bytes) -> tuple[bool, dict[str, Any]]:
         requested = set(task.validation) if task.validation else {"non_empty", "png_signature"}
@@ -1103,11 +1109,15 @@ class Runner:
             if not checks["png_signature"]:
                 errors.append("Artifact is not a well-formed PNG (bad magic or missing IEND).")
 
-        return _validation_report(task, checks, errors, len(artifact))
+        unknown = sorted(requested - VALIDATION_CHECKS["image"])
+        if unknown:
+            errors.append(f"Unknown validation check(s): {', '.join(unknown)}.")
+        passes, report = _validation_report(task, checks, errors, len(artifact))
+        return passes and not unknown, report
 
     def _validate_multi(self, task: TaskSpec, artifact: bytes) -> tuple[bool, dict[str, Any]]:
         requested = set(task.validation) if task.validation else {"non_empty", "zip_signature"}
-        known = {"non_empty", "zip_signature", "has_paths"}
+        known = VALIDATION_CHECKS["multi-file"]
         checks: dict[str, bool] = {}
         errors: list[str] = []
 
@@ -1116,16 +1126,19 @@ class Runner:
             if not checks["non_empty"]:
                 errors.append("Artifact is empty.")
         present: dict[str, int] = {}
-        if "zip_signature" in requested or "has_paths" in requested:
+        bodies: dict[str, bytes] = {}
+        if "zip_signature" in requested or "has_paths" in requested or "has_content" in requested:
             try:
                 with zipfile.ZipFile(io.BytesIO(artifact)) as archive:
-                    present = {
-                        info.filename: info.file_size
-                        for info in archive.infolist()
-                        if not info.filename.endswith("/")
-                    }
-            except zipfile.BadZipFile:
+                    for info in archive.infolist():
+                        if info.filename.endswith("/"):
+                            continue
+                        present[info.filename] = info.file_size
+                        if "has_content" in requested:
+                            bodies[info.filename] = archive.read(info)
+            except (zipfile.BadZipFile, RuntimeError, OSError):
                 present = {}
+                bodies = {}
         if "zip_signature" in requested:
             checks["zip_signature"] = zipfile.is_zipfile(io.BytesIO(artifact))
             if not checks["zip_signature"]:
@@ -1138,6 +1151,24 @@ class Runner:
                 errors.append("has_paths requested but metadata.expected_paths is empty.")
             elif missing:
                 errors.append(f"Missing or empty expected files: {', '.join(missing)}.")
+        if "has_content" in requested:
+            declared_content = required_content(task.metadata)
+            absent: list[str] = []
+            unmatched: list[str] = []
+            for path, tokens in sorted(declared_content.items()):
+                body = bodies.get(path)
+                if body is None:
+                    absent.append(path)
+                    continue
+                haystack = body.decode("utf-8", errors="replace").lower()
+                unmatched.extend(f"{path}:{token}" for token in tokens if token.lower() not in haystack)
+            checks["has_content"] = bool(declared_content) and not absent and not unmatched
+            if not declared_content:
+                errors.append("has_content requested but metadata.required_content is empty.")
+            if absent:
+                errors.append(f"No file body to read for: {', '.join(absent)}.")
+            if unmatched:
+                errors.append(f"Required token(s) missing from file bodies: {', '.join(unmatched)}.")
 
         unknown = sorted(requested - known)
         if unknown:
@@ -1217,7 +1248,11 @@ class Runner:
             if not checks["mp4_signature"]:
                 errors.append("Artifact is not a well-formed MP4 (missing leading ftyp box).")
 
-        return _validation_report(task, checks, errors, len(artifact))
+        unknown = sorted(requested - VALIDATION_CHECKS["video"])
+        if unknown:
+            errors.append(f"Unknown validation check(s): {', '.join(unknown)}.")
+        passes, report = _validation_report(task, checks, errors, len(artifact))
+        return passes and not unknown, report
 
     def _validate_sql(self, task: TaskSpec, sql: str) -> tuple[bool, dict[str, Any]]:
         report = run_sql_check(task.metadata, sql)

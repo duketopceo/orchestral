@@ -5,3 +5,11 @@ prompt: Create a landing page for a personal CRM targeted at early adopters. Wri
   a call-to-action button. Output a single self-contained HTML file with inline CSS.
 validation:
 - html
+- has_required
+- matches_pattern
+metadata:
+  required:
+  - crm
+  pattern: early adopter|early access|early bird|early|first[ -]?look|be the first|get
+    early|first to try|first in line|waitlist|before everyone|founding (?:member|customer)|locked
+    in early|head start

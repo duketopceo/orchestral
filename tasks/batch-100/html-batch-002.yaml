@@ -6,3 +6,11 @@ prompt: Create a landing page for a coffee roaster targeted at open-source devel
   CSS.
 validation:
 - html
+- has_required
+- matches_pattern
+metadata:
+  required:
+  - roast
+  pattern: open[ -]source|developer|dev team|contributor|codebase|self[ -]host|\bcli\b|api[-
+    ]first|github|git repository|repository|readme|ship your own|for developers|by
+    developers

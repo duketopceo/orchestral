@@ -148,16 +148,36 @@ class TestCiPythonMatrix(unittest.TestCase):
 
         This checks one narrow thing: that this workflow neither declares a
         `python-version` matrix nor expands one. It is not a spend cap, and the
-        name used to claim it was. Three shapes were measured against these two
-        assertions that all pass and all multiply a real bill — a `matrix:` on a
-        non-python key, a second job that runs the eval again, and a
-        reusable-workflow call. A block-sequence `python-version` also passes,
-        because the pattern needs literal brackets and YAML lists have none.
+        name used to claim it was.
 
-        A comment above the pin states the intent, and this makes the common
-        accidental case fail loudly. Closing the other shapes is a judgement
-        about what this workflow is allowed to become, so it is raised as a
-        review question rather than decided here.
+        Dropping the brackets defeats the first assertion only. `_MATRIX` needs
+        a literal `[`, so a block-sequence `python-version` slips past it — and
+        is then caught by the second, because expanding that block into
+        `setup-python` writes `matrix.python-version` into the file. Only a
+        block-sequence matrix that is never expanded gets past both, and that
+        one bills once, because every job still runs the pinned interpreter. It
+        is not a spend path, so it is not listed as one below.
+
+        Five shapes do get past both while multiplying a real bill. All five are
+        green here today:
+
+        - a `matrix:` on a non-python key, fanning jobs out at one interpreter
+        - a `matrix.include` fanned out through `${{ matrix['python-version'] }}`,
+          which the bracket-quote accessor keeps off the second assertion's
+          literal
+        - a second job that runs the eval again
+        - the eval run twice inside the one job
+        - a second workflow file beside `orchestral.yml` carrying its own
+          matrix, which the hard-coded path above never reads
+
+        A `reusable-workflow` call gets past both too. On its own it moves the
+        bill rather than multiplying it; it multiplies once the caller fans out.
+
+        These were measured against the two assertions above rather than argued,
+        and the review of record is DUK-202. A comment above the pin states the
+        intent, and this makes the common accidental case fail loudly. Closing
+        the rest is a judgement about what this workflow is allowed to become,
+        so it is raised there as a review question rather than decided here.
         """
         text = PAID_EVAL_WORKFLOW.read_text()
         self.assertIsNone(

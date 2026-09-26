@@ -421,6 +421,7 @@ def _has_topic_anchor(spec: TaskSpec) -> bool:
     return "matches_pattern" in checks and _pattern_declared(spec.metadata.get("pattern"))
 
 
+
 def _scalars(value: Any) -> list[str]:
     """Flatten a metadata value to comparable strings, ignoring short tokens."""
     out: list[str] = []
@@ -979,6 +980,7 @@ _CONSTANT_ASSERTIONS_NEUTRAL = (
 )
 
 
+
 def _suite_gate_reason(tests_source: str) -> str | None:
     """Why the suite cannot gate anything, or None when it can.
 
@@ -992,6 +994,7 @@ def _suite_gate_reason(tests_source: str) -> str | None:
     - that assertion is not a constant, so it can discriminate between artifacts;
     - a test body that is inert (`pass`, a docstring) is not a gate.
 
+
     **Not provable by a static read.** An assertion arranged by the test itself
     — `self.flag = True` then `self.assertTrue(self.flag)` — provably passes
     for any artifact. Detecting that needs execution: run the suite against a
@@ -1000,6 +1003,7 @@ def _suite_gate_reason(tests_source: str) -> str | None:
     A test body that does something but shows no assertion to the audit is not
     reported: an assertion assembled at runtime is a real gate, and calling it
     a constant would be false in both halves.
+
     """
     try:
         tree = ast.parse(tests_source)
@@ -1017,6 +1021,7 @@ def _suite_gate_reason(tests_source: str) -> str | None:
         if not isinstance(node, ast.ClassDef):
             continue
         kind = _is_test_case(node, locals_, imports, bound)
+
         if not kind:
             continue
         for member in node.body:
@@ -1030,6 +1035,7 @@ def _suite_gate_reason(tests_source: str) -> str | None:
             collectable = True
             if not _is_effect_free(member.body):
                 did_something = True
+
             for inner in ast.walk(member):
                 is_assertion = isinstance(inner, ast.Assert) or (
                     isinstance(inner, ast.Call)
@@ -1056,6 +1062,7 @@ def _suite_gate_reason(tests_source: str) -> str | None:
     if all(polarity is True for polarity in polarities):
         return _CONSTANT_ASSERTIONS_PASSES
     return _CONSTANT_ASSERTIONS_NEUTRAL
+
 
 
 def _has_required_field(metadata: dict[str, Any]) -> bool:
@@ -1138,6 +1145,7 @@ def _anchor_advice(spec: TaskSpec) -> str:
             "compliant way to anchor the subject from the spec: the topic checks are text-only and "
             "this type never grades text. Add a content check to the runner, or grade the artifact "
             "as a text-producing type."
+
         )
     if _required_tokens(spec.metadata.get("required")) and "has_required" not in checks:
         advice += (

@@ -40,6 +40,7 @@ it for you.
 | `unanchored_fileset` | warn | `multi-file` grades filenames and byte counts only. No check reads the file bodies. Fires in all three unanchored states: no usable `metadata.expected_paths`, declared paths that `has_paths` was never asked to check, or declared paths checked only for existence. Requesting `has_content` without populating `metadata.required_content` keeps the finding. |
 
 | `judge_gated_media` | info | An `image` / `video` artifact is encoded bytes, so no text check can anchor its subject. `png_signature` / `mp4_signature` prove format only; topicality rests on the vision judge, so a run without `--judge` grades these specs on file format alone. |
+
 | `prompt_states_the_answer` | warn | The prompt spells out graded output — an expected value, the reference query, or the expected call list. Recitation scores the same as reasoning. `extract` is exempt by design: its prompt carries the source document. |
 | `answer_derivable_from_prompt` | warn | Every graded value is readable in the prompt (`extract`, `sql`). The task ceiling is transcription and lookup, not problem solving. |
 | `memorization_risk` | warn | The id or prompt matches a known textbook problem (fizzbuzz, slugify, LRU cache, expression parser, two-sum, …). A memorised answer scores the same as a solved one. |
@@ -132,6 +133,7 @@ limit; it is not a claim that the rule asks whether an assertion can read the
 artifact, because it asks the narrower question of whether the assertion is
 built only from the constructs above.
 
+
 **Not provable by a static read:**
 
 - An assertion arranged by the test itself — `self.flag = True` then
@@ -203,6 +205,7 @@ separate analysis from whether one was declared, and only the second is done her
 A declaration is compared against `metadata.pattern` as written, exactly as
 `re.search(str(pattern), artifact)` will read it.
 
+
 **Why that matters here.** At this commit code execution is live:
 `run_unittest_suite` writes the suite to `task_tests.py` in a temp directory and
 runs `python -Es -m unittest -v task_tests` in a subprocess with
@@ -259,6 +262,7 @@ every other spec with it, in the one function in the file that read metadata
 unguarded. Every metadata read is now covered by a test that feeds each rule
 every shape (`TestHostileMetadataNeverRaises`), because the shape of that bug was
 an omission and a fix to the one instance would not have caught the next.
+
 
 
 ## What this does not do

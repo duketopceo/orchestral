@@ -59,12 +59,14 @@ two different problems under one id.
 Read the result with `python harness.py report --contamination`, which prints
 mean score per arm per task type plus the gap, and the `n` behind each mean.
 
+
 Editing a spec changes its `task_hash` (sha256 of the spec content, recorded
 in the manifest). Runs recorded under the old hash stay valid artifacts but no
 longer pair with runs of the edited spec, so set `metadata.version` (recorded
 as `task_version`) to label the revision and note in the spec why it changed.
 That applies to a bug fix in the expected answer too: a corrected spec is a
 new hash.
+
 ## Task types
 
 - **`html`** — workers write markup fragments; the orchestrator assembles a
@@ -179,6 +181,7 @@ new hash.
     answer is harder to notice than a total failure, and a non-empty reference
     passes the check above. Aggregate the rounded value:
     `MAX(ROUND(SUM(x), 2)) OVER (...)`.
+
   - **Seed values that exercise the comparison.** Prices like `30.0` and
     `12.5` are exact binary fractions, so they hide the case above. Use prices
     with a fractional cent (`12.34`) and quantities that are not powers of two.
@@ -193,6 +196,7 @@ new hash.
     fully determine row order either way, because the compare is positional.
     `tasks/sql-monthly-revenue.yaml` is the worked example: its prompt names the
     alphabetical tie-break and its `reference_sql` picks the same row.
+
 - **`extract`** — workers extract a JSON object per subtask; the orchestrator
   picks the best candidate (same selection flow as `image`/`video`); the
   chosen extraction is stored as `artifact.json` and graded deterministically.

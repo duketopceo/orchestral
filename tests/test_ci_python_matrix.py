@@ -52,8 +52,23 @@ def _declared_floor() -> tuple[int, ...]:
     return (int(match.group("floor")), int(match.group("patch")))
 
 
+def _uncommented(path: Path) -> str:
+    """The file's own lines, with `#` comments dropped.
+
+    ci.yml documents its matrix four lines above the matrix, and a bracketed
+    `python-version: [...]` example in that comment is indistinguishable from the
+    real row to a regex over the raw text. Matching one would let a comment
+    satisfy the guard while the row it documents is gone.
+    """
+    return "\n".join(
+        line
+        for line in path.read_text().splitlines()
+        if not line.lstrip().startswith("#")
+    )
+
+
 def _matrix_versions() -> list[str]:
-    match = _MATRIX.search(CI_WORKFLOW.read_text())
+    match = _MATRIX.search(_uncommented(CI_WORKFLOW))
     if match is None:
         raise AssertionError(
             "ci.yml pins a single python-version and has no matrix.\n"
@@ -107,9 +122,7 @@ class TestCiPythonMatrix(unittest.TestCase):
         passes. That reports success for a range measured only at the bottom,
         and the top goes unverified silently.
 
-        This is the trade the paid-eval guard below makes in the same file: a
-        pinned constant standing in for a fact the repository cannot derive. It
-        trips when the matrix shrinks. It does not know whether 3.15 has
+        It trips when the matrix shrinks. It does not know whether 3.15 has
         shipped, so a constant left stale here is still an untested claim, just
         one that now fails loudly instead of passing quietly.
         """
@@ -119,8 +132,8 @@ class TestCiPythonMatrix(unittest.TestCase):
             versions,
             f"the top of the range went unverified: ci.yml's newest row is "
             f"{max(versions, key=_version_key) if versions else 'absent'}, but "
-            f"{_NEWEST_SUPPORTED_MINOR} is the newest minor this project claims "
-            f"to support. requires-python is "
+            f"{_NEWEST_SUPPORTED_MINOR} is the newest minor this project has run "
+            f"the suite on. requires-python is "
             f"'>={'.'.join(str(part) for part in _declared_floor())}' with no "
             f"ceiling, so {_NEWEST_SUPPORTED_MINOR} is claimed whether or not "
             f"ci.yml runs it. Put the row back. To widen the range instead, "
@@ -128,6 +141,41 @@ class TestCiPythonMatrix(unittest.TestCase):
             f'the version, since a bare "{_NEWEST_SUPPORTED_MINOR}" silently '
             f"becomes the next minor.",
         )
+
+    def test_matrix_skips_no_minor_inside_its_own_range(self) -> None:
+        """The interior of the range. The ends are owned by the tests above.
+
+        Pinning the top and the floor leaves the middle unconstrained:
+        `["3.11", "3.14"]` satisfies both ends and leaves 3.12 and 3.13 untested,
+        which is the `textual` trap one level in again — the file would report
+        the range covered while a hole sits in the middle of it.
+
+        The bound is the highest row the matrix itself carries, not
+        `_NEWEST_SUPPORTED_MINOR`, so the interior stays guarded while the pin
+        is stale. A hole is a hole whichever end declared it, and a matrix that
+        runs ahead of the pin is contiguous or it is not; there is no reason to
+        let a stale pin decide this.
+        """
+        versions = _matrix_versions()
+        floor = _declared_floor()
+        same_major = [v for v in versions if _version_key(v)[0] == floor[0]]
+        self.assertTrue(
+            same_major,
+            f"ci.yml runs no {floor[0]}.x interpreter, so the declared range "
+            f"from {'.'.join(str(part) for part in floor)} up is unverified",
+        )
+        newest = max(same_major, key=_version_key)
+        gaps = [
+            f"{floor[0]}.{minor}"
+            for minor in range(floor[1] + 1, _version_key(newest)[1] + 1)
+            if f"{floor[0]}.{minor}" not in versions
+        ]
+        if gaps:
+            self.fail(
+                f"ci.yml runs up to {newest} but skips {', '.join(gaps)}, so those "
+                f"minors are support claims with no run behind them. Put the rows "
+                f"back, or drop the rows above them."
+            )
 
     def test_workflow_expands_the_matrix_in_setup_python(self) -> None:
         text = CI_WORKFLOW.read_text()
@@ -175,8 +223,10 @@ class TestCiPythonMatrix(unittest.TestCase):
         nothing here has run that parser, so this file takes no position on
         whether such a workflow loads at all.
 
+
         Five shapes do get past both while multiplying a real bill. All five are
-        green here today:
+        green here today, each measured by expanding the job as Actions does and
+        counting the paid-eval steps that expansion produces:
 
         - a `matrix:` on a non-python key, fanning jobs out at one interpreter
         - a `matrix.include` fanned out through `${{ matrix['python-version'] }}`,
@@ -187,14 +237,19 @@ class TestCiPythonMatrix(unittest.TestCase):
         - a second workflow file beside `orchestral.yml` carrying its own
           matrix, which the hard-coded path above never reads
 
-        A `reusable-workflow` call gets past both too. On its own it moves the
-        bill rather than multiplying it; it multiplies once the caller fans out.
+        Two more clear both assertions and are deliberately not called spend
+        paths, because neither can be settled from this repository. A
+        `python-version` written as a list but never expanded is not a
+        `setup-python` input, and whether such a step selects one interpreter,
+        coerces the list to a string, or fails outright was not measured, so
+        this docstring does not claim it does. A `reusable-workflow` call bills
+        once per caller instance, and whether the called file fans out is not
+        measurable from here, because that file is not in this repository.
 
-        These were measured against the two assertions above rather than argued,
-        and the review of record is DUK-202. A comment above the pin states the
-        intent, and this makes the common accidental case fail loudly. Closing
-        the rest is a judgement about what this workflow is allowed to become,
-        so it is raised there as a review question rather than decided here.
+        A comment above the pin states the intent, and this makes the common
+        accidental case fail loudly. Closing the rest is a judgement about what
+        this workflow is allowed to become, so it is raised as a review question
+        on DUK-202 rather than decided here.
         """
         text = PAID_EVAL_WORKFLOW.read_text()
         self.assertIsNone(

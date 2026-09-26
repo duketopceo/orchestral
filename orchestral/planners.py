@@ -1193,8 +1193,18 @@ def assemble_ce(
     with contextlib.suppress(ValueError):
         verification = _extract_json(final_content)
     if isinstance(verification, dict) and verification.get("passed") is False:
-        reason = str(verification.get("reasoning") or verification.get("reason") or "unspecified")[:200]
-        raise ValueError(f"final verification failed: {reason}")
+        # This message is not private. `runner.py` copies `str(exc)` into the
+        # `run.failed` event twice, the TUI renders that field, and
+        # `harness._fail_line` prints it to stderr — which is the CI log. The
+        # model's own `reasoning`/`reason` is not quoted here for the same
+        # reason the judge parse reason is not: the message identifies the
+        # response, and the full text stays in the event log from the
+        # `_llm_call` above. `tests/test_planner_verification_failure.py`
+        # plants a canary on every field and holds the message, the
+        # `run.failed` event, and the stderr line.
+        reported = verification.get("reasoning") or verification.get("reason")
+        why = "reason logged" if reported else "no reason given"
+        raise ValueError(f"final verification failed ({why}): {_response_fingerprint(final_content)}")
 
     return artifact, [cost, final_cost]
 

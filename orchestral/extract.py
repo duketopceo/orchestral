@@ -65,7 +65,7 @@ def _strict_eq(a: Any, b: Any) -> bool:
     if isinstance(a, dict) and isinstance(b, dict):
         return a.keys() == b.keys() and all(_strict_eq(a[k], b[k]) for k in a)
     if isinstance(a, list) and isinstance(b, list):
-        return len(a) == len(b) and all(_strict_eq(x, y) for x, y in zip(a, b))
+        return len(a) == len(b) and all(_strict_eq(x, y) for x, y in zip(a, b, strict=True))
     return a == b
 
 

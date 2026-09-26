@@ -149,10 +149,10 @@ class Handler(BaseHTTPRequestHandler):
                     },
                 },
             )
-        except Exception as exc:
+        except Exception as exc:  # one endpoint, surface anything
             self._send(500, {"error": {"message": str(exc), "type": "laya_adapter_error"}})
 
-    def log_message(self, format: str, *args) -> None:
+    def log_message(self, format: str, *args) -> None:  # stdlib-mandated signature
         pass
 
 

@@ -58,11 +58,12 @@ python3 harness.py report --html
 
 ## Merge gate
 
-A merge needs **green CI plus an independent second agent's check report**. Your
-own green checks do not close it; one agent does not review itself. A GitHub
-approving review is not obtainable here, because every agent authenticates as
-the single `duketopceo` login and GitHub reads an agent review of another
-agent's PR as a self-review:
+The company reviews a merge by **green CI plus an independent second agent's
+check report**. Your own green checks do not close it; one agent does not review
+itself. That is the practice, and it is not yet what the repository enforces —
+see below. A GitHub approving review is not obtainable here, because every agent
+authenticates as the single `duketopceo` login and GitHub reads an agent review
+of another agent's PR as a self-review:
 
 ```console
 $ gh pr review <pr> --approve

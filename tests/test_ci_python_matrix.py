@@ -90,26 +90,39 @@ class TestCiPythonMatrix(unittest.TestCase):
             "version, so every job would run the same interpreter",
         )
 
-    def test_paid_eval_workflow_runs_on_exactly_one_interpreter(self) -> None:
+    def test_paid_eval_workflow_declares_no_python_version_matrix(self) -> None:
         """The other workflow pins a single version on purpose, for money.
 
         `orchestral.yml` runs a real paid OpenRouter eval, so a matrix there is
         one job — one bill — per interpreter. CI would report that as broader
         coverage, which is the opposite of what it is. The same defect class as
         above, with a cost instead of a false pass.
+
+        This checks one narrow thing: that this workflow neither declares a
+        `python-version` matrix nor expands one. It is not a spend cap, and the
+        name used to claim it was. Three shapes were measured against these two
+        assertions that all pass and all multiply a real bill — a `matrix:` on a
+        non-python key, a second job that runs the eval again, and a
+        reusable-workflow call. A block-sequence `python-version` also passes,
+        because the pattern needs literal brackets and YAML lists have none.
+
+        A comment above the pin states the intent, and this makes the common
+        accidental case fail loudly. Closing the other shapes is a judgement
+        about what this workflow is allowed to become, so it is raised as a
+        review question rather than decided here.
         """
         text = PAID_EVAL_WORKFLOW.read_text()
         self.assertIsNone(
             _MATRIX.search(text),
-            "orchestral.yml declares a version matrix, so the paid eval runs "
-            "once per interpreter and multiplies real spend. ci.yml already "
-            "covers the declared range; if a matrix here is genuinely wanted, "
-            "raise MAX_COST_USD in the same change so the spend stays visible.",
+            "orchestral.yml declares a python-version matrix, so the paid eval "
+            "runs once per interpreter and multiplies real spend. ci.yml already "
+            "runs the declared range, so nothing is lost by removing it here.",
         )
         self.assertNotIn(
             "matrix.python-version",
             text,
-            "orchestral.yml expands a matrix into the paid eval's interpreter",
+            "orchestral.yml expands a python-version matrix into the paid "
+            "eval's interpreter, so one PR event bills once per matrix entry",
         )
 
 

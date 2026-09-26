@@ -147,8 +147,8 @@ new hash.
     graded wrong. Pick one: state the tie-break in the prompt and implement it
     in the reference (`ROW_NUMBER() OVER (PARTITION BY month ORDER BY revenue
     DESC, product ASC) = 1`), or state in the prompt that every tied product
-    gets a row. The reference's `ORDER BY` must fully determine row order either
-    way, because `metadata.ordered` compares positionally.
+    gets a row. When `metadata.ordered` is true, the reference's `ORDER BY` must
+    fully determine row order either way, because the compare is positional.
     `tasks/sql-monthly-revenue.yaml` is the worked example: its prompt names the
     alphabetical tie-break and its `reference_sql` picks the same row
     (DUK-117).

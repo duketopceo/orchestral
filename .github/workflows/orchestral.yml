@@ -20,6 +20,9 @@ on:
         description: "Planner strategy: raw or ce-plan"
         required: true
         default: "raw"
+      max_cost_usd:
+        description: "Cap in USD, compared against provider-billed cost. Blank uses 0.05."
+        required: false
 
 jobs:
   eval:
@@ -35,7 +38,11 @@ jobs:
       ORCHESTRATOR: ${{ inputs.orchestrator || 'deepseek/deepseek-v4-flash-0731' }}
       WORKER: ${{ inputs.worker || 'z-ai/glm-5.3-flash' }}
       PLANNER: ${{ inputs.planner || 'raw' }}
-      MAX_COST_USD: "0.05"
+      # One source of truth for the cap: the dispatch input overrides it, and
+      # the shell default below covers pull_request events, where `inputs` is
+      # always empty. A literal here as well would silently win on PR runs and
+      # make the dispatch input a no-op.
+      MAX_COST_USD: ${{ inputs.max_cost_usd }}
 
     steps:
       - uses: actions/checkout@v4
@@ -76,19 +83,43 @@ jobs:
               body
             });
 
+      # A cost cap bounds spend. It is not a containment control, and never was.
+      #
+      # The cap is compared against `calls.api_cost_usd` — the figure the
+      # provider puts in its own response — not against the harness's
+      # configured rate-card estimate. On 2026-09-26 the estimate understated
+      # real spend 5.3x, so the old `runs.total_cost_usd` check passed 83 runs
+      # that were charged $3.12. See orchestral/budget.py and DUK-214.
+      #
+      # The step runs on every paid eval, dispatch included, not only on
+      # pull_request: the cap is a spend control, and a manual run spends the
+      # same money. Fork PRs never reach it — the job-level `if` above skips
+      # them before any step runs.
+      # always(): a failed eval still spent money. Without this the cap would
+      # be skipped exactly when a run blew past it on the way down, which is
+      # the same hole as reading a failed run's 0.0 total.
       - name: Enforce cost budget
-        if: github.event_name == 'pull_request'
-        run: |
-          cost=$(python3 - << 'PY'
-          import sqlite3
-          conn = sqlite3.connect('runs/index.db')
-          row = conn.execute("SELECT total_cost_usd FROM runs ORDER BY started_at DESC LIMIT 1").fetchone()
-          print(row[0] if row else 0.0)
-          PY
-          )
-          if (( $(echo "$cost > $MAX_COST_USD" | bc -l) )); then
-            echo "orchestral eval cost \${cost} exceeded \${MAX_COST_USD} budget"
-            exit 1
-          else
-            echo "orchestral eval passed within \${MAX_COST_USD} budget"
-          fi
+        if: always()
+        run: python3 -m orchestral.budget --runs-dir runs --max-cost-usd "${MAX_COST_USD:-0.05}"
+
+      # DECLINED as a blocking gate, on purpose (DUK-214 AC #3).
+      #
+      # `harness.py prices` compares the configured rate card against the
+      # provider's billed figure, and it is the right detector for a stale
+      # models/*.yaml. It is not wired in as a gate because it cannot fail
+      # today: `pricing_drift()` only considers rows whose `pricing_source` is
+      # "api_reported", and the call paths the eval actually takes hardcode
+      # "configured" (orchestral/planners.py, orchestral/judge.py). Measured
+      # 2026-09-26: 183 real calls, 183 with `api_cost_usd` set, 0 labelled
+      # "api_reported". A gate over a set that is structurally empty is a gate
+      # that always passes, which is the same defect this issue is closing.
+      #
+      # It also is the wrong control. Stale rates are a hygiene defect, not
+      # overspend, and a mid-eval provider reprice would redden every PR for a
+      # reason unrelated to the change under test.
+      #
+      # Revisit once the labelling defect is fixed. Until then this step reports
+      # the drift so the number is visible in the log; it never fails the job.
+      - name: Report pricing drift (informational, non-blocking)
+        if: always()
+        run: python3 harness.py prices || echo "::warning::pricing drift check is inert until pricing_source is labelled api_reported"

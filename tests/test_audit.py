@@ -334,12 +334,13 @@ class TestInertMetadataRequired(unittest.TestCase):
         """Both findings fire: the key grades nothing, and the spec is unanchored."""
         spec = _task(
             id="i-4",
-            type="video",
-            prompt="Record a barista pulling a shot.",
-            validation=["non_empty", "mp4_signature"],
+            prompt="Write a page about baristas.",
+            validation=["html", "has_title"],
             metadata={"required": ["barista"]},
         )
-        self.assertIn("structural_only", _rules(spec))
+        found = _rules(spec)
+        self.assertIn("ignored_metadata_required", found)
+        self.assertIn("structural_only", found)
 
     def test_text_type_without_has_required_is_an_error(self):
         """The same hole in a text type: nothing requests the check that reads it."""
@@ -931,7 +932,8 @@ class TestGamingSurface(unittest.TestCase):
         self.assertIn("no check reads the file bodies", found["unanchored_fileset"][0].detail)
 
     def test_multi_file_reading_bodies_is_not_flagged(self):
-        """`has_paths` plus a body-reading check is an anchored fileset."""
+        """`has_paths` plus a body-reading check with tokens is an anchored fileset."""
+
         spec = TaskSpec(
             id="mf-2",
             type="multi-file",
@@ -946,6 +948,39 @@ class TestGamingSurface(unittest.TestCase):
         self.assertNotIn("unanchored_fileset", found)
         self.assertNotIn("unknown_validation_check", found)
 
+    def test_multi_file_without_expected_paths_is_flagged(self):
+        """The guard used to require `has_paths`, so the unanchored case never fired."""
+        spec = TaskSpec(id="mf-3", type="multi-file", prompt="Build a site.", validation=["non_empty", "zip_signature"])
+        found = _rules(spec)
+        self.assertIn("unanchored_fileset", found)
+        self.assertIn("the fileset is unanchored", found["unanchored_fileset"][0].detail)
+
+    def test_unusable_expected_paths_counts_as_unanchored(self):
+        """`expected_paths()` drops a non-list, so the grader looks for nothing."""
+        spec = TaskSpec(
+            id="mf-4",
+            type="multi-file",
+            prompt="Build a site.",
+            validation=["has_paths"],
+            metadata={"expected_paths": "index.html"},
+        )
+        found = _rules(spec)
+        self.assertIn("unanchored_fileset", found)
+        self.assertIn("the fileset is unanchored", found["unanchored_fileset"][0].detail)
+
+    def test_declared_paths_without_has_paths_are_flagged(self):
+        spec = TaskSpec(
+            id="mf-5",
+            type="multi-file",
+            prompt="Build a site.",
+            validation=["non_empty", "zip_signature"],
+            metadata={"expected_paths": ["index.html"]},
+
+        )
+        found = _rules(spec)
+        self.assertIn("unanchored_fileset", found)
+        self.assertIn("has_paths is not requested", found["unanchored_fileset"][0].detail)
+
     def test_has_content_without_metadata_stays_flagged(self):
         """Asking for the check without declaring the tokens is still unanchored.
 
@@ -954,7 +989,7 @@ class TestGamingSurface(unittest.TestCase):
         audit should still say so.
         """
         spec = TaskSpec(
-            id="mf-3",
+            id="mf-6",
             type="multi-file",
             prompt="Build a two-page microsite.",
             validation=["has_paths", "has_content"],
@@ -993,11 +1028,19 @@ class TestGamingSurface(unittest.TestCase):
         self.assertIn("unanchored_fileset", _rules(spec))
 
 
+
 class TestMediaSpecsAreNotJudgedByTextChecks(unittest.TestCase):
     """`image` / `video` artifacts are bytes; a text token is not a weaker
     anchor, it is an unimplemented one. The audit used to ask for
     `has_required` on a PNG, which the runner drops as an unknown check — the
-    spec would have looked anchored while gating on nothing."""
+    spec would have looked anchored while gating on nothing.
+
+    This supersedes the earlier `type-aware advice` contract, which still
+    reported `structural_only` for a media spec. A warning the author cannot
+    close teaches people to ignore warnings; `judge_gated_media` states the
+    real condition instead: the topicality of a PNG rests on the run carrying
+    `--judge`.
+    """
 
     def _media(self, task_type: str, **kwargs) -> TaskSpec:
         base = {
@@ -1033,6 +1076,7 @@ class TestMediaSpecsAreNotJudgedByTextChecks(unittest.TestCase):
 
     def test_html_is_unaffected(self):
         self.assertIn("structural_only", _rules(_task(validation=["html"])))
+
 
     def test_structural_only_advice_still_names_the_text_checks(self):
         detail = _rules(_task(validation=["html"]))["structural_only"][0].detail
@@ -1080,8 +1124,12 @@ class TestMediaSpecsAreNotJudgedByTextChecks(unittest.TestCase):
             metadata={"required": ["latte", "wooden table"]},
         )
         found = _rules(spec)
+        # Nothing in the spec can clear this one: `metadata.required` is inert
+        # for a PNG, so the finding that remains is the honest one — the
+        # artifact is gated on the run carrying `--judge`, not on the spec.
         # A byte artifact is never structural_only: nothing in the spec can
         # clear it, so the honest finding is that topicality needs --judge.
+
         self.assertNotIn("structural_only", found)
         self.assertIn("judge_gated_media", found)
 

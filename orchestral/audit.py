@@ -1179,6 +1179,7 @@ def check_structural_only(spec: TaskSpec, path: Path | None = None) -> list[Find
     a text token is not a looser anchor but an unimplemented one. See
     `check_judge_gated_media`.
     A `metadata.required` the grader never reads is `ignored_metadata_required`.
+
     """
     if spec.type in SELF_ANCHORED_TYPES:
         return []
@@ -1251,9 +1252,11 @@ def check_judge_gated_media(spec: TaskSpec, path: Path | None = None) -> list[Fi
 def check_unanchored_fileset(spec: TaskSpec, path: Path | None = None) -> list[Finding]:
     """`multi-file` grades names and byte counts; nothing checks the contents.
 
-    Every `multi-file` spec lands here in one of three states: no declared
-    paths, declared paths the grader never looks for, or declared paths checked
-    only for existence. None of them reads a file body.
+    A fileset is anchored only when the grader reads a file *body*: `has_paths`
+    plus `has_content` with tokens in `metadata.required_content`. Every other
+    `multi-file` spec lands in one of four states — no usable declared paths,
+    declared paths the grader never looks for, declared paths checked only for
+    existence, or a body check with nothing to look for.
     """
     if spec.type != "multi-file":
         return []
@@ -1263,9 +1266,15 @@ def check_unanchored_fileset(spec: TaskSpec, path: Path | None = None) -> list[F
     # the gate fires but the spec is not a graded site and the finding stands.
     if requested & FILESET_BODY_CHECKS and required_content(spec.metadata):
         return []
+
     # the same normalisation the runner uses, so the reported set is the set it
     # will actually look for
     declared = expected_paths(spec.metadata)
+    # A body-reading check anchors the fileset only once it has tokens to look
+    # for. Requested-but-unconfigured, `has_content` fails every artifact, so
+    # the gate fires but the spec is not a graded site and the finding stands.
+    if requested & FILESET_BODY_CHECKS and required_content(spec.metadata):
+        return []
     if not declared:
         detail = (
             "the fileset is unanchored: metadata.expected_paths yields no usable path, so any "
@@ -1282,6 +1291,7 @@ def check_unanchored_fileset(spec: TaskSpec, path: Path | None = None) -> list[F
             "has_content is requested but metadata.required_content is empty, so every "
             "artifact fails on an unconfigured gate rather than on its contents."
         )
+
     else:
         detail = (
             f"has_paths only checks that {sorted(declared)} exist and are non-empty. "

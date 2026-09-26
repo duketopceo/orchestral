@@ -296,6 +296,14 @@ class Runner:
             file_sets: list[tuple[int, dict[str, str]]] = []
             media_ext = _artifact_ext(task.type)
             subtasks = plan.get("subtasks") or plan.get("sections", {}).get("subtasks", [])
+            if not subtasks:
+                # Raw/none planners may emit no subtasks; every task type's
+                # delegate paths are single-shot over one subtask (extract,
+                # sql, api, needle, constraint, media, multi). With zero
+                # subtasks the loop would run zero times and the assembly
+                # branches would write empty artifacts — fall back to one
+                # default subtask so the worker still runs.
+                subtasks = [{"id": "s0", "description": task.prompt}]
             logger.lifecycle(
                 "delegation.created", phase="delegate",
                 subtasks=len(subtasks),
@@ -485,7 +493,7 @@ class Runner:
                             "delegate", "empty worker output; retrying",
                             subtask_id=sub.get("id", i), attempt=attempt + 1,
                         )
-                if out is None:
+                if not out:  # None or exhausted-empty dict must not reach assembly
                     logger.lifecycle(
                         "worker.failed", phase="delegate", role="worker",
                         worker_id=wid, subtask_id=sub.get("id", i),
@@ -777,19 +785,22 @@ class Runner:
                 if artifact_path.exists():
                     try:
                         from orchestral.shots import ScreenshotUnavailable, capture_html
-
-                        capture_html(artifact_path, run_dir / "screenshot.png")
-                    except ScreenshotUnavailable as exc:
-                        logger.log(
-                            phase="shots",
-                            step=assembly_step + 5,
-                            event_type="screenshot_skipped",
-                            model="",
-                            role="harness",
-                            input_data={"artifact": str(artifact_path)},
-                            output_data={"reason": str(exc)},
-                            reasoning="Playwright or browser binaries unavailable; screenshot skipped.",
-                        )
+                    except ImportError:
+                        pass  # shots extras not installed — screenshot degrades cleanly
+                    else:
+                        try:
+                            capture_html(artifact_path, run_dir / "screenshot.png")
+                        except ScreenshotUnavailable as exc:
+                            logger.log(
+                                phase="shots",
+                                step=assembly_step + 5,
+                                event_type="screenshot_skipped",
+                                model="",
+                                role="harness",
+                                input_data={"artifact": str(artifact_path)},
+                                output_data={"reason": str(exc)},
+                                reasoning="Playwright or browser binaries unavailable; screenshot skipped.",
+                            )
 
             # 6. Final accounting
             total_cost = ledger.total_cost_usd()

@@ -1,0 +1,17 @@
+# Local fleet router served by mlx_lm.server (or any OpenAI-compatible endpoint).
+# Start the server before running evals:
+#   mlx_lm.server --model models/router-fused --port 8080
+# Zero API cost; pricing fields kept at 0 for the cost tables.
+models:
+  - slug: "local/fleet-router"
+    name: "Fleet Router (local MLX)"
+    role: worker
+    input_price_per_mtok: 0.0
+    output_price_per_mtok: 0.0
+    context: 4096
+    max_tokens: 64
+    retry_limit: 1
+    metadata:
+      provider: openai-compatible
+      base_url: http://127.0.0.1:8080/v1
+      modalities: ["text"]

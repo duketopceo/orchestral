@@ -7,7 +7,6 @@ import base64
 import contextlib
 import html
 import json
-import random
 import re
 from functools import cache
 from pathlib import Path
@@ -71,9 +70,16 @@ def load_prompt_variant(variant: str, prompts_dir: Path | str = PROMPTS_DIR) -> 
     return text
 
 
-@cache
 def _read_prompt_file(path: str) -> str:
-    return Path(path).read_text(encoding="utf-8").strip()
+    # keyed on mtime so edits to a prompt file during a long-running harness
+    # are honored (a bare path key would serve stale content forever)
+    p = Path(path)
+    return _read_prompt_file_cached((path, p.stat().st_mtime_ns))
+
+
+@cache
+def _read_prompt_file_cached(key: tuple[str, int]) -> str:
+    return Path(key[0]).read_text(encoding="utf-8").strip()
 
 
 # ---------------------------------------------------------------------------
@@ -108,11 +114,15 @@ def _build_messages(
     ]
 
 
+# fixed dry-run latency: dry-run artifacts must be fully deterministic
+_DRY_RUN_LATENCY_MS = 250.0
+
+
 def _fake_cost(model_cfg: ModelConfig, input_data: dict[str, Any], output_data: dict[str, Any]) -> dict[str, Any]:
     input_chars = len(json.dumps(input_data, default=str))
     output_chars = len(json.dumps(output_data, default=str))
-    input_tokens = max(100, input_chars // 4 + random.randint(0, 20))
-    output_tokens = max(50, output_chars // 4 + random.randint(0, 20))
+    input_tokens = max(100, input_chars // 4)
+    output_tokens = max(50, output_chars // 4)
     cost_usd = (input_tokens * model_cfg.input_price) + (output_tokens * model_cfg.output_price)
     return {
         "phase": "",
@@ -158,7 +168,7 @@ def _llm_call(
             input_tokens=cost["input_tokens"],
             output_tokens=cost["output_tokens"],
             cost_usd=cost["cost_usd"],
-            latency_ms=random.uniform(80, 1200),
+            latency_ms=_DRY_RUN_LATENCY_MS,
             pricing_source="none",
             attempt=attempt,
         )
@@ -408,7 +418,7 @@ def delegate_image(
             input_tokens=0,
             output_tokens=0,
             cost_usd=cost["cost_usd"],
-            latency_ms=random.uniform(80, 1200),
+            latency_ms=_DRY_RUN_LATENCY_MS,
             pricing_source="none",
             attempt=attempt,
         )
@@ -503,7 +513,7 @@ def delegate_video(
             input_tokens=0,
             output_tokens=0,
             cost_usd=cost["cost_usd"],
-            latency_ms=random.uniform(80, 1200),
+            latency_ms=_DRY_RUN_LATENCY_MS,
             pricing_source="none",
             attempt=attempt,
         )
@@ -606,7 +616,7 @@ def delegate_multi(
             input_tokens=cost["input_tokens"],
             output_tokens=cost["output_tokens"],
             cost_usd=cost["cost_usd"],
-            latency_ms=random.uniform(80, 1200),
+            latency_ms=_DRY_RUN_LATENCY_MS,
             pricing_source="none",
             attempt=attempt,
         )
@@ -759,7 +769,7 @@ def delegate_constraint(
             input_tokens=cost["input_tokens"],
             output_tokens=cost["output_tokens"],
             cost_usd=cost["cost_usd"],
-            latency_ms=random.uniform(80, 1200),
+            latency_ms=_DRY_RUN_LATENCY_MS,
             pricing_source="none",
             attempt=attempt,
         )
@@ -811,7 +821,7 @@ def delegate_needle(
             input_tokens=cost["input_tokens"],
             output_tokens=cost["output_tokens"],
             cost_usd=cost["cost_usd"],
-            latency_ms=random.uniform(80, 1200),
+            latency_ms=_DRY_RUN_LATENCY_MS,
             pricing_source="none",
             attempt=attempt,
         )
@@ -869,7 +879,7 @@ def delegate_sql(
             input_tokens=cost["input_tokens"],
             output_tokens=cost["output_tokens"],
             cost_usd=cost["cost_usd"],
-            latency_ms=random.uniform(80, 1200),
+            latency_ms=_DRY_RUN_LATENCY_MS,
             pricing_source="none",
             attempt=attempt,
         )
@@ -926,7 +936,7 @@ def delegate_extract(
             input_tokens=cost["input_tokens"],
             output_tokens=cost["output_tokens"],
             cost_usd=cost["cost_usd"],
-            latency_ms=random.uniform(80, 1200),
+            latency_ms=_DRY_RUN_LATENCY_MS,
             pricing_source="none",
             attempt=attempt,
         )
@@ -987,7 +997,7 @@ def delegate_api(
             input_tokens=cost["input_tokens"],
             output_tokens=cost["output_tokens"],
             cost_usd=cost["cost_usd"],
-            latency_ms=random.uniform(80, 1200),
+            latency_ms=_DRY_RUN_LATENCY_MS,
             pricing_source="none",
             attempt=attempt,
         )
@@ -1125,8 +1135,13 @@ def assemble_ce(
         dry_run=dry_run,
         expect_json=True,
     )
-    with contextlib.suppress(Exception):
-        _extract_json(final_content)
+    verification = None
+    # An unparseable verification is recorded below, never silently dropped.
+    with contextlib.suppress(ValueError):
+        verification = _extract_json(final_content)
+    if isinstance(verification, dict) and verification.get("passed") is False:
+        reason = str(verification.get("reasoning") or verification.get("reason") or "unspecified")[:200]
+        raise ValueError(f"final verification failed: {reason}")
 
     return artifact, [cost, final_cost]
 

@@ -13,8 +13,9 @@ A labels file is YAML:
 verdict agreement (accuracy, Cohen's kappa, confusion counts).
 
 Only runs with both a human and a judge value for a field enter that
-field's metrics — a run judged-but-unlabeled (or labeled-but-unjudged)
-still counts in `coverage` so label gaps are visible.
+field's metrics. Runs that are judged-but-unlabeled are not counted here —
+only labeled runs are accounted for in `coverage` (label gaps on the
+labeled side show up as `matched` vs the pair counts).
 """
 
 from __future__ import annotations
@@ -53,6 +54,7 @@ def collect_pairs(store: RunStore, labels: list[dict[str, Any]]) -> dict[str, An
     """Join labels to stored judge verdicts; returns pairs + coverage."""
     pairs: list[dict[str, Any]] = []
     unmatched: list[str] = []
+    corrupt = 0
     for label in labels:
         run_dir = _find_run_dir(store, str(label["run_id"]))
         if run_dir is None:
@@ -61,8 +63,12 @@ def collect_pairs(store: RunStore, labels: list[dict[str, Any]]) -> dict[str, An
         report: dict[str, Any] = {}
         report_path = run_dir / "report.json"
         if report_path.exists():
-            with contextlib.suppress(json.JSONDecodeError, OSError):
+            try:
                 report = json.loads(report_path.read_text())
+            except (json.JSONDecodeError, OSError):
+                # a corrupt judge report must not silently contaminate the
+                # agreement metrics — count it so the gap is visible
+                corrupt += 1
         run_json: dict[str, Any] = {}
         run_path = run_dir / "run.json"
         if run_path.exists():
@@ -74,15 +80,16 @@ def collect_pairs(store: RunStore, labels: list[dict[str, Any]]) -> dict[str, An
                 "run_id": label["run_id"],
                 "task_id": run_json.get("task_id"),
                 "human_score": label.get("score"),
-                "judge_score": judge.get("score", run_json.get("score")),
+                "judge_score": judge.get("score") if judge.get("score") is not None else run_json.get("score"),
                 "human_passed": label.get("passed"),
-                "judge_passed": judge.get("passed", run_json.get("passes")),
+                "judge_passed": judge.get("passed") if judge.get("passed") is not None else run_json.get("passes"),
             }
         )
     coverage = {
         "labeled": len(labels),
         "matched": len(pairs),
         "unmatched": unmatched,
+        "corrupt": corrupt,
         "score_pairs": sum(1 for p in pairs if p["human_score"] is not None and p["judge_score"] is not None),
         "verdict_pairs": sum(1 for p in pairs if p["human_passed"] is not None and p["judge_passed"] is not None),
     }

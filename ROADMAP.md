@@ -41,7 +41,7 @@
 ## v1.1 — More task types
 
 - [x] Multi-file project task type — workers return a JSON file set, merged deterministically into a byte-reproducible `artifact.zip`; `zip_signature`/`has_paths` validation, content-free traces, archives never published by `scrub`
-- [ ] API integration task type
+- [x] API integration task type — workers emit a JSON request plan, replayed against a loopback HTTP stub (`orchestral/apistub.py`); score is the fraction of expected calls that arrived correctly, `strict` also fails unexpected calls
 
 **Goal:** cover the delegation shapes a single artifact can't express.
 

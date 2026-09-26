@@ -5,3 +5,10 @@ prompt: Create a landing page for a personal CRM targeted at indie hackers. Writ
   a call-to-action button. Output a single self-contained HTML file with inline CSS.
 validation:
 - html
+- has_required
+- matches_pattern
+metadata:
+  required:
+  - crm
+  pattern: indie|hacker|solo founder|bootstrapped|side project|side hustle|one[ -]person|ship
+    fast|build in public|\bdoer\b

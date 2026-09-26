@@ -6,3 +6,11 @@ prompt: Create a landing page for a dev-ops observability platform targeted at s
   file with inline CSS.
 validation:
 - html
+- has_required
+- matches_pattern
+metadata:
+  required:
+  - observab
+  pattern: small business|small biz|\bsmb\b|local business|independent (?:business|shop|retailer)|shop
+    owner|business owner|sole proprietor|main street|mom[- ]and[- ]pop|grow your business|run
+    your business|boutique owner

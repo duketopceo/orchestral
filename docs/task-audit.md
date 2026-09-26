@@ -32,9 +32,10 @@ it for you.
 | --- | --- | --- |
 | `unknown_validation_check` | error | `validation:` names a check the runner does not implement for that type. Silently dropped today; the run reports a pass anyway. |
 | `ignored_validation_list` | error | `code` / `sql` / `extract` / `api` never read `validation:`. They compute a fixed check set from `metadata`, so anything declared there is a phantom gate. |
-| `absent_grading_contract` | error | A self-anchored type ships no anchor in `metadata`, so its grader has nothing to compare the artifact against: `code` with no `metadata.tests`, `extract` with neither a required `fields` entry nor `expected`, `sql` with no `reference_sql`, `api` with no `calls`. `sql` and `api` fail closed at runtime; `extract` does not — an empty contract grades `{}` as `passes=True score=1.0`. |
-| `structural_only` | warn | Nothing in the grader requires topical content. `has_title` / `has_cta` / `has_form` prove markup exists, not that the artifact is about the task, so only `has_required`, `matches_pattern`, or — for text-producing types only — declared `metadata.required` clear this. The suggested fix is type-aware: a type whose grader never reads text (`image`, `video`) has no compliant way to anchor the subject from the spec. |
-| `unanchored_fileset` | warn | `multi-file` grades filenames and byte counts only. No check reads the file bodies. Fires in all three unanchored states: no usable `metadata.expected_paths`, declared paths that `has_paths` was never asked to check, or declared paths checked only for existence. |
+| `absent_grading_contract` | error | A self-anchored type ships no anchor in `metadata`, so its grader has nothing to compare the artifact against: `code` with no `metadata.tests` (or a suite whose tests are no-ops), `extract` with neither a required `fields` entry nor `expected`, `sql` with no `reference_sql`, `api` with no `calls`. `sql` and `api` fail closed at runtime; `extract` does not — an empty contract grades `{}` as `passes=True score=1.0`. |
+| `structural_only` | warn | Nothing in the grader requires topical content. `has_title` / `has_cta` / `has_form` prove markup exists, not that the artifact is about the task, so only `has_required`, `matches_pattern`, or — for text-producing types only — declared `metadata.required` clear this. `image` / `video` are exempt: their artifacts are bytes, so a text token is an unimplemented check rather than a loose one. See `judge_gated_media`. |
+| `unanchored_fileset` | warn | `multi-file` grades filenames and byte counts only. A fileset is anchored only when the grader reads a body: `has_paths` plus `has_content` with tokens in `metadata.required_content`. The finding fires in all four other states: no usable `metadata.expected_paths`, declared paths that `has_paths` was never asked to check, declared paths checked only for existence, or `has_content` requested with nothing to look for. |
+| `judge_gated_media` | info | An `image` / `video` artifact is encoded bytes, so no text check can anchor its subject. `png_signature` / `mp4_signature` prove format only; topicality rests on the vision judge, so a run without `--judge` grades these specs on file format alone. |
 | `prompt_states_the_answer` | warn | The prompt spells out graded output — an expected value, the reference query, or the expected call list. Recitation scores the same as reasoning. `extract` is exempt by design: its prompt carries the source document. |
 | `answer_derivable_from_prompt` | warn | Every graded value is readable in the prompt (`extract`, `sql`). The task ceiling is transcription and lookup, not problem solving. |
 | `memorization_risk` | warn | The id or prompt matches a known textbook problem (fizzbuzz, slugify, LRU cache, expression parser, two-sum, …). A memorised answer scores the same as a solved one. |
@@ -103,3 +104,8 @@ does not bless it.
 - It does not check the *worker* prompt for leaked answer keys. That is a
   runtime property of `orchestral/planners.py`, and only a run can observe it.
 - It does not judge artifacts. It grades the problem, not the response.
+- It does not check that an anchor is *distinguishing*, only that one is
+  declared. A `has_required` token copied out of the prompt into an `<h1>`
+  satisfies the check without any topical work. `tests/test_spec_anchors.py`
+  is the counterweight: it holds hand-written honest pages and asserts that the
+  generic template scores on none of them and that the family discriminates.

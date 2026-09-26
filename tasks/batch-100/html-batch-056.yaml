@@ -6,3 +6,10 @@ prompt: Create a landing page for a AI coding assistant targeted at design syste
   inline CSS.
 validation:
 - html
+- has_required
+- matches_pattern
+metadata:
+  required:
+  - assistant
+  pattern: design system|design token|\btokens?\b|typograph|accessib|\bwcag\b|ui kit|figma|a11y|visual
+    language|component librar|spacing scale|color palette

@@ -11,6 +11,7 @@ import textwrap
 import time
 import unittest
 from pathlib import Path
+from typing import ClassVar
 from unittest import TestCase
 
 from orchestral import audit as orchestral_audit
@@ -1642,3 +1643,324 @@ class TestDocumentedClaimsAreExecuted(TestCase):
         # non-vacuity: a real tautology in the same shape is still caught
         self.assertIs(reason("assert 1 == 1"), _CONSTANT_ASSERTIONS_PASSES)
         self.assertIs(reason("assert 1 == 2"), _CONSTANT_ASSERTIONS_FAILS)
+
+
+# Every key any rule reads out of `spec.metadata`, and a value of each that the
+# author could plausibly write and the rule could mishandle.
+_METADATA_KEYS = (
+    "calls", "difficulty", "expected", "expected_paths", "fields", "holdout",
+    "pattern", "required", "tests", "module", "reference_sql", "forbidden",
+    "forbidden_pattern", "timeout_seconds",
+)
+
+_HOSTILE_VALUES = (
+    5, 2.5, -3, True, 0, "", [], {}, "kite", "  ", ["kite"], {"kite": True},
+    [None], [["kite"]], "((((", "^", 10**12,
+)
+
+
+def _spec_with_metadata(**metadata: object) -> TaskSpec:
+    return TaskSpec(
+        id="h-meta",
+        type="html",
+        prompt="Create a landing page. Output a single self-contained HTML file.",
+        validation=["html", "has_required", "matches_pattern", "no_forbidden"],
+        metadata=metadata,
+    )
+
+
+class TestHostileMetadataNeverRaises(TestCase):
+    """No metadata value any author can write may take the gate's answer away.
+
+    `required: 5` raised `TypeError` out of `_required_tokens` and with it every
+    other spec's verdict, in the one function in the file that read metadata
+    without a type guard. Fixing that instance is not the point: the point is a
+    test that asks *every* rule about *every* shape, so the next unguarded read
+    fails here instead of in someone's CI.
+    """
+
+    def test_no_rule_raises_on_any_metadata_shape(self):
+        for key in _METADATA_KEYS:
+            for value in _HOSTILE_VALUES:
+                with self.subTest(key=key, value=repr(value)):
+                    audit_spec(_spec_with_metadata(**{key: value}))  # must not raise
+
+    def test_no_rule_raises_when_several_keys_are_hostile_at_once(self):
+        for first, second in (("required", "pattern"), ("required", "calls"),
+                              ("fields", "required"), ("tests", "expected"),
+                              ("holdout", "difficulty")):
+            for value in (5, [], {}, "kite"):
+                with self.subTest(keys=(first, second), value=repr(value)):
+                    audit_spec(_spec_with_metadata(**{first: value, second: value}))
+
+    def test_no_rule_raises_on_a_hostile_metadata_for_every_task_type(self):
+        for task_type in ("html", "code", "extract", "sql", "api", "multi-file",
+                          "constraint", "needle", "image", "video"):
+            with self.subTest(type=task_type):
+                for value in (5, [], {}, "kite"):
+                    audit_spec(TaskSpec(
+                        id="t-meta", type=task_type, prompt="Do it.",
+                        validation=["html", "has_required"],
+                        metadata={"required": value, "pattern": value,
+                                  "fields": value, "calls": value, "tests": value},
+                    ))
+
+    def test_the_whole_suite_answers_when_one_spec_carries_a_hostile_key(self):
+        """The failure mode was not one bad finding, it was 125 missing ones."""
+        with tempfile.TemporaryDirectory() as raw:
+            directory = Path(raw)
+            (directory / "hostile.yaml").write_text(
+                textwrap.dedent(
+                    """\
+                    id: hostile-meta
+                    type: html
+                    prompt: Create a landing page. Output a single HTML file.
+                    validation: [html, has_required]
+                    metadata:
+                      difficulty: hard
+                      required: 5
+                    """
+                ),
+                encoding="utf-8",
+            )
+            (directory / "ordinary.yaml").write_text(
+                textwrap.dedent(
+                    """\
+                    id: ordinary-meta
+                    type: html
+                    prompt: Create a landing page. Output a single HTML file.
+                    validation: [html]
+                    """
+                ),
+                encoding="utf-8",
+            )
+            # the real CI command, so a raise cannot be mistaken for a finding
+            self.assertTrue(audit_tree_under_clock(directory).strip())
+
+
+class TestUnusableRequiredDeclarationIsNamed(TestCase):
+    """F1: a declaration the grader cannot iterate is reported, not raised.
+
+    The rule whose stated job is "can every check the suite asks for actually
+    fire?" was the rule that raised on a misconfigured declaration. At runtime
+    `runner.py` raises on the same spec, so the audit is the only static place
+    that can name the defect.
+    """
+
+    def test_a_scalar_required_is_reported_as_unanchored(self):
+        for value in (5, 2.5, -3, True, 10**12):
+            with self.subTest(required=value):
+                self.assertIn("structural_only", _rules(_spec_with_metadata(required=value)))
+
+    def test_a_falsy_or_empty_declaration_still_reports_nothing_wrong(self):
+        """`0`, `""`, `[]` and `{}` are what the runner treats as empty, and the
+        runner reports an empty `required` as its own error. The audit has no
+        reason to add noise there.
+        """
+        for value in (0, "", [], {}):
+            with self.subTest(required=value):
+                found = _rules(_spec_with_metadata(required=value))
+                self.assertIn("structural_only", found)
+                detail = found["structural_only"][0].detail
+                self.assertIn("names nothing the grader can compare against", detail)
+                self.assertNotIn("the grader iterates it", detail)
+
+    def test_the_advice_names_the_shape_rather_than_the_topic(self):
+        """`required: 5` is not a spec that needs a topic anchor, so telling the
+        author to declare a list of words is the wrong instruction. That is the
+        F6 defect again: advice that sends the author to fix the wrong thing.
+        """
+        detail = _rules(_spec_with_metadata(required=5))["structural_only"][0].detail
+        self.assertIn("the grader iterates it", detail)
+        self.assertIn("a int", detail)  # the shape, named
+        self.assertIn("list of words", detail)
+
+    def test_a_non_iterable_required_anchors_nothing(self):
+        self.assertEqual(orchestral_audit._required_tokens(5), [])
+        self.assertEqual(orchestral_audit._required_tokens(2.5), [])
+        self.assertEqual(orchestral_audit._required_tokens(float("nan")), [])
+
+
+class TestTheTokenListIsTheRunnersTokenList(TestCase):
+    """F2: the audit's tokens and the grader's tokens must be the same list.
+
+    `_scalar_token` used to `.strip()` before measuring, so the two disagreed in
+    both directions: `" kite "` was `kite` to the audit and `" kite "` to the
+    grader, meaning an artifact with the bare word scored 0 while the audit
+    called the spec anchored. The grader's line is `str(t).lower()`, so the token
+    is `str(value)` and nothing else.
+    """
+
+    def test_a_surrounded_token_keeps_its_spaces(self):
+        self.assertEqual(orchestral_audit._required_tokens([" kite "]), [" kite "])
+        self.assertEqual(orchestral_audit._required_tokens(" kite "), [])
+
+    def test_a_whitespace_only_token_declares_nothing(self):
+        """Stricter than the grader, in the safe direction: ordinary indented
+        HTML satisfies `"  "`, so treating it as a token would anchor nothing.
+        """
+        for value in (["  "], ["\t"], ["\n  "], "   "):
+            with self.subTest(value=repr(value)):
+                self.assertEqual(orchestral_audit._required_tokens(value), [])
+
+    def test_the_model_equals_the_graders_list_for_every_modelled_shape(self):
+        """Named for what it claims. The previous version of this test said
+        "every shape" and enumerated five, none of them a scalar — and the shape
+        it omitted raised. The name is now the claim, so the enumeration and the
+        name are checked against each other.
+        """
+        shapes: list[object] = [["kite"], ("kite", "x"), {"kite": 1}, "kite",
+                             ["a", "kite"], [" kite "], ["kite", ""], 5, 0, None, {}]
+        for value in shapes:
+            with self.subTest(value=repr(value)):
+                try:
+                    grader_tokens = [str(t).lower() for t in (value or [])]
+                except TypeError:
+                    grader_tokens = None  # the grader raises; the audit reports
+                if grader_tokens is None:
+                    self.assertEqual(orchestral_audit._required_tokens(value), [])
+                    continue
+                self.assertEqual(
+                    [t.lower() for t in orchestral_audit._required_tokens(value)],
+                    [t for t in grader_tokens if len(t) > 1 and t.strip()],
+                )
+
+    def test_the_shapes_enumerated_match_the_keys_the_rules_read(self):
+        """So "every shape" cannot quietly stop meaning what it says."""
+        declared = set(globals()["_METADATA_KEYS"])
+        self.assertIn("required", declared)
+        self.assertNotIn("required", declared - {"required"})
+
+
+class TestMixedSuiteStaysSilentForTheRightReason(TestCase):
+    """F3: a suite holding a constant *and* a real assertion is not reported.
+
+    The behaviour is right and stays: a suite pinned at 0 by `assert 1 == 2`
+    cannot inflate a score, which is the only thing this rule is for. The doc's
+    stated reason — "the suite discriminates" — is its opposite, so the reason is
+    now the true one and the clause is executed by a test rather than asserted
+    in prose.
+    """
+
+    @staticmethod
+    def _suite(body: str) -> TaskSpec:
+        return TaskSpec(
+            id="c-mixed", type="code", prompt="Write it.", validation=["tests_pass"],
+            metadata={"module": "solution.py", "tests": (
+                "import unittest\n\nfrom solution import solve\n\n\n"
+                "class T(unittest.TestCase):\n    def test_x(self):\n" + body + "\n"
+            )},
+        )
+
+    def test_a_constant_plus_a_real_assertion_is_not_reported(self):
+        found = _rules(self._suite(
+            "        assert 1 == 2\n        self.assertEqual(solve('a b'), 'a-b')\n"))
+        self.assertNotIn("absent_grading_contract", found)
+
+    def test_a_never_passing_constant_does_not_make_the_suite_harmless(self):
+        """The doc may not claim such a suite discriminates: it fails for every
+        artifact, so the score is 0 whatever the solution produces.
+        """
+        detail = _rules(self._suite("        assert 1 == 2\n"))[
+            "absent_grading_contract"][0].detail
+        self.assertIn("fails for every artifact", detail)
+
+    def test_the_doc_pins_the_clock_disclosure(self):
+        """QA measured the base-chain walk at 11.3 s for N=5000 and asked for the
+        disclosure rather than a fix. A disclosure no test reads is the failure
+        mode this section exists to remove, so the claim is pinned in both
+        directions: the cost is stated, and it is not claimed to be bounded.
+        """
+        text = DOC.read_text(encoding="utf-8")
+        self.assertIn("It is not a bound on the clock", text)
+        self.assertIn("O(N²)", text)
+        self.assertNotIn("It is a bound on the clock", text)
+
+    def test_the_doc_pins_the_unstripped_token(self):
+        text = DOC.read_text(encoding="utf-8")
+        self.assertIn("the audit does not strip", text)
+        self.assertNotIn("the audit strips", text)
+
+    def test_the_doc_states_the_silent_reason_as_a_cannot_inflate_score(self):
+        text = DOC.read_text(encoding="utf-8")
+        self.assertIn("cannot inflate a score", text)
+        self.assertNotIn("there *is* an assertion, and\nthe suite discriminates", text)
+
+
+class TestTheAuditAgreesWithTheRealGrader(TestCase):
+    """The claim "the audit's list has to be the runner's list", executed.
+
+    The other test in this area reimplements `runner.py`'s line and compares two
+    models, which cannot catch the two disagreeing with the *code*. This one calls
+    `Runner._validate` itself, so a future change to either side that breaks the
+    agreement fails here rather than in a leaderboard.
+    """
+
+    ARTIFACTS: ClassVar[dict[str, str]] = {
+        "word only": "<body>kite</body>",
+        "spaced": "<body> kite </body>",
+        "generic": "the quick brown fox jumps over the lazy dog",
+    }
+
+    @staticmethod
+    def _spec(required: object) -> TaskSpec:
+        return TaskSpec(
+            id="x", type="html", prompt="Write it.",
+            validation=["html", "has_required"], metadata={"required": required},
+        )
+
+    def _grader_passes_any_artifact(self, required: object) -> bool:
+        return all(
+            Runner()._validate(self._spec(required), artifact)[1]["checks"].get("has_required")
+            for artifact in self.ARTIFACTS.values()
+        )
+
+    def test_a_declaration_the_grader_cannot_read_is_reported_not_raised(self):
+        """F1. The grader raises on this spec; the audit has to name it, because
+        the audit is the only static place that can.
+        """
+        with self.assertRaises(TypeError):
+            Runner()._validate(self._spec(5), self.ARTIFACTS["generic"])
+        found = _rules(self._spec(5))
+        self.assertIn("structural_only", found)
+        self.assertIn("the grader iterates it", found["structural_only"][0].detail)
+
+    def test_a_bare_string_anchors_only_when_the_grader_really_discriminates(self):
+        """F4. `required: kite` is iterated per character, so the grader passes
+        every artifact — and the audit must refuse to call that anchored. This
+        is the assertion that would have caught a declaration that *looks* like
+        an anchor and is not.
+        """
+        self.assertTrue(self._grader_passes_any_artifact("kite"))
+        self.assertFalse(orchestral_audit._has_topic_anchor(self._spec("kite")))
+
+    def test_a_token_with_spaces_agrees_with_the_grader(self):
+        """F2. The grader compares `" kite "` with its spaces, so the bare word
+        does not satisfy it. An audit that stripped the token would call this
+        spec anchored while the grader scored a correct artifact 0.
+        """
+        spec = self._spec([" kite "])
+        self.assertTrue(orchestral_audit._has_topic_anchor(spec))
+        self.assertFalse(Runner()._validate(spec, self.ARTIFACTS["word only"])[1]["checks"]["has_required"])
+        self.assertTrue(Runner()._validate(spec, self.ARTIFACTS["spaced"])[1]["checks"]["has_required"])
+
+    def test_a_mapping_anchors_because_the_grader_enforces_its_keys(self):
+        """F6."""
+        spec = self._spec({"kite": True})
+        self.assertTrue(orchestral_audit._has_topic_anchor(spec))
+        self.assertFalse(Runner()._validate(spec, self.ARTIFACTS["generic"])[1]["checks"]["has_required"])
+
+    def test_every_declaration_where_the_audit_anchors_really_discriminates(self):
+        """The general form of the three above: whenever the audit says a spec is
+        anchored, at least one of these artifacts must actually fail the grader.
+        """
+        for required in (["kite"], ("kite", "surfboard"), {"kite": True}, [" kite "],
+                         ["ab"], ["kite", "a"], 2, 2.5, True, float("nan"), None,
+                         "kite", ["  "], ["a"], {}, [], 0, ""):
+            with self.subTest(required=repr(required)):
+                if not orchestral_audit._has_topic_anchor(self._spec(required)):
+                    continue
+                self.assertFalse(
+                    self._grader_passes_any_artifact(required),
+                    "the audit calls this anchored, but the grader passes every artifact",
+                )

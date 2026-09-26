@@ -303,6 +303,12 @@ def effective_checks(spec: TaskSpec) -> set[str]:
     return requested
 
 
+# Shapes the grader can iterate. YAML gives a spec author a string, an int, a
+# float, a bool, a date, a list or a mapping, and the grader writes `for t in
+# required` — so a number, a bool or a date is a declaration it cannot read.
+_DECLARATION_SHAPES = (str, list, tuple, dict, set, frozenset)
+
+
 def _required_tokens(value: Any) -> list[str]:
     """The tokens `runner.py` will compare the artifact against.
 
@@ -319,17 +325,36 @@ def _required_tokens(value: Any) -> list[str]:
 
     Modelling the iteration rather than the YAML is the point: the audit's list
     has to be the runner's list, or the two disagree about what is anchored.
+
+    A value the grader cannot iterate at all is a *malformed* declaration, not an
+    absent one, and it is reported as such rather than raised. `required: 5`
+    raised `TypeError` out of here and took the gate's answer for every other
+    spec with it, and this was the only metadata read in the file without a type
+    guard — the shape of the bug was an omission, so the guard is explicit and
+    every other reader is covered by `TestHostileMetadataNeverRaises`.
     """
     if not value:
+        return []
+    if not isinstance(value, _DECLARATION_SHAPES):
         return []
     return [token for item in value for token in _scalar_token(item)]
 
 
 def _scalar_token(value: Any) -> list[str]:
-    """One declared token, or nothing when the value is not a token at all."""
+    """One declared token, or nothing when the value is not a token at all.
+
+    The token is `str(value)` unstripped, because that is what the runner
+    compares: `str(t).lower() in lowered` and nothing else. Stripping first made
+    the audit's list disagree with the runner's in both directions — it treated
+    `" kite "` as `kite` (so an artifact containing the bare word scored 0 while
+    the audit called the spec anchored) and it treated `"  "` as a token (which
+    ordinary indented HTML satisfies). A token that is entirely whitespace is
+    rejected outright instead, which is stricter than the runner in the safe
+    direction and keeps the two lists identical everywhere else.
+    """
     if isinstance(value, (str, int, float, bool)):
-        text = str(value).strip()
-        return [text] if len(text) > 1 else []
+        text = str(value)
+        return [text] if len(text) > 1 and text.strip() else []
     # A nested container is stringified by the runner (`str({'kite': True})`), so
     # it compares the artifact against a repr. That is a check nothing can pass,
     # which anchors no topic.
@@ -1057,13 +1082,24 @@ def _anchor_advice(spec: TaskSpec) -> str:
             "metadata.required only inside the has_required check, so it anchors nothing here."
         )
     if checks & TOPIC_ANCHORS and not _has_topic_anchor(spec):
-        advice += (
-            " A check is requested but its declaration names nothing the grader can compare against: "
-            "metadata.required is iterated, so a bare string is compared character by character and a "
-            "one-character token is satisfied by almost any artifact, and metadata.pattern is compiled "
-            "as written. Declare a list of words, or a pattern specific enough to exclude a generic "
-            "artifact."
-        )
+        required = spec.metadata.get("required")
+        if required and not isinstance(required, _DECLARATION_SHAPES):
+            # A declaration the grader cannot iterate is a different defect from
+            # one that names too little, and the runner raises on it at grading
+            # time. Telling the author to declare a list of words would send them
+            # to fix the wrong thing — the F6 defect, reached through the shape.
+            advice += (
+                f" metadata.required is a {type(required).__name__}, and the grader iterates it, so it "
+                "raises on this spec rather than comparing anything. Declare it as a list of words."
+            )
+        else:
+            advice += (
+                " A check is requested but its declaration names nothing the grader can compare against: "
+                "metadata.required is iterated, so a bare string is compared character by character and a "
+                "one-character token is satisfied by almost any artifact, and metadata.pattern is compiled "
+                "as written. Declare a list of words, or a pattern specific enough to exclude a generic "
+                "artifact."
+            )
     return advice
 
 

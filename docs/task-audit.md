@@ -120,7 +120,14 @@ built only from the constructs above.
 - A test body that does something but shows the audit no assertion — an
   assertion assembled at runtime. The rule stays silent rather than call it a
   constant, which would be false in both halves: there *is* an assertion, and
-  the suite discriminates.
+  whether the suite discriminates is not something a static read can say.
+- A suite that mixes a constant assertion with one that reads the artifact. The
+  rule stays silent, and the reason is not that the suite is sound: `assert 1 == 2`
+  fails for *every* artifact, so the score is 0 whatever the solution produces. A
+  suite pinned at 0 cannot inflate a score, which is the only thing this rule
+  exists to catch, so reporting it would spend an author's attention on a spec
+  that cannot game anything. The audit is not a linter for constant-failing
+  tests.
 
 **Declared anchors are checked, not assumed.** `metadata.required` is read by
 the runner in exactly one place, inside `if "has_required" in requested`, and
@@ -134,7 +141,18 @@ because the runner iterates it: `for t in required` means a mapping contributes
 its keys, a list its items, and a **bare string its characters**, so
 `required: kite` asks only that the artifact contain `k`, `i`, `t` and `e` and
 clears nothing. A token of one character is satisfied by nearly any artifact, so
-`[""]`, `[0]` and `["a"]` declare nothing too.
+`[""]`, `[0]` and `["a"]` declare nothing too, and a token that is entirely
+whitespace declares nothing either — ordinary indented HTML satisfies `"  "`.
+
+A token is `str(value)` and nothing more, because that is what the runner
+compares. `" kite "` keeps its spaces on both sides: the audit does not strip,
+so an artifact containing the bare word scores 0 exactly as the runner will
+report, instead of the audit calling the spec anchored when it is not.
+
+A declaration the runner cannot iterate at all — `required: 5`, `required: true`,
+a date — is a *malformed* declaration rather than an absent one, and the advice
+says so. The runner raises on it at grading time, so the audit is the only static
+place that can name it.
 
 One limit on this: a `pattern` that matches every artifact — `.`, `^`, `.*`,
 `[\s\S]*` — clears the finding, because deciding how strong a regex has to be is a
@@ -174,11 +192,27 @@ verdict rather than one spec a finding. Three things are bounded:
   service against the gate: `(A+)+B` doubles the backtracking cost every two
   characters.
 
-This is a statement about the inputs that were tried, not a proof. A suite too
-deeply nested for the parser to read at all is reported as unreadable rather than
-raised, and an input that defeats one of these three bounds is not known. What
-the bounds buy is that the known ones cost a missed detection rather than a
-missing verdict.
+Two things this does not buy, stated because the claim above is easy to over-read:
+
+- *It is not a bound on the clock.* Resolving a base chain is linear in the chain
+  and is done once per class, so N chained classes cost O(N²): 0.4 s at N=1000,
+  3.8 s at N=3000, 11.3 s at N=5000. That is a cost to whoever writes the spec,
+  not an outage — no wrong answer and no crash at any size — and it is a
+  spec-authoring cost rather than a denial of service, because the input has to
+  live in a spec file.
+- *It is a statement about the inputs that were tried, not a proof.* A suite too
+  deeply nested for the parser to read at all is reported as unreadable rather
+  than raised, and an input that defeats one of these bounds is not known. What
+  the bounds buy is that the known ones cost a missed detection rather than a
+  missing verdict.
+
+One more bound is worth naming because it is not a bound on folding at all: **no
+metadata value an author can write may raise.** `metadata.required` read without
+a type guard raised `TypeError` on `required: 5` and took the gate's answer for
+every other spec with it, in the one function in the file that read metadata
+unguarded. Every metadata read is now covered by a test that feeds each rule
+every shape (`TestHostileMetadataNeverRaises`), because the shape of that bug was
+an omission and a fix to the one instance would not have caught the next.
 
 
 ## What this does not do

@@ -399,7 +399,6 @@ _BINARY_OPS: dict[type, Callable[[Any, Any], Any]] = {
     ast.Div: lambda a, b: a / b,
     ast.FloorDiv: lambda a, b: a // b,
     ast.Mod: lambda a, b: a % b,
-    ast.Pow: lambda a, b: a**b,
     ast.BitAnd: lambda a, b: a & b,
     ast.BitOr: lambda a, b: a | b,
     ast.BitXor: lambda a, b: a ^ b,
@@ -439,10 +438,15 @@ _FOLDABLE_CALLS: dict[str, Callable[..., Any]] = {
     "chr": chr,
     "ord": ord,
 }
-_FOLD_FAILURE = (ValueError, TypeError, ZeroDivisionError, OverflowError, IndexError, KeyError, AttributeError)
+# `_const` recurses over the expression tree. Bound the depth explicitly instead of
+# relying on the interpreter limit: a `RecursionError` surfaces at the first
+# `isinstance` in the callee, which is *before* any `_FOLD_FAILURE` guard, so
+# catching it there cannot work. 64 is far above any hand-written constant.
+_MAX_FOLD_DEPTH = 64
+_FOLD_FAILURE = (ValueError, TypeError, ZeroDivisionError, OverflowError, IndexError, KeyError, AttributeError, RecursionError)
 
 
-def _const(node: ast.AST) -> tuple[bool, Any]:
+def _const(node: ast.AST, depth: int = 0) -> tuple[bool, Any]:
     """Fold `node` to a constant, or report that it is not provable.
 
     Returns `(True, value)` only when the node provably reads nothing from the
@@ -450,12 +454,14 @@ def _const(node: ast.AST) -> tuple[bool, Any]:
     non-literal, or an unknown call is left unfolded, so a real assertion is
     never mistaken for a constant.
     """
+    if depth > _MAX_FOLD_DEPTH:
+        return False, None
     if isinstance(node, ast.Constant):
         return True, node.value
     if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
         items: list[Any] = []
         for element in node.elts:
-            ok, value = _const(element)
+            ok, value = _const(element, depth + 1)
             if not ok:
                 return False, None
             items.append(value)
@@ -472,8 +478,8 @@ def _const(node: ast.AST) -> tuple[bool, Any]:
         for key_node, value_node in zip(node.keys, node.values, strict=True):
             if key_node is None:  # {**other} reads a value
                 return False, None
-            key_ok, key = _const(key_node)
-            value_ok, value = _const(value_node)
+            key_ok, key = _const(key_node, depth + 1)
+            value_ok, value = _const(value_node, depth + 1)
             if not (key_ok and value_ok):
                 return False, None
             pairs.append((key, value))
@@ -482,7 +488,7 @@ def _const(node: ast.AST) -> tuple[bool, Any]:
         except TypeError:
             return False, None
     if isinstance(node, ast.UnaryOp) and type(node.op) in _UNARY_OPS:
-        ok, operand = _const(node.operand)
+        ok, operand = _const(node.operand, depth + 1)
         if not ok:
             return False, None
         try:
@@ -490,8 +496,8 @@ def _const(node: ast.AST) -> tuple[bool, Any]:
         except _FOLD_FAILURE:
             return False, None
     if isinstance(node, ast.BinOp) and type(node.op) in _BINARY_OPS:
-        left_ok, left = _const(node.left)
-        right_ok, right = _const(node.right)
+        left_ok, left = _const(node.left, depth + 1)
+        right_ok, right = _const(node.right, depth + 1)
         if not (left_ok and right_ok):
             return False, None
         try:
@@ -502,7 +508,7 @@ def _const(node: ast.AST) -> tuple[bool, Any]:
         # short-circuit, so `False and f(x)` folds even though f is unknown
         results = []
         for value_node in node.values:
-            ok, value = _const(value_node)
+            ok, value = _const(value_node, depth + 1)
             if not ok:
                 return False, None
             results.append(value)
@@ -510,11 +516,11 @@ def _const(node: ast.AST) -> tuple[bool, Any]:
             return True, all(results)
         return True, any(results)
     if isinstance(node, ast.Compare):
-        left_ok, left = _const(node.left)
+        left_ok, left = _const(node.left, depth + 1)
         if not left_ok:
             return False, None
         for op, comparator in zip(node.ops, node.comparators, strict=True):
-            right_ok, right = _const(comparator)
+            right_ok, right = _const(comparator, depth + 1)
             if not right_ok or type(op) not in _COMPARE_OPS:
                 return False, None
             try:
@@ -531,7 +537,7 @@ def _const(node: ast.AST) -> tuple[bool, Any]:
             return False, None
         args: list[Any] = []
         for arg in node.args:
-            ok, value = _const(arg)
+            ok, value = _const(arg, depth + 1)
             if not ok:
                 return False, None
             args.append(value)

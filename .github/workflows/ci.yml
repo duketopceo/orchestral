@@ -11,11 +11,19 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # pyproject declares requires-python = ">=3.11" with no upper bound, so the
+        # whole range is a support claim. Pin exact minors: a floating "3.14" would
+        # silently become 3.15 and reopen the gap this closes. Floor plus every
+        # minor we have actually run the suite on.
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python-version }}
 
       - name: Install
         run: pip install -e .[dev,tui]

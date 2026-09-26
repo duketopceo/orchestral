@@ -41,6 +41,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
+          # Single interpreter on purpose, and the floor deliberately. This job
+          # runs a real paid OpenRouter eval, so one job per matrix version
+          # multiplies spend and wall-clock for a portability signal that ci.yml
+          # already covers on its own matrix. Widening the cost budget and this
+          # pin together is a deliberate act, not a consistency fix.
           python-version: "3.11"
 
       - name: Install orchestral

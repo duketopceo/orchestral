@@ -6,3 +6,10 @@ prompt: Create a landing page for a no-code automation tool targeted at indie ha
   CSS.
 validation:
 - html
+- has_required
+- matches_pattern
+metadata:
+  required:
+  - automat
+  pattern: indie|hacker|solo founder|bootstrapped|side project|side hustle|one[ -]person|ship
+    fast|build in public|\bdoer\b

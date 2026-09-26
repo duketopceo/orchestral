@@ -198,6 +198,80 @@ class TestGamingSurface(unittest.TestCase):
         self.assertIn("unanchored_fileset", found)
         self.assertIn("no check reads the file bodies", found["unanchored_fileset"][0].detail)
 
+    def test_multi_file_reading_bodies_is_not_flagged(self):
+        """`has_paths` plus a body-reading check is an anchored fileset."""
+        spec = TaskSpec(
+            id="mf-2",
+            type="multi-file",
+            prompt="Build a two-page microsite.",
+            validation=["has_paths", "has_content"],
+            metadata={
+                "expected_paths": ["index.html", "style.css"],
+                "required_content": {"index.html": ["pricing"], "style.css": ["pricing"]},
+            },
+        )
+        found = _rules(spec)
+        self.assertNotIn("unanchored_fileset", found)
+        self.assertNotIn("unknown_validation_check", found)
+
+    def test_has_content_without_metadata_stays_flagged(self):
+        """Asking for the check without declaring the tokens is still unanchored.
+
+        The check fails closed at grade time, so the gate fires — but a spec
+        that requests it and configures nothing is not a graded site, and the
+        audit should still say so.
+        """
+        spec = TaskSpec(
+            id="mf-3",
+            type="multi-file",
+            prompt="Build a two-page microsite.",
+            validation=["has_paths", "has_content"],
+            metadata={"expected_paths": ["index.html"]},
+        )
+        self.assertIn("unanchored_fileset", _rules(spec))
+
+
+class TestMediaSpecsAreNotJudgedByTextChecks(unittest.TestCase):
+    """`image` / `video` artifacts are bytes; a text token is not a weaker
+    anchor, it is an unimplemented one. The audit used to ask for
+    `has_required` on a PNG, which the runner drops as an unknown check — the
+    spec would have looked anchored while gating on nothing."""
+
+    def _media(self, task_type: str, **kwargs) -> TaskSpec:
+        base = {
+            "id": f"{task_type}-1",
+            "type": task_type,
+            "prompt": "Generate a hero image for a coffee subscription page.",
+            "validation": ["non_empty", "png_signature" if task_type == "image" else "mp4_signature"],
+        }
+        base.update(kwargs)
+        return TaskSpec(**base)
+
+    def test_media_is_not_reported_as_structural_only(self):
+        for task_type in ("image", "video"):
+            with self.subTest(task_type=task_type):
+                found = _rules(self._media(task_type))
+                self.assertNotIn("structural_only", found)
+
+    def test_media_reports_judge_gated_media_at_info(self):
+        for task_type in ("image", "video"):
+            with self.subTest(task_type=task_type):
+                found = _rules(self._media(task_type))
+                self.assertIn("judge_gated_media", found)
+                finding = found["judge_gated_media"][0]
+                self.assertEqual(finding.severity, INFO)
+                self.assertIn("--judge", finding.detail)
+
+    def test_text_anchor_on_a_media_spec_is_still_an_error(self):
+        """The audit does not become a way to *excuse* a text anchor on bytes."""
+        spec = self._media("image", validation=["non_empty", "png_signature", "has_required"])
+        found = _rules(spec)
+        self.assertIn("unknown_validation_check", found)
+        self.assertNotIn("structural_only", found)
+
+    def test_html_is_unaffected(self):
+        self.assertIn("structural_only", _rules(_task(validation=["html"])))
+
     def test_missing_difficulty_is_info_not_a_warning(self):
         found = _rules(_task())
         self.assertEqual(found["unlabeled_difficulty"][0].severity, INFO)

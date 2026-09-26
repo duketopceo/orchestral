@@ -1,0 +1,81 @@
+version: 1
+source: runs/
+selection:
+  status: finished
+  config_dry_run: false
+  report_present: true
+  artifact_present: true
+  judge_present: true
+  run_group: duk109-media
+  tasks: [image-hero-coffee, image-logo-minimal]
+  review_method: >-
+    QA reviewed each artifact PNG against its task contract, blind. Artifacts were
+    copied to neutral filenames in a randomised order, the rubric was fixed in
+    advance, and every human label was written before any report.judge value was
+    read. Score is requirements_met / requirements_total; passed is true only when
+    every requirement is met. Aspect ratio was measured from the PNG header and PNG
+    alpha was measured from the pixel data. Rubric: reports/judge-calibration-media.md
+  reviewed_on: 2026-09-26
+  judge_under_test: google/gemini-3.1-flash-lite
+  judge_null_runs_excluded: true
+  notes: >-
+    DUK-109 media set. Distinct from labels.yaml, which is the untouched DUK-55
+    text-artifact baseline. Runs whose report.judge was null are excluded; every
+    run listed here carries a real non-null LLM judge verdict.
+labels:
+  # --- image-hero-coffee: 8 requirements ---
+  - run_id: 22d5462ee2df   # m01 6/8
+    score: 0.75
+    passed: false
+  - run_id: b99f70fc76c7   # m02 7/8
+    score: 0.88
+    passed: false
+  - run_id: 02404be718c5   # m04 5/8
+    score: 0.63
+    passed: false
+  - run_id: 74f45aa95fab   # m07 2/8
+    score: 0.25
+    passed: false
+  - run_id: 63e956d02aef   # m11 7/8
+    score: 0.88
+    passed: false
+  - run_id: 0e20e326ec9e   # m12 7/8
+    score: 0.88
+    passed: false
+  - run_id: 18a19db364b3   # m15 7/8
+    score: 0.88
+    passed: false
+  - run_id: f89a511bc85d   # m16 3/8
+    score: 0.38
+    passed: false
+  - run_id: 84206f8da416   # m17 6/8
+    score: 0.75
+    passed: false
+  # --- image-logo-minimal: 7 requirements ---
+  - run_id: e02b3f226a88   # m03 4/7
+    score: 0.57
+    passed: false
+  - run_id: 53b22f20042b   # m05 5/7
+    score: 0.71
+    passed: false
+  - run_id: 4e4c28ea9432   # m06 2/7
+    score: 0.29
+    passed: false
+  - run_id: 9bf7133a6952   # m08 6/7
+    score: 0.86
+    passed: false
+  - run_id: fe0c7825b2f0   # m09 6/7
+    score: 0.86
+    passed: false
+  - run_id: fc7521e217aa   # m10 6/7
+    score: 0.86
+    passed: false
+  - run_id: 47c17c9849f6   # m13 5/7
+    score: 0.71
+    passed: false
+  - run_id: 76e85c1e0900   # m14 5/7
+    score: 0.71
+    passed: false
+  - run_id: c939566c9e8b   # m18 5/7
+    score: 0.71
+    passed: false

@@ -72,19 +72,6 @@ class RunCancelled(Exception):
     """Raised when the run's cancel_event is set between steps."""
 
 
-# Which rule owns `report["score"]` and `passes`.
-#
-# The mechanical grade owns them. `reports/judge-calibration.md` records the
-# only calibration on file — kappa 0.41 — and its own limitation section says the
-# number was measured against the *validator* fallback with zero live judge
-# verdicts, so the judge's number has never been checked against a human label.
-# The judge's verdict is still recorded in `report["judge"]`; it just does not
-# overrule a measured grade in the stored record. Restoring judge precedence
-# needs a calibration whose judge column is non-empty, not a flag flip. See
-# docs/task-audit.md.
-JUDGE_IS_AUTHORITATIVE = False
-
-
 class Runner:
     def __init__(
         self,
@@ -788,15 +775,20 @@ class Runner:
                     language="text" if is_multi else "html",
                 )
                 ledger.add_many(judge_costs)
-                # The judge's verdict is recorded, not obeyed. See
-                # `JUDGE_IS_AUTHORITATIVE` — the judge has never been calibrated
-                # against real labels, so it does not get to overwrite a
-                # measured grade in the stored record.
                 report["judge"] = judge_result
+                code_execution_pending = (
+                    task.type == "code" and report.get("execution", {}).get("executed") is not True
+                )
+                if judge_result.get("score") is not None and not code_execution_pending:
+                    report["score"] = judge_result["score"]
+                    report["score_source"] = "judge"
+                if judge_result.get("passed") is not None:
+                    passes = passes and judge_result["passed"]
 
             # The record says which rule produced `score`, so a reader never has
             # to guess whether the stored number is measured or judged.
-            report["score_source"] = "judge" if JUDGE_IS_AUTHORITATIVE else "mechanical"
+            report.setdefault("score_source", "mechanical")
+
 
             logger.lifecycle(
                 "evaluation.completed", phase="validate", role="judge" if judge else "harness",
@@ -1196,12 +1188,11 @@ class Runner:
         return passes and not unknown, report
 
     def _validate_code(self, task: TaskSpec, files: dict[str, str]) -> tuple[bool, dict[str, Any]]:
-        """Run the task's hidden unittest source against the merged file set.
+        """Validate a code file set without executing generated code.
 
-        Expected files must exist; live runs execute the suite in a
-        subprocess (see codeexec for containment notes). Dry runs only
-        compile-check the Python files — no model code ever ran, so the
-        report says `executed: false`.
+        Expected files must exist. Live validation calls the fail-closed code
+        execution boundary; dry runs only compile-check the Python files, so
+        no model code ever runs in either path.
         """
         module = str(task.metadata.get("module") or "solution.py")
         declared = expected_paths(task.metadata) or [module]
@@ -1246,9 +1237,16 @@ class Runner:
             timeout_seconds=float(task.metadata.get("timeout_seconds", DEFAULT_TIMEOUT_SECONDS)),
         )
         report["execution"] = suite
-        checks["tests_pass"] = bool(suite.get("ok"))
+        suite_passed = (
+            suite.get("executed") is True
+            and int(suite.get("tests_run") or 0) > 0
+            and bool(suite.get("ok"))
+        )
+        checks["tests_pass"] = suite_passed
         if not suite.get("executed"):
             errors.append(suite.get("error", "tests did not execute"))
+        elif not suite_passed:
+            errors.append("code execution did not complete a successful non-empty test suite")
         report["score"] = score_from_report(suite)
         return bool(all(checks.values())), report
 

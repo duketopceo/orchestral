@@ -230,6 +230,50 @@ except ImportError:
 
 
 @unittest.skipUnless(HAS_TEXTUAL, "textual not installed (pip install 'orchestral[tui]')")
+class TestStatusBar(unittest.TestCase):
+    """_render_text must not read an attribute the class never assigns.
+
+    17f6c543 removed the `set_message` writer and its `self._message = ""`
+    initialiser but left the reader behind, so every status-strip refresh
+    raised AttributeError. Asserting on rendered text keeps a reader-without-
+    a-writer from reaching main again.
+    """
+
+    def _bar(self, runs=0, cost=0.0, jobs=None):
+        from orchestral.tui.widgets import StatusBar
+
+        bar = StatusBar()
+        bar.set_counts(runs, cost)
+        bar.set_jobs(jobs or [])
+        return bar
+
+    def _text(self, bar):
+        return str(bar.visual)
+
+    def test_counts_render_without_a_message_attribute(self):
+        bar = self._bar(runs=3, cost=0.1234)
+        self.assertEqual(self._text(bar), "3 runs  ·  $0.1234")
+
+    def test_active_jobs_are_listed_and_terminal_ones_are_not(self):
+        running = Job(label="o/m·t")
+        running.transition(JobStatus.RUNNING)
+        done = Job(label="old")
+        done.transition(JobStatus.RUNNING)
+        done.transition(JobStatus.SUCCEEDED)
+        bar = self._bar(jobs=[running, done])
+        self.assertEqual(self._text(bar), "0 runs  ·  $0.0000  ·  jobs: o/m·t (running)")
+
+    def test_active_job_list_caps_at_three(self):
+        jobs = []
+        for i in range(5):
+            j = Job(label=f"j{i}")
+            j.transition(JobStatus.RUNNING)
+            jobs.append(j)
+        text = self._text(self._bar(jobs=jobs))
+        self.assertIn("jobs: j0 (running), j1 (running), j2 (running) +2 more", text)
+
+
+@unittest.skipUnless(HAS_TEXTUAL, "textual not installed (pip install 'orchestral[tui]')")
 class TestAppPilot(unittest.IsolatedAsyncioTestCase):
     async def _pump(self, app, pilot, until, timeout=5.0):
         """Wait for a condition with real time for thread workers."""

@@ -38,7 +38,8 @@ it for you.
 | `prompt_states_the_answer` | warn | The prompt spells out graded output — an expected value, the reference query, or the expected call list. Recitation scores the same as reasoning. `extract` is exempt by design: its prompt carries the source document. |
 | `answer_derivable_from_prompt` | warn | Every graded value is readable in the prompt (`extract`, `sql`). The task ceiling is transcription and lookup, not problem solving. |
 | `memorization_risk` | warn | The id or prompt matches a known textbook problem (fizzbuzz, slugify, LRU cache, expression parser, two-sum, …). A memorised answer scores the same as a solved one. |
-| `near_duplicate_family` | info | Several specs share one prompt shape. They are one problem counted many times, so an aggregate pass rate inherits that single template's difficulty. |
+| `near_duplicate_family` | info | Several specs share one prompt shape. They are one problem counted many times, so an aggregate pass rate inherits that single template's difficulty. The six shared terms are the highest-count terms with ties broken alphabetically, so the finding is reproducible across runs; a tied counter means the six are not necessarily the six most distinctive words, which is a property of the counter rather than of this ordering.
+| `unreadable_spec_fields` | error | `metadata` is not a mapping, `validation` is not a list of strings, or `prompt` is not a string. Every check the spec asks for is then unfireable and the grader cannot read the spec, which is what this file's `ok` policy calls an error. On the file path `load_task` rejects these with `ConfigError` before the audit sees them, so this fires for a caller that built a `TaskSpec` directly. |
 | `no_holdout_arm` | info | No spec sets `metadata.holdout`, so every problem is also a published problem and contamination cannot be measured. |
 | `unlabeled_difficulty` | info | No `metadata.difficulty`, so the spec cannot be excluded from a headline result. |
 
@@ -153,6 +154,15 @@ A declaration the runner cannot iterate at all — `required: 5`, `required: tru
 a date — is a *malformed* declaration rather than an absent one, and the advice
 says so. The runner raises on it at grading time, so the audit is the only static
 place that can name it.
+
+**That finding is a warning, so `--strict` exits 0 on it.** A spec whose grader
+raises still passes the gate, deliberately: the runner's own abort is louder than
+any audit line, and the alternative spends an author's attention on a spec that
+cannot report a leaderboard number anyway. The severity is a judgement, not a
+consequence. The case one level up is different and is an error — a non-mapping
+`metadata` means the audit learned nothing about the spec at all
+(`unreadable_spec_fields`), and on the file path `load_task` rejects it outright
+rather than reporting it.
 
 One limit on this: a `pattern` that matches every artifact — `.`, `^`, `.*`,
 `[\s\S]*` — clears the finding, because deciding how strong a regex has to be is a

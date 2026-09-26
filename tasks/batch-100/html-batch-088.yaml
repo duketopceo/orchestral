@@ -6,3 +6,11 @@ prompt: Create a landing page for a open-source fonts library targeted at produc
   inline CSS.
 validation:
 - html
+- has_required
+- matches_pattern
+metadata:
+  required:
+  - fonts
+  pattern: product manager|product management|\bpm\b|roadmap review|sprint planning|backlog
+    grooming|stakeholder|user research|prioriti[sz]|feature request|voice of the customer|product
+    team|ship the right thing

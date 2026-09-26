@@ -6,3 +6,10 @@ prompt: Create a landing page for a smart home dashboard targeted at data engine
   inline CSS.
 validation:
 - html
+- has_required
+- matches_pattern
+metadata:
+  required:
+  - dashboard
+  pattern: data engineer|data platform|data team|pipeline|warehouse|\betl\b|streaming|\bdbt\b|analytics
+    engineer|airflow|\bspark\b|lakehouse|data ingestion|transformation

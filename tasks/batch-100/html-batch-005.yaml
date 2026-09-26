@@ -6,3 +6,10 @@ prompt: Create a landing page for a coffee roaster targeted at climate-conscious
   CSS.
 validation:
 - html
+- has_required
+- matches_pattern
+metadata:
+  required:
+  - roast
+  pattern: climate|carbon|sustainab|eco[ -]?friendly|emission|planet|renewable|footprint|greenhouse|net[
+    -]zero|lower your impact|environmentally

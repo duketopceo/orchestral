@@ -6,3 +6,10 @@ prompt: Create a landing page for a carbon offset marketplace targeted at design
   inline CSS.
 validation:
 - html
+- has_required
+- matches_pattern
+metadata:
+  required:
+  - carbon
+  pattern: design system|design token|\btokens?\b|typograph|accessib|\bwcag\b|ui kit|figma|a11y|visual
+    language|component librar|spacing scale|color palette

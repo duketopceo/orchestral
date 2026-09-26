@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from orchestral.config import ModelConfig, TaskSpec
+from orchestral.holdout import is_holdout
 from orchestral.judge import JUDGE_PROMPT
 from orchestral.planners import ORCHESTRATOR_DEFAULT_PROMPT
 
@@ -93,6 +94,7 @@ def build_manifest(
         "timeout_seconds": 120,
         "retry_policy": f"retry_limit={worker.retry_limit}",
         "seed": seed,
+        "holdout": is_holdout(task),
         "run_group": run_group,
         "replicate": replicate,
         "dry_run": dry_run,

@@ -6,3 +6,10 @@ prompt: Create a landing page for a remote team retreat planner targeted at clim
   inline CSS.
 validation:
 - html
+- has_required
+- matches_pattern
+metadata:
+  required:
+  - retreat
+  pattern: climate|carbon|sustainab|eco[ -]?friendly|emission|planet|renewable|footprint|greenhouse|net[
+    -]zero|lower your impact|environmentally

@@ -34,7 +34,9 @@ shots = [
     "playwright>=1.40",
 ]
 tui = [
-    "textual>=1.0",
+    # Upper bound: the TUI is written against the textual 8.x widget API;
+    # a floating install must not drift onto an incompatible UI major.
+    "textual>=1.0,<9",
 ]
 dev = [
     "ruff>=0.6",

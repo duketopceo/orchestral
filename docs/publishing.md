@@ -1,7 +1,25 @@
 # Publishing results
 
-`orchestral scrub` turns local `runs/` into a shareable `runs-pub/` tree plus a
-`manifest.json` index — the intended way to publish example eval results.
+`orchestral scrub` makes a run shareable **as a result artifact, not as a
+re-runnable one**: the answer key does not survive a publish. A published key
+means the next run measures retrieval, not reasoning, so `scrub` drops the graded
+answer (`metadata.expected`, `metadata.expected_answer`), the reference solution
+(`metadata.reference_sql`, `metadata.required_content`) and the expected request
+plan (`metadata.calls`) from every published JSON and JSONL file, and replaces
+each `llm_call` message body in `events.jsonl` with a size-only record. What
+stays is the score, the pass/fail verdict, the per-check and per-field booleans,
+the row counts, the candidate's own output, and the cost, latency, token counts
+and model identity behind them. There is no flag that turns this off, and there
+is no keyed-hash alternative: the per-field booleans in a report already let a
+grader confirm an answer was correct without learning it, so a hash would add a
+key to distribute and buy nothing — while an unhashed low-entropy key like
+`{"line_items": 3}` falls to a dictionary attack. The reasoning is in the
+`orchestral/privacy.py` module docstring; the omissions and withheld fields are
+named per run in `manifest.json`.
+
+`scrub` also redacts credentials — API keys, emails, paths, hostnames — and that
+is the half people usually mean when they say "scrubbed". Redaction alone is not
+contamination control. Read both halves before you publish.
 
 ## Recipe
 
@@ -62,6 +80,23 @@ as release evidence.
 
 ## What scrub does
 
+- **Withholds the answer key.** `GRADED_KEYS` in `orchestral/privacy.py` are
+  dropped at every depth of every published JSON and JSONL file. `calls` is
+  dropped only inside a `metadata` object, because that name is also the
+  llm-call count in `metrics.json` and `cost.json`, and a gate that deletes
+  measurement evidence is a worse failure than a leak. The report writers already
+  omit these values, so this is the gate for runs written by an older harness.
+- **Replaces `llm_call` bodies.** `input.messages` and `output.content` are
+  dropped from published events; `messages_withheld` and `content_withheld`
+  record the size that was removed. Cost, latency, token counts, model identity,
+  the provider's usage block and the response id stay. The completion is not lost
+  evidence — the candidate's own text is published as `artifact.*`. Other event
+  types (`evaluation.completed`, `artifact.saved`, …) keep their payloads.
+- **Names what it took.** Every withheld field is listed in the run's
+  `manifest.json` entry under `scrub_withheld`, with the file, the key names, and
+  the count of stripped call bodies. Omissions (`scrub_omissions`) and withheld
+  fields are separate lists: an omitted file is absent from the tree, a withheld
+  field is a hole inside a file that was published.
 - **Redacts** in text/JSON/JSONL: OpenRouter/OpenAI/Anthropic/Groq/xAI/Google/
   GitHub/AWS-shaped keys, `Bearer` tokens, PEM private keys, URL userinfo
   (`https://user:pass@host`), internal hostnames (`.internal`, `.corp`, `.lan`,
@@ -87,6 +122,17 @@ as release evidence.
 
 ## Caveats — read before publishing
 
+- **A published prompt is still a published prompt.** Withholding the key stops
+  a published artifact from *grading* a future run, but `plan.json` and
+  `worker-*.json` still carry the orchestrator's subtask descriptions. For a task
+  whose prompt contains its own answer — an extraction task over a quoted source
+  document, for example — the published tree is a worked example and must be
+  treated as a retired task, not a benchmark. Scrub cannot tell those tasks
+  apart; you know which ones they are.
+- **`reports/` is a different door.** `orchestral report --html` reads the local
+  `runs/` tree, not `runs-pub/`, so the HTML report carries the full run record.
+  The answer key is no longer in it (the report writers omit it), but it carries
+  everything else. Publish `runs-pub/`, not `reports/`.
 - **Eyeball the output.** Patterns cover common shapes; your custom env vars or
   internal URLs may not match. Extend `PATTERNS` in `orchestral/privacy.py` for
   your own sensitive data.
@@ -96,4 +142,8 @@ as release evidence.
 - **`runs-pub/` is gitignored** in this repo — publish it deliberately, to
   wherever the results should live.
 - **Malformed JSON** degrades to text-mode scrubbing rather than aborting, so a
-  truncated `run.json` can't silently skip the rest of the tree.
+  truncated `run.json` can't silently skip the rest of the tree. A malformed JSON
+  file gets no key-level withholding, because the file could not be parsed to
+  find the keys. That is a reason to inspect the output, not a reason to trust
+  it.
+

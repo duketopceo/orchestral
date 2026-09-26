@@ -111,13 +111,16 @@ class TestRunSqlCheck(unittest.TestCase):
         )
         self.assertTrue(report["match"])
 
-    def test_wrong_result_scores_zero_with_previews(self):
+    def test_wrong_result_scores_zero_with_got_preview_only(self):
         report = run_sql_check(_metadata(), "SELECT grp, SUM(val) FROM t GROUP BY grp HAVING grp='a'")
         self.assertTrue(report["executed"])
         self.assertFalse(report["match"])
         self.assertEqual(report["score"], 0.0)
-        self.assertIn("expected_preview", report)
         self.assertIn("got_preview", report)
+        # the reference rows are the answer key — the report says how many rows
+        # a correct answer returns, never which rows those are
+        self.assertEqual(report["rows_expected"], 2)
+        self.assertNotIn("expected_preview", report)
 
     def test_invalid_sql_scores_zero(self):
         report = run_sql_check(_metadata(), "SELECT * FROM nope")

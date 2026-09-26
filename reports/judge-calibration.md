@@ -34,3 +34,7 @@ Verdict agreement (n=29):
 ## Limitation
 
 No selected run has a non-null `report.judge` result. `collect_pairs` therefore uses the stored run-level `score` and `passes` fallback. These results are reproducible human-label versus validator agreement, not a live LLM-judge calibration. A real judge calibration requires new judged runs; this work does not invent judge outputs.
+
+## Consequence
+
+Because the judge column is empty, this calibration does not authorise the judge to own `report["score"]` or `passes`. The runner treats the judge as advisory and records its verdict in `report.judge` without merging it into the stored grade; see "Who owns `score`" in `docs/task-audit.md`. Re-run this calibration on judged runs before changing that.

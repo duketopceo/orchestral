@@ -67,6 +67,64 @@ defined where a type appears in both arms — across types the difference measur
 a change of subject, not contamination — and the report prints each side's `n`
 and flags types with fewer than five runs on a side as anecdote.
 
+## Who owns `score`: the judge is advisory
+
+**Decision: the mechanical grade is authoritative. The judge's verdict is
+recorded beside it and does not overrule it.**
+
+The runner used to do this:
+
+```python
+report["judge"] = judge_result
+if judge_result.get("score") is not None:
+    report["score"] = judge_result["score"]      # measured grade overwritten
+if judge_result.get("passed") is not None:
+    passes = passes and judge_result["passed"]    # verdict ANDed with the judge
+```
+
+So a stored `report["score"]` and a stored `passes` could both be the LLM judge's
+opinion rather than a measurement. The only calibration on file,
+`reports/judge-calibration.md`, does not support that authority: its own
+limitation section records kappa 0.41 measured against the **validator** fallback
+with **zero live judge verdicts** (`judge_output_coverage.non_null_judge_outputs:
+0`). The number in that report is human-label agreement with the mechanical
+grade. It says nothing about the judge, because the judge column was empty.
+
+That is the same failure mode the rest of this file is about: a stored number
+that looks authoritative and is not. The fix is not to make the number more
+confident, it is to stop the uncalibrated signal from occupying the authoritative
+slot.
+
+**What changed, and what did not.**
+
+| | before | after |
+|---|---|---|
+| `report["score"]` | judge's score when a judge ran | the mechanical score, always |
+| `passes` | mechanical **and** judge | mechanical only |
+| `report["judge"]` | judge's verdict | unchanged — score, passed, reasoning all still stored |
+| `report["score_source"]` | absent | `"mechanical"`, so the record names its own authority |
+| `meta.failure_reason` | `"judge"` when checks passed but the judge said no | `"validation"` — a judge disagreement is kept in `report.judge`, not relabelled as the cause |
+
+`JUDGE_IS_AUTHORITATIVE` in `orchestral/runner.py` is `False` and names this
+section. It is not a flag to flip on a hunch: restoring judge precedence needs a
+calibration whose `judge_output_coverage.non_null_judge_outputs` is greater than
+zero, which means new judged runs and a fresh `harness.py calibrate` pass, and
+then a deliberate code change. A flag flip would let the next person restore an
+unvalidated override without reading why it was removed.
+
+**What would change the decision.** A kappa computed against real judge verdicts
+on a labelled set, high enough that you would trust the judge over the validator
+on a case where they disagree. Below that, keep the mechanical grade and treat
+the judge as a second opinion for a human to read. Note that the two graders
+disagree for a reason worth keeping: the eight false positives in the calibration
+were landing-page artifacts that satisfy the structural checks and do not satisfy
+the task contract. The mechanical grade is not the ceiling of what is knowable
+here — it is the part that is currently measured.
+
+**Not done, deliberately.** No attempt was made to improve the judge, the
+prompts, or the validator coverage. This records who owns a number that was
+stored without a mandate.
+
 ## Adding a check name
 
 `VALIDATION_CHECKS` in `orchestral/audit.py` is the single source of truth for

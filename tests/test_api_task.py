@@ -85,14 +85,17 @@ class TestCheckApi(unittest.TestCase):
         report = check_api(_metadata(), json.dumps(CALLS[:3]))
         self.assertFalse(report["passes"])
         self.assertEqual(report["score"], 0.75)
-        self.assertIn("GET /orders", report["missing"])
+        # the missed route is the answer key (metadata.calls), so the report
+        # carries the count of missed calls, not which calls they were
+        self.assertEqual(report["missing"], 1)
 
     def test_wrong_body_misses(self):
         calls = [dict(c) for c in CALLS]
         calls[2] = {"method": "POST", "path": "/orders", "json": {"user_id": 42, "sku": "X"}}
         report = check_api(_metadata(), json.dumps(calls))
         self.assertFalse(report["passes"])
-        self.assertIn("POST /orders", report["missing"])
+        self.assertEqual(report["missing"], 1)
+        self.assertEqual(report["matched"], 3)
 
     def test_wrong_params_misses(self):
         calls = [dict(c) for c in CALLS]

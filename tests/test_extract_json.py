@@ -12,7 +12,7 @@ from __future__ import annotations
 import re
 import unittest
 
-from orchestral.planners import _extract_json
+from orchestral.planners import PlanParseFault, _extract_json
 
 # the first 200 chars of the failed `eval` response on PR #66, as the old error
 # message printed it. The old message cut the response at 200 chars, so the
@@ -24,6 +24,13 @@ CI_LOG_PREFIX = (
 )
 
 CANARY = "CANARY-4f2a-do-not-log"
+
+# one payload per fault, keyed by the `kind` that fault must report
+_FAULT_PAYLOADS = {
+    "no_json": "Here is the plan you asked for, in prose.",
+    "unbalanced": '{"plan": "cut off mid',
+    "balanced_invalid": '{"plan": }',
+}
 
 
 def _message(payload: str) -> str:
@@ -185,6 +192,50 @@ class TestNoModelTextInFailureMessages(unittest.TestCase):
         msg = _message(payload)
         self.assertNotIn("SECRETBODY", msg)
         self.assertIn(f"{len(payload)} chars", msg)
+
+
+class TestFaultKinds(unittest.TestCase):
+    """`kind` is the discriminator the plan-parse-fault event counts on.
+
+    DUK-183 declined to add a plan retry because the rate of transport faults
+    in the plan phase is unknown. Counting that rate means naming the fault
+    without matching the message prose, and `kind` is that name. The type
+    subclasses `ValueError` so adding it cannot change what an existing
+    `except ValueError` / `except Exception` caller does.
+    """
+
+    def _fault(self, payload: str) -> PlanParseFault:
+        with self.assertRaises(PlanParseFault) as ctx:
+            _extract_json(payload)
+        return ctx.exception
+
+    def test_each_branch_names_its_own_kind(self):
+        for kind, payload in _FAULT_PAYLOADS.items():
+            with self.subTest(kind=kind):
+                self.assertEqual(self._fault(payload).kind, kind)
+
+    def test_the_three_kinds_are_distinct(self):
+        self.assertEqual({self._fault(p).kind for p in _FAULT_PAYLOADS.values()}, set(_FAULT_PAYLOADS))
+
+    def test_every_kind_is_still_a_value_error(self):
+        """`delegate`, `delegate_multi`, `assemble_media` and `judge_artifact`
+        catch `ValueError` to degrade gracefully; naming the fault must not
+        escape that contract."""
+        for kind, payload in _FAULT_PAYLOADS.items():
+            with self.subTest(kind=kind), self.assertRaises(ValueError) as ctx:
+                _extract_json(payload)
+            self.assertIsInstance(ctx.exception, PlanParseFault)
+
+    def test_the_message_still_says_which_fault_it_is(self):
+        """`kind` is for code. A human reading CI still reads prose."""
+        markers = {
+            "no_json": "No JSON found",
+            "unbalanced": "Unbalanced JSON",
+            "balanced_invalid": "Balanced JSON",
+        }
+        for kind, payload in _FAULT_PAYLOADS.items():
+            with self.subTest(kind=kind):
+                self.assertIn(markers[kind], str(self._fault(payload)))
 
 
 class TestRealCiRepro(unittest.TestCase):

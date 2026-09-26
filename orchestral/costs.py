@@ -121,6 +121,16 @@ def token_usage_from_raw(usage: dict[str, Any]) -> TokenUsage:
     )
 
 
+def pricing_source_for(api_cost_usd: Any) -> str:
+    """Label a call by whether the provider billed it or the rate card did.
+
+    "api_reported" when the response carried a cost, "configured_estimate"
+    when `cost_usd` is a rate-card fallback. `pricing_drift` re-prices only
+    api_reported rows, so a call with a real provider cost must say so.
+    """
+    return "api_reported" if isinstance(api_cost_usd, (int, float)) else "configured_estimate"
+
+
 def compute_cost(usage: TokenUsage, model_cfg: ModelConfig) -> tuple[float, TokenUsage]:
     """Return (cost_usd, usage) — cost from configured per-token pricing.
 

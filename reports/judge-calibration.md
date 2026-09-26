@@ -34,3 +34,28 @@ Verdict agreement (n=29):
 ## Limitation
 
 No selected run has a non-null `report.judge` result. `collect_pairs` therefore uses the stored run-level `score` and `passes` fallback. These results are reproducible human-label versus validator agreement, not a live LLM-judge calibration. A real judge calibration requires new judged runs; this work does not invent judge outputs.
+
+## Reproducibility ceiling
+
+The figures above are **not recomputable from this repository alone.** The input store is `runs/`,
+which `.gitignore` ignores, and `runs/` is not committed.
+
+What a reviewer *can* verify from the repo:
+
+- `labels.yaml` parses, and contains the 29 labels the report claims
+- `labels_sha256` matches `shasum -a 256 labels.yaml`
+- the confusion matrix sums to 29, and accuracy and kappa recompute from it
+- the JSON schema contract the tool expects
+
+What a reviewer **cannot** verify without the original run store: `matched: 29`, and therefore the
+selection of which 29 completed runs were included. If you are checking these numbers, obtain the
+run store or treat the agreement figures as historical record rather than a reproducible
+measurement.
+
+## Reading the commit subject
+
+The commit that introduced this file is titled `chore: record judge calibration baseline`. That
+subject overstates what was measured. As the Limitation section above says, there is no live
+LLM-judge output in this data: `non_null_judge_outputs` is 0, and the score side of the comparison
+is `collect_pairs` falling back to the stored run-level `score` and `passes`. This is a
+human-label-versus-validator-fallback agreement baseline, not a judge-quality calibration.

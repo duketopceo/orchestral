@@ -21,6 +21,21 @@ on:
         required: true
         default: "raw"
 
+# A new push to a PR head supersedes the run already in flight for that head,
+# and nobody will read the superseded result. Without this, every re-push pays
+# the full eval again: 38 of the 75 runs on 2026-09-26 were re-pushes of a
+# branch already evaluated that day. Keying on the pull request number keeps one
+# branch's re-push from cancelling a different PR's run.
+#
+# Cancelling does not strand a required check. Branch protection reads the
+# checks attached to the *current* head SHA, and a cancelled run is attached to
+# the superseded SHA; the head SHA always has its own run. The one case this
+# does not cover is a cancelled run with no successor on the same head — so do
+# not cancel these runs by hand. (DUK-198)
+concurrency:
+  group: orchestral-eval-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   eval:
     runs-on: ubuntu-latest
@@ -43,26 +58,74 @@ jobs:
         with:
           python-version: "3.11"
 
+      # `harness.py run` reads product source, task specs, and package metadata.
+      # A diff that touches none of them cannot change its result, so the paid
+      # step is skipped for it. It gates on product source, not on the diff, so
+      # charging a docs-only or test-only PR the full 16 minutes buys nothing.
+      #
+      # The guard is on the *steps*, never on the job or the workflow. A job
+      # whose steps are all skipped still reports success; a workflow filtered
+      # out by `paths`/`paths-ignore` reports no check at all, which would leave
+      # `eval` pending on main forever. That is the failure mode this shape
+      # exists to avoid. (DUK-198)
+      #
+      # Changed files come from the API, not `git diff`: actions/checkout leaves
+      # a depth-1 clone with no merge base to diff against.
+      - name: Classify diff
+        id: diff
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const RELEVANT = [/^orchestral\//, /^harness\.py$/, /^tasks\//, /^pyproject\.toml$/];
+            // The list-files API stops at 3000 without saying so. A PR that
+            // large has a diff we cannot see, so assume it is relevant rather
+            // than silently skip a gate.
+            const LIST_FILES_CAP = 3000;
+
+            let relevant = true;
+            if (context.eventName === 'pull_request') {
+              const files = await github.paginate(github.rest.pulls.listFiles, {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: context.issue.number,
+                per_page: 100,
+              });
+              const touched = files
+                .flatMap((f) => [f.filename, f.previous_filename])
+                .filter((f) => f && RELEVANT.some((re) => re.test(f)));
+              relevant = files.length >= LIST_FILES_CAP || touched.length > 0;
+              const shown = touched.slice(0, 5).map((f) => `\`${f}\``);
+              const verdict = relevant
+                ? `Paid eval runs. Relevant paths in this diff: ${shown.join(', ')}${touched.length > shown.length ? `, +${touched.length - shown.length} more` : ''}.`
+                : 'Paid eval skipped. This diff touches no product source, task spec, or package metadata, so the fixed eval task cannot produce a different result.';
+              await core.summary.addRaw(verdict, true).write();
+            }
+            core.setOutput('relevant', String(relevant));
+
       - name: Install orchestral
+        if: steps.diff.outputs.relevant == 'true'
         run: pip install -e .
 
       - name: Run eval
+        if: steps.diff.outputs.relevant == 'true'
         run: python3 harness.py run --task "$TASK" --orchestrator "$ORCHESTRATOR" --worker "$WORKER" --planner "$PLANNER"
 
       - name: Generate reports
+        if: steps.diff.outputs.relevant == 'true'
         run: |
           python3 harness.py dashboard
           python3 harness.py report --html
           python3 harness.py report > reports/summary.txt
 
       - name: Upload reports
+        if: steps.diff.outputs.relevant == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: orchestral-reports
           path: reports/
 
       - name: Comment on PR
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' && steps.diff.outputs.relevant == 'true'
         uses: actions/github-script@v7
         with:
           script: |
@@ -76,8 +139,10 @@ jobs:
               body
             });
 
+      # Guards the budget it cannot measure: with no run there is no cost row,
+      # and a skipped step is the only honest reading of "spent nothing".
       - name: Enforce cost budget
-        if: github.event_name == 'pull_request'
+        if: steps.diff.outputs.relevant == 'true'
         run: |
           cost=$(python3 - << 'PY'
           import sqlite3

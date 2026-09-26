@@ -42,6 +42,12 @@ RELEVANT_PATHS = [
     "harness.py",
     "tasks/landing-page-coffee.yaml",
     "pyproject.toml",
+    # The gate's own file. It sets the harness invocation the paid step runs, and
+    # it holds the skip logic itself: if editing it were not relevant, the
+    # relevance set could be widened, the guard removed, and the job gutted while
+    # `eval` still reported success doing nothing. (DUK-256)
+    ".github/workflows/orchestral.yml",
+    ".github/workflows/ci.yml",
 ]
 # `false` = the diff cannot change the eval's result, so the paid step is skipped.
 IRRELEVANT_PATHS = [
@@ -50,8 +56,6 @@ IRRELEVANT_PATHS = [
     "docs/plans/2026-09-16-0214-serve-web-gui-plan.md",
     "tests/test_runner.py",
     "tests/test_workflow_gate.py",
-    ".github/workflows/ci.yml",
-    ".github/workflows/orchestral.yml",
     # Prefix and suffix boundaries: these are not the directories the gate reads.
     "orchestral_extra/helper.py",
     "orchestrality.py",
@@ -59,6 +63,10 @@ IRRELEVANT_PATHS = [
     "harness.py.bak",
     "tasks_extra/other.yaml",
     "my-pyproject.toml",
+    # `.github/` outside `workflows/` is not CI configuration, and a
+    # sibling directory is not the one the pattern names.
+    ".github/ISSUE_TEMPLATE/bug.yml",
+    ".github/workflows-legacy/eval.yml",
 ]
 
 

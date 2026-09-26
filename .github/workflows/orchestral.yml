@@ -63,6 +63,12 @@ jobs:
       # step is skipped for it. It gates on product source, not on the diff, so
       # charging a docs-only or test-only PR the full 16 minutes buys nothing.
       #
+      # `.github/workflows/**` is in the set because this file is part of what the
+      # step runs: it fixes the harness invocation, and it *is* the skip logic.
+      # Without it, anyone who can push here could widen this list, drop the
+      # guards, or gut the job, and `eval` would still report success having
+      # done nothing. A gate has to be inside its own relevance set. (DUK-256)
+      #
       # The guard is on the *steps*, never on the job or the workflow. A job
       # whose steps are all skipped still reports success; a workflow filtered
       # out by `paths`/`paths-ignore` reports no check at all, which would leave
@@ -76,7 +82,7 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
-            const RELEVANT = [/^orchestral\//, /^harness\.py$/, /^tasks\//, /^pyproject\.toml$/];
+            const RELEVANT = [/^orchestral\//, /^harness\.py$/, /^tasks\//, /^pyproject\.toml$/, /^\.github\/workflows\//];
             // The list-files API stops at 3000 without saying so. A PR that
             // large has a diff we cannot see, so assume it is relevant rather
             // than silently skip a gate.
@@ -97,7 +103,7 @@ jobs:
               const shown = touched.slice(0, 5).map((f) => `\`${f}\``);
               const verdict = relevant
                 ? `Paid eval runs. Relevant paths in this diff: ${shown.join(', ')}${touched.length > shown.length ? `, +${touched.length - shown.length} more` : ''}.`
-                : 'Paid eval skipped. This diff touches no product source, task spec, or package metadata, so the fixed eval task cannot produce a different result.';
+                : 'Paid eval skipped. This diff touches no product source, task spec, package metadata, or workflow, so the fixed eval task cannot produce a different result.';
               core.info(verdict);
               await core.summary.addRaw(verdict, true).write();
             }

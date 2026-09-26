@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import base64
 import contextlib
+import hashlib
 import html
 import json
 import re
@@ -215,8 +216,50 @@ def _llm_call(
     }
 
 
+# A parse failure must name the failure without republishing the model's text.
+# Run output belongs inside the run directory, and an exception string travels
+# to CI logs and issue comments, so a fingerprint may carry delimiters and
+# punctuation only — never words.
+_SKELETON_CHARS = frozenset('{}[]()",:\\')
+_SKELETON_EDGE_CHARS = 200
+
+
+def _skeleton(text: str) -> str:
+    """A response's delimiters and punctuation, with none of its content."""
+    return "".join(ch for ch in text if ch in _SKELETON_CHARS)
+
+
+def _response_fingerprint(text: str) -> str:
+    """Identify a model response without carrying any of its text.
+
+    Length and a short digest say *which* response failed. The head and tail
+    skeletons say whether it stopped mid-object or mid-string, which is what
+    separates a truncated response from a well-formed response that breaks the
+    plan contract.
+
+    A response that fits in both edge windows is reported once as `whole`.
+    Printing the same skeleton twice under two labels is indistinguishable from
+    a reporter that is misbehaving, and an ambiguous log is the thing this
+    message exists to prevent.
+    """
+    digest = hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()[:12]
+    if len(text) <= 2 * _SKELETON_EDGE_CHARS:
+        return f"{len(text)} chars sha256:{digest} whole={_skeleton(text)!r}"
+    return (
+        f"{len(text)} chars sha256:{digest} "
+        f"head={_skeleton(text[:_SKELETON_EDGE_CHARS])!r} "
+        f"tail={_skeleton(text[-_SKELETON_EDGE_CHARS:])!r}"
+    )
+
+
 def _extract_json(content: str) -> Any:
-    """Parse JSON from a model response, tolerating code fences and extra text."""
+    """Parse JSON from a model response, tolerating code fences and extra text.
+
+    The three failure branches name three different faults, because a
+    transient provider response and a model that broke the output contract
+    need different responses from whoever reads the log: the first is a
+    transport fault to re-run, the second is a contract fault to escalate.
+    """
     text = content.strip()
     if text.startswith("```"):
         text = text.split("```")[1]
@@ -229,7 +272,8 @@ def _extract_json(content: str) -> Any:
             start = i
             break
     if start is None:
-        raise ValueError(f"No JSON found in model response: {content[:200]}")
+        # no delimiter anywhere: the model never produced JSON at all
+        raise ValueError(f"No JSON found in model response: {_response_fingerprint(text)}")
     # naive brace matching
     depth = 0
     in_string = False
@@ -254,8 +298,23 @@ def _extract_json(content: str) -> Any:
         elif ch in "}]":
             depth -= 1
             if depth == 0:
-                return json.loads(text[start : i + 1])
-    raise ValueError(f"Could not extract JSON from model response: {content[:200]}")
+                block = text[start : i + 1]
+                try:
+                    return json.loads(block)
+                except json.JSONDecodeError as exc:
+                    # delimiters balanced, so the response is whole; the model
+                    # emitted something that is not valid JSON
+                    raise ValueError(
+                        f"Balanced JSON in model response did not parse: {exc.msg} at position "
+                        f"{exc.pos} of the block at offset {start}: {_response_fingerprint(block)}"
+                    ) from exc
+    # a delimiter was found but never closed: the response was cut off, or a
+    # brace inside a string escaped the matcher
+    raise ValueError(
+        f"Unbalanced JSON in model response: candidate at offset {start} never closed, so the "
+        f"response was truncated or a brace inside a string escaped the matcher: "
+        f"{_response_fingerprint(text)}"
+    )
 
 
 def _fake_output(input_data: dict[str, Any], phase: str) -> Any:

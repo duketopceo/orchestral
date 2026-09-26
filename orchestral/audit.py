@@ -863,12 +863,42 @@ def find_duplicate_families(
     return findings
 
 
-def check_holdout_arm(specs: list[TaskSpec]) -> list[Finding]:
-    """Contamination is unmeasurable until some specs are never published."""
+def check_holdout_arm(specs: list[TaskSpec], *, probe: Any = None) -> list[Finding]:
+    """Contamination is unmeasurable until some specs are never published.
+
+    An arm counts when the suite either holds a committed `metadata.holdout` spec
+    or can generate one on demand. A committed holdout spec is a contradiction —
+    it is in git, so it is a published problem wearing a holdout label — so the
+    generated arm is the normal case and the committed spec is only accepted for
+    a private tree that never gets published.
+
+    The generator is not taken on trust: `probe` is called and must return real
+    specs whose prompts are not already in the suite. A generator that is absent,
+    raises, or emits a prompt the suite already contains leaves contamination
+    unmeasured, and the finding stands. Accepting a declared-but-unverified arm
+    would make this rule report the absence of a measurement while doing nothing
+    to produce one.
+    """
     if not specs:
         return []
     if any(bool(spec.metadata.get("holdout")) for spec in specs):
         return []
+
+    detail_suffix = ""
+    if probe is not None:
+        try:
+            generated = list(probe())
+        except Exception as exc:  # a broken generator is not an arm
+            generated = []
+            detail_suffix = f" The generator failed to run: {type(exc).__name__}: {exc}."
+        else:
+            detail_suffix = ""
+        if generated:
+            published = {spec.prompt.strip() for spec in specs}
+            fresh = [spec for spec in generated if spec.prompt.strip() not in published]
+            if fresh and all(bool(spec.metadata.get("holdout")) for spec in fresh):
+                return []
+
     return [
         Finding(
             rule="no_holdout_arm",
@@ -876,9 +906,10 @@ def check_holdout_arm(specs: list[TaskSpec]) -> list[Finding]:
             task_id=None,
             path=None,
             detail=(
-                f"none of the {len(specs)} specs sets metadata.holdout, so every problem is a "
-                "published problem. Mark a small arm holdout and keep it out of runs-pub to make "
-                "contamination checkable instead of assumed."
+                f"none of the {len(specs)} specs sets metadata.holdout and no holdout arm could "
+                "be generated, so every problem is a published problem. Generate an arm with "
+                "`harness.py holdout` and keep it out of runs-pub to make contamination checkable "
+                f"instead of assumed.{detail_suffix}"
             ),
         )
     ]
@@ -915,8 +946,13 @@ def audit_suite(
     *,
     min_family: int = 5,
     similarity: float = 0.8,
+    holdout_probe: Any = None,
 ) -> AuditReport:
-    """Audit a whole suite. `paths` is parallel to `specs` when given."""
+    """Audit a whole suite. `paths` is parallel to `specs` when given.
+
+    `holdout_probe` is a zero-argument callable returning generated holdout
+    specs. Pass None to audit a tree as if no generator existed.
+    """
     report = AuditReport(specs=len(specs))
     locations = paths or [None] * len(specs)
     for spec, path in zip(specs, locations, strict=True):
@@ -924,9 +960,16 @@ def audit_suite(
             report.add(finding)
     for finding in find_duplicate_families(specs, min_family=min_family, similarity=similarity):
         report.add(finding)
-    for finding in check_holdout_arm(specs):
+    for finding in check_holdout_arm(specs, probe=holdout_probe):
         report.add(finding)
     return report
+
+
+def default_holdout_probe() -> list[TaskSpec]:
+    """Generate a small arm so the audit can check one exists and is usable."""
+    from orchestral.holdout import generate_arm
+
+    return generate_arm(4)
 
 
 def audit_tree(root: Path | str = "tasks", **kwargs: Any) -> AuditReport:

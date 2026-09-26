@@ -5,16 +5,20 @@ A extract task ships a grading contract in `metadata`:
 - `fields` — {name: {"type": "str|int|number|bool|list|object",
                     "required": bool, "enum": [...]}}  — schema-lite checks
 - `expected` — {name: value} — deep-equality graded keys
-- `pass_threshold` — float, default 1.0 — minimum score to pass
+- `pass_threshold` — score floor in (0, 1], default 1.0 — minimum score to
+  pass; anything else is a spec error and fails the run closed
 
 Score is the fraction of `expected` keys whose extracted value deep-equals
 the expected one; with no `expected`, score is 1.0 when all field checks
 pass. `passes` additionally requires every `required` field present and
 type/enum-valid — partial credit never counts as a pass by accident.
 
-A contract that grades nothing fails closed (`contract_anchored`): the audit
-rule `absent_grading_contract` already rejects these specs, and a spec that
-bypasses the audit must not score 1.0 here either.
+A contract that grades nothing fails closed (`contract_anchored`): an empty
+artifact would score 1.0 against it, so the grader refuses it whether or not the
+audit ran. The audit rule `absent_grading_contract` rejects the same specs
+upstream, but `orchestral/audit.py` is not on this branch — it lands with
+`pr50`/`pr67` (DUK-94), so that half of the note is a forward reference until
+one of them merges.
 """
 
 from __future__ import annotations
@@ -104,6 +108,63 @@ def _as_mapping(
             "nothing and was not applied to the grade."
         )
     return {}, value is not None
+
+
+def _as_threshold(metadata: dict[str, Any], errors: list[str]) -> tuple[float, bool]:
+    """Read `metadata.pass_threshold` as a score floor in (0, 1]; 1.0 when undeclared.
+
+    `passes` is gated on `score >= threshold`, so a floor of `0` declares no floor
+    at all: a completely wrong artifact scores 0.0, clears the gate, and passes
+    with its value mismatches still sitting in `errors`. The floor is therefore
+    (0, 1], and anything outside it is the spec author's error — recorded and
+    failed closed rather than clamped, because clamping to an epsilon still
+    passes the wrong answer and clamping to 1.0 silently overrides the author.
+
+    A `bool` is refused rather than coerced. `float(False) == 0.0` and
+    `float(True) == 1.0`, so `pass_threshold: no` becomes "anything passes" while
+    `pass_threshold: yes` works by accident: the coercion is invisible in the one
+    direction that fails safe, which is why it survived review.
+
+    A floor above 1 needs no branch. A score is a fraction, so it can never clear
+    one and the run fails closed without help.
+
+    Reading a bad value must not raise. This is reached through
+    `Runner._validate_extract` inside the run's `try:`, where the handler set
+    `meta.status = "failed"`, logged `run.failed`, and re-raised — so one typo in
+    one spec destroyed the whole run after the model had been paid. As in
+    `_as_mapping`, `None` is not a malformation: it means "not declared".
+
+    Returns the floor and whether the run may pass at all.
+    """
+    value = metadata.get("pass_threshold", 1.0)
+    if value is None:
+        return 1.0, True
+    if isinstance(value, bool):
+        errors.append(
+            "metadata.pass_threshold is a bool, not a score in (0, 1], so it declares "
+            "no floor and this run cannot pass. Give pass_threshold a number in (0, 1]."
+        )
+        return 1.0, False
+    try:
+        floor = float(value)
+    except (TypeError, ValueError):
+        errors.append(
+            f"metadata.pass_threshold is a {type(value).__name__}, not a number, so it "
+            "declares no floor and this run cannot pass. Give pass_threshold a number "
+            "in (0, 1]."
+        )
+        return 1.0, False
+    # `not floor > 0` rather than `floor <= 0` so a NaN floor, which no score can
+    # clear either, is reported here instead of passing through as a silent NaN.
+    if not floor > 0:
+        errors.append(
+            f"metadata.pass_threshold is {value!r}, not a score above 0, so it declares "
+            "no usable floor and this run cannot pass: `passes` is gated on "
+            "`score >= pass_threshold`, so a floor of 0 lets a wrong artifact pass. "
+            "Give pass_threshold a number in (0, 1]."
+        )
+        return 1.0, False
+    return floor, True
 
 
 def _unanchored_fields(
@@ -231,9 +292,13 @@ def check_extraction(metadata: dict[str, Any], artifact_text: str) -> dict[str, 
     else:
         report["score"] = 1.0 if all(report["checks"].values()) else 0.0
 
-    threshold = float(metadata.get("pass_threshold", 1.0))
+    # Read with the score rather than with the contract above: a parse failure
+    # already fails closed before this point, so the only artifacts that can be
+    # talked into passing by a bad floor are the ones that got this far.
+    threshold, threshold_ok = _as_threshold(metadata, report["errors"])
     report["passes"] = (
-        report["checks"]["contract_anchored"]
+        threshold_ok
+        and report["checks"]["contract_anchored"]
         and report["checks"]["required_present"]
         and report["checks"]["types_ok"]
         and report["score"] >= threshold

@@ -1,9 +1,21 @@
 name: orchestral eval
 
+# The paid eval costs real provider spend and reaches the provider API key, so it
+# is manual and environment-gated only. It must never be reachable from a pull
+# request: a same-repository PR can write to this repository, so "skip forks" is
+# not a boundary here (DUK-184). The regression check in
+# tests/test_workflow_security.py fails if a PR trigger is added back.
+#
+# A dispatcher may name a ref to evaluate, so the environment's required reviewer
+# is the control that stands between PR content and the key. That reviewer must
+# read the diff, not just the ref name. See docs/ci-security.md.
 on:
-  pull_request:
   workflow_dispatch:
     inputs:
+      ref:
+        description: "Branch or tag to evaluate. Leave empty to evaluate the default branch."
+        required: false
+        default: ""
       task:
         description: "Task id from tasks/*.yaml"
         required: true
@@ -21,16 +33,28 @@ on:
         required: true
         default: "raw"
 
+# Deny everything by default. A job that needs a scope must ask for it.
+permissions: {}
+
 jobs:
   eval:
     runs-on: ubuntu-latest
-    # Secrets aren't available to fork PRs — skip the paid eval there instead
-    # of failing every external contribution.
-    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
+    # Closed by default. A referenced environment that does not exist yet is
+    # created by GitHub with no protection rules, so a dispatcher would reach
+    # OPENROUTER_API_KEY on any branch with nobody to approve it. Every agent in
+    # this company dispatches as the same write-access identity, so "only a
+    # trusted person can dispatch" is not true here. Set the repository variable
+    # PAID_EVAL_ENABLED=true, with the paid-eval environment's required reviewers
+    # configured, to open this path. docs/ci-security.md has the steps.
+    if: vars.PAID_EVAL_ENABLED == 'true'
+    # The paid-eval environment is the human gate on provider spend. It is only a
+    # gate if the environment has required reviewers configured; as of this commit
+    # the repository has no environments at all. See docs/ci-security.md.
+    environment: paid-eval
     permissions:
-      pull-requests: write
+      contents: read
+    # No secret lives at job scope. Every value here is a non-sensitive input.
     env:
-      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
       TASK: ${{ inputs.task || 'landing-page-coffee' }}
       ORCHESTRATOR: ${{ inputs.orchestrator || 'deepseek/deepseek-v4-flash-0731' }}
       WORKER: ${{ inputs.worker || 'z-ai/glm-5.3-flash' }}
@@ -38,15 +62,35 @@ jobs:
       MAX_COST_USD: "0.05"
 
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      # The evaluated ref is the default branch unless a dispatcher names one, so
+      # the safe target is what happens by default. Because the ref can be
+      # attacker-chosen branch content, the containment property now rests on the
+      # paid-eval required reviewer rather than on structure alone: approval of a
+      # ref name is not a code review, so the approver must read the diff first.
+      # docs/ci-security.md states the residual risk. The "Record evaluated
+      # commit" step below is what makes the approved run auditable afterwards.
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ inputs.ref || github.event.repository.default_branch }}
+          persist-credentials: false
+      - uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
         with:
           python-version: "3.11"
+
+      # A dispatcher input must reach the shell through env, never interpolated
+      # into the run line, or a crafted ref executes before the job is reviewed.
+      - name: Record evaluated commit
+        env:
+          REQUESTED_REF: ${{ inputs.ref || github.event.repository.default_branch }}
+        run: echo "evaluating commit $(git rev-parse HEAD) for ref $REQUESTED_REF"
 
       - name: Install orchestral
         run: pip install -e .
 
+      # The only step that receives the provider key.
       - name: Run eval
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
         run: python3 harness.py run --task "$TASK" --orchestrator "$ORCHESTRATOR" --worker "$WORKER" --planner "$PLANNER"
 
       - name: Generate reports
@@ -56,28 +100,17 @@ jobs:
           python3 harness.py report > reports/summary.txt
 
       - name: Upload reports
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: orchestral-reports
           path: reports/
 
-      - name: Comment on PR
-        if: github.event_name == 'pull_request'
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const fs = require('fs');
-            const summary = fs.readFileSync('reports/summary.txt', 'utf8');
-            const body = `## orchestral eval\n\n\`\`\`\n${summary}\n\`\`\`\n\nReports are attached as the \`orchestral-reports\` artifact.`;
-            github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-              body
-            });
-
-      - name: Enforce cost budget
-        if: github.event_name == 'pull_request'
+      # MAX_COST_USD does not cap anything. The eval above has already been paid
+      # for by the time this reads the database; this step reports the figure
+      # after the fact and fails the run, which is an alarm, not a limit. Real
+      # spend control is the environment's required reviewer plus the disabled
+      # default above.
+      - name: Report run cost
         run: |
           cost=$(python3 - << 'PY'
           import sqlite3
@@ -87,8 +120,8 @@ jobs:
           PY
           )
           if (( $(echo "$cost > $MAX_COST_USD" | bc -l) )); then
-            echo "orchestral eval cost \${cost} exceeded \${MAX_COST_USD} budget"
+            echo "orchestral eval cost ${cost} exceeded ${MAX_COST_USD} budget"
             exit 1
           else
-            echo "orchestral eval passed within \${MAX_COST_USD} budget"
+            echo "orchestral eval cost ${cost} passed within ${MAX_COST_USD} budget"
           fi

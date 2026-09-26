@@ -275,9 +275,8 @@ class TestStatusBar(unittest.TestCase):
             job.transition(JobStatus.RUNNING)
             jobs.append(job)
         text = self._text(self._bar(jobs=jobs))
-        self.assertIn("j0 (running)", text)
+        self.assertIn("jobs: j0 (running), j1 (running), j2 (running) +2 more", text)
         self.assertNotIn("j3", text)
-        self.assertIn("+2 more", text)
 
 
 @unittest.skipUnless(HAS_TEXTUAL, "textual not installed (pip install 'orchestral[tui]')")

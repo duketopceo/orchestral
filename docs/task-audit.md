@@ -38,8 +38,8 @@ it for you.
 | `prompt_states_the_answer` | warn | The prompt spells out graded output — an expected value, the reference query, or the expected call list. Recitation scores the same as reasoning. `extract` is exempt by design: its prompt carries the source document. |
 | `answer_derivable_from_prompt` | warn | Every graded value is readable in the prompt (`extract`, `sql`). The task ceiling is transcription and lookup, not problem solving. |
 | `memorization_risk` | warn | The id or prompt matches a known textbook problem (fizzbuzz, slugify, LRU cache, expression parser, two-sum, …). A memorised answer scores the same as a solved one. |
-| `near_duplicate_family` | info | Several specs share one prompt shape. They are one problem counted many times, so an aggregate pass rate inherits that single template's difficulty. The six shared terms are the highest-count terms with ties broken alphabetically, so the finding is reproducible across runs; a tied counter means the six are not necessarily the six most distinctive words, which is a property of the counter rather than of this ordering.
-| `unreadable_spec_fields` | error | `metadata` is not a mapping, `validation` is not a list of strings, or `prompt` is not a string. Every check the spec asks for is then unfireable and the grader cannot read the spec, which is what this file's `ok` policy calls an error. On the file path `load_task` rejects these with `ConfigError` before the audit sees them, so this fires for a caller that built a `TaskSpec` directly. |
+| `near_duplicate_family` | info | Several specs share one prompt shape. They are one problem counted many times, so an aggregate pass rate inherits that single template's difficulty. The six shared terms are ordered by count, then by how rare the term is across the whole suite, then by name. The first key is the point of the finding and the second is what makes it useful: a term in most of the suite says nothing about one family, so a tie on count alone fills the list with `and` and `at`. The third key is what makes it reproducible — counting is stable, choosing among ties is not.
+| `unreadable_spec_fields` | error | A field of the spec is a type the grader cannot read: `metadata` is not a mapping, `validation` is not a list of strings, `prompt` is not a string, `id` is not a string, `type` is not a string, or a requested `metadata.required` cannot be iterated. Under this file's `ok` policy — "errors mean a requested gate cannot fire" — each is a gate that cannot fire. On the file path `load_task` rejects the field-level ones with `ConfigError` before the audit sees them, so those fire for a caller that built a `TaskSpec` directly; a malformed `required` is visible either way. The rule returns before any rule runs, so findings needing only the readable fields — an unknown check name, an unimplemented type — are suppressed for that spec. |
 | `no_holdout_arm` | info | No spec sets `metadata.holdout`, so every problem is also a published problem and contamination cannot be measured. |
 | `unlabeled_difficulty` | info | No `metadata.difficulty`, so the spec cannot be excluded from a headline result. |
 
@@ -155,14 +155,19 @@ a date — is a *malformed* declaration rather than an absent one, and the advic
 says so. The runner raises on it at grading time, so the audit is the only static
 place that can name it.
 
-**That finding is a warning, so `--strict` exits 0 on it.** A spec whose grader
-raises still passes the gate, deliberately: the runner's own abort is louder than
-any audit line, and the alternative spends an author's attention on a spec that
-cannot report a leaderboard number anyway. The severity is a judgement, not a
-consequence. The case one level up is different and is an error — a non-mapping
-`metadata` means the audit learned nothing about the spec at all
-(`unreadable_spec_fields`), and on the file path `load_task` rejects it outright
-rather than reporting it.
+**That finding is an error, so `--strict` exits 1 on it.** A spec whose grader
+raises does not pass the gate. It was a warning in an earlier revision, on the
+argument that the runner's own abort is louder than any audit line — which is an
+argument about noise, not about the criterion `--strict` is wired to, and the
+answer to noise is a precise message, which the finding already carries. Under
+this file's own policy it is an error: `AuditReport.ok` says *"errors mean a
+requested gate cannot fire"*, and a `required` the grader cannot iterate is
+exactly that.
+
+A declaration the grader *can* iterate but that names too little — a bare string,
+a one-character token — is a different defect and stays a `structural_only`
+warning. The severity follows the grader's behaviour rather than a preference:
+unreadable is an error, readable-but-weak is a warning.
 
 One limit on this: a `pattern` that matches every artifact — `.`, `^`, `.*`,
 `[\s\S]*` — clears the finding, because deciding how strong a regex has to be is a
@@ -217,7 +222,10 @@ Two things this does not buy, stated because the claim above is easy to over-rea
   missing verdict.
 
 One more bound is worth naming because it is not a bound on folding at all: **no
-metadata value an author can write may raise.** `metadata.required` read without
+metadata value an author can write may raise, and no field of a spec may have a type
+the grader cannot read.** All six `TaskSpec` fields are accounted for: `id`, `type`,
+`metadata`, `validation` and `prompt` are checked, and `assets` is the one field
+nothing in the project reads. `metadata.required` read without
 a type guard raised `TypeError` on `required: 5` and took the gate's answer for
 every other spec with it, in the one function in the file that read metadata
 unguarded. Every metadata read is now covered by a test that feeds each rule

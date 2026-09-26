@@ -115,10 +115,21 @@ def load_task(path: Path | str) -> TaskSpec:
         task = TaskSpec(**data)
     except TypeError as exc:
         raise ConfigError(f"task spec {path}: {exc}") from exc
+    # Checked before the membership test below, because that test hashes: a
+    # `type: [a]` raised `TypeError: unhashable type` from inside the tool
+    # instead of naming the spec.
+    if not isinstance(task.type, str):
+        raise ConfigError(
+            f"task spec {path}: type must be a string, got {type(task.type).__name__}"
+        )
     if task.type not in TASK_TYPES:
         raise ConfigError(
             f"task spec {path}: unknown type '{task.type}' "
             f"— expected one of {', '.join(sorted(TASK_TYPES))}"
+        )
+    if not isinstance(task.id, str):
+        raise ConfigError(
+            f"task spec {path}: id must be a string, got {type(task.id).__name__}"
         )
     # TaskSpec is a dataclass with no runtime type check, so these three fields
     # accept anything the YAML parser produces. A value of the wrong type then

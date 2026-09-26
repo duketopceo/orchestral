@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from orchestral.apistub import check_api
+from orchestral.audit import VALIDATION_CHECKS
 from orchestral.codeexec import (
     DEFAULT_TIMEOUT_SECONDS,
     check_code_quality,
@@ -1087,7 +1088,11 @@ class Runner:
                     checks["no_pattern"] = False
                     errors.append(f"metadata.forbidden_pattern is not a valid regex: {exc}.")
 
-        return _validation_report(task, checks, errors, len(artifact))
+        unknown = sorted(requested - VALIDATION_CHECKS["html"])
+        if unknown:
+            errors.append(f"Unknown validation check(s): {', '.join(unknown)}.")
+        passes, report = _validation_report(task, checks, errors, len(artifact))
+        return passes and not unknown, report
 
     def _validate_image(self, task: TaskSpec, artifact: bytes) -> tuple[bool, dict[str, Any]]:
         requested = set(task.validation) if task.validation else {"non_empty", "png_signature"}
@@ -1103,11 +1108,15 @@ class Runner:
             if not checks["png_signature"]:
                 errors.append("Artifact is not a well-formed PNG (bad magic or missing IEND).")
 
-        return _validation_report(task, checks, errors, len(artifact))
+        unknown = sorted(requested - VALIDATION_CHECKS["image"])
+        if unknown:
+            errors.append(f"Unknown validation check(s): {', '.join(unknown)}.")
+        passes, report = _validation_report(task, checks, errors, len(artifact))
+        return passes and not unknown, report
 
     def _validate_multi(self, task: TaskSpec, artifact: bytes) -> tuple[bool, dict[str, Any]]:
         requested = set(task.validation) if task.validation else {"non_empty", "zip_signature"}
-        known = {"non_empty", "zip_signature", "has_paths"}
+        known = VALIDATION_CHECKS["multi-file"]
         checks: dict[str, bool] = {}
         errors: list[str] = []
 
@@ -1217,7 +1226,11 @@ class Runner:
             if not checks["mp4_signature"]:
                 errors.append("Artifact is not a well-formed MP4 (missing leading ftyp box).")
 
-        return _validation_report(task, checks, errors, len(artifact))
+        unknown = sorted(requested - VALIDATION_CHECKS["video"])
+        if unknown:
+            errors.append(f"Unknown validation check(s): {', '.join(unknown)}.")
+        passes, report = _validation_report(task, checks, errors, len(artifact))
+        return passes and not unknown, report
 
     def _validate_sql(self, task: TaskSpec, sql: str) -> tuple[bool, dict[str, Any]]:
         report = run_sql_check(task.metadata, sql)

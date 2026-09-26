@@ -107,6 +107,12 @@ COMPUTED_CHECKS: dict[str, str] = {
 # they prove markup exists, not that the content is on-topic.
 TOPIC_ANCHORS = frozenset({"has_required", "matches_pattern"})
 
+# The `unittest` classes a suite's test methods can be collected from. Matched
+# on the last dotted segment, so `unittest.case.TestCase` and
+# `unittest.async_case.IsolatedAsyncioTestCase` resolve alongside the direct
+# names — all three of those are documented unittest import forms.
+_TEST_CASE_BASES = frozenset({"TestCase", "IsolatedAsyncioTestCase"})
+
 # Types that grade against their own metadata anchor, so "no topic anchor in
 # `validation:`" is not a finding for them.
 SELF_ANCHORED_TYPES = frozenset(
@@ -295,15 +301,34 @@ def effective_checks(spec: TaskSpec) -> set[str]:
     return requested
 
 
+def _declared_strings(value: Any) -> list[str]:
+    """The non-blank strings a declaration actually asserts something about."""
+    if isinstance(value, str):
+        return [value] if value.strip() else []
+    if isinstance(value, (list, tuple)):
+        return [text for item in value for text in _declared_strings(item)]
+    return []
+
+
 def _has_topic_anchor(spec: TaskSpec) -> bool:
-    if effective_checks(spec) & TOPIC_ANCHORS:
-        return True
-    # `metadata.required` is read in exactly one place in the runner: inside
-    # `if "has_required" in requested`. So the declaration is an anchor only when
-    # `has_required` is actually requested — not for a type. Keying it on the
-    # type let one line of YAML silence the finding while the grader read
-    # nothing, on 100 of the 104 shipped findings.
-    return "has_required" in effective_checks(spec) and bool(spec.metadata.get("required"))
+    """Will the grader actually compare the artifact against the subject?
+
+    The runner reads `metadata.required` in exactly one place, inside
+    `if "has_required" in requested`, and `metadata.pattern` inside
+    `if "matches_pattern" in requested`. So a declaration anchors the subject
+    only when that check is requested *and* the declaration names something.
+
+    Either half alone proves nothing, and both halves alone have been the bug:
+    keying the exemption on the task *type* let one word of YAML silence the
+    finding, and letting `has_required` clear it on its own meant
+    `validation: [html, has_required]` with no `required` silenced it through
+    the other key — a configuration the runner itself reports as an error.
+    """
+    checks = effective_checks(spec)
+    return any(
+        checks & {check} and _declared_strings(spec.metadata.get(key))
+        for check, key in (("has_required", "required"), ("matches_pattern", "pattern"))
+    )
 
 
 def _scalars(value: Any) -> list[str]:
@@ -439,23 +464,85 @@ _FOLDABLE_CALLS: dict[str, Callable[..., Any]] = {
     "chr": chr,
     "ord": ord,
 }
-_FOLD_FAILURE = (ValueError, TypeError, ZeroDivisionError, OverflowError, IndexError, KeyError, AttributeError)
+# A fold has to terminate. `2**2**2**2**2**2` doubles in bit length per level
+# and `'ab' * 10**9 * 10**9` grows a string, so an eager operator turns one
+# hostile suite into a wedged gate — `harness.py audit` answers for the whole
+# tree, so that is a total outage, not one bad spec. `ast.literal_eval` refused
+# both instantly; these caps are what put the capability back on a leash.
+# Refusing to fold is the conservative direction: the assertion is then treated
+# as possibly reading the artifact, which is what a real assertion looks like.
+_MAX_FOLD_BITS = 4096
+_MAX_FOLD_LEN = 4096
+_MAX_FOLD_DEPTH = 200
 
 
-def _const(node: ast.AST) -> tuple[bool, Any]:
+def _too_large(value: Any) -> bool:
+    """Is this folded value too big to have come from cheap arithmetic?"""
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, int):
+        return value.bit_length() > _MAX_FOLD_BITS
+    if isinstance(value, (str, bytes, list, tuple, set, frozenset, dict)):
+        return len(value) > _MAX_FOLD_LEN
+    return False
+
+
+def _blows_up(op: type, left: Any, right: Any) -> bool:
+    """Would evaluating this operator do unbounded work on these operands?
+
+    Two shapes grow far faster than their operands suggest: `a ** b`, whose
+    result carries about `b * bit_length(a)` bits, and `seq * n`, whose result
+    is `len(seq) * n` long. Both are predictable from the operands, so both are
+    refused before the work happens rather than after. Every other operator is
+    bounded by the size of its operands, which `_too_large` already checks.
+    """
+    if op is ast.Pow:
+        exponent = abs(right) if isinstance(right, int) and not isinstance(right, bool) else 0
+        base_bits = left.bit_length() if isinstance(left, int) and not isinstance(left, bool) else 1
+        return exponent * base_bits > _MAX_FOLD_BITS
+    if op is ast.Mult:
+        return any(
+            _is_repeat_too_long(sequence, count)
+            for sequence, count in ((left, right), (right, left))
+        )
+    return False
+
+
+def _is_repeat_too_long(sequence: Any, count: Any) -> bool:
+    """Would `sequence * count` build something past the length cap?"""
+    if not isinstance(sequence, (str, bytes, list, tuple)):
+        return False
+    if not isinstance(count, int) or isinstance(count, bool) or count <= 0:
+        return False
+    return len(sequence) * count > _MAX_FOLD_LEN
+
+
+_FOLD_FAILURE = (
+    ValueError, TypeError, ZeroDivisionError, OverflowError, IndexError, KeyError,
+    AttributeError, RecursionError, MemoryError,
+)
+
+
+def _const(node: ast.AST, depth: int = 0) -> tuple[bool, Any]:
     """Fold `node` to a constant, or report that it is not provable.
 
     Returns `(True, value)` only when the node provably reads nothing from the
     artifact. Anything that touches a name, an attribute, a subscript of a
     non-literal, or an unknown call is left unfolded, so a real assertion is
     never mistaken for a constant.
+
+    A `Compare` folds to the boolean it evaluates to, including `False`. That
+    is what lets `assert not (1 == 2)` be caught: the inner comparison is a
+    constant, so the `not` over it is too.
     """
+    if depth > _MAX_FOLD_DEPTH:
+        return False, None
     if isinstance(node, ast.Constant):
         return True, node.value
     if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
         items: list[Any] = []
         for element in node.elts:
-            ok, value = _const(element)
+            ok, value = _const(element, depth + 1)
             if not ok:
                 return False, None
             items.append(value)
@@ -472,8 +559,8 @@ def _const(node: ast.AST) -> tuple[bool, Any]:
         for key_node, value_node in zip(node.keys, node.values, strict=True):
             if key_node is None:  # {**other} reads a value
                 return False, None
-            key_ok, key = _const(key_node)
-            value_ok, value = _const(value_node)
+            key_ok, key = _const(key_node, depth + 1)
+            value_ok, value = _const(value_node, depth + 1)
             if not (key_ok and value_ok):
                 return False, None
             pairs.append((key, value))
@@ -482,56 +569,73 @@ def _const(node: ast.AST) -> tuple[bool, Any]:
         except TypeError:
             return False, None
     if isinstance(node, ast.UnaryOp) and type(node.op) in _UNARY_OPS:
-        ok, operand = _const(node.operand)
-        if not ok:
+        ok, operand = _const(node.operand, depth + 1)
+        if not ok or _too_large(operand):
             return False, None
         try:
-            return True, _UNARY_OPS[type(node.op)](operand)
+            folded = _UNARY_OPS[type(node.op)](operand)
         except _FOLD_FAILURE:
             return False, None
+        return (False, None) if _too_large(folded) else (True, folded)
     if isinstance(node, ast.BinOp) and type(node.op) in _BINARY_OPS:
-        left_ok, left = _const(node.left)
-        right_ok, right = _const(node.right)
+        left_ok, left = _const(node.left, depth + 1)
+        right_ok, right = _const(node.right, depth + 1)
         if not (left_ok and right_ok):
             return False, None
+        if _too_large(left) or _too_large(right) or _blows_up(type(node.op), left, right):
+            return False, None
         try:
-            return True, _BINARY_OPS[type(node.op)](left, right)
+            folded = _BINARY_OPS[type(node.op)](left, right)
         except _FOLD_FAILURE:
             return False, None
+        return (False, None) if _too_large(folded) else (True, folded)
     if isinstance(node, ast.BoolOp):
-        # short-circuit, so `False and f(x)` folds even though f is unknown
-        results = []
+        # `and`/`or` short-circuit, so `False and f(x)` folds even though f is
+        # unknown — a decisive operand settles the result on its own.
+        is_and = isinstance(node.op, ast.And)
+        last: Any = None
+        unknown = False
         for value_node in node.values:
-            ok, value = _const(value_node)
+            ok, value = _const(value_node, depth + 1)
             if not ok:
-                return False, None
-            results.append(value)
-        if isinstance(node.op, ast.And):
-            return True, all(results)
-        return True, any(results)
+                unknown = True
+                continue
+            if is_and and not value:
+                return True, False
+            if not is_and and value:
+                return True, True
+            last = value
+        if unknown:
+            return False, None
+        return True, bool(last)
     if isinstance(node, ast.Compare):
-        left_ok, left = _const(node.left)
+        left_ok, left = _const(node.left, depth + 1)
         if not left_ok:
             return False, None
         for op, comparator in zip(node.ops, node.comparators, strict=True):
-            right_ok, right = _const(comparator)
+            right_ok, right = _const(comparator, depth + 1)
             if not right_ok or type(op) not in _COMPARE_OPS:
                 return False, None
             try:
-                outcome = _COMPARE_OPS[type(op)](left, right)
+                step = _COMPARE_OPS[type(op)](left, right)
             except _FOLD_FAILURE:
                 return False, None
-            if not outcome:
-                return False, None  # provably False: a different defect, not this one
+            if not step:
+                # A provably false comparison is still a constant. It just does
+                # not contribute a truthy value, so the chain ends here.
+                return True, False
             left = right
         return True, True
     if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
         fold = _FOLDABLE_CALLS.get(node.func.id)
+        # `node.args` is empty whenever every argument is a keyword, so the
+        # keyword test has to be here too: `self.assertEqual(first=f(x),
+        # second=y)` has no positional argument and is not an empty call.
         if fold is None or node.keywords:
             return False, None
         args: list[Any] = []
         for arg in node.args:
-            ok, value = _const(arg)
+            ok, value = _const(arg, depth + 1)
             if not ok:
                 return False, None
             args.append(value)
@@ -546,11 +650,12 @@ def _assertion_reads_nothing(node: ast.AST) -> bool:
     """Is this assertion provably independent of the artifact?
 
     Method-agnostic on purpose. Enumerating `assert*` names was the first
-    version's mistake: it covered four of the 41, and the ones it missed
-    (`assertNotEqual(1, 2)`, `assertIn(1, [1, 2])`) audited clean while
-    scoring 1.0 against a stub. The question is not *which* assertion it is but
-    whether anything in it can read the artifact — so a call whose every
-    argument folds is a constant assertion whatever its name.
+    version's mistake: it covered four of the methods `unittest` provides, and
+    the ones it missed (`assertNotEqual(1, 2)`, `assertIn(1, [1, 2])`) audited
+    clean while scoring 1.0 against a stub. The question is not *which*
+    assertion it is but whether anything in it can read the artifact — so an
+    assertion every expression of which folds is a constant, whatever it is
+    called.
     """
     if isinstance(node, ast.Assert):
         ok, _ = _const(node.test)
@@ -559,10 +664,26 @@ def _assertion_reads_nothing(node: ast.AST) -> bool:
         func = node.func
         if not (isinstance(func, ast.Attribute) and func.attr.startswith("assert")):
             return False
-        if not node.args:
-            return True  # self.assertTrue() with no argument cannot read anything
-        return all(_const(arg)[0] for arg in node.args)
+        # Both argument kinds count. `all()` over an empty `node.args` is
+        # vacuously True, so checking only the positional arguments reported
+        # `self.assertEqual(first=f(x), second=y)` as a constant.
+        values = [*node.args, *(keyword.value for keyword in node.keywords)]
+        if not values:
+            return True  # a bare self.assertTrue() cannot read anything
+        return all(_const(value)[0] for value in values)
     return False
+
+
+def _dotted(node: ast.expr) -> str | None:
+    """`unittest.case.TestCase` as a dotted string, or None if not plain names."""
+    parts: list[str] = []
+    while isinstance(node, ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+    if not isinstance(node, ast.Name):
+        return None
+    parts.append(node.id)
+    return ".".join(reversed(parts))
 
 
 def _unittest_names(tree: ast.Module) -> dict[str, str]:
@@ -577,22 +698,33 @@ def _unittest_names(tree: ast.Module) -> dict[str, str]:
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
-                if alias.name == "unittest":
-                    names[alias.asname or alias.name] = "unittest"
-        elif isinstance(node, ast.ImportFrom) and node.module == "unittest":
+                if alias.name == "unittest" or alias.name.startswith("unittest."):
+                    names[alias.asname or alias.name] = alias.name
+        elif isinstance(node, ast.ImportFrom) and node.module and (
+            node.module == "unittest" or node.module.startswith("unittest.")
+        ):
+            prefix = node.module
             for alias in node.names:
-                names[alias.asname or alias.name] = f"unittest.{alias.name}"
+                names[alias.asname or alias.name] = f"{prefix}.{alias.name}"
     return names
 
 
 def _base_target(base: ast.expr, imports: dict[str, str]) -> str | None:
-    """Resolve a base-class reference to a dotted `unittest` name, or None."""
-    if isinstance(base, ast.Name):
-        return imports.get(base.id)
-    if isinstance(base, ast.Attribute) and isinstance(base.value, ast.Name):
-        head = imports.get(base.value.id, base.value.id)
-        return f"{head}.{base.attr}" if head == "unittest" else None
-    return None
+    """Resolve a base-class reference to a dotted `unittest` name, or None.
+
+    The test is on the resolved *package*, not the first segment: `from
+    unittest import case` binds `case` to `unittest.case`, and comparing
+    `imports["case"] == "unittest"` reported that documented idiom as a suite
+    that passes for any artifact. It did not.
+    """
+    dotted = _dotted(base)
+    if dotted is None:
+        return None
+    head, _, tail = dotted.partition(".")
+    resolved = imports.get(head, head)
+    if resolved != "unittest" and not resolved.startswith("unittest."):
+        return None
+    return f"{resolved}.{tail}" if tail else resolved
 
 
 def _is_test_case(node: ast.ClassDef, locals_: dict[str, ast.ClassDef], imports: dict[str, str],
@@ -600,17 +732,22 @@ def _is_test_case(node: ast.ClassDef, locals_: dict[str, ast.ClassDef], imports:
     """Resolve this class to `unittest.TestCase` or `IsolatedAsyncioTestCase`.
 
     Returns "" when it is neither, "sync" for plain `TestCase`, and "async" for
-    `IsolatedAsyncioTestCase`. A cyclic base list cannot be resolved.
+    `IsolatedAsyncioTestCase`. A cyclic base list cannot be resolved. The
+    submodule form is matched on the last segment, so `unittest.case.TestCase`
+    and `unittest.async_case.IsolatedAsyncioTestCase` resolve the same way the
+    direct names do.
     """
     if node.name in seen:
         return ""
     for base in node.bases:
         target = _base_target(base, imports)
-        if target in ("unittest.TestCase", "unittest.IsolatedAsyncioTestCase"):
-            return "async" if target.endswith("IsolatedAsyncioTestCase") else "sync"
+        if target is not None:
+            leaf = target.rsplit(".", 1)[-1]
+            if leaf in _TEST_CASE_BASES:
+                return "async" if leaf == "IsolatedAsyncioTestCase" else "sync"
         # a base may be another class defined in the same suite
-        name = base.id if isinstance(base, ast.Name) else getattr(base, "attr", "")
-        local = locals_.get(name)
+        dotted = _dotted(base)
+        local = locals_.get(dotted) if dotted else None
         if local is not None:
             resolved = _is_test_case(local, locals_, imports, seen | {node.name})
             if resolved:
@@ -618,30 +755,77 @@ def _is_test_case(node: ast.ClassDef, locals_: dict[str, ast.ClassDef], imports:
     return ""
 
 
+def _is_effect_free(body: list[ast.stmt]) -> bool:
+    """Does this method body provably do nothing when it runs?
+
+    `pass`, a docstring and `...` are the only statements with no effect. This
+    is what separates a suite of inert tests from one that assembles its
+    assertion at runtime: both have no assertion the audit can *see*, but only
+    the first cannot gate anything.
+    """
+    for statement in body:
+        if isinstance(statement, ast.Pass):
+            continue
+        if isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Constant):
+            continue  # a docstring, or a bare literal
+        return False
+    return True
+
+
+# The suite could not be read at all. A `RecursionError` from a deeply nested
+# constant, or a `MemoryError` from a very long one, is a resource limit on the
+# audit, not a defect in the spec — but it still leaves the gate unable to say
+# whether the suite gates anything, so it is reported like any other unanalysable
+# suite rather than raised.
+_UNREADABLE_SUITE = (
+    "metadata.tests is too deeply nested for the audit to read, so it cannot confirm the suite gates "
+    "anything. Keep assertions shallow and reference the solution's output in a local first."
+)
+# No assertion the audit can find that unittest will actually run.
+_NO_COLLECTABLE_ASSERTION = (
+    "metadata.tests has no assertion inside a collectable test* method of a "
+    "unittest.TestCase, so nothing in it can fail. The suite passes for any artifact."
+)
+# Assertions are there, and every one of them is the same for any artifact.
+_CONSTANT_ASSERTIONS = (
+    "every assertion in metadata.tests is a constant: it evaluates the same for any artifact, so it "
+    "cannot gate one. Assert against something the solution produces."
+)
+
+
 def _suite_gate_reason(tests_source: str) -> str | None:
     """Why the suite cannot gate anything, or None when it can.
 
-    Three properties are decidable from the source alone, and only these:
+    Four properties are decidable from the source alone, and only these:
 
     - the suite parses — code that cannot be imported cannot gate anything;
     - it carries an assertion `unittest` will actually collect: a `test*` method
       of a `TestCase` subclass, resolved through the module's imports. A
       coroutine test on a plain `TestCase` does not count, because unittest
       never awaits it and reports the suite as passing anyway;
-    - that assertion reads something, so it can fail on a wrong artifact.
+    - that assertion is not a constant, so it can discriminate between artifacts;
+    - a test body that is inert (`pass`, a docstring) is not a gate.
 
     **Not provable by a static read.** An assertion arranged by the test itself
     — `self.flag = True` then `self.assertTrue(self.flag)` — provably passes
     for any artifact. Detecting that needs execution: run the suite against a
     stub and require it to fail. This audit executes nothing.
+
+    A test body that does something but shows no assertion to the audit is not
+    reported: an assertion assembled at runtime is a real gate, and calling it
+    a constant would be false in both halves.
     """
     try:
         tree = ast.parse(tests_source)
     except SyntaxError:
         return "metadata.tests does not parse, so it cannot be a suite the runner can import."
+    except (RecursionError, MemoryError):
+        return _UNREADABLE_SUITE
     imports = _unittest_names(tree)
     locals_ = {n.name: n for n in ast.walk(tree) if isinstance(n, ast.ClassDef)}
     collectable = False
+    saw_assertion = False
+    did_something = False
     for node in ast.walk(tree):
         if not isinstance(node, ast.ClassDef):
             continue
@@ -657,23 +841,24 @@ def _suite_gate_reason(tests_source: str) -> str | None:
             if isinstance(member, ast.AsyncFunctionDef) and kind != "async":
                 continue
             collectable = True
+            if not _is_effect_free(member.body):
+                did_something = True
             for inner in ast.walk(member):
                 is_assertion = isinstance(inner, ast.Assert) or (
                     isinstance(inner, ast.Call)
                     and isinstance(inner.func, ast.Attribute)
                     and inner.func.attr.startswith("assert")
                 )
-                if is_assertion and not _assertion_reads_nothing(inner):
+                if not is_assertion:
+                    continue
+                saw_assertion = True
+                if not _assertion_reads_nothing(inner):
                     return None
-    if not collectable:
-        return (
-            "metadata.tests has no assertion inside a collectable test* method of a "
-            "unittest.TestCase, so nothing in it can fail. The suite passes for any artifact."
-        )
-    return (
-        "every assertion in metadata.tests reads no value, so none of them can fail on a wrong "
-        "artifact. Assert against something the solution produces."
-    )
+    if not collectable or (not saw_assertion and not did_something):
+        return _NO_COLLECTABLE_ASSERTION
+    if not saw_assertion:
+        return None
+    return _CONSTANT_ASSERTIONS
 
 
 def _has_required_field(metadata: dict[str, Any]) -> bool:
@@ -744,6 +929,10 @@ def check_absent_grading_contract(spec: TaskSpec, path: Path | None = None) -> l
 
 def _anchor_advice(spec: TaskSpec) -> str:
     """How to anchor this spec — only types whose grader reads text can be."""
+    checks = effective_checks(spec)
+    # What advice is possible keys on what the *type* can grade, not on what
+    # this spec happens to request: `html` implements `has_required` whether or
+    # not this particular spec asked for it.
     if VALIDATION_CHECKS.get(spec.type, frozenset()) & TOPIC_ANCHORS:
         advice = "Add has_required or matches_pattern to anchor the subject."
     else:
@@ -753,12 +942,16 @@ def _anchor_advice(spec: TaskSpec) -> str:
             "this type never grades text. Add a content check to the runner, or grade the artifact "
             "as a text-producing type."
         )
-    # the grader reads metadata.required only inside `if "has_required" in
-    # requested`, so a declaration without that check anchors nothing
-    if spec.metadata.get("required") and "has_required" not in effective_checks(spec):
+    if _declared_strings(spec.metadata.get("required")) and "has_required" not in checks:
         advice += (
             " metadata.required is declared but has_required is not requested, and the grader reads "
             "metadata.required only inside the has_required check, so it anchors nothing here."
+        )
+    if checks & TOPIC_ANCHORS and not _has_topic_anchor(spec):
+        advice += (
+            " The check is requested but the matching declaration is missing or empty, and the grader "
+            "reads metadata.required only inside has_required (metadata.pattern only inside "
+            "matches_pattern), so it has nothing to compare the artifact against."
         )
     return advice
 
@@ -768,9 +961,9 @@ def check_structural_only(spec: TaskSpec, path: Path | None = None) -> list[Find
 
     Element checks (`has_title`, `has_cta`, `has_form`, `has_viewport`,
     `no_placeholder`) prove markup exists, not that the artifact is about the
-    task's subject, so they do not clear this finding. Only `has_required`,
-    `matches_pattern`, or — for the text-producing types only — declared
-    `metadata.required` do.
+    task's subject, so they do not clear this finding. Only a topic check that
+    is requested *and* backed by a non-empty declaration does — see
+    `_has_topic_anchor` for why either half alone proves nothing.
     """
     if spec.type in SELF_ANCHORED_TYPES:
         return []

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import ast
 import inspect
+import subprocess
+import sys
 import tempfile
 import textwrap
 import unittest
@@ -124,6 +126,66 @@ def _task(**kwargs) -> TaskSpec:
     base = {"id": "t-1", "type": "html", "prompt": "Write a page about kites."}
     base.update(kwargs)
     return TaskSpec(**base)
+
+
+# The audit is a whole-suite gate: a rule that never returns takes the gate
+# down for every spec, not just the one it was reading. These two run the real
+# entry point in a subprocess under a wall clock, because the failure mode is a
+# hang or an escaping exception — a plain in-process call would wedge the test
+# run instead of reporting.
+SUITE_RUNNER = textwrap.dedent(
+    """
+    import sys
+    from pathlib import Path
+    from orchestral.audit import audit_tree
+    report = audit_tree(Path(sys.argv[1]))
+    print(len(report.findings))
+    """
+)
+
+
+def audit_tree_under_clock(directory: Path, seconds: float = 30.0) -> str:
+    """`audit_tree` over `directory` in a subprocess, or raise on the clock.
+
+    Returns the child's stdout. Raises `TimeoutExpired` if the audit does not
+    finish, and propagates a non-zero exit as a failed assertion.
+    """
+    result = subprocess.run(
+        [sys.executable, "-c", SUITE_RUNNER, str(directory)],
+        capture_output=True,
+        text=True,
+        timeout=seconds,
+        cwd=str(Path(__file__).resolve().parent.parent),
+    )
+    if result.returncode != 0:
+        raise AssertionError(f"audit_tree exited {result.returncode}\n{result.stderr[-2000:]}")
+    return result.stdout
+
+
+def write_suite_task(directory: Path, assertion: str) -> Path:
+    """A `code` spec whose suite's only test body is `assertion`."""
+    path = directory / "hostile.yaml"
+    path.write_text(
+        textwrap.dedent(
+            f"""\
+            id: hostile-1
+            type: code
+            prompt: Implement it.
+            validation: [tests_pass]
+            metadata:
+              difficulty: hard
+              module: solution.py
+              tests: |
+                import unittest
+
+                class T(unittest.TestCase):
+                    def test_x(self):
+                        {assertion}
+            """
+        ),
+        encoding="utf-8",
+    )
+    return path
 
 
 def _rules(spec: TaskSpec) -> dict[str, list]:
@@ -266,20 +328,22 @@ class TestAbsentGradingContract(unittest.TestCase):
 
         The rule is method-agnostic on purpose. An earlier version folded with
         `ast.literal_eval`, which cannot fold a `Compare` or a `UnaryOp`, and
-        handled four of the 41 `assert*` methods — so `assert 1 == 1` and
-        `assertNotEqual(1, 2)` audited clean while scoring 1.0 against a stub.
+        handled four of the `assert*` methods unittest provides — so
+        `assert 1 == 1` and `assertNotEqual(1, 2)` audited clean while scoring
+        1.0 against a stub. The count is deliberately not written down: it
+        differs between 3.11 and 3.14.
         """
         for expression in CONSTANT_SUITES:
             with self.subTest(assertion=expression):
                 suite = (
-                    "import unittest\n\n\n"
+                    "import unittest\n\n"
                     "class T(unittest.TestCase):\n"
                     f"    def test_x(self):\n        {expression}\n"
                 )
                 spec = TaskSpec(id="c-5", type="code", prompt="Write it.", metadata={"tests": suite})
                 found = _rules(spec)
                 self.assertIn("absent_grading_contract", found)
-                self.assertIn("reads no value", found["absent_grading_contract"][0].detail)
+                self.assertIn("is a constant", found["absent_grading_contract"][0].detail)
 
     def test_assertion_outside_a_collected_test_is_an_error(self):
         """unittest collects only TestCase methods, so this assertion never runs."""
@@ -412,6 +476,261 @@ class TestAbsentGradingContract(unittest.TestCase):
         for task_type in ("html", "constraint", "needle", "image", "video", "multi-file"):
             with self.subTest(type=task_type):
                 self.assertNotIn("absent_grading_contract", _rules(_task(id="t-x", type=task_type)))
+
+
+class TestAuditAlwaysAnswers(unittest.TestCase):
+    """The gate must return a verdict for every spec it is handed.
+
+    These are availability regressions, not accuracy ones. An over-eager rule
+    costs one spec author an edit; a rule that never returns, or raises, takes
+    down `harness.py audit --strict` for all 124 specs.
+    """
+
+    def test_pow_chain_does_not_wedge_the_audit(self):
+        """`2**2**2**2**2**2` doubles in bit-length per level, so eager folding
+        never terminates. `ast.literal_eval` refused it instantly, so this
+        capability came in with the constant folder.
+        """
+        with tempfile.TemporaryDirectory() as raw:
+            directory = Path(raw)
+            write_suite_task(directory, "assert " + "2**" * 6 + "2 == 1")
+            self.assertTrue(audit_tree_under_clock(directory).strip())
+
+    def test_repeated_multiply_does_not_wedge_the_audit(self):
+        """The same unbounded-work shape through `*` and a growing string."""
+        with tempfile.TemporaryDirectory() as raw:
+            directory = Path(raw)
+            write_suite_task(directory, "assert 'ab' * 10**9 * 10**9 == 'x'")
+            self.assertTrue(audit_tree_under_clock(directory).strip())
+
+    def test_deep_constant_expression_does_not_raise(self):
+        """A flat unary chain is a legal parse at any depth, and recursing the
+        folder over it overflows the stack. `RecursionError` escaping
+        `audit_tree` crashes the gate.
+        """
+        with tempfile.TemporaryDirectory() as raw:
+            directory = Path(raw)
+            write_suite_task(directory, "assert " + "not " * 2000 + "None")
+            self.assertTrue(audit_tree_under_clock(directory).strip())
+
+    def test_unparseable_by_recursion_limit_is_an_error_not_a_crash(self):
+        """The same shape in-process, so the verdict itself is asserted."""
+        spec = TaskSpec(
+            id="c-rec",
+            type="code",
+            prompt="Write it.",
+            metadata={"tests": "import unittest\n\n\nclass T(unittest.TestCase):\n"
+                               "    def test_x(self):\n        assert " + "not " * 3000 + "None\n"},
+        )
+        found = _rules(spec)  # must not raise
+        self.assertIn("absent_grading_contract", found)
+
+    def test_one_hostile_suite_does_not_cost_the_tree_its_verdict(self):
+        """A single unreadable spec must not cost the others their findings."""
+        with tempfile.TemporaryDirectory() as raw:
+            directory = Path(raw)
+            write_suite_task(directory, "assert " + "2**" * 6 + "2 == 1")
+            (directory / "kite.yaml").write_text(
+                textwrap.dedent(
+                    """\
+                    id: kite-1
+                    type: html
+                    prompt: Write a page about kites.
+                    validation: [html_parses, non_empty]
+                    metadata:
+                      difficulty: hard
+                    """
+                ),
+                encoding="utf-8",
+            )
+            printed = audit_tree_under_clock(directory).strip()
+            self.assertGreater(int(printed), 0, "the tree must still report findings")
+
+
+class TestAnchorNeedsBothTheCheckAndTheDeclaration(unittest.TestCase):
+    """`metadata.required` only means something if the grader is asked to read it.
+
+    Requesting `has_required` without declaring `required` is a misconfiguration
+    the runner itself treats as an error, so the audit must not read it as
+    anchored. The earlier type-keyed exemption had the mirror-image hole.
+    """
+
+    def test_requested_anchor_without_a_declaration_does_not_clear_the_finding(self):
+        for validation, metadata in (
+            (["html", "has_required"], {}),
+            (["html", "has_required"], {"required": []}),
+            (["html", "matches_pattern"], {}),
+            (["html", "matches_pattern"], {"pattern": ""}),
+        ):
+            with self.subTest(validation=validation, metadata=metadata):
+                found = _rules(_task(validation=validation, metadata=metadata))
+                self.assertIn("structural_only", found)
+
+    def test_requested_anchor_with_a_declaration_clears_the_finding(self):
+        """Both halves together pin the mechanism. Deleting the `metadata` key
+        from this case must fail the previous test, which is what a single-sided
+        test cannot do.
+        """
+        self.assertNotIn(
+            "structural_only", _rules(_task(validation=["html", "has_required"], metadata={"required": ["kite"]}))
+        )
+        self.assertNotIn(
+            "structural_only", _rules(_task(validation=["html", "matches_pattern"], metadata={"pattern": "kite"}))
+        )
+
+    def test_degenerate_declaration_is_not_an_anchor(self):
+        """`required: [""]` is satisfied by every artifact, so it anchors nothing.
+
+        `bool([""])` is True and `"" in text` is True for any string, so this
+        silences the finding while proving nothing.
+
+        `pattern: "."` is a match-everything regex and is *not* caught here.
+        Deciding how strong a regex has to be is a separate analysis from
+        whether one was declared, and it is disclosed in docs/task-audit.md
+        rather than half-done in code.
+        """
+        for metadata in ({"required": [""]}, {"required": ""}, {"required": []}, {"required": ["  ", ""]}):
+            with self.subTest(metadata=metadata):
+                self.assertIn(
+                    "structural_only", _rules(_task(validation=["html", "has_required"], metadata=metadata))
+                )
+
+    def test_advice_names_the_missing_declaration(self):
+        found = _rules(_task(validation=["html", "has_required"]))
+        detail = found["structural_only"][0].detail
+        self.assertIn("has_required", detail)
+        self.assertIn("metadata.required", detail)
+
+
+class TestAssertionMessagesAreTrue(unittest.TestCase):
+    """A rule that reports a reason has to be right about the reason.
+
+    Both earlier versions collapsed distinct diagnoses into one message, and
+    the message claimed a property ("none of them can fail") that is false for
+    an always-failing assertion.
+    """
+
+    def suite(self, body: str) -> TaskSpec:
+        return TaskSpec(
+            id="c-msg",
+            type="code",
+            prompt="Write it.",
+            metadata={"tests": "import unittest\n\n\nclass T(unittest.TestCase):\n"
+                               f"    def test_x(self):\n        {body}\n"},
+        )
+
+    def test_no_visible_assertion_and_constant_assertion_report_differently(self):
+        """`pass` and `assert 1 == 1` are different defects."""
+        no_assertion = _rules(self.suite("pass"))["absent_grading_contract"][0].detail
+        constant = _rules(self.suite("assert 1 == 1"))["absent_grading_contract"][0].detail
+        self.assertNotEqual(no_assertion, constant)
+        self.assertIn("no assertion", no_assertion)
+        self.assertIn("constant", constant)
+
+    def test_keyword_only_assertion_is_not_mistaken_for_an_empty_one(self):
+        """`node.args` is empty whenever every argument is a keyword, so the
+        zero-argument branch was catching any keyword-only assert call.
+        """
+        spec = self.suite("self.assertEqual(first=solve('a b'), second='a-b')")
+        self.assertNotIn("absent_grading_contract", _rules(spec))
+
+    def test_zero_argument_assertion_still_reads_nothing(self):
+        """The branch is real, just narrower: a bare `self.assertTrue()`."""
+        self.assertIn("absent_grading_contract", _rules(self.suite("self.assertTrue()")))
+
+    def test_negated_provably_false_comparison_is_a_constant(self):
+        """`assert not (1 == 2)` is a tautology. The inner `Compare` reported
+        "not constant" for a provably-false branch and `not` inherited it.
+        """
+        for expression in ("assert not (1 == 2)", "assert not (1 > 2)", "assert not (1 in (2,))"):
+            with self.subTest(assertion=expression):
+                self.assertIn("absent_grading_contract", _rules(self.suite(expression)))
+
+    def test_short_circuiting_boolop_folds_to_a_constant(self):
+        for expression in ("assert False and solve(1)", "assert True or solve(1)"):
+            with self.subTest(assertion=expression):
+                self.assertIn("absent_grading_contract", _rules(self.suite(expression)))
+
+    def test_alternating_comparison_still_reads_the_artifact(self):
+        """The `Compare` fix must not turn `1 < len(out) <= 3` into a constant."""
+        self.assertNotIn("absent_grading_contract", _rules(self.suite("assert 1 < len(out) <= 3")))
+
+    def test_always_failing_constant_is_reported_as_a_constant(self):
+        """`assert 1 == 2` is a constant too. The message must not claim it
+        cannot fail, because it always does.
+        """
+        detail = _rules(self.suite("assert 1 == 2"))["absent_grading_contract"][0].detail
+        self.assertIn("constant", detail)
+        self.assertNotIn("cannot fail", detail)
+
+    def test_assertion_the_audit_cannot_see_is_not_reported_as_a_tautology(self):
+        """An assertion assembled at runtime discriminates — verified by running
+        it against a wrong solution. Calling it a constant is false in both
+        halves, so the rule stays silent rather than guessing.
+        """
+        spec = TaskSpec(
+            id="c-exec",
+            type="code",
+            prompt="Write it.",
+            metadata={"tests": "import unittest\n\n\nclass T(unittest.TestCase):\n"
+                               "    def test_x(self):\n"
+                               "        exec('assert solve(\"a b\") == \"a-b\"')\n"},
+        )
+        self.assertNotIn("absent_grading_contract", _rules(spec))
+
+
+class TestUnittestBaseIdioms(unittest.TestCase):
+    """`from unittest import case` is a documented idiom, and a suite that uses
+    it does discriminate. Reporting it as "passes for any artifact" was a false
+    positive on an error-severity rule.
+    """
+
+    def suite(self, imports: str, base: str) -> TaskSpec:
+        return TaskSpec(
+            id="c-base",
+            type="code",
+            prompt="Write it.",
+            metadata={"tests": f"{imports}\n\nfrom solution import solve\n\n\n"
+                               f"class T({base}):\n"
+                               "    def test_x(self):\n"
+                               "        self.assertEqual(solve('a b'), 'a-b')\n"},
+        )
+
+    def test_documented_from_import_idioms_are_accepted(self):
+        for imports, base in (
+            ("from unittest import case", "case.TestCase"),
+            ("from unittest import case as u", "u.TestCase"),
+            ("from unittest import async_case", "async_case.IsolatedAsyncioTestCase"),
+            ("import unittest.case", "unittest.case.TestCase"),
+        ):
+            with self.subTest(imports=imports, base=base):
+                self.assertNotIn("absent_grading_contract", _rules(self.suite(imports, base)))
+
+    def test_a_local_class_named_case_is_not_unittest(self):
+        """The fix must not resolve a same-named local class to unittest."""
+        spec = TaskSpec(
+            id="c-base-local",
+            type="code",
+            prompt="Write it.",
+            metadata={"tests": "import unittest\n\nfrom solution import solve\n\n\n"
+                               "class case:\n    pass\n\n\n"
+                               "class T(case):\n"
+                               "    def test_x(self):\n"
+                               "        self.assertEqual(solve('a b'), 'a-b')\n"},
+        )
+        self.assertIn("absent_grading_contract", _rules(spec))
+
+    def test_an_unrelated_package_is_not_unittest(self):
+        spec = TaskSpec(
+            id="c-base-other",
+            type="code",
+            prompt="Write it.",
+            metadata={"tests": "import notunittest as case\n\nfrom solution import solve\n\n\n"
+                               "class T(case.TestCase):\n"
+                               "    def test_x(self):\n"
+                               "        self.assertEqual(solve('a b'), 'a-b')\n"},
+        )
+        self.assertIn("absent_grading_contract", _rules(spec))
 
 
 class TestGamingSurface(unittest.TestCase):
@@ -562,9 +881,12 @@ class TestGamingSurface(unittest.TestCase):
     def test_metadata_required_does_not_clear_the_finding_when_has_required_is_not_requested(self):
         """The only read of metadata.required is inside `if "has_required" in requested`.
 
-        Keying the exemption on the task *type* let a two-word YAML edit silence
-        100 of the 104 shipped findings while the grader read nothing. This
-        test exists to stop that coming back.
+        Keying the exemption on the task *type` let a two-word YAML edit silence
+        the finding while the grader read nothing. That is the hole this test
+        exists to stop returning. It silenced **zero** shipped findings, not
+        the hundred a comment here once claimed: no shipped spec declares
+        `metadata.required` at all, so the count was the flagged-`html` total
+        restated as if it were the number of affected specs.
         """
         for validation in (["html"], ["html_parses", "non_empty"], None):
             with self.subTest(validation=validation):

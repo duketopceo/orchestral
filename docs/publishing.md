@@ -10,7 +10,8 @@
 orchestral grid --task landing-page-coffee --jobs 4
 
 # 2. Scrub into runs-pub/
-orchestral scrub                      # or --runs-dir X --scrub-dir Y
+orchestral scrub                      # or --runs-dir X --scrub-dir Y, in
+                                       # either position
 
 # 3. INSPECT the output before publishing — scrubbing is conservative,
 #    not exhaustive. Grep for anything you don't want public.
@@ -22,6 +23,11 @@ grep -rniE "key|token|secret|/home/|/Users/" runs-pub/ | less
 
 ## What scrub does
 
+- **Refuses an unusable source**: if `--runs-dir` names a directory that does
+  not exist, or one with no `run.json` in it, `scrub` exits non-zero and writes
+  nothing. It checks *before* touching the output, so a bad `--runs-dir` cannot
+  wipe a previous `runs-pub/`. A silent "Scrubbed 0 runs" is not a success
+  signal and is not reported as one.
 - **Redacts** in text/JSON/JSONL: OpenRouter/OpenAI/Anthropic/Groq/xAI/Google/
   GitHub/AWS-shaped keys, `Bearer` tokens, PEM private keys, URL userinfo
   (`https://user:pass@host`), internal hostnames (`.internal`, `.corp`, `.lan`,

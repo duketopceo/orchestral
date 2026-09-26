@@ -140,7 +140,10 @@ polling); `/leaderboard`; and `/new`, a form that launches runs
 stop runs this `serve` process started — same mechanism and same limit
 as the TUI.
 
-Global flags (before the subcommand): `--runs-dir`, `--tasks-dir`, `--models-dir`.
+Global flags: `--runs-dir`, `--tasks-dir`, `--models-dir`. They work before
+the subcommand (`orchestral --runs-dir X scrub`) and, for the commands that
+re-declare them, after it (`orchestral scrub --runs-dir X`) — the
+subcommand-local spelling wins when both are given.
 
 ## Task formats
 

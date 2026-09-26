@@ -16,11 +16,12 @@ pip install -e .[dev]
 
 ```bash
 python -m unittest discover -s tests   # stdlib unittest — no pytest
+python harness.py audit --strict       # task specs: no unrunnable checks
 ruff check .
 mypy orchestral harness.py
 ```
 
-All three run in CI on every PR with no secrets needed. The paid OpenRouter
+All four run in CI on every PR with no secrets needed. The paid OpenRouter
 eval workflow (`.github/workflows/orchestral.yml`) runs only on same-repo PRs;
 external contributions are covered by the mock-provider integration tests.
 

@@ -253,7 +253,13 @@ Each fails closed when requested but its metadata key is missing:
 | `no_pattern` | the regex does not match | `forbidden_pattern` |
 
 Unknown check names fail the run — including in a list that also contains known
-checks.
+checks. This holds for `html`, `constraint`, `needle`, `image`, `video`, and
+`multi-file`. The `code`, `sql`, `extract`, and `api` types never read
+`validation:` at all: they compute a fixed check set from `metadata`, so
+anything declared there is a phantom gate and the run still reports a pass.
+`python harness.py audit --strict` is the gate for that case and for the first —
+it fails CI on a spec that asks for a check which cannot run. See
+[docs/task-audit.md](task-audit.md).
 
 ## Example
 

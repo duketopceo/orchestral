@@ -17,6 +17,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from orchestral.audit import VALIDATION_CHECKS
 from orchestral.apistub import check_api
 from orchestral.codeexec import (
     DEFAULT_TIMEOUT_SECONDS,
@@ -767,7 +768,10 @@ class Runner:
                 )
                 ledger.add_many(judge_costs)
                 report["judge"] = judge_result
-                if judge_result.get("score") is not None:
+                code_execution_pending = (
+                    task.type == "code" and report.get("execution", {}).get("executed") is not True
+                )
+                if judge_result.get("score") is not None and not code_execution_pending:
                     report["score"] = judge_result["score"]
                 if judge_result.get("passed") is not None:
                     passes = passes and judge_result["passed"]
@@ -1087,7 +1091,11 @@ class Runner:
                     checks["no_pattern"] = False
                     errors.append(f"metadata.forbidden_pattern is not a valid regex: {exc}.")
 
-        return _validation_report(task, checks, errors, len(artifact))
+        unknown = sorted(requested - VALIDATION_CHECKS["html"])
+        if unknown:
+            errors.append(f"Unknown validation check(s): {', '.join(unknown)}.")
+        passes, report = _validation_report(task, checks, errors, len(artifact))
+        return passes and not unknown, report
 
     def _validate_image(self, task: TaskSpec, artifact: bytes) -> tuple[bool, dict[str, Any]]:
         requested = set(task.validation) if task.validation else {"non_empty", "png_signature"}
@@ -1107,7 +1115,7 @@ class Runner:
 
     def _validate_multi(self, task: TaskSpec, artifact: bytes) -> tuple[bool, dict[str, Any]]:
         requested = set(task.validation) if task.validation else {"non_empty", "zip_signature"}
-        known = {"non_empty", "zip_signature", "has_paths"}
+        known = VALIDATION_CHECKS["multi-file"]
         checks: dict[str, bool] = {}
         errors: list[str] = []
 
@@ -1146,12 +1154,11 @@ class Runner:
         return passes and not unknown, report
 
     def _validate_code(self, task: TaskSpec, files: dict[str, str]) -> tuple[bool, dict[str, Any]]:
-        """Run the task's hidden unittest source against the merged file set.
+        """Validate a code file set without executing generated code.
 
-        Expected files must exist; live runs execute the suite in a
-        subprocess (see codeexec for containment notes). Dry runs only
-        compile-check the Python files — no model code ever ran, so the
-        report says `executed: false`.
+        Expected files must exist. Live validation calls the fail-closed code
+        execution boundary; dry runs only compile-check the Python files, so
+        no model code ever runs in either path.
         """
         module = str(task.metadata.get("module") or "solution.py")
         declared = expected_paths(task.metadata) or [module]
@@ -1196,9 +1203,16 @@ class Runner:
             timeout_seconds=float(task.metadata.get("timeout_seconds", DEFAULT_TIMEOUT_SECONDS)),
         )
         report["execution"] = suite
-        checks["tests_pass"] = bool(suite.get("ok"))
+        suite_passed = (
+            suite.get("executed") is True
+            and int(suite.get("tests_run") or 0) > 0
+            and bool(suite.get("ok"))
+        )
+        checks["tests_pass"] = suite_passed
         if not suite.get("executed"):
             errors.append(suite.get("error", "tests did not execute"))
+        elif not suite_passed:
+            errors.append("code execution did not complete a successful non-empty test suite")
         report["score"] = score_from_report(suite)
         return bool(all(checks.values())), report
 

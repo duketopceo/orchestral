@@ -21,8 +21,9 @@ mypy orchestral harness.py
 ```
 
 All three run in CI on every PR with no secrets needed. The paid OpenRouter
-eval workflow (`.github/workflows/orchestral.yml`) runs only on same-repo PRs;
-external contributions are covered by the mock-provider integration tests.
+workflow (`.github/workflows/orchestral.yml`) is manual-only and requires the
+protected `paid-eval` environment. External contributions are covered by the
+mock-provider integration tests.
 
 ## Conventions
 

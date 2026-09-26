@@ -4,10 +4,9 @@ This is intentionally conservative: it redacts API keys, emails, phone numbers,
 local filesystem paths, provider endpoint credentials, and internal hostnames.
 You can add patterns specific to your data.
 
-Binary artifacts (screenshots, generated images) are copied byte-for-byte —
-they contain no scrubbable text, but note that embedded metadata (PNG tEXt
-chunks, EXIF) passes through verbatim; strip it with exiftool before publishing
-if your toolchain writes metadata.
+Approved media and font artifacts are copied byte-for-byte. Archives, databases,
+and unknown binary content are blocked because they cannot be safely scrubbed.
+Embedded media metadata still requires manual review before publication.
 """
 
 from __future__ import annotations
@@ -65,19 +64,29 @@ ALLOWED_NAMES = {
 }
 ALLOWED_PREFIXES = ("worker-", "artifact.", "screenshot.", "judge")
 
-# Extensions copied verbatim — binary formats carry no scrubbable text.
 BINARY_EXTS = {
     ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".ico",
     ".mp4", ".webm", ".mov",
-    ".zip", ".gz", ".tar",
     ".woff", ".woff2", ".ttf", ".otf",
-    ".db", ".sqlite", ".sqlite3",
 }
 
-# Archive formats are never published: redaction cannot see inside them, so a
-# generated file could carry a secret straight into runs-pub/. They are
-# omitted by default and the omission is recorded in the manifest.
-ARCHIVE_EXTS = {".zip", ".gz", ".tar"}
+ARCHIVE_EXTS = {
+    ".zip", ".gz", ".tar", ".7z", ".bz2", ".xz", ".rar",
+}
+
+DATABASE_EXTS = {".db", ".sqlite", ".sqlite3", ".mdb", ".accdb", ".dbf"}
+
+_ARCHIVE_SIGNATURES = (
+    b"PK\x03\x04",
+    b"PK\x05\x06",
+    b"PK\x07\x08",
+    b"\x1f\x8b",
+    b"BZh",
+    b"\xfd7zXZ\x00",
+    b"7z\xbc\xaf\x27\x1c",
+    b"Rar!\x1a\x07",
+)
+_SQLITE_SIGNATURE = b"SQLite format 3\x00"
 
 # Filenames that are omitted from published output even though they are
 # text-scrubbable: debug.jsonl is internal diagnostics (transport retries,
@@ -85,16 +94,21 @@ ARCHIVE_EXTS = {".zip", ".gz", ".tar"}
 # never traversed (only files are iterated). Omissions are manifested.
 OMIT_NAMES = {"debug.jsonl"}
 
-# Per-file omission reasons for the manifest; archives get the generic reason.
 _OMISSION_REASONS = {
     "debug.jsonl": "internal diagnostics — not part of the published record",
     "raw/": "unredacted raw provider payloads",
 }
 
 
+class _BlockedPublicationFile(Exception):
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
 def _is_binary(path: Path) -> bool:
     """Binary if a known binary extension or a NUL byte in the first chunk."""
-    if path.suffix.lower() in BINARY_EXTS:
+    if path.suffix.lower() in BINARY_EXTS | ARCHIVE_EXTS | DATABASE_EXTS:
         return True
     try:
         with path.open("rb") as fh:
@@ -105,6 +119,46 @@ def _is_binary(path: Path) -> bool:
 
 def _is_allowed(name: str) -> bool:
     return name in ALLOWED_NAMES or name.startswith(ALLOWED_PREFIXES)
+
+
+def _read_prefix(path: Path) -> bytes:
+    if path.is_symlink():
+        raise _BlockedPublicationFile("symbolic links are not approved for publication")
+    try:
+        with path.open("rb") as fh:
+            return fh.read(8192)
+    except OSError as exc:
+        raise _BlockedPublicationFile("file could not be inspected") from exc
+
+
+def _has_archive_signature(prefix: bytes) -> bool:
+    return any(prefix.startswith(signature) for signature in _ARCHIVE_SIGNATURES) or prefix[257:262] == b"ustar"
+
+
+def _publication_block_reason(path: Path, prefix: bytes) -> str | None:
+    suffix = path.suffix.lower()
+    if suffix in ARCHIVE_EXTS:
+        return "archive contents cannot be redacted and are not approved for publication"
+    if _has_archive_signature(prefix):
+        return "archive contents cannot be redacted and are not approved for publication"
+    if suffix in DATABASE_EXTS or prefix.startswith(_SQLITE_SIGNATURE):
+        return "database contents are not approved for publication"
+    if suffix in BINARY_EXTS:
+        return None
+    if b"\0" in prefix:
+        return "unknown binary content is not approved for publication"
+    try:
+        prefix.decode("utf-8")
+    except UnicodeDecodeError:
+        return "non-text content is not approved for publication"
+    return None
+
+
+def _remove_output(path: Path) -> None:
+    if path.is_dir():
+        shutil.rmtree(path)
+    elif path.exists():
+        path.unlink()
 
 
 def scrub_text(text: str) -> str:
@@ -131,13 +185,27 @@ def scrub_dict(obj: Any) -> Any:
 
 
 def _scrub_file(src: Path, dst: Path) -> None:
+    prefix = _read_prefix(src)
+    reason = _publication_block_reason(src, prefix)
+    if reason:
+        _remove_output(dst)
+        raise _BlockedPublicationFile(reason)
+
     dst.parent.mkdir(parents=True, exist_ok=True)
-    if _is_binary(src):
+    if src.suffix.lower() in BINARY_EXTS:
         shutil.copyfile(src, dst)
         return
-    if src.suffix == ".jsonl":
+
+    try:
+        text = src.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        _remove_output(dst)
+        raise _BlockedPublicationFile("text content could not be safely scrubbed") from exc
+
+    suffix = src.suffix.lower()
+    if suffix == ".jsonl":
         out_lines = []
-        for line in src.read_text(encoding="utf-8", errors="replace").splitlines():
+        for line in text.splitlines():
             try:
                 data = json.loads(line)
             except json.JSONDecodeError:
@@ -145,47 +213,54 @@ def _scrub_file(src: Path, dst: Path) -> None:
             else:
                 out_lines.append(json.dumps(scrub_dict(data), default=str))
         dst.write_text("\n".join(out_lines) + "\n", encoding="utf-8")
-    elif src.suffix == ".json":
+    elif suffix == ".json":
         try:
-            data = json.loads(src.read_text(encoding="utf-8"))
+            data = json.loads(text)
         except json.JSONDecodeError:
-            dst.write_text(
-                scrub_text(src.read_text(encoding="utf-8", errors="replace")),
-                encoding="utf-8",
-            )
+            dst.write_text(scrub_text(text), encoding="utf-8")
         else:
             dst.write_text(json.dumps(scrub_dict(data), indent=2, default=str), encoding="utf-8")
     else:
-        dst.write_text(scrub_text(src.read_text(encoding="utf-8", errors="replace")), encoding="utf-8")
+        dst.write_text(scrub_text(text), encoding="utf-8")
 
 
-def _scrub_dir(src: Path, dst: Path) -> tuple[Path, list[str]]:
-    """Copy the allowlisted files of a run dir to dst, scrubbing text.
-
-    Returns the destination and the names omitted because their contents
-    cannot be redacted (archives).
-    """
-    omitted: list[str] = []
-    for f in src.iterdir():
+def _scrub_dir(src: Path, dst: Path) -> tuple[Path, list[dict[str, str]]]:
+    if src.resolve() == dst.resolve():
+        raise ValueError("scrub output must differ from the source run directory")
+    _remove_output(dst)
+    dst.mkdir(parents=True, exist_ok=True)
+    omitted: list[dict[str, str]] = []
+    for f in sorted(src.iterdir(), key=lambda path: path.name):
         if f.is_file() and f.name in OMIT_NAMES:
-            omitted.append(f.name)
+            _remove_output(dst / f.name)
+            omitted.append({
+                "file": f.name,
+                "reason": _OMISSION_REASONS[f.name],
+                "status": "omitted",
+            })
             continue
         if f.is_dir() and f.name == "raw":
-            omitted.append(f.name + "/")
+            _remove_output(dst / f.name)
+            omitted.append({
+                "file": f.name + "/",
+                "reason": _OMISSION_REASONS["raw/"],
+                "status": "omitted",
+            })
             continue
         if f.is_file() and _is_allowed(f.name):
-            if f.suffix.lower() in ARCHIVE_EXTS:
-                omitted.append(f.name)
-                continue
-            _scrub_file(f, dst / f.name)
+            try:
+                _scrub_file(f, dst / f.name)
+            except _BlockedPublicationFile as exc:
+                omitted.append({"file": f.name, "reason": exc.reason, "status": "blocked"})
     return dst, omitted
 
 
 def scrub_run(src: Path, out_dir: Path) -> Path:
     """Scrub a single run directory and write it under out_dir.
 
-    Archives are omitted (see `ARCHIVE_EXTS`); single-run scrubbing has no
-    manifest to record that in, so use `scrub_all` when the omission matters.
+    The same fail-closed policy used by `scrub_all` blocks unapproved archives,
+    databases, and unknown binary content. Use `scrub_all` when the blocked-file
+    evidence and publication review requirements must be recorded in a manifest.
     """
     dst, _ = _scrub_dir(src, out_dir / src.name)
     return dst
@@ -209,6 +284,11 @@ def _manifest_entry(run_json: Path, runs_dir: Path, out_dir: Path) -> dict[str, 
 
 def scrub_all(runs_dir: Path = Path("runs"), out_dir: Path = Path("runs-pub")) -> list[Path]:
     """Scrub every run in runs_dir into out_dir and write a manifest.json."""
+    source = runs_dir.resolve()
+    destination = out_dir.resolve()
+    if destination == source or source.is_relative_to(destination):
+        raise ValueError("scrub output must not contain the source runs directory")
+    _remove_output(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     copied: list[Path] = []
     manifest: list[dict[str, Any]] = []
@@ -220,21 +300,26 @@ def scrub_all(runs_dir: Path = Path("runs"), out_dir: Path = Path("runs-pub")) -
         dst.parent.mkdir(parents=True, exist_ok=True)
         _, omitted = _scrub_dir(src, dst)
         entry = _manifest_entry(run_json, runs_dir, out_dir)
+        entry["scrub_policy"] = "fail_closed"
+        entry["publication_review"] = {
+            "manual_inspection_required": True,
+            "second_scanner_required": True,
+            "status": "required",
+        }
         if omitted:
-            entry["scrub_omissions"] = [
-                {"file": name, "reason": _OMISSION_REASONS.get(
-                    name, "contents cannot be redacted")}
-                for name in sorted(omitted)
-            ]
+            ordered_omissions = sorted(omitted, key=lambda item: item["file"])
+            entry["scrub_omissions"] = ordered_omissions
+            blocked = [item for item in ordered_omissions if item["status"] == "blocked"]
+            if blocked:
+                entry["scrub_blocked"] = blocked
             warned.add(str(rel))
         manifest.append(entry)
         copied.append(dst)
     if warned:
         print(
-            "warning: omitted files from "
-            f"{len(warned)} run(s) ({', '.join(sorted(warned))}): archives cannot "
-            "be redacted and debug output is internal-only. Multi-file run data "
-            "needs inner-file redaction before it can ship.",
+            "warning: publication review is required for omitted content in "
+            f"{len(warned)} run(s) ({', '.join(sorted(warned))}); inspect the output "
+            "manually and run a second scanner before publication.",
             file=sys.stderr,
         )
     (out_dir / "manifest.json").write_text(

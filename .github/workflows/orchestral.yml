@@ -1,7 +1,6 @@
 name: orchestral eval
 
 on:
-  pull_request:
   workflow_dispatch:
     inputs:
       task:
@@ -24,13 +23,10 @@ on:
 jobs:
   eval:
     runs-on: ubuntu-latest
-    # Secrets aren't available to fork PRs — skip the paid eval there instead
-    # of failing every external contribution.
-    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
+    environment: paid-eval
     permissions:
-      pull-requests: write
+      contents: read
     env:
-      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
       TASK: ${{ inputs.task || 'landing-page-coffee' }}
       ORCHESTRATOR: ${{ inputs.orchestrator || 'deepseek/deepseek-v4-flash-0731' }}
       WORKER: ${{ inputs.worker || 'z-ai/glm-5.3-flash' }}
@@ -38,8 +34,11 @@ jobs:
       MAX_COST_USD: "0.05"
 
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38
         with:
           python-version: "3.11"
 
@@ -47,6 +46,8 @@ jobs:
         run: pip install -e .
 
       - name: Run eval
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
         run: python3 harness.py run --task "$TASK" --orchestrator "$ORCHESTRATOR" --worker "$WORKER" --planner "$PLANNER"
 
       - name: Generate reports
@@ -56,28 +57,13 @@ jobs:
           python3 harness.py report > reports/summary.txt
 
       - name: Upload reports
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: orchestral-reports
           path: reports/
 
-      - name: Comment on PR
-        if: github.event_name == 'pull_request'
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const fs = require('fs');
-            const summary = fs.readFileSync('reports/summary.txt', 'utf8');
-            const body = `## orchestral eval\n\n\`\`\`\n${summary}\n\`\`\`\n\nReports are attached as the \`orchestral-reports\` artifact.`;
-            github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-              body
-            });
-
       - name: Enforce cost budget
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'workflow_dispatch'
         run: |
           cost=$(python3 - << 'PY'
           import sqlite3

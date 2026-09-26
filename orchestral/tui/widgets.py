@@ -8,7 +8,7 @@ from orchestral.tui.state import Job
 
 
 class StatusBar(Static):
-    """One-line status strip: run counts, active jobs, and errors."""
+    """One-line status strip: run counts, cost, and active jobs."""
 
     DEFAULT_CSS = """
     StatusBar {

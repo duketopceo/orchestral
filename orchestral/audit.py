@@ -114,10 +114,12 @@ TOPIC_ANCHORS = frozenset({"has_required", "matches_pattern"})
 _TEST_CASE_BASES = frozenset({"TestCase", "IsolatedAsyncioTestCase"})
 
 # Types that grade against their own metadata anchor, so "no topic anchor in
-# `validation:`" is not a finding for them.
-SELF_ANCHORED_TYPES = frozenset(
-    {"code", "sql", "extract", "api", "multi-file", "constraint", "needle"}
-)
+# `validation:`" is not a finding for them. `constraint` and `needle` are *not*
+# in this set: the runner uses them only as labelling flags and grades them
+# through the same `_validate`, so a `validation: [html]` `constraint` spec gets
+# `html_parses` and `non_empty` and nothing topical. Keying this on the type name
+# was the same hole the anchor check just closed for `metadata.required`.
+SELF_ANCHORED_TYPES = frozenset({"code", "sql", "extract", "api", "multi-file"})
 
 # Textbook problems with heavy pretraining coverage. Matching one is a
 # contamination risk, not proof of contamination — the signal is that the
@@ -301,13 +303,48 @@ def effective_checks(spec: TaskSpec) -> set[str]:
     return requested
 
 
-def _declared_strings(value: Any) -> list[str]:
-    """The non-blank strings a declaration actually asserts something about."""
-    if isinstance(value, str):
-        return [value] if value.strip() else []
-    if isinstance(value, (list, tuple)):
-        return [text for item in value for text in _declared_strings(item)]
+def _required_tokens(value: Any) -> list[str]:
+    """The tokens `runner.py` will compare the artifact against.
+
+    The runner writes `for t in required` and then `str(t).lower()`, so the shape
+    of the declaration decides what is compared, not just its content:
+
+    - a list or tuple contributes its items;
+    - a mapping contributes its **keys** — `required: {"kite": true}` really is
+      enforced, so treating it as an absent declaration was factually wrong;
+    - a bare string contributes its **characters**, so `required: kite` asks only
+      that the artifact contain `k`, `i`, `t` and `e`. A token of one character
+      is satisfied by nearly any artifact and therefore declares nothing, which
+      is also why `[""]`, `[0]` and `["a"]` declare nothing.
+
+    Modelling the iteration rather than the YAML is the point: the audit's list
+    has to be the runner's list, or the two disagree about what is anchored.
+    """
+    if not value:
+        return []
+    return [token for item in value for token in _scalar_token(item)]
+
+
+def _scalar_token(value: Any) -> list[str]:
+    """One declared token, or nothing when the value is not a token at all."""
+    if isinstance(value, (str, int, float, bool)):
+        text = str(value).strip()
+        return [text] if len(text) > 1 else []
+    # A nested container is stringified by the runner (`str({'kite': True})`), so
+    # it compares the artifact against a repr. That is a check nothing can pass,
+    # which anchors no topic.
     return []
+
+
+def _pattern_declared(value: Any) -> bool:
+    """Is `metadata.pattern` something the runner will compile?
+
+    `re.search(str(pattern), ...)` takes the whole value, so a pattern is never
+    iterated and a bare string is a perfectly good one. Whether the regex is
+    *strong* enough to anchor a topic is a separate question from whether one was
+    declared, and only the second one is decided here.
+    """
+    return bool(str(value).strip()) if value else False
 
 
 def _has_topic_anchor(spec: TaskSpec) -> bool:
@@ -325,10 +362,9 @@ def _has_topic_anchor(spec: TaskSpec) -> bool:
     the other key — a configuration the runner itself reports as an error.
     """
     checks = effective_checks(spec)
-    return any(
-        checks & {check} and _declared_strings(spec.metadata.get(key))
-        for check, key in (("has_required", "required"), ("matches_pattern", "pattern"))
-    )
+    if "has_required" in checks and _required_tokens(spec.metadata.get("required")):
+        return True
+    return "matches_pattern" in checks and _pattern_declared(spec.metadata.get("pattern"))
 
 
 def _scalars(value: Any) -> list[str]:
@@ -368,7 +404,13 @@ def _prompt_mentions_call(prompt: str, call: Any) -> bool:
     path = str(call.get("path", "")).strip()
     if not path:
         return False
-    pattern = re.compile(rf"\b{method}(?:s|es)?\b\W{{0,3}}{re.escape(path)}\b", re.I)
+    # `method` is spec-controlled and the same line already escapes `path`.
+    # Interpolating it raw makes the gate itself the denial of service: a method
+    # of `(A+)+B` is a nested quantifier, and the backtracking cost doubles every
+    # two characters, so a 30-character prompt is measured in minutes and a
+    # 50-character one in hours. No audit finding is worth that, and the word
+    # boundary already restricts a real method name to something like `GET`.
+    pattern = re.compile(rf"\b{re.escape(method)}(?:s|es)?\b\W{{0,3}}{re.escape(path)}\b", re.I)
     return pattern.search(prompt) is not None
 
 
@@ -646,8 +688,12 @@ def _const(node: ast.AST, depth: int = 0) -> tuple[bool, Any]:
     return False, None
 
 
-def _assertion_reads_nothing(node: ast.AST) -> bool:
-    """Is this assertion provably independent of the artifact?
+def _assertion_constant(node: ast.AST) -> tuple[bool, bool | None]:
+    """`(is a constant, and if so the value it takes for any artifact)`.
+
+    A constant is `True` (passes for any artifact) or `False` (fails for every
+    artifact); the polarity is `None` when the assertion method decides it rather
+    than the arguments.
 
     Method-agnostic on purpose. Enumerating `assert*` names was the first
     version's mistake: it covered four of the methods `unittest` provides, and
@@ -655,23 +701,25 @@ def _assertion_reads_nothing(node: ast.AST) -> bool:
     clean while scoring 1.0 against a stub. The question is not *which*
     assertion it is but whether anything in it can read the artifact — so an
     assertion every expression of which folds is a constant, whatever it is
-    called.
+    called. Staying method-agnostic is why an `assert*` call reports no polarity:
+    whether it passes or fails follows from the method, not from the arguments.
     """
     if isinstance(node, ast.Assert):
-        ok, _ = _const(node.test)
-        return ok
+        ok, value = _const(node.test)
+        return (True, bool(value)) if ok else (False, None)
     if isinstance(node, ast.Call):
         func = node.func
         if not (isinstance(func, ast.Attribute) and func.attr.startswith("assert")):
-            return False
+            return False, None
         # Both argument kinds count. `all()` over an empty `node.args` is
         # vacuously True, so checking only the positional arguments reported
         # `self.assertEqual(first=f(x), second=y)` as a constant.
         values = [*node.args, *(keyword.value for keyword in node.keywords)]
         if not values:
-            return True  # a bare self.assertTrue() cannot read anything
-        return all(_const(value)[0] for value in values)
-    return False
+            return True, True  # a bare self.assertTrue() cannot read anything
+        if all(_const(value)[0] for value in values):
+            return True, None
+    return False, None
 
 
 def _dotted(node: ast.expr) -> str | None:
@@ -686,49 +734,66 @@ def _dotted(node: ast.expr) -> str | None:
     return ".".join(reversed(parts))
 
 
-def _unittest_names(tree: ast.Module) -> dict[str, str]:
-    """Map a local name to its `unittest` member, following imports.
+def _unittest_names(tree: ast.Module) -> tuple[dict[str, str], set[str]]:
+    """`(local name -> its `unittest` member, every locally bound import name)`.
 
     Matching a base by the bare name `TestCase` rejected
     `from unittest import TestCase as TC`, which is the common idiom and a
     suite that does discriminate. Resolving through the import is the only
     way to tell `unittest.TestCase` from a same-named local class.
+
+    The second set is every name *any* import binds, `unittest` or not. Without
+    it, `from mypkg import unittest` is invisible here, so the name looks unbound
+    and the resolver falls back to treating it as `unittest` itself — outside the
+    package guard rather than through it.
     """
     names: dict[str, str] = {}
+    bound: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
+                root = alias.name.split(".")[0]
+                bound.add(alias.asname or root)
                 if alias.name == "unittest" or alias.name.startswith("unittest."):
+                    # `import unittest.case` binds the *root* name `unittest`, so
+                    # the root has to resolve as well as the full dotted form.
+                    names.setdefault(root, root)
                     names[alias.asname or alias.name] = alias.name
-        elif isinstance(node, ast.ImportFrom) and node.module and (
-            node.module == "unittest" or node.module.startswith("unittest.")
-        ):
-            prefix = node.module
+        elif isinstance(node, ast.ImportFrom) and node.module:
             for alias in node.names:
-                names[alias.asname or alias.name] = f"{prefix}.{alias.name}"
-    return names
+                bound.add(alias.asname or alias.name)
+            if node.module == "unittest" or node.module.startswith("unittest."):
+                for alias in node.names:
+                    names[alias.asname or alias.name] = f"{node.module}.{alias.name}"
+    return names, bound
 
 
-def _base_target(base: ast.expr, imports: dict[str, str]) -> str | None:
+def _base_target(base: ast.expr, imports: dict[str, str], bound: set[str]) -> str | None:
     """Resolve a base-class reference to a dotted `unittest` name, or None.
 
     The test is on the resolved *package*, not the first segment: `from
     unittest import case` binds `case` to `unittest.case`, and comparing
     `imports["case"] == "unittest"` reported that documented idiom as a suite
     that passes for any artifact. It did not.
+
+    A name no import binds falls back to itself, which is what makes a bare
+    `unittest.TestCase` resolve in a suite that never imports it. A name some
+    *other* import binds does not: it is not `unittest`, whatever it is called.
     """
     dotted = _dotted(base)
     if dotted is None:
         return None
     head, _, tail = dotted.partition(".")
+    if head in bound and head not in imports:
+        return None
     resolved = imports.get(head, head)
     if resolved != "unittest" and not resolved.startswith("unittest."):
         return None
     return f"{resolved}.{tail}" if tail else resolved
 
 
-def _is_test_case(node: ast.ClassDef, locals_: dict[str, ast.ClassDef], imports: dict[str, str],
-                  seen: frozenset[str] = frozenset()) -> str:
+def _is_test_case(node: ast.ClassDef, locals_: dict[str, ast.ClassDef],
+                  imports: dict[str, str], bound: set[str]) -> str:
     """Resolve this class to `unittest.TestCase` or `IsolatedAsyncioTestCase`.
 
     Returns "" when it is neither, "sync" for plain `TestCase`, and "async" for
@@ -736,38 +801,53 @@ def _is_test_case(node: ast.ClassDef, locals_: dict[str, ast.ClassDef], imports:
     submodule form is matched on the last segment, so `unittest.case.TestCase`
     and `unittest.async_case.IsolatedAsyncioTestCase` resolve the same way the
     direct names do.
+
+    The base chain is walked with an explicit worklist rather than by
+    recursion. Chain *length* is not bounded the way tree depth is: each class in
+    a 1000-long `class C1(C0): pass` chain is a separate top-level statement, so
+    the parser accepts it and the recursion overflowed the stack, taking the
+    gate's answer for every other spec with it. A depth cap would trade that
+    crash for a false positive on a chain that really does end at a `TestCase`,
+    so the chain is walked to its end and the answer is exact.
     """
-    if node.name in seen:
-        return ""
-    for base in node.bases:
-        target = _base_target(base, imports)
-        if target is not None:
-            leaf = target.rsplit(".", 1)[-1]
-            if leaf in _TEST_CASE_BASES:
-                return "async" if leaf == "IsolatedAsyncioTestCase" else "sync"
-        # a base may be another class defined in the same suite
-        dotted = _dotted(base)
-        local = locals_.get(dotted) if dotted else None
-        if local is not None:
-            resolved = _is_test_case(local, locals_, imports, seen | {node.name})
-            if resolved:
-                return resolved
+    pending = [node]
+    seen: set[str] = set()
+    while pending:
+        current = pending.pop()
+        if current.name in seen:
+            continue
+        seen.add(current.name)
+        for base in current.bases:
+            target = _base_target(base, imports, bound)
+            if target is not None:
+                leaf = target.rsplit(".", 1)[-1]
+                if leaf in _TEST_CASE_BASES:
+                    return "async" if leaf == "IsolatedAsyncioTestCase" else "sync"
+            # a base may be another class defined in the same suite
+            dotted = _dotted(base)
+            local = locals_.get(dotted) if dotted else None
+            if local is not None:
+                pending.append(local)
     return ""
 
 
 def _is_effect_free(body: list[ast.stmt]) -> bool:
     """Does this method body provably do nothing when it runs?
 
-    `pass`, a docstring and `...` are the only statements with no effect. This
-    is what separates a suite of inert tests from one that assembles its
-    assertion at runtime: both have no assertion the audit can *see*, but only
-    the first cannot gate anything.
+    `pass`, a docstring, `...`, a `global`/`nonlocal` declaration and a bare
+    annotation are the statements with no effect. This is what separates a suite
+    of inert tests from one that assembles its assertion at runtime: both have no
+    assertion the audit can *see*, but only the first cannot gate anything.
     """
     for statement in body:
         if isinstance(statement, ast.Pass):
             continue
         if isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Constant):
             continue  # a docstring, or a bare literal
+        if isinstance(statement, (ast.Global, ast.Nonlocal)):
+            continue  # a declaration binds nothing and evaluates nothing
+        if isinstance(statement, ast.AnnAssign) and statement.value is None:
+            continue  # a bare annotation: no value, no call, no effect
         return False
     return True
 
@@ -787,9 +867,27 @@ _NO_COLLECTABLE_ASSERTION = (
     "unittest.TestCase, so nothing in it can fail. The suite passes for any artifact."
 )
 # Assertions are there, and every one of them is the same for any artifact.
-_CONSTANT_ASSERTIONS = (
-    "every assertion in metadata.tests is a constant: it evaluates the same for any artifact, so it "
-    "cannot gate one. Assert against something the solution produces."
+#
+# A constant folds to True (passes for any artifact) or to False (fails for every
+# artifact). Only `assert <expr>` exposes which, so there are two wordings and the
+# second is used whenever the polarity is not knowable without enumerating the
+# `assert*` methods — enumerating them is what the method-agnostic check exists
+# to avoid. The neutral wording is true for both polarities: a suite whose
+# outcome never varies with the artifact is not testing the artifact, whichever
+# way it varies.
+_CONSTANT_ASSERTIONS_PASSES = (
+    "every assertion in metadata.tests is a constant: it evaluates the same for any artifact, so the "
+    "suite passes for any artifact. Assert against something the solution produces."
+)
+_CONSTANT_ASSERTIONS_FAILS = (
+    "every assertion in metadata.tests is a constant and at least one of them fails for every "
+    "artifact, so the suite scores 0 whatever the solution produces. Assert against something the "
+    "solution produces."
+)
+_CONSTANT_ASSERTIONS_NEUTRAL = (
+    "every assertion in metadata.tests is a constant: the suite's outcome does not depend on what the "
+    "solution produced, so it cannot separate one artifact from another. Assert against something the "
+    "solution produces."
 )
 
 
@@ -821,15 +919,16 @@ def _suite_gate_reason(tests_source: str) -> str | None:
         return "metadata.tests does not parse, so it cannot be a suite the runner can import."
     except (RecursionError, MemoryError):
         return _UNREADABLE_SUITE
-    imports = _unittest_names(tree)
+    imports, bound = _unittest_names(tree)
     locals_ = {n.name: n for n in ast.walk(tree) if isinstance(n, ast.ClassDef)}
     collectable = False
     saw_assertion = False
     did_something = False
+    polarities: list[bool | None] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.ClassDef):
             continue
-        kind = _is_test_case(node, locals_, imports)
+        kind = _is_test_case(node, locals_, imports, bound)
         if not kind:
             continue
         for member in node.body:
@@ -852,13 +951,23 @@ def _suite_gate_reason(tests_source: str) -> str | None:
                 if not is_assertion:
                     continue
                 saw_assertion = True
-                if not _assertion_reads_nothing(inner):
+                is_constant, polarity = _assertion_constant(inner)
+                if not is_constant:
                     return None
+                polarities.append(polarity)
     if not collectable or (not saw_assertion and not did_something):
         return _NO_COLLECTABLE_ASSERTION
     if not saw_assertion:
         return None
-    return _CONSTANT_ASSERTIONS
+    # Every assertion is a constant. Which message depends on the one thing the
+    # folder can know: a constant that folds to False fails for *every* artifact,
+    # so saying the suite "passes for any artifact" there would be the same false
+    # claim in the other direction.
+    if False in polarities:
+        return _CONSTANT_ASSERTIONS_FAILS
+    if all(polarity is True for polarity in polarities):
+        return _CONSTANT_ASSERTIONS_PASSES
+    return _CONSTANT_ASSERTIONS_NEUTRAL
 
 
 def _has_required_field(metadata: dict[str, Any]) -> bool:
@@ -942,16 +1051,18 @@ def _anchor_advice(spec: TaskSpec) -> str:
             "this type never grades text. Add a content check to the runner, or grade the artifact "
             "as a text-producing type."
         )
-    if _declared_strings(spec.metadata.get("required")) and "has_required" not in checks:
+    if _required_tokens(spec.metadata.get("required")) and "has_required" not in checks:
         advice += (
             " metadata.required is declared but has_required is not requested, and the grader reads "
             "metadata.required only inside the has_required check, so it anchors nothing here."
         )
     if checks & TOPIC_ANCHORS and not _has_topic_anchor(spec):
         advice += (
-            " The check is requested but the matching declaration is missing or empty, and the grader "
-            "reads metadata.required only inside has_required (metadata.pattern only inside "
-            "matches_pattern), so it has nothing to compare the artifact against."
+            " A check is requested but its declaration names nothing the grader can compare against: "
+            "metadata.required is iterated, so a bare string is compared character by character and a "
+            "one-character token is satisfied by almost any artifact, and metadata.pattern is compiled "
+            "as written. Declare a list of words, or a pattern specific enough to exclude a generic "
+            "artifact."
         )
     return advice
 

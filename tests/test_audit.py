@@ -8,10 +8,18 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import time
 import unittest
 from pathlib import Path
+from unittest import TestCase
 
+from orchestral import audit as orchestral_audit
 from orchestral.audit import (
+    _CONSTANT_ASSERTIONS_FAILS,
+    _CONSTANT_ASSERTIONS_NEUTRAL,
+    _CONSTANT_ASSERTIONS_PASSES,
+    _NO_COLLECTABLE_ASSERTION,
+    _UNREADABLE_SUITE,
     ERROR,
     INFO,
     WARN,
@@ -513,17 +521,52 @@ class TestAuditAlwaysAnswers(unittest.TestCase):
             write_suite_task(directory, "assert " + "not " * 2000 + "None")
             self.assertTrue(audit_tree_under_clock(directory).strip())
 
-    def test_unparseable_by_recursion_limit_is_an_error_not_a_crash(self):
-        """The same shape in-process, so the verdict itself is asserted."""
+    def test_a_suite_the_parser_refuses_is_an_error_not_a_crash(self):
+        """The unreadable-suite path, in-process, so the verdict is asserted.
+
+        The construction is an unbalanced bracket, which every supported
+        interpreter refuses. The previous version of this test used a 3000-deep
+        `not` chain and assumed the parser's nesting limit is the same
+        everywhere; CPython raised that limit in 3.12, so the suite parsed, the
+        rule stayed silent for the documented cap reason, and the test failed on
+        3 of the 4 versions `requires-python = ">=3.11"` claims to support. A
+        test whose premise is an implementation detail of one release is a test
+        that lies on the other three.
+        """
         spec = TaskSpec(
             id="c-rec",
             type="code",
             prompt="Write it.",
             metadata={"tests": "import unittest\n\n\nclass T(unittest.TestCase):\n"
-                               "    def test_x(self):\n        assert " + "not " * 3000 + "None\n"},
+                               "    def test_x(self):\n        assert " + "(" * 3000 + "None\n"},
         )
         found = _rules(spec)  # must not raise
         self.assertIn("absent_grading_contract", found)
+        self.assertIn("does not parse", found["absent_grading_contract"][0].detail)
+
+    def test_a_deeply_nested_suite_is_answered_on_every_interpreter(self):
+        """Whatever the parser does with this shape, the gate answers.
+
+        3.11 refuses to parse it and the suite is reported unreadable; 3.12 and
+        later parse it, folding stops at the depth cap, and the assertion is
+        treated as possibly reading the artifact. Both are acceptable outcomes.
+        The one that is not acceptable is a raise, so that is the assertion — and
+        it holds on every version instead of one.
+        """
+        source = ("import unittest\n\n\nclass T(unittest.TestCase):\n"
+                  "    def test_x(self):\n        assert " + "not " * 3000 + "None\n")
+        reason = orchestral_audit._suite_gate_reason(source)  # must not raise
+        self.assertIn(
+            reason,
+            (
+                None,  # 3.12+: the depth cap treats it as possibly reading the artifact
+                _UNREADABLE_SUITE,  # 3.11: the parser's nesting limit
+                "metadata.tests does not parse, so it cannot be a suite the runner can import.",
+                _CONSTANT_ASSERTIONS_NEUTRAL,
+                _CONSTANT_ASSERTIONS_PASSES,
+                _CONSTANT_ASSERTIONS_FAILS,
+            ),
+        )
 
     def test_one_hostile_suite_does_not_cost_the_tree_its_verdict(self):
         """A single unreadable spec must not cost the others their findings."""
@@ -1011,3 +1054,591 @@ class TestShippedSuite(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestAvailabilityF1(TestCase):
+    """F1: a long chain of local base classes is a legal parse at any length.
+
+    Tree depth is bounded by the parser; the length of a *base-class chain* is
+    not, because each class is a separate top-level statement. Resolving that
+    chain by recursion therefore overflowed the stack and took the gate's answer
+    for every other spec with it.
+    """
+
+    @staticmethod
+    def _chained(count: int) -> str:
+        lines = ["import unittest", ""]
+        for index in range(count):
+            base = f"C{index - 1}" if index else "object"
+            lines.append(f"class C{index}({base}): pass")
+        lines += ["", "class Suite(unittest.TestCase):", "    def test_x(self): pass"]
+        return "\n".join(lines) + "\n"
+
+    def test_a_thousand_chained_classes_still_answer(self):
+        with tempfile.TemporaryDirectory() as raw:
+            directory = Path(raw)
+            write_suite_task(directory, "self.assertEqual(1, 1)")
+            (directory / "chain.yaml").write_text(
+                textwrap.dedent(
+                    """\
+                    id: chain-1
+                    type: code
+                    prompt: Implement it.
+                    validation: [tests_pass]
+                    metadata:
+                      difficulty: hard
+                      module: solution.py
+                      tests: |
+                    """
+                )
+                + textwrap.indent(self._chained(1000), "    "),
+                encoding="utf-8",
+            )
+            # the subprocess prints a finding count; the point is that it
+            # printed one at all instead of tracebacking
+            self.assertGreater(int(audit_tree_under_clock(directory, 60.0).strip()), 0)
+
+    def test_the_chained_classes_are_still_audited(self):
+        """The verdict, in-process, now that resolution no longer overflows."""
+        self.assertEqual(
+            orchestral_audit._suite_gate_reason(self._chained(1000)),
+            _NO_COLLECTABLE_ASSERTION,
+        )
+
+    def test_a_chain_ending_in_testcase_still_resolves(self):
+        """Bounding the recursion by refusing to answer would be a false
+        positive on a real gate. A long chain that *does* end at a TestCase has
+        to keep resolving, so the fix is a worklist rather than a depth cap.
+        """
+        lines = ["import unittest", "", "class Root(unittest.TestCase): pass", ""]
+        for index in range(1000):
+            base = f"C{index - 1}" if index else "Root"
+            lines.append(f"class C{index}({base}): pass")
+        source = "\n".join(lines)
+        tree = ast.parse(source)
+        imports, bound = orchestral_audit._unittest_names(tree)
+        self.assertEqual(orchestral_audit._is_test_case(
+            tree.body[-1],
+            {n.name: n for n in ast.walk(tree) if isinstance(n, ast.ClassDef)},
+            imports, bound,
+        ), "sync")
+
+    def test_a_cyclic_base_list_does_not_hang(self):
+        source = "class A(B): pass\nclass B(A): pass\n"
+        tree = ast.parse(source)
+        locals_ = {n.name: n for n in ast.walk(tree) if isinstance(n, ast.ClassDef)}
+        self.assertEqual(orchestral_audit._is_test_case(tree.body[0], locals_, {}, set()), "")
+
+
+class TestAnchorDeclarationShape(TestCase):
+    """F4 and F6: the declaration's *shape* decides what the runner compares.
+
+    `runner.py` writes `for t in required`, so a mapping contributes its keys, a
+    list its items, and a bare string its *characters*. The audit has to model
+    that, or a declaration that anchors nothing clears the finding.
+    """
+
+    def _html(self, required: object) -> TaskSpec:
+        return TaskSpec(
+            id="h-decl",
+            type="html",
+            prompt="Create a landing page. Output a single self-contained HTML file.",
+            validation=["html", "has_required"],
+            metadata={"required": required},
+        )
+
+    def test_a_bare_string_is_iterated_per_character_so_it_anchors_nothing(self):
+        for value in ("kite", "ab", "the"):
+            with self.subTest(required=value):
+                self.assertIn("structural_only", _rules(self._html(value)))
+
+    def test_a_list_of_words_anchors(self):
+        self.assertNotIn("structural_only", _rules(self._html(["kite", "surfboard"])))
+
+    def test_a_single_character_token_anchors_nothing(self):
+        for value in ([""], ["  "], [0], [1], ["a"]):
+            with self.subTest(required=value):
+                self.assertIn("structural_only", _rules(self._html(value)))
+
+    def test_a_mapping_contributes_its_keys_so_it_anchors(self):
+        """F6: the runner iterates a mapping, so `{"kite": true}` *is* enforced.
+        Reporting it as unanchored is factually wrong.
+        """
+        self.assertNotIn("structural_only", _rules(self._html({"kite": True})))
+
+    def test_the_advice_does_not_tell_the_author_the_declaration_is_missing(self):
+        """F6's second half: the advice claimed the matching declaration was
+        "missing or empty" while the author had written one. Here the finding is
+        correct — a one-character token anchors nothing — so the advice has to
+        describe what is actually wrong with the declaration.
+        """
+        detail = _rules(self._html(["a"]))["structural_only"][0].detail
+        self.assertNotIn("missing or empty", detail)
+        self.assertIn("character by character", detail)
+        self.assertIn("Declare a list of words", detail)
+
+    def test_the_token_model_matches_the_runner_on_every_shape(self):
+        """The audit's notion of a declared token is the runner's, by
+        construction rather than by coincidence.
+        """
+        for value in (["kite"], ("kite", "x"), {"kite": 1}, "kite", ["a", "kite"]):
+            with self.subTest(required=value):
+                runner_tokens = [str(t).lower() for t in (value or [])]
+                model = [t.lower() for t in orchestral_audit._required_tokens(value)]
+                self.assertEqual(model, [t for t in runner_tokens if len(t) > 1])
+
+
+class TestSelfAnchoredTypesAreNotKeyedOnTheTypeName(TestCase):
+    """F7: `constraint` and `needle` are labels in the runner, not graders.
+
+    Both expand through `VALIDATION_SHORTHANDS` to the same plain `html` checks
+    every other type gets, so a `validation: [html]` `constraint` spec has no
+    topical anchor. Keying the early return on the type name is the same hole
+    this issue closed for `metadata.required`.
+    """
+
+    def test_a_constraint_spec_with_only_html_checks_is_flagged(self):
+        spec = TaskSpec(
+            id="c-only",
+            type="constraint",
+            prompt="Write a blurb.",
+            validation=["html"],
+            metadata={},
+        )
+        self.assertIn("structural_only", _rules(spec))
+
+    def test_a_needle_spec_with_only_html_checks_is_flagged(self):
+        spec = TaskSpec(
+            id="n-only",
+            type="needle",
+            prompt="Find the token.",
+            validation=["html"],
+            metadata={},
+        )
+        self.assertIn("structural_only", _rules(spec))
+
+    def test_a_constraint_spec_with_a_real_anchor_is_not_flagged(self):
+        spec = TaskSpec(
+            id="c-anchored",
+            type="constraint",
+            prompt="Write a blurb.",
+            validation=["html", "has_required"],
+            metadata={"required": ["kite", "surfboard"]},
+        )
+        self.assertNotIn("structural_only", _rules(spec))
+
+    def test_the_still_genuinely_self_anchored_types_stay_silent(self):
+        for task_type in ("code", "sql", "extract", "api", "multi-file"):
+            with self.subTest(type=task_type):
+                self.assertNotIn(
+                    "structural_only",
+                    _rules(TaskSpec(id="s-1", type=task_type, prompt="Do it.", validation=["html"])),
+                )
+
+
+class TestConstantMessageIsTrueForBothPolarities(TestCase):
+    """F8: a constant can fold to True or to False.
+
+    `assert 1 == 2` folds to False and fails for *every* artifact, so a message
+    saying it "cannot gate one" tells the author their suite is harmless when it
+    is guaranteed to score 0. The old guard asserted the literal
+    `assertNotIn("cannot fail")`, which the live wording passed by accident.
+    """
+
+    @staticmethod
+    def _detail(assertion: str) -> str:
+        spec = TaskSpec(
+            id="c-msg",
+            type="code",
+            prompt="Write it.",
+            validation=["tests_pass"],
+            metadata={"module": "solution.py", "tests": (
+                "import unittest\n\nfrom solution import solve\n\n\n"
+                "class T(unittest.TestCase):\n    def test_x(self):\n        "
+                + assertion + "\n"
+            )},
+        )
+        return _rules(spec)["absent_grading_contract"][0].detail
+
+    def test_the_message_never_claims_the_suite_is_harmless(self):
+        for assertion in ("assert 1 == 2", "assert 1 < 0", "self.assertEqual(1, 2)"):
+            with self.subTest(assertion=assertion):
+                detail = self._detail(assertion)
+                for phrase in ("cannot fail", "cannot gate", "passes for any"):
+                    self.assertNotIn(phrase, detail)
+
+    def test_an_always_failing_constant_says_so(self):
+        detail = self._detail("assert 1 == 2")
+        self.assertIn("fails for every artifact", detail)
+
+    def test_an_always_passing_constant_says_so(self):
+        self.assertIn("passes for any artifact", self._detail("assert 1 == 1"))
+
+    def test_an_assert_call_states_neither_polarity(self):
+        """Whether `self.assertEqual(1, 2)` passes or fails follows from the
+        method, and the check is method-agnostic on purpose. So its message
+        claims only what is true either way: the outcome does not depend on the
+        artifact.
+        """
+        detail = self._detail("self.assertEqual(1, 2)")
+        self.assertIn("does not depend on what the solution produced", detail)
+
+    def test_the_guard_would_notice_the_old_wording_coming_back(self):
+        """The defect the old guard missed: a reword that keeps the same false
+        claim. This pins the exact sentence, so no rewording passes silently.
+        """
+        self.assertIn("fails for every artifact", self._detail("assert 1 == 2"))
+        for wording in (
+            _CONSTANT_ASSERTIONS_FAILS, _CONSTANT_ASSERTIONS_PASSES, _CONSTANT_ASSERTIONS_NEUTRAL,
+        ):
+            self.assertNotIn("cannot gate", wording)
+            self.assertNotIn("cannot fail", wording)
+
+
+class TestEffectFreeIsComplete(TestCase):
+    """F9: `global x` and a bare annotation also do nothing."""
+
+    def test_a_global_statement_alone_is_inert(self):
+        spec = TaskSpec(
+            id="c-g",
+            type="code",
+            prompt="Write it.",
+            validation=["tests_pass"],
+            metadata={"module": "solution.py", "tests": (
+                "import unittest\n\n\nclass T(unittest.TestCase):\n"
+                "    def test_x(self):\n        global x\n"
+            )},
+        )
+        self.assertIn("absent_grading_contract", _rules(spec))
+
+    def test_a_bare_annotation_alone_is_inert(self):
+        spec = TaskSpec(
+            id="c-a",
+            type="code",
+            prompt="Write it.",
+            validation=["tests_pass"],
+            metadata={"module": "solution.py", "tests": (
+                "import unittest\n\n\nclass T(unittest.TestCase):\n"
+                "    def test_x(self):\n        x: int\n"
+            )},
+        )
+        self.assertIn("absent_grading_contract", _rules(spec))
+
+    def test_a_body_that_does_something_is_not_inert(self):
+        spec = TaskSpec(
+            id="c-d",
+            type="code",
+            prompt="Write it.",
+            validation=["tests_pass"],
+            metadata={"module": "solution.py", "tests": (
+                "import unittest\n\nfrom solution import solve\n\n\n"
+                "class T(unittest.TestCase):\n"
+                "    def test_x(self):\n        self.assertEqual(solve('a'), 'a')\n"
+            )},
+        )
+        self.assertNotIn("absent_grading_contract", _rules(spec))
+
+
+class TestUnittestResolverIsNotOverWide(TestCase):
+    """F10: a name bound by a non-unittest import is not `unittest`."""
+
+    @staticmethod
+    def _resolves(source: str) -> bool:
+        tree = ast.parse(source)
+        imports, bound = orchestral_audit._unittest_names(tree)
+        return bool(orchestral_audit._is_test_case(
+            tree.body[-1],
+            {n.name: n for n in ast.walk(tree) if isinstance(n, ast.ClassDef)},
+            imports, bound,
+        ))
+
+    def test_a_shadowed_unittest_import_does_not_resolve(self):
+        self.assertFalse(self._resolves(
+            "from mypkg import unittest\n\nclass T(unittest.TestCase): pass\n"))
+
+    def test_the_documented_idioms_still_resolve(self):
+        for source in (
+            "import unittest\n\nclass T(unittest.TestCase): pass\n",
+            "import unittest as ut\n\nclass T(ut.TestCase): pass\n",
+            "from unittest import TestCase\n\nclass T(TestCase): pass\n",
+            "from unittest import TestCase as TC\n\nclass T(TC): pass\n",
+            "from unittest import case\n\nclass T(case.TestCase): pass\n",
+            "import unittest.case\n\nclass T(unittest.case.TestCase): pass\n",
+        ):
+            with self.subTest(source=source.splitlines()[0]):
+                self.assertTrue(self._resolves(source))
+
+
+class TestPromptCallPatternIsNotABacktrackingBomb(TestCase):
+    """F2: `method` is spec-controlled and was interpolated raw into a regex.
+
+    Pre-existing since the original audit commit, and reported because it
+    falsifies the same "the gate always answers" property.
+    """
+
+    def test_a_nested_quantifier_method_returns_promptly(self):
+        spec = TaskSpec(
+            id="a-1",
+            type="api",
+            prompt="A" * 30 + " build the widget page please.",
+            metadata={"calls": [{"method": "(A+)+B", "path": "/x"}]},
+        )
+        start = time.monotonic()
+        audit_spec(spec)
+        self.assertLess(time.monotonic() - start, 5.0)
+
+    def test_the_method_is_matched_literally(self):
+        spec = TaskSpec(
+            id="a-2",
+            type="api",
+            prompt="Call GET /x to fetch the widget.",
+            metadata={"calls": [{"method": "G.T", "path": "/x"}]},
+        )
+        self.assertNotIn("prompt_states_the_answer", _rules(spec))
+        self.assertIn("prompt_states_the_answer", _rules(TaskSpec(
+            id="a-3", type="api", prompt="Call GET /x to fetch the widget.",
+            metadata={"calls": [{"method": "GET", "path": "/x"}]})))
+
+
+DOC = Path(__file__).resolve().parent.parent / "docs" / "task-audit.md"
+
+
+def _doc_rules() -> list[tuple[str, str]]:
+    """`(rule, severity)` for every row of the rules table in the doc."""
+    rows: list[tuple[str, str]] = []
+    for line in DOC.read_text(encoding="utf-8").splitlines():
+        if not line.startswith("| `"):
+            continue
+        cells = [cell.strip() for cell in line.strip("|").split("|")]
+        if len(cells) < 2:
+            continue
+        rows.append((cells[0].strip("`"), cells[1].strip("`")))
+    return rows
+
+
+class TestDocumentedClaimsAreExecuted(TestCase):
+    """Every claim the audit doc makes, asserted against the running code.
+
+    Written because three rounds of review kept finding doc clauses that
+    described a stronger rule than the code implements, and because a claim no
+    test reads is a sentence nobody re-reads. A doc claim that cannot be
+    executed does not belong in that section — it belongs in a comment on the
+    code it describes.
+    """
+
+    def suite(self, body: str) -> TaskSpec:
+        return TaskSpec(
+            id="c-doc",
+            type="code",
+            prompt="Write it.",
+            validation=["tests_pass"],
+            metadata={"module": "solution.py", "tests": (
+                "import unittest\n\nfrom solution import solve\n\n\n"
+                "class T(unittest.TestCase):\n    def test_x(self):\n        " + body + "\n"
+            )},
+        )
+
+    def html(self, **metadata: object) -> TaskSpec:
+        return TaskSpec(
+            id="h-doc",
+            type="html",
+            prompt="Create a landing page. Output a single self-contained HTML file.",
+            validation=["html", "has_required"],
+            metadata=metadata,
+        )
+
+    # --- the rules table ---
+
+    def test_the_doc_and_the_code_agree_on_every_rule_and_its_severity(self):
+        """Both directions, from the source rather than from one audit run.
+
+        A run over `tasks/` proves the rules that *shipped specs* happen to
+        trigger, which is not the same as the code being able to emit them. The
+        doc and the code are compared directly instead, so a rename that leaves
+        the doc behind — or a new rule that never reaches it — fails here.
+        """
+        source = Path(orchestral_audit.__file__).read_text(encoding="utf-8")
+        severities = {"ERROR": ERROR, "WARN": WARN, "INFO": INFO}
+        implemented: dict[str, str] = {}
+        for call in ast.walk(ast.parse(source)):
+            if not (isinstance(call, ast.Call) and getattr(call.func, "id", "") == "Finding"):
+                continue
+            keywords = {kw.arg: kw.value for kw in call.keywords if kw.arg}
+            rule, severity = keywords.get("rule"), keywords.get("severity")
+            if not isinstance(rule, ast.Constant):
+                continue
+            if isinstance(severity, ast.Constant):
+                level = severity.value
+            elif isinstance(severity, ast.Name) and severity.id in severities:
+                level = severities[severity.id]
+            else:
+                continue
+            implemented[rule.value] = level
+        self.assertGreater(len(implemented), 5, "no rules parsed out of audit.py")
+        documented = dict(_doc_rules())
+        self.assertEqual(
+            sorted(set(documented) - set(implemented)),
+            [],
+            "the doc documents a rule the code cannot emit",
+        )
+        self.assertEqual(
+            sorted(set(implemented) - set(documented)),
+            [],
+            "the code emits a rule the doc does not document",
+        )
+        for rule, severity in sorted(documented.items()):
+            with self.subTest(rule=rule):
+                self.assertEqual(implemented[rule], severity)
+
+    # --- "does and does not prove": what it claims to catch ---
+
+    def test_the_suite_must_parse(self):
+        spec = TaskSpec(
+            id="c-parse", type="code", prompt="Write it.", validation=["tests_pass"],
+            metadata={"module": "solution.py", "tests": "class T(unittest.TestCase)\n    def test_x(\n"},
+        )
+        self.assertIn("does not parse", _rules(spec)["absent_grading_contract"][0].detail)
+
+    def test_the_five_documented_constants_are_caught(self):
+        for assertion in (
+            "assert 1 == 1", "assert not None", "self.assertIn(1, [1, 2])",
+            "assert len([]) == 0", "assert not (1 == 2)",
+        ):
+            with self.subTest(assertion=assertion):
+                self.assertIn("absent_grading_contract", _rules(self.suite(assertion)))
+
+    def test_the_check_is_method_agnostic(self):
+        """The doc says the rule does not enumerate the `assert*` methods. A
+        method absent from any plausible list has to be caught anyway, or the
+        claim is false and the version-dependent list rots silently.
+        """
+        for assertion in (
+            "self.assertSetEqual(frozenset([1]), frozenset([1]))",
+            "self.assertDictEqual({'a': 1}, {'a': 1})",
+            "self.assertSequenceEqual((1,), (1,))",
+        ):
+            with self.subTest(assertion=assertion):
+                self.assertIn("absent_grading_contract", _rules(self.suite(assertion)))
+
+    def test_the_documented_inert_bodies_are_not_a_gate(self):
+        for body in (
+            "import unittest\n\n\nclass T(unittest.TestCase):\n    def test_x(self):\n        pass\n",
+            "import unittest\n\n\nclass T(unittest.TestCase):\n    def test_x(self):\n        'doc'\n",
+            "import unittest\n\n\nclass T(unittest.TestCase):\n    def test_x(self):\n        ...\n",
+            "import unittest\n\n\nclass T(unittest.TestCase):\n    def test_x(self):\n        global flag\n",
+            "import unittest\n\n\nclass T(unittest.TestCase):\n    def test_x(self):\n        flag: int\n",
+        ):
+            with self.subTest(body=body.splitlines()[-1].strip()):
+                spec = TaskSpec(
+                    id="c-inert", type="code", prompt="Write it.", validation=["tests_pass"],
+                    metadata={"module": "solution.py", "tests": body},
+                )
+                self.assertIn("absent_grading_contract", _rules(spec))
+
+    def test_a_coroutine_test_on_a_plain_testcase_does_not_count(self):
+        body = ("import unittest\n\nfrom solution import solve\n\n\n"
+                "class T(unittest.TestCase):\n"
+                "    async def test_x(self):\n        self.assertEqual(solve('a'), 'a')\n")
+        spec = TaskSpec(
+            id="c-async", type="code", prompt="Write it.", validation=["tests_pass"],
+            metadata={"module": "solution.py", "tests": body},
+        )
+        self.assertIn("absent_grading_contract", _rules(spec))
+
+    # --- the same section: the limits it claims NOT to catch ---
+
+    def test_the_documented_unmodelled_forms_audit_clean(self):
+        for assertion in (
+            'assert f"{1}" == "1"',
+            'assert "a,b".split(",") == ["a", "b"]',
+        ):
+            with self.subTest(assertion=assertion):
+                self.assertNotIn("absent_grading_contract", _rules(self.suite(assertion)))
+
+    def test_the_documented_self_arranged_assertion_audits_clean(self):
+        """Disclosed as needing execution. If a future change catches it, the doc
+        limit is out of date and this test is what says so.
+        """
+        body = ("import unittest\n\n\nclass T(unittest.TestCase):\n"
+                "    def test_x(self):\n        self.flag = True\n"
+                "        self.assertTrue(self.flag)\n")
+        spec = TaskSpec(
+            id="c-self", type="code", prompt="Write it.", validation=["tests_pass"],
+            metadata={"module": "solution.py", "tests": body},
+        )
+        self.assertNotIn("absent_grading_contract", _rules(spec))
+
+    def test_the_documented_unresolvable_base_is_reported_not_cleared(self):
+        """The doc now says such a suite is reported and calls that direction
+        safe, so the report is the contract.
+        """
+        body = ("import unittest\n\nfrom solution import solve\n\nTC = unittest.TestCase\n\n\n"
+                "class T(TC):\n    def test_x(self):\n        self.assertEqual(solve('a'), 'a')\n")
+        spec = TaskSpec(
+            id="c-tc", type="code", prompt="Write it.", validation=["tests_pass"],
+            metadata={"module": "solution.py", "tests": body},
+        )
+        self.assertIn("absent_grading_contract", _rules(spec))
+
+    # --- declared anchors ---
+
+    def test_the_documented_useless_declarations_all_clear_nothing(self):
+        for value in ("", "kite", ["", ], [0], ["a"], ["  "]):
+            with self.subTest(required=value):
+                self.assertIn("structural_only", _rules(self.html(required=value)))
+
+    def test_the_documented_anchoring_declarations_anchor(self):
+        for value in (["kite"], ("kite", "surfboard"), {"kite": True}):
+            with self.subTest(required=value):
+                self.assertNotIn("structural_only", _rules(self.html(required=value)))
+
+    def test_every_match_everything_pattern_the_doc_names_really_matches(self):
+        """F5 named one instance of a class and called it "one limit". The doc now
+        names the class, so the doc's own list is pinned to the behaviour: drop
+        one and this fails, invent one and the doc has to say so.
+        """
+        text = DOC.read_text(encoding="utf-8")
+        for pattern in (".", "^", ".*", r"[\s\S]*"):
+            with self.subTest(pattern=pattern):
+                self.assertIn(pattern, text)
+                spec = TaskSpec(
+                    id="h-pat", type="html",
+                    prompt="Create a landing page. Output a single HTML file.",
+                    validation=["html", "matches_pattern"], metadata={"pattern": pattern},
+                )
+                self.assertNotIn("structural_only", _rules(spec))
+
+    def test_a_usable_pattern_anchors(self):
+        spec = TaskSpec(
+            id="h-pat2", type="html",
+            prompt="Create a landing page. Output a single HTML file.",
+            validation=["html", "matches_pattern"], metadata={"pattern": "kite|surfboard"},
+        )
+        self.assertNotIn("structural_only", _rules(spec))
+
+    # --- the availability section ---
+
+    def test_the_documented_bounds_all_answer(self):
+        """The claim is that these *answer*. `None` is an answer — it means the
+        suite was accepted, which is the documented conservative outcome of a cap.
+        What must never happen is a raise, a hang, or a wrong verdict on a
+        neighbouring tautology, so that is what is asserted.
+        """
+        def reason(body: str) -> str | None:
+            return orchestral_audit._suite_gate_reason(
+                "import unittest\n\n\nclass T(unittest.TestCase):\n"
+                "    def test_x(self):\n        " + body + "\n"
+            )
+
+        for label, body in (
+            ("pow chain", "assert 2**2**2**2**2**2 == 1"),
+            ("sequence repetition", "assert 'ab' * 10**9 * 10**9 == 'x'"),
+            ("deep unary", "assert " + " not" * 2000 + " None"),
+        ):
+            with self.subTest(case=label):
+                started = time.monotonic()
+                self.assertIsNone(reason(body))
+                self.assertLess(time.monotonic() - started, 5.0)
+        # non-vacuity: a real tautology in the same shape is still caught
+        self.assertIs(reason("assert 1 == 1"), _CONSTANT_ASSERTIONS_PASSES)
+        self.assertIs(reason("assert 1 == 2"), _CONSTANT_ASSERTIONS_FAILS)

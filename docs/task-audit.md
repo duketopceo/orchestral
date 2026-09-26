@@ -33,7 +33,7 @@ it for you.
 | `unknown_validation_check` | error | `validation:` names a check the runner does not implement for that type. Silently dropped today; the run reports a pass anyway. |
 | `ignored_validation_list` | error | `code` / `sql` / `extract` / `api` never read `validation:`. They compute a fixed check set from `metadata`, so anything declared there is a phantom gate. |
 | `absent_grading_contract` | error | A self-anchored type ships no anchor in `metadata`, so its grader has nothing to compare the artifact against: `code` with no `metadata.tests`, `extract` with neither a required `fields` entry nor `expected`, `sql` with no `reference_sql`, `api` with no `calls`. `sql` and `api` fail closed at runtime; `extract` does not — an empty contract grades `{}` as `passes=True score=1.0`. |
-| `structural_only` | warn | Nothing in the grader requires topical content. `has_title` / `has_cta` / `has_form` prove markup exists, not that the artifact is about the task, so only `has_required` with a non-empty `metadata.required`, or `matches_pattern` with a non-empty `metadata.pattern`, clear this. Both halves are required: the runner reads each declaration in exactly one place, inside that check, so a declaration without the check anchors nothing and the check without a declaration has nothing to compare against. The suggested fix is type-aware: a type whose grader never reads text (`image`, `video`) has no compliant way to anchor the subject from the spec. |
+| `structural_only` | warn | Nothing in the grader requires topical content. `has_title` / `has_cta` / `has_form` prove markup exists, not that the artifact is about the task, so only `has_required` with a non-empty `metadata.required`, or `matches_pattern` with a non-empty `metadata.pattern`, clear this. Both halves are required: the runner reads each declaration in exactly one place, inside that check, so a declaration without the check anchors nothing and the check without a declaration has nothing to compare against. The declaration's *shape* is modelled the way the runner reads it, because the runner iterates `required`: a mapping contributes its keys, and a bare string its characters, so `required: kite` anchors nothing. This is not keyed on the task type — `constraint` and `needle` are labels the runner uses, not graders, so a `validation: [html]` spec of either type is checked like any other. The suggested fix is type-aware: a type whose grader never reads text (`image`, `video`) has no compliant way to anchor the subject from the spec. |
 | `unanchored_fileset` | warn | `multi-file` grades filenames and byte counts only. No check reads the file bodies. Fires in all three unanchored states: no usable `metadata.expected_paths`, declared paths that `has_paths` was never asked to check, or declared paths checked only for existence. |
 | `prompt_states_the_answer` | warn | The prompt spells out graded output — an expected value, the reference query, or the expected call list. Recitation scores the same as reasoning. `extract` is exempt by design: its prompt carries the source document. |
 | `answer_derivable_from_prompt` | warn | Every graded value is readable in the prompt (`extract`, `sql`). The task ceiling is transcription and lookup, not problem solving. |
@@ -109,9 +109,14 @@ built only from the constructs above.
   `self.assertTrue(self.flag)` — provably passes for any artifact. Detecting it
   needs execution: run the suite against a stub and require it to fail. This
   audit executes nothing, so it does not claim to catch it.
-- A base class reached through indirection the folder does not model — a class
-  built by a metaclass, or assigned at module level (`TC = unittest.TestCase`)
-  rather than imported.
+- A base class reached through indirection the resolver does not model — a class
+  assigned at module level (`TC = unittest.TestCase`) rather than imported. The
+  resolver follows `import` and `from ... import` forms and a base defined
+  earlier in the same suite, and nothing else, so such a class does not resolve
+  to a `TestCase` and the suite is reported rather than cleared. That direction is
+  safe — such a suite is unusual — but the report says the suite passes for any
+  artifact, which is a claim about the *author's* suite that has not been
+  checked. Treat it as "not confirmed a gate", not as "is not a gate".
 - A test body that does something but shows the audit no assertion — an
   assertion assembled at runtime. The rule stays silent rather than call it a
   constant, which would be false in both halves: there *is* an assertion, and
@@ -124,9 +129,18 @@ declaration anchors the subject only when that check is requested *and* the
 declaration names something. Requesting `has_required` with no `required`
 declares nothing to compare against — the runner reports that as an error — and
 `required: [""]` is satisfied by every artifact, so neither clears
-`structural_only`. One limit on this: `pattern: "."` is a match-everything
-regex and does clear it. Deciding how strong a regex has to be is a separate
-analysis from whether one was declared, and is not implemented.
+`structural_only`. The shape of the declaration matters as much as its content,
+because the runner iterates it: `for t in required` means a mapping contributes
+its keys, a list its items, and a **bare string its characters**, so
+`required: kite` asks only that the artifact contain `k`, `i`, `t` and `e` and
+clears nothing. A token of one character is satisfied by nearly any artifact, so
+`[""]`, `[0]` and `["a"]` declare nothing too.
+
+One limit on this: a `pattern` that matches every artifact — `.`, `^`, `.*`,
+`[\s\S]*` — clears the finding, because deciding how strong a regex has to be is a
+separate analysis from whether one was declared, and only the second is done here.
+A declaration is compared against `metadata.pattern` as written, exactly as
+`re.search(str(pattern), artifact)` will read it.
 
 **Why that matters here.** At this commit code execution is live:
 `run_unittest_suite` writes the suite to `task_tests.py` in a temp directory and
@@ -139,15 +153,32 @@ beyond the timeout. Whether that is an acceptable boundary for model-authored
 code is a security review, tracked in DUK-87 and routed to the Identity Auditor.
 This file records the exposure; it does not bless it.
 
-**The audit always answers.** It is a whole-suite gate, so a rule that never
-returns, or raises, costs every spec its verdict rather than one spec a finding.
-Constant folding is therefore bounded: operands and results are capped, `**` and
-sequence repetition are predicted from their operands and refused before the
-work happens, and folding stops at a fixed depth. A suite too deeply nested to
-read at all is reported as unreadable rather than raised. Refusing to fold is the
-conservative direction — the assertion is then treated as possibly reading the
-artifact, which is what a real assertion looks like — so the cost of a cap is a
-missed tautology, never a wedged or crashed gate.
+**The audit is built not to wedge, and what that claim rests on.** It is a
+whole-suite gate, so a rule that never returns, or raises, costs every spec its
+verdict rather than one spec a finding. Three things are bounded:
+
+- *constant folding* — operands and results are capped, `**` and sequence
+  repetition are predicted from their operands and refused before the work
+  happens, and folding stops at a fixed depth. Refusing to fold is the
+  conservative direction — the assertion is then treated as possibly reading the
+  artifact, which is what a real assertion looks like — so the cost of a cap is a
+  missed tautology;
+- *base-class resolution* — a base chain is walked with an explicit worklist, not
+  by recursion, because chain length is not bounded the way tree depth is. Tree
+  depth is the parser's business and it refuses beyond a few hundred; a chain of
+  a thousand `class C1(C0): pass` statements is a thousand separate top-level
+  statements and parses fine. Recursing it took the gate's answer for every spec
+  with it;
+- *spec-controlled text in patterns* — `metadata.calls[].method` is interpolated
+  into a regex, so it is escaped. A nested quantifier there is a denial of
+  service against the gate: `(A+)+B` doubles the backtracking cost every two
+  characters.
+
+This is a statement about the inputs that were tried, not a proof. A suite too
+deeply nested for the parser to read at all is reported as unreadable rather than
+raised, and an input that defeats one of these three bounds is not known. What
+the bounds buy is that the known ones cost a missed detection rather than a
+missing verdict.
 
 
 ## What this does not do

@@ -28,7 +28,24 @@ MP4_BYTES = b"\x00\x00\x00\x18ftypisom" + b"\x00" * 8
 
 # A suite that runs one test and asserts nothing: it passes for any artifact.
 NO_OP_SUITE = "import unittest\n\n\nclass T(unittest.TestCase):\n    def test_x(self):\n        pass\n"
-ASSERTING_SUITE = "import unittest\n\n\nclass T(unittest.TestCase):\n    def test_x(self):\n        self.assertEqual(1, 1)\n"
+# A suite whose assertion reads the artifact, so it can discriminate.
+ASSERTING_SUITE = (
+    "import unittest\n\nfrom solution import solve\n\n\n"
+    "class T(unittest.TestCase):\n"
+    "    def test_x(self):\n"
+    "        self.assertEqual(solve('a b'), 'a-b')\n"
+)
+# Suites that carry an assertion unittest will never run, or one that cannot fail.
+UNCOLLECTED_SUITE = "def test_x():\n    assert True\n"
+NOT_A_TEST_CASE = "class T:\n    def test_x(self):\n        assert True\n"
+WRONG_NAME_SUITE = "import unittest\n\n\nclass T(unittest.TestCase):\n    def check_x(self):\n        assert True\n"
+CONSTANT_SUITE = "import unittest\n\n\nclass T(unittest.TestCase):\n    def test_x(self):\n        assert True\n"
+CONSTANT_ASSERT_TRUE = (
+    "import unittest\n\n\nclass T(unittest.TestCase):\n    def test_x(self):\n        self.assertTrue(True)\n"
+)
+CONSTANT_ASSERT_EQUAL = (
+    "import unittest\n\n\nclass T(unittest.TestCase):\n    def test_x(self):\n        self.assertEqual(1, 1)\n"
+)
 
 # Which `Runner` method implements each registry entry. The text-producing
 # types share `_validate`; the media and fileset types compute their own sets.
@@ -40,6 +57,26 @@ VALIDATOR_FOR_TYPE = {
     "video": "_validate_video",
     "multi-file": "_validate_multi",
 }
+
+
+def unimplemented_names(registry: dict[str, frozenset[str]], shorthands: dict[str, frozenset[str]],
+                        body_of) -> list[tuple[str, str]]:
+    """Registered names the implementing validator body never assigns.
+
+    A name is implemented when the body assigns `checks["<name>"]`, or when the
+    body carries it as a shorthand it expands. The shorthand exemption is
+    looked up per type, so a name cannot hide behind another type's shorthand.
+    """
+    missing: list[tuple[str, str]] = []
+    for task_type, names in registry.items():
+        source = body_of(task_type)
+        for name in sorted(names):
+            if name in shorthands.get(task_type, frozenset()):
+                if name not in source:
+                    missing.append((task_type, name))
+            elif f'checks["{name}"]' not in source:
+                missing.append((task_type, name))
+    return missing
 
 
 def _task(**kwargs) -> TaskSpec:
@@ -123,11 +160,28 @@ class TestCheckNamesFailClosed(unittest.TestCase):
         from orchestral.audit import VALIDATION_CHECKS, VALIDATION_SHORTHANDS
 
         self.assertEqual(set(VALIDATION_CHECKS), set(VALIDATOR_FOR_TYPE))
-        for task_type, names in VALIDATION_CHECKS.items():
-            source = inspect.getsource(getattr(runner.Runner, VALIDATOR_FOR_TYPE[task_type]))
-            for name in sorted(set(names) - VALIDATION_SHORTHANDS):
-                with self.subTest(type=task_type, check=name):
-                    self.assertIn(f'checks["{name}"]', source)
+        bodies = {
+            task_type: inspect.getsource(getattr(runner.Runner, method))
+            for task_type, method in VALIDATOR_FOR_TYPE.items()
+        }
+        self.assertEqual(unimplemented_names(VALIDATION_CHECKS, VALIDATION_SHORTHANDS, bodies.get), [])
+
+    def test_the_drift_guard_flags_a_registered_name_with_no_assignment(self):
+        """Test the guard, not just the registry: a guard that only ever sees a
+        clean registry cannot detect its own blind spot."""
+        from orchestral.audit import VALIDATION_SHORTHANDS
+
+        bodies = {"image": 'checks["non_empty"] = True\n'}
+        phantom = {"image": frozenset({"non_empty", "has_alpha"})}
+        self.assertEqual(unimplemented_names(phantom, VALIDATION_SHORTHANDS, bodies.get), [("image", "has_alpha")])
+
+    def test_the_drift_guard_does_not_let_a_name_hide_behind_another_types_shorthand(self):
+        from orchestral.audit import VALIDATION_SHORTHANDS
+
+        bodies = {"image": 'checks["non_empty"] = True\n'}
+        self.assertNotIn("image", VALIDATION_SHORTHANDS)
+        smuggled = {"image": frozenset({"non_empty", "html"})}
+        self.assertEqual(unimplemented_names(smuggled, VALIDATION_SHORTHANDS, bodies.get), [("image", "html")])
 
 
 class TestAbsentGradingContract(unittest.TestCase):
@@ -160,6 +214,58 @@ class TestAbsentGradingContract(unittest.TestCase):
         )
         self.assertIn("absent_grading_contract", _rules(spec))
 
+    def test_constant_assertion_is_an_error(self):
+        """`assert True` can never fail, so it gates nothing."""
+        spec = TaskSpec(id="c-5", type="code", prompt="Write it.", metadata={"tests": CONSTANT_SUITE})
+        found = _rules(spec)
+        self.assertIn("absent_grading_contract", found)
+        self.assertIn("constant", found["absent_grading_contract"][0].detail)
+
+    def test_constant_assert_true_call_is_an_error(self):
+        spec = TaskSpec(id="c-6", type="code", prompt="Write it.", metadata={"tests": CONSTANT_ASSERT_TRUE})
+        self.assertIn("absent_grading_contract", _rules(spec))
+
+    def test_constant_assert_equal_is_an_error(self):
+        spec = TaskSpec(id="c-7", type="code", prompt="Write it.", metadata={"tests": CONSTANT_ASSERT_EQUAL})
+        self.assertIn("absent_grading_contract", _rules(spec))
+
+    def test_assertion_outside_a_collected_test_is_an_error(self):
+        """unittest collects only TestCase methods, so this assertion never runs."""
+        for suite in (UNCOLLECTED_SUITE, NOT_A_TEST_CASE, WRONG_NAME_SUITE):
+            with self.subTest(suite=suite.splitlines()[0]):
+                spec = TaskSpec(id="c-8", type="code", prompt="Write it.", metadata={"tests": suite})
+                found = _rules(spec)
+                self.assertIn("absent_grading_contract", found)
+                self.assertIn("collect", found["absent_grading_contract"][0].detail)
+
+    def test_smoke_assertion_against_a_real_value_is_not_flagged(self):
+        """`assert result is not None` is a legitimate smoke check, not a constant."""
+        suite = (
+            "import unittest\n\nfrom solution import solve\n\n\n"
+            "class T(unittest.TestCase):\n"
+            "    def test_x(self):\n"
+            "        result = solve('a b')\n"
+            "        assert result is not None\n"
+            "        self.assertEqual(solve(''), '')\n"
+        )
+        spec = TaskSpec(id="c-9", type="code", prompt="Write it.", metadata={"tests": suite})
+        self.assertNotIn("absent_grading_contract", _rules(spec))
+
+    def test_inherited_test_case_base_is_accepted(self):
+        suite = (
+            "import unittest\n\nfrom solution import solve\n\n\n"
+            "class Base(unittest.TestCase):\n    pass\n\n\n"
+            "class T(Base):\n"
+            "    def test_x(self):\n"
+            "        self.assertEqual(solve('a b'), 'a-b')\n"
+        )
+        spec = TaskSpec(id="c-10", type="code", prompt="Write it.", metadata={"tests": suite})
+        self.assertNotIn("absent_grading_contract", _rules(spec))
+
+    def test_unparseable_suite_is_an_error(self):
+        spec = TaskSpec(id="c-11", type="code", prompt="Write it.", metadata={"tests": "def test_x(:\n"})
+        self.assertIn("absent_grading_contract", _rules(spec))
+
     def test_extract_without_fields_or_expected_is_an_error(self):
         """`check_extraction` scores an empty contract as 1.0, so no rule saw it."""
         spec = TaskSpec(id="x-1", type="extract", prompt="Pull the totals from this invoice.", metadata={})
@@ -167,13 +273,29 @@ class TestAbsentGradingContract(unittest.TestCase):
         self.assertIn("absent_grading_contract", found)
         self.assertIn("fields", found["absent_grading_contract"][0].detail)
 
-    def test_extract_with_fields_only_is_clean_of_that_error(self):
+    def test_extract_with_only_optional_fields_is_an_error(self):
+        """A field that is neither required nor paired with expected grades nothing."""
         spec = TaskSpec(
-            id="x-2",
+            id="x-3",
             type="extract",
             prompt="Pull the total.",
             metadata={"fields": {"total": {"type": "number"}}},
         )
+        found = _rules(spec)
+        self.assertIn("absent_grading_contract", found)
+        self.assertIn("required", found["absent_grading_contract"][0].detail)
+
+    def test_extract_with_one_required_field_is_clean_of_that_error(self):
+        spec = TaskSpec(
+            id="x-4",
+            type="extract",
+            prompt="Pull the total.",
+            metadata={"fields": {"total": {"type": "number", "required": True}}},
+        )
+        self.assertNotIn("absent_grading_contract", _rules(spec))
+
+    def test_extract_with_expected_only_is_clean_of_that_error(self):
+        spec = TaskSpec(id="x-5", type="extract", prompt="Pull the total.", metadata={"expected": {"total": 249.0}})
         self.assertNotIn("absent_grading_contract", _rules(spec))
 
     def test_sql_without_reference_sql_is_an_error(self):
@@ -333,6 +455,24 @@ class TestGamingSurface(unittest.TestCase):
 
     def test_declared_difficulty_clears_the_info(self):
         self.assertNotIn("unlabeled_difficulty", _rules(_task(metadata={"difficulty": "hard"})))
+
+    def test_metadata_required_clears_the_finding_for_a_text_type(self):
+        spec = _task(validation=["html"], metadata={"required": ["kite"]})
+        self.assertNotIn("structural_only", _rules(spec))
+
+    def test_metadata_required_does_not_clear_the_finding_for_an_image(self):
+        """`_validate_image` never reads metadata.required, so declaring it proves nothing."""
+        spec = _task(
+            id="i-3",
+            type="image",
+            prompt="Draw a latte on a wooden table.",
+            validation=["non_empty", "png_signature"],
+            metadata={"required": ["latte", "wooden table"]},
+        )
+        found = _rules(spec)
+        self.assertIn("structural_only", found)
+        self.assertIn("metadata.required", found["structural_only"][0].detail)
+        self.assertIn("never reads", found["structural_only"][0].detail)
 
 
 class TestSuiteLevel(unittest.TestCase):

@@ -145,6 +145,9 @@ def run_sql_check(
     report["match"] = rows_match(expected or [], got or [], ordered=report["ordered"])
     report["score"] = 1.0 if report["match"] else 0.0
     if not report["match"]:
-        report["expected_preview"] = repr((expected or [])[:5])[:_PREVIEW]
+        # `got_preview` is the candidate's own rows, already public in the
+        # artifact. The reference rows are the answer key: `rows_expected`
+        # already reports how many rows a correct answer returns, which is the
+        # shape of the answer without being the answer.
         report["got_preview"] = repr((got or [])[:5])[:_PREVIEW]
     return report

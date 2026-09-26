@@ -85,7 +85,7 @@ orchestral dashboard               # reports/dashboard.html
 | `shots` | Screenshot stored HTML artifacts (needs `[shots]` extra) |
 | `tui` | Interactive terminal UI — browse/inspect/launch runs (needs `[tui]` extra) |
 | `serve` | Local web observatory — same views in a browser, launch/cancel runs (localhost only) |
-| `scrub` | Redact secrets/paths from `runs/` into `runs-pub/` + `manifest.json` |
+| `scrub` | Redact secrets/paths from `runs/` into `runs-pub/` + `manifest.json`, withholding the answer key |
 | `calibrate` | Judge-vs-human agreement from a labels file (`--labels`, `--json`) |
 | `audit` | Static task-spec audit — fail-open checks, structural-only graders, contamination risk (`--json`, `--strict`) — see [docs/task-audit.md](docs/task-audit.md) |
 
@@ -213,7 +213,10 @@ replicate/variance analysis.
 
 `orchestral scrub` copies allowlisted run artifacts into `runs-pub/`, redacts
 credentials/paths/endpoints, preserves binary files byte-for-byte, and writes a
-`manifest.json` index. See [docs/publishing.md](docs/publishing.md).
+`manifest.json` index. It also withholds the answer key: graded expected values,
+the reference solution, and `llm_call` message bodies do not survive a publish,
+so a published run is a result artifact and not a re-runnable benchmark. See
+[docs/publishing.md](docs/publishing.md).
 
 ## GitHub Action
 

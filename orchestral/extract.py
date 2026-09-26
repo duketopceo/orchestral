@@ -129,7 +129,12 @@ def check_extraction(metadata: dict[str, Any], artifact_text: str) -> dict[str, 
             matched += int(ok)
             if not ok:
                 got = repr(obj.get(name))[:120]
-                report["errors"].append(f"{name}: expected {want!r}, got {got}")
+                # The expected value is the answer key. `field_results` still
+                # grades the field and the error names it, so the report says a
+                # field mismatched and what the candidate produced — never what
+                # was wanted. A stored `expected {want!r}` here would reach
+                # report.json, the HTML report, and every published scrub.
+                report["errors"].append(f"{name}: value mismatch (got {got})")
         report["score"] = matched / len(expected)
     else:
         report["score"] = 1.0 if all(report["checks"].values()) else 0.0

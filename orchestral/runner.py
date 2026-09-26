@@ -72,6 +72,19 @@ class RunCancelled(Exception):
     """Raised when the run's cancel_event is set between steps."""
 
 
+# Which rule owns `report["score"]` and `passes`.
+#
+# The mechanical grade owns them. `reports/judge-calibration.md` records the
+# only calibration on file — kappa 0.41 — and its own limitation section says the
+# number was measured against the *validator* fallback with zero live judge
+# verdicts, so the judge's number has never been checked against a human label.
+# The judge's verdict is still recorded in `report["judge"]`; it just does not
+# overrule a measured grade in the stored record. Restoring judge precedence
+# needs a calibration whose judge column is non-empty, not a flag flip. See
+# docs/task-audit.md.
+JUDGE_IS_AUTHORITATIVE = False
+
+
 class Runner:
     def __init__(
         self,
@@ -775,11 +788,15 @@ class Runner:
                     language="text" if is_multi else "html",
                 )
                 ledger.add_many(judge_costs)
+                # The judge's verdict is recorded, not obeyed. See
+                # `JUDGE_IS_AUTHORITATIVE` — the judge has never been calibrated
+                # against real labels, so it does not get to overwrite a
+                # measured grade in the stored record.
                 report["judge"] = judge_result
-                if judge_result.get("score") is not None:
-                    report["score"] = judge_result["score"]
-                if judge_result.get("passed") is not None:
-                    passes = passes and judge_result["passed"]
+
+            # The record says which rule produced `score`, so a reader never has
+            # to guess whether the stored number is measured or judged.
+            report["score_source"] = "judge" if JUDGE_IS_AUTHORITATIVE else "mechanical"
 
             logger.lifecycle(
                 "evaluation.completed", phase="validate", role="judge" if judge else "harness",
@@ -833,15 +850,10 @@ class Runner:
             meta.score = report.get("score")
             meta.latency_ms = (time.perf_counter() - t0) * 1000
             if passes is False:
-                # distinguish a judge rejection of a structurally-valid
-                # artifact from a failed structural check
-                checks = report.get("checks") or {}
-                judge_res = report.get("judge") or {}
-                meta.failure_reason = (
-                    "judge"
-                    if all(checks.values()) and judge_res.get("passed") is False
-                    else "validation"
-                )
+                # The judge no longer decides `passes`, so a failure here is a
+                # validation failure. A judge disagreement is preserved in
+                # `report.judge` rather than relabelled as the cause.
+                meta.failure_reason = "validation"
             self.store.update_meta(meta)
 
             logger.log(
@@ -1274,8 +1286,7 @@ class Runner:
                 "rows_got": report["rows_got"],
             }
         )
-        if report.get("expected_preview"):
-            out["expected_preview"] = report["expected_preview"]
+        if report.get("got_preview"):
             out["got_preview"] = report["got_preview"]
         return passes, out
 

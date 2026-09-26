@@ -20,8 +20,9 @@ ruff check .
 mypy orchestral harness.py
 ```
 
-All three run in CI on every PR with no secrets needed. The paid OpenRouter
-eval workflow (`.github/workflows/orchestral.yml`) runs only on same-repo PRs;
+All three run in CI on every PR with no secrets needed, each as its own job, so
+a failure in one never stops the others from running. The paid OpenRouter eval
+workflow (`.github/workflows/orchestral.yml`) runs only on same-repo PRs;
 external contributions are covered by the mock-provider integration tests.
 
 ## Conventions

@@ -257,6 +257,52 @@ class TestMalformedContract(unittest.TestCase):
         report = check_extraction({"fields": ["total"]}, "{}")
         self.assertTrue(any("not a mapping" in e for e in report["errors"]), report["errors"])
 
+    def test_malformed_expected_cannot_leave_a_presence_only_pass(self):
+        """A required field plus an unreadable `expected` is the DUK-94 fail-open.
+
+        `_as_mapping` drops the malformed value, so the contract quietly degrades
+        to a presence check: `{"name": "Eve"}` scored 1.0 and passed even though the
+        author declared value grades that never ran. The malformation is still
+        reported, and it must also stop the pass.
+        """
+        # `None` is excluded: it means "not declared", so it is not a dropped grade.
+        for value in [v for v in self.WRONG_SHAPES if v is not None]:
+            for artifact in ('{"name": "Eve"}', '{"name": "Anyone At All"}'):
+                with self.subTest(expected=value, artifact=artifact):
+                    md = {
+                        "fields": {"name": {"type": "str", "required": True}},
+                        "expected": value,
+                    }
+                    report = check_extraction(md, artifact)
+                    self.assertFalse(report["passes"])
+                    self.assertFalse(report["checks"]["contract_anchored"])
+                    self.assertEqual(report["score"], 0.0)
+                    self.assertTrue(
+                        any("metadata.expected" in e and "not a mapping" in e
+                            for e in report["errors"]),
+                        report["errors"],
+                    )
+
+    def test_well_formed_required_only_contract_still_passes(self):
+        """The fix targets a dropped `expected`, not the deliberate schema-only form."""
+        md = {"fields": {"name": {"type": "str", "required": True}}}
+        report = check_extraction(md, '{"name": "Eve"}')
+        self.assertTrue(report["checks"]["contract_anchored"])
+        self.assertTrue(report["passes"])
+
+    def test_numeric_field_name_reports_instead_of_raising(self):
+        """YAML keeps `7:` as an int key; joining the names raised TypeError.
+
+        The raise escaped `check_extraction`, so the malformed contract produced no
+        report at all — the run record the finding exists to produce was lost.
+        """
+        report = check_extraction({"fields": {7: {"type": "number"}}}, "{}")
+        self.assertFalse(report["passes"])
+        self.assertFalse(report["checks"]["contract_anchored"])
+        detail = " ".join(report["errors"])
+        self.assertIn("declares 7", detail)
+        self.assertIn("required: true", detail)
+
     def test_absent_key_is_not_called_a_malformation(self):
         """`fields: null` and a missing key both mean 'not declared'."""
         for metadata in ({"fields": None}, {}, {"fields": {}}):

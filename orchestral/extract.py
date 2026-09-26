@@ -82,28 +82,33 @@ def _type_ok(declared: str, value: Any) -> bool:
     return isinstance(value, types)
 
 
-def _as_mapping(metadata: dict[str, Any], key: str, errors: list[str]) -> dict[str, Any]:
+def _as_mapping(
+    metadata: dict[str, Any], key: str, errors: list[str]
+) -> tuple[dict[str, Any], bool]:
     """Read `metadata[key]` as a mapping; a malformed value contributes nothing.
 
     The audit already treats a non-dict `fields` as declaring no fields, and a
     contract is read before the artifact is parsed, so a wrong-shaped value is
     reached on every run rather than only on a parseable artifact. Dropping it
     keeps the grader total; recording why keeps the typo from being silent.
+
+    Returns the mapping and whether a value was declared but unreadable — `None`
+    is not a malformation, it means "not declared".
     """
     value = metadata.get(key)
     if isinstance(value, dict):
-        return value
+        return value, False
     if value is not None:
         errors.append(
             f"metadata.{key} is a {type(value).__name__}, not a mapping, so it declares "
             "nothing and was not applied to the grade."
         )
-    return {}
+    return {}, value is not None
 
 
 def _unanchored_fields(
     fields: dict[str, Any], expected: dict[str, Any]
-) -> tuple[list[str], bool]:
+) -> tuple[list[Any], bool]:
     """Which declared fields the contract never grades, and whether any anchor exists.
 
     A field is graded when it is `required` (checked for presence) or named in
@@ -113,6 +118,9 @@ def _unanchored_fields(
 
     The second element is whether the contract grades anything at all, which
     covers the empty contract where `fields` is empty and there is no `expected`.
+
+    Names come straight from YAML, so a key written `7:` is an int, not a `str`.
+    They are returned as the keys are, and the caller stringifies to name them.
     """
     required = [
         name for name, spec in fields.items() if isinstance(spec, dict) and spec.get("required")
@@ -147,13 +155,16 @@ def check_extraction(metadata: dict[str, Any], artifact_text: str) -> dict[str, 
     # non-dict `fields` as declaring no fields, and a spec author's typo must not
     # cost the run its record. A contract that ends up with nothing to grade still
     # fails closed below.
-    fields = _as_mapping(metadata, "fields", report["errors"])
-    expected = _as_mapping(metadata, "expected", report["errors"])
+    fields, _fields_unreadable = _as_mapping(metadata, "fields", report["errors"])
+    expected, _expected_unreadable = _as_mapping(metadata, "expected", report["errors"])
     unanchored, has_anchor = _unanchored_fields(fields, expected)
     report["checks"]["contract_anchored"] = has_anchor and not unanchored
     if unanchored:
+        # Names are stringified before the sort: a YAML `7:` key is an int, and
+        # joining it raised TypeError out of here, losing the report this branch
+        # exists to write.
         report["errors"].append(
-            f"metadata.fields declares {', '.join(sorted(unanchored))} with neither "
+            f"metadata.fields declares {', '.join(sorted(str(n) for n in unanchored))} with neither "
             "`required: true` nor a metadata.expected value, so the contract grades nothing "
             "for it: an absent field and any fabricated value score the same. Set "
             "`required: true` or add a metadata.expected value."
@@ -163,6 +174,20 @@ def check_extraction(metadata: dict[str, Any], artifact_text: str) -> dict[str, 
             "metadata has no `fields` entry marked `required: true` and no metadata.expected, "
             "so the contract grades nothing: an empty artifact scores 1.0. Add a required "
             "field, or declare expected values."
+        )
+    if _expected_unreadable and has_anchor:
+        # A malformed `expected` is an unreadable value grade, not an absent one. It
+        # is dropped above, which silently downgrades the contract to a presence
+        # check: `{"name": "Eve"}` scores 1.0 and passes a `required: true` field
+        # even though the declared deep-comparison never ran. That is the fail-open
+        # DUK-94 closed, so an unreadable `expected` costs the run its pass. A
+        # malformed `fields` does not, because a well-formed `expected` is still a
+        # value grade over the artifact.
+        report["checks"]["contract_anchored"] = False
+        report["errors"].append(
+            "metadata.expected is not a mapping, so the values it declares were not compared "
+            "and the remaining fields are graded on presence alone: an absent field and any "
+            "fabricated value score the same. Give metadata.expected a mapping shape."
         )
 
     if obj is None:

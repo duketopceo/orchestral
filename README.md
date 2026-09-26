@@ -149,9 +149,9 @@ Implemented task types: **HTML page generation**, **image generation**
 submit/poll/download; `--judge` is skipped for video runs), **multi-file
 projects** (workers return a JSON file set, merged into a reproducible
 `artifact.zip`; archives are never published by `scrub`), **code tasks**
-(same file-set contract; hidden `metadata.tests` run via `python -Es -m
-unittest` in a subprocess — score = fraction of tests passed, replicates
-give pass@k), and **constraint tasks** (workers produce text under hard
+(same file-set contract; live validation is disabled in this release until an
+isolated runtime exists, with no host-subprocess fallback; dry runs compile
+without executing), and **constraint tasks** (workers produce text under hard
 constraints — word/char budgets, required and forbidden tokens, regex
 patterns — the orchestrator picks the best candidate, deterministic
 validators check every constraint), and **long-context needle** tasks (`metadata.document` haystack injected into each subtask; the answer must name the true token and no decoys), and **SQL analytics** (workers produce candidate queries, the orchestrator picks one, and the harness executes it read-only against a fixture SQLite database and compares to `metadata.reference_sql` — fully deterministic scoring), and **structured extraction** (workers return JSON per a declared `metadata.fields` schema, graded per-field against `metadata.expected` — deterministic, partial credit), and **API integration** (workers produce a JSON request plan, replayed over real loopback HTTP against a stub server built from `metadata.stub`; scored by which expected calls actually arrived).

@@ -50,7 +50,7 @@
 - [x] Observability v2 — `debug.jsonl` channel, `calls` index table, `metrics.json`, `failure_reason`/`error_category` taxonomy, `pricing_source`/`api_cost_usd` labels, env/replicate labels, `--verbose`
 - [x] N runs per pairing — replicate variance + error bars in reports
 - [x] Pricing drift check — provider-reported `usage.cost` vs configured prices
-- [x] Executable code task type — worker writes module + tests, run in a subprocess (pass@k)
+- [ ] Isolated-runtime executable code task validation — code filesets ship, but live tests stay disabled until a no-host-mount, no-credential, network-denied runtime with resource limits is wired
 - [x] SQL/analytics task — `sqlite3` execution validator
 - [x] Structured extraction task — deterministic JSON-schema validation
 - [x] Constraint tasks — negative constraints / size budgets, deterministic checks

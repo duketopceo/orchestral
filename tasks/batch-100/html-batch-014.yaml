@@ -6,3 +6,10 @@ prompt: Create a landing page for a electric bike targeted at remote-first start
   CSS.
 validation:
 - html
+- has_required
+- matches_pattern
+metadata:
+  required:
+  - bike
+  pattern: remote[ -]?first|distributed|async|remote team|work from anywhere|hybrid|global
+    team|timezone|time zone|hire anywhere

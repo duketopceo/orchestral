@@ -13,7 +13,20 @@ validation:
   - has_title
   - has_cta
   - has_form
+  # has_title/has_cta/has_form prove markup exists, not that the page is about
+  # coffee subscriptions. The subject words and the pricing structure the prompt
+  # asks for are what make a passing artifact an answer to *this* prompt.
+  - has_required
+  - matches_pattern
 assets: []
 metadata:
   difficulty: easy
   estimated_subtasks: 3
+  # Both stems come from the prompt's own subject ("premium coffee subscription
+  # service"); a generic landing page about anything else satisfies neither.
+  required:
+    - coffee
+    - subscrib
+  # The prompt requires a 3-tier pricing section, so any way of rendering tiers
+  # clears the leg: a heading, a plan name, or a price per month.
+  pattern: 'pricing|tier|per month|monthly|annual|/mo|/month|choose your|subscription plan'

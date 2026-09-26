@@ -9,6 +9,9 @@ validation:
   - non_empty
   - zip_signature
   - has_paths
+  # has_paths grades names and byte counts, so one byte per name passes. This
+  # reads the bodies, so the artifact has to be the site the prompt describes.
+  - has_content
 assets: []
 metadata:
   difficulty: medium
@@ -16,3 +19,13 @@ metadata:
   expected_paths:
     - index.html
     - style.css
+  # Every token is a section the prompt names, so an artifact that carries them
+  # has answered the prompt rather than named two files after it.
+  required_content:
+    index.html:
+      - hero
+      - pricing
+      - email
+    style.css:
+      - pricing
+      - form

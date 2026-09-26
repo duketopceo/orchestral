@@ -6,3 +6,11 @@ prompt: Create a landing page for a smart home dashboard targeted at small busin
   inline CSS.
 validation:
 - html
+- has_required
+- matches_pattern
+metadata:
+  required:
+  - dashboard
+  pattern: small business|small biz|\bsmb\b|local business|independent (?:business|shop|retailer)|shop
+    owner|business owner|sole proprietor|main street|mom[- ]and[- ]pop|grow your business|run
+    your business|boutique owner

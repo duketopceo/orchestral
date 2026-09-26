@@ -243,6 +243,27 @@ def expected_paths(task_metadata: dict[str, Any]) -> list[str]:
     return [sanitize_path(p) for p in declared if isinstance(p, str) and p.strip()]
 
 
+def required_content(task_metadata: dict[str, Any]) -> dict[str, list[str]]:
+    """Sanitized `metadata.required_content`: path -> tokens that must be in that file.
+
+    `has_paths` proves a name exists with a byte in it. This is the companion
+    that reads the body, so a spec can demand the artifact is *about* its
+    subject rather than merely named after it. Keys go through
+    `sanitize_path` so a declared path cannot escape the archive.
+    """
+    declared = task_metadata.get("required_content") or {}
+    if not isinstance(declared, dict):
+        return {}
+    out: dict[str, list[str]] = {}
+    for path, tokens in declared.items():
+        if not isinstance(path, str) or not isinstance(tokens, list):
+            continue
+        clean = [t for t in tokens if isinstance(t, str) and t.strip()]
+        if clean:
+            out[sanitize_path(path)] = clean
+    return out
+
+
 def _entry_pairs(data: Any) -> list[tuple[Any, Any]]:
     """Normalize the accepted file-set shapes into (path, content) pairs."""
     if isinstance(data, dict):

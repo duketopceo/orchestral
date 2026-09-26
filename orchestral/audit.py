@@ -1326,7 +1326,11 @@ def find_duplicate_families(
         if len(members) < min_family:
             continue
         ids = sorted(specs[i].id for i in members)
-        shared = Counter(t for i in members for t in tokens[i]).most_common(6)
+        # `tokens[i]` is a set, so `most_common` would break ties by hash order and
+        # the finding's *content* changed with PYTHONHASHSEED. Counting is stable;
+        # it is the tie-break that was not, so it is made explicit and alphabetical.
+        counts = Counter(t for i in members for t in tokens[i])
+        shared = sorted(counts.items(), key=lambda item: (-item[1], item[0]))[:6]
         findings.append(
             Finding(
                 rule="near_duplicate_family",
@@ -1380,8 +1384,50 @@ PER_SPEC_RULES = (
 )
 
 
+def _unreadable_field(spec: TaskSpec) -> str | None:
+    """Name the first field the grader could not read, or None if it can.
+
+    `TaskSpec` is a dataclass with no runtime type check, so a spec file can put
+    anything in these three fields and the bad value reaches `spec.metadata.get(...)`
+    in about ten places. A non-mapping `metadata` raised `AttributeError` out of a
+    rule and took the gate's answer for every other spec with it.
+
+    `load_task` rejects these on the file path, so this only fires for a caller
+    that built a `TaskSpec` directly — which is why the finding is an error here
+    and the `required: 5` case below it is a warning. There, the grader still
+    runs and speaks louder than any audit line; here the audit learned nothing
+    about the spec at all, and nothing else is going to say so.
+    """
+    if not isinstance(spec.metadata, dict):
+        return f"metadata is a {type(spec.metadata).__name__}, not a mapping"
+    # `validation:` with nothing under it parses to None, and None has always meant
+    # "no explicit checks, use the defaults" — so it is not a malformed spec and
+    # must not become one here.
+    if spec.validation is not None and not isinstance(spec.validation, list):
+        return f"validation is a {type(spec.validation).__name__}, not a list of check names"
+    if any(not isinstance(name, str) for name in spec.validation or ()):
+        return "validation contains a check name that is not a string"
+    if not isinstance(spec.prompt, str):
+        return f"prompt is a {type(spec.prompt).__name__}, not a string"
+    return None
+
+
 def audit_spec(spec: TaskSpec, path: Path | None = None) -> list[Finding]:
     """Run every per-spec rule against one spec."""
+    unreadable = _unreadable_field(spec)
+    if unreadable is not None:
+        return [
+            Finding(
+                rule="unreadable_spec_fields",
+                severity=ERROR,
+                task_id=spec.id,
+                path=str(path) if path else None,
+                detail=(
+                    f"{unreadable}, so no check the spec asks for can fire and the grader cannot "
+                    "read it. load_task rejects this on the file path; fix the spec's shape."
+                ),
+            )
+        ]
     findings: list[Finding] = []
     for rule in PER_SPEC_RULES:
         findings.extend(rule(spec, path))
@@ -1401,9 +1447,14 @@ def audit_suite(
     for spec, path in zip(specs, locations, strict=True):
         for finding in audit_spec(spec, path):
             report.add(finding)
-    for finding in find_duplicate_families(specs, min_family=min_family, similarity=similarity):
+    # The two suite-level rules read `spec.metadata` and `spec.prompt` directly, so
+    # a spec whose fields are the wrong shape is excluded from them rather than
+    # crashing the whole tree on the way past. It is already reported by
+    # `audit_spec` above.
+    readable = [spec for spec in specs if _unreadable_field(spec) is None]
+    for finding in find_duplicate_families(readable, min_family=min_family, similarity=similarity):
         report.add(finding)
-    for finding in check_holdout_arm(specs):
+    for finding in check_holdout_arm(readable):
         report.add(finding)
     return report
 

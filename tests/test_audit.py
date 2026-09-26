@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import inspect
+import os
 import subprocess
 import sys
 import tempfile
@@ -15,6 +16,7 @@ from typing import ClassVar
 from unittest import TestCase
 
 from orchestral import audit as orchestral_audit
+from orchestral import config as orchestral_config
 from orchestral.audit import (
     _CONSTANT_ASSERTIONS_FAILS,
     _CONSTANT_ASSERTIONS_NEUTRAL,
@@ -1645,12 +1647,20 @@ class TestDocumentedClaimsAreExecuted(TestCase):
         self.assertIs(reason("assert 1 == 2"), _CONSTANT_ASSERTIONS_FAILS)
 
 
-# Every key any rule reads out of `spec.metadata`, and a value of each that the
-# author could plausibly write and the rule could mishandle.
+# The metadata keys `orchestral/audit.py` reads, with a value of each the author
+# could plausibly write and a rule could mishandle. Kept honest by
+# `TestTheKeyListIsDerivedFromTheCode`, which derives the set from the source
+# rather than trusting this tuple: the hand-written version omitted
+# `expected_answer`, which two rules read.
 _METADATA_KEYS = (
-    "calls", "difficulty", "expected", "expected_paths", "fields", "holdout",
-    "pattern", "required", "tests", "module", "reference_sql", "forbidden",
-    "forbidden_pattern", "timeout_seconds",
+    "calls", "difficulty", "expected", "expected_answer", "fields", "holdout",
+    "pattern", "reference_sql", "required", "tests",
+)
+
+# The names looked up on something *inside* metadata, reached by nesting a
+# hostile value rather than by naming the key. Computed, not listed.
+_NESTED_KEYS_REACHED: frozenset[str] = frozenset(
+    {"method", "path", "required", "type", "nested", "kite"}
 )
 
 _HOSTILE_VALUES = (
@@ -1684,6 +1694,15 @@ class TestHostileMetadataNeverRaises(TestCase):
             for value in _HOSTILE_VALUES:
                 with self.subTest(key=key, value=repr(value)):
                     audit_spec(_spec_with_metadata(**{key: value}))  # must not raise
+
+    def test_no_rule_raises_on_a_hostile_value_nested_inside_metadata(self):
+        """`metadata: {calls: 5}` is not the only way to reach `call.get("method")`.
+        A list of entries with a hostile value inside one reaches it too, and a
+        key list alone would not notice.
+        """
+        for metadata in _HOSTILE_NESTED:
+            with self.subTest(metadata=repr(metadata)):
+                audit_spec(_spec_with_metadata(**metadata))  # must not raise
 
     def test_no_rule_raises_when_several_keys_are_hostile_at_once(self):
         for first, second in (("required", "pattern"), ("required", "calls"),
@@ -1825,12 +1844,6 @@ class TestTheTokenListIsTheRunnersTokenList(TestCase):
                     [t for t in grader_tokens if len(t) > 1 and t.strip()],
                 )
 
-    def test_the_shapes_enumerated_match_the_keys_the_rules_read(self):
-        """So "every shape" cannot quietly stop meaning what it says."""
-        declared = set(globals()["_METADATA_KEYS"])
-        self.assertIn("required", declared)
-        self.assertNotIn("required", declared - {"required"})
-
 
 class TestMixedSuiteStaysSilentForTheRightReason(TestCase):
     """F3: a suite holding a constant *and* a real assertion is not reported.
@@ -1880,6 +1893,18 @@ class TestMixedSuiteStaysSilentForTheRightReason(TestCase):
         text = DOC.read_text(encoding="utf-8")
         self.assertIn("the audit does not strip", text)
         self.assertNotIn("the audit strips", text)
+
+    def test_the_doc_pins_the_strict_exit_code_for_a_raising_spec(self):
+        """QA's point was not the severity — it was that a spec whose grader
+        raises still passes `--strict`, and the doc did not say so. That is the
+        fact an author needs, so it is pinned in both directions.
+        """
+        text = DOC.read_text(encoding="utf-8")
+        self.assertIn("`--strict` exits 0 on it", text)
+        # the sentence wraps across lines in the source, so normalise before pinning
+        flat = " ".join(text.split())
+        self.assertIn("The severity is a judgement, not a consequence", flat)
+        self.assertIn("so `--strict` exits 0 on it", flat)
 
     def test_the_doc_states_the_silent_reason_as_a_cannot_inflate_score(self):
         text = DOC.read_text(encoding="utf-8")
@@ -1964,3 +1989,222 @@ class TestTheAuditAgreesWithTheRealGrader(TestCase):
                     self._grader_passes_any_artifact(required),
                     "the audit calls this anchored, but the grader passes every artifact",
                 )
+
+
+def _metadata_lookups_in_audit() -> dict[str, set[str]]:
+    """Every name `orchestral/audit.py` looks up, mapped to the expression it is
+    looked up on.
+
+    Derived from the source on purpose. The hand-written list this replaces
+    omitted `expected_answer`, which two rules read, and nothing failed — because
+    nothing compared the list to the code. The scan deliberately
+    over-approximates: it catches every string-keyed `.get()` and subscript in
+    the file, so a name reached through a helper parameter (`metadata.get("fields")`)
+    is covered as well as one reached through `spec.metadata`. Over-approximating
+    is the safe direction for a hostile-value test: extra names are noise, a
+    missing name is a blind spot.
+    """
+    source = Path(orchestral_audit.__file__).read_text(encoding="utf-8")
+    found: dict[str, set[str]] = {}
+
+    def record(name: str, owner: str) -> None:
+        found.setdefault(name, set()).add(owner)
+
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Call):
+            if not (isinstance(node.func, ast.Attribute) and node.func.attr == "get"):
+                continue
+            if node.args and isinstance(node.args[0], ast.Constant) \
+                    and isinstance(node.args[0].value, str):
+                record(node.args[0].value, ast.unparse(node.func.value))
+        elif isinstance(node, ast.Subscript):
+            if not (isinstance(node.value, ast.Attribute)
+                    and isinstance(node.slice, ast.Constant)
+                    and isinstance(node.slice.value, str)):
+                continue
+            record(node.slice.value, ast.unparse(node.value))
+    return found
+
+
+def _metadata_keys_read_by_audit() -> set[str]:
+    """The names looked up on a `metadata` expression."""
+    return {
+        name for name, owners in _metadata_lookups_in_audit().items()
+        if any("metadata" in owner for owner in owners)
+    }
+
+
+def _nested_keys_read_by_audit() -> set[str]:
+    """Names looked up on something *inside* metadata, e.g. a `calls` entry."""
+    return {
+        name for name, owners in _metadata_lookups_in_audit().items()
+        if not any("metadata" in owner for owner in owners)
+    }
+
+
+# Nested structures a hostile value can hide inside. `metadata: {calls: 5}` is
+# not the only shape that reaches `call.get("method")` — a list of entries with a
+# hostile value inside one reaches it too, and the key list alone would not notice.
+_HOSTILE_NESTED = (
+    {"calls": [{"method": 5, "path": 5}]},
+    {"calls": [{"method": ["x"], "path": ["x"]}]},
+    {"calls": [{"method": "(A+)+B", "path": "(A+)+B"}]},
+    {"calls": ["a string, not a mapping"]},
+    {"fields": {"a": 5}},
+    {"fields": {"a": {"type": 5, "required": 5}}},
+    {"fields": {"a": {"required": {"nested": 5}}}},
+    {"expected": [5]},
+    {"expected": [{"kite": 5}]},
+    {"tests": 5},
+    {"holdout": 5},
+    {"difficulty": {"a": 5}},
+)
+
+
+class TestTheKeyListIsDerivedFromTheCode(TestCase):
+    """F8: the comment claimed "every key any rule reads" and omitted one."""
+
+    def test_every_metadata_key_the_audit_reads_is_in_the_hostile_value_list(self):
+        missing = sorted(_metadata_keys_read_by_audit() - set(_METADATA_KEYS))
+        self.assertEqual(missing, [], f"read by audit.py, absent from _METADATA_KEYS: {missing}")
+
+    def test_every_key_read_inside_metadata_is_reached_by_a_nested_hostile_value(self):
+        """`method` and `path` are read off a `calls` entry, not off metadata, so
+        they are covered by nesting rather than by the key list. Dropping either
+        coverage has to fail here.
+        """
+        nested = _NESTED_KEYS_REACHED
+        for name in sorted(_nested_keys_read_by_audit()):
+            with self.subTest(key=name):
+                self.assertIn(name, nested)
+
+    def test_the_derivation_itself_is_not_vacuous(self):
+        """The previous version of this check compared a constant to itself, so
+        it passed on an empty code change. This one reads the code, and asserts
+        the code still has the shape it is supposed to have.
+        """
+        read = _metadata_keys_read_by_audit()
+        self.assertGreaterEqual(len(read), 8, f"derivation found only {sorted(read)}")
+        for expected in ("required", "fields", "tests", "pattern", "expected",
+                         "expected_answer", "reference_sql"):
+            self.assertIn(expected, read)
+        self.assertIn("expected_answer", _METADATA_KEYS)
+
+
+class TestTheMetadataContainerIsGuarded(TestCase):
+    """F7: a type-invalid *container* escaped validation entirely.
+
+    `required: 5` was fixed last round; the container it hangs off was not, and
+    the fix added a new unguarded read of the same shape six lines above the one
+    that raised. A spec whose `metadata` is a list or a string cannot be read by
+    the grader or by any rule.
+    """
+
+    HOSTILE_CONTAINERS = (5, 2.5, -3, True, "kite", [1, 2], ("a",), None)
+
+    def test_a_non_mapping_metadata_does_not_raise_in_audit_spec(self):
+        for value in self.HOSTILE_CONTAINERS:
+            with self.subTest(metadata=repr(value)):
+                spec = TaskSpec(id="c-cont", type="html", prompt="Write it.",
+                                validation=["html"], metadata=value)
+                self.assertIsInstance(audit_spec(spec), list)  # must not raise
+
+    def test_a_non_mapping_metadata_is_reported_with_its_actual_shape(self):
+        spec = TaskSpec(id="c-cont", type="html", prompt="Write it.",
+                        validation=["html"], metadata=5)
+        rules = _rules(spec)
+        self.assertIn("unreadable_spec_fields", rules)
+        self.assertIn("int", rules["unreadable_spec_fields"][0].detail)
+
+    def test_a_non_mapping_validation_does_not_raise(self):
+        for value in (5, "html", {"html": True}, 2.5):
+            with self.subTest(validation=repr(value)):
+                spec = TaskSpec(id="c-v", type="html", prompt="Write it.",
+                                validation=value, metadata={})
+                self.assertIsInstance(audit_spec(spec), list)
+
+    def test_a_non_string_prompt_does_not_raise(self):
+        for value in (5, ["Write it."], None):
+            with self.subTest(prompt=repr(value)):
+                spec = TaskSpec(id="c-p", type="html", prompt=value,
+                                validation=["html"], metadata={})
+                self.assertIsInstance(audit_spec(spec), list)
+
+    def test_load_task_rejects_it_with_the_projects_own_error(self):
+        """`load_task` already rejects an unknown `type` with `ConfigError`; a
+        type-invalid field is the same class of problem and belongs on the path
+        the project already owns, not in a rule ten frames deep.
+        """
+        for value, key in ((5, "metadata"), (5, "validation"), (5, "prompt"),
+                           ("kite", "metadata"), ([1, 2], "metadata")):
+            with self.subTest(key=key, value=repr(value)), \
+                    tempfile.TemporaryDirectory() as raw:
+                    path = Path(raw) / "bad.yaml"
+                    body = textwrap.dedent("""\
+                        id: bad
+                        type: html
+                        prompt: Write it.
+                        validation: [html]
+                        """)
+                    if key == "prompt":
+                        body = body.replace("prompt: Write it.", f"prompt: {value!r}"
+                                            if isinstance(value, str) else f"prompt: {value}")
+                    else:
+                        body += f"{key}: {value!r}\n"
+                    path.write_text(body, encoding="utf-8")
+                    with self.assertRaises(orchestral_config.ConfigError) as caught:
+                        orchestral_config.load_task(path)
+                    self.assertIn(key, str(caught.exception))
+
+    def test_a_well_formed_spec_is_unaffected(self):
+        spec = TaskSpec(id="c-ok", type="html", prompt="Write it.",
+                        validation=["html"], metadata={"difficulty": "hard"})
+        self.assertNotIn("unreadable_spec_fields", _rules(spec))
+
+
+class TestTheFindingSetIsReproducible(TestCase):
+    """F9: the same commit produced different output on four consecutive runs.
+
+    `most_common(6)` over a `set` breaks ties by hash order, so a cluster with
+    more than six equally-shared terms got six arbitrary ones and the finding's
+    *content* changed. Two runs under different hash seeds now have to agree.
+    """
+
+    def _audit_json(self) -> str:
+        import json
+        report = audit_tree(REPO_TASKS)
+        return json.dumps(
+            sorted(
+                (f.severity, f.rule, f.task_id or "", f.detail or "")
+                for f in report.findings
+            )
+        )
+
+    def test_two_runs_under_different_hash_seeds_agree(self):
+        """Run in subprocesses: the seed is fixed at interpreter start, so this
+        cannot be checked in-process without lying about it.
+        """
+        repo = str(Path(orchestral_audit.__file__).resolve().parent.parent)
+        script = (
+            "import json, sys;"
+            "from pathlib import Path;"
+            f"sys.path.insert(0, {repo!r});"
+            "from orchestral.audit import audit_tree;"
+            f"r = audit_tree(Path({str(REPO_TASKS)!r}));"
+            "print(json.dumps(sorted((f.severity, f.rule, f.task_id or '', f.detail or '')"
+            " for f in r.findings)))"
+        )
+        outputs = []
+        for seed in ("0", "1"):
+            result = subprocess.run(
+                [sys.executable, "-c", script],
+                capture_output=True, text=True,
+                cwd=str(Path(__file__).resolve().parent.parent),
+                env={**os.environ, "PYTHONHASHSEED": seed},
+            )
+            self.assertEqual(result.returncode, 0, result.stderr[-2000:])
+            outputs.append(result.stdout.strip())
+        self.assertEqual(
+            outputs[0], outputs[1],
+            "the finding set is not reproducible across hash seeds",
+        )

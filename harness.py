@@ -753,7 +753,25 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
 
 
 def cmd_scrub(args: argparse.Namespace) -> None:
-    copied = scrub_all(Path(args.runs_dir), Path(args.scrub_dir))
+    source = Path(args.runs_dir)
+    # Validate before scrubbing: scrub_all clears the output directory first, so
+    # a wrong --runs-dir used to destroy the previous runs-pub/ and repopulate it
+    # from a directory the caller never named. Fail before any write.
+    if not source.is_dir():
+        print(
+            f"error: runs directory not found: {source}. Nothing was written. "
+            "Set --runs-dir (before or after `scrub`) to the tree holding run.json files.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    if not any(source.rglob("run.json")):
+        print(
+            f"error: no runs found under {source} (no run.json). Nothing was written. "
+            "Check --runs-dir — an empty source must not be published as a success.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    copied = scrub_all(source, Path(args.scrub_dir))
     print(f"Scrubbed {len(copied)} runs to {args.scrub_dir}")
     for c in copied:
         print(f"  {c}")
@@ -815,7 +833,28 @@ def cmd_shots(args: argparse.Namespace) -> None:
     print(f"screenshots: {captured} captured, {current} already current, {no_artifact} no HTML artifact, {failed} unavailable")
 
 
-def main() -> None:
+# Global directory flags are declared on the top-level parser. A subparser that
+# also declares one must use SUPPRESS: argparse copies subparser defaults onto
+# the shared namespace *after* the top-level value is parsed, so a plain
+# default silently overwrote `harness.py --runs-dir X scrub` with "runs".
+GLOBAL_DIR_FLAGS = {"--runs-dir": "runs", "--tasks-dir": "tasks", "--models-dir": "models"}
+
+
+def _add_global_dir_flag(sp: argparse.ArgumentParser, flag: str, help_text: str) -> None:
+    """Re-declare a top-level directory flag on a subparser without shadowing it.
+
+    SUPPRESS leaves the top-level value in place when the flag is absent, and
+    overrides it when given — so both spellings work and the subcommand-local
+    one wins.
+    """
+    if flag not in GLOBAL_DIR_FLAGS:
+        raise ValueError(f"{flag} is not a global directory flag: {sorted(GLOBAL_DIR_FLAGS)}")
+    sp.add_argument(flag, default=argparse.SUPPRESS, help=help_text)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    """Build the full CLI parser. Split out of main() so tests can inspect the
+    flag wiring without executing a subcommand."""
     p = argparse.ArgumentParser(description="orchestral eval harness")
     p.add_argument("--runs-dir", default="runs", help="Root directory for run data")
     p.add_argument("--tasks-dir", default="tasks", help="Task spec directory")
@@ -900,7 +939,7 @@ def main() -> None:
     prices.set_defaults(func=cmd_prices)
 
     export = sub.add_parser("export", help="Export runs as CSV, or a single run as Markdown/JSONL")
-    export.add_argument("--runs-dir", default="runs", help="Root directory for run data")
+    _add_global_dir_flag(export, "--runs-dir", "Root directory for run data")
     export.add_argument("--format", choices=["csv", "md", "jsonl"], default="csv", help="Export format")
     export.add_argument("--run", default=None, help="Export a single run id (md audit or jsonl events)")
     export.add_argument("--leaderboard", action="store_true", help="Export pairing leaderboard as CSV")
@@ -909,30 +948,30 @@ def main() -> None:
     export.set_defaults(func=cmd_export)
 
     scrub = sub.add_parser("scrub", help="Redact sensitive data from all runs for sharing")
-    scrub.add_argument("--runs-dir", default="runs", help="Source runs directory")
+    _add_global_dir_flag(scrub, "--runs-dir", "Source runs directory")
     scrub.add_argument("--scrub-dir", default="runs-pub", help="Where to write scrubbed runs")
     scrub.set_defaults(func=cmd_scrub)
 
     dashboard = sub.add_parser("dashboard", help="Generate a unified stats dashboard")
-    dashboard.add_argument("--runs-dir", default="runs", help="Root directory for run data")
+    _add_global_dir_flag(dashboard, "--runs-dir", "Root directory for run data")
     dashboard.add_argument("--reports-dir", default="reports", help="Output directory for HTML reports")
     dashboard.set_defaults(func=cmd_dashboard)
 
     tui = sub.add_parser("tui", help="Interactive experiment observatory (needs the [tui] extra)")
-    tui.add_argument("--runs-dir", default="runs", help="Root directory for run data")
+    _add_global_dir_flag(tui, "--runs-dir", "Root directory for run data")
     tui.add_argument("--reports-dir", default="reports", help="Output directory for exports")
     tui.add_argument("--refresh", action="store_true", help="Auto-refresh every 5s")
     tui.set_defaults(func=cmd_tui)
 
     shots = sub.add_parser("shots", help="Screenshot HTML artifacts in stored runs (requires playwright extra)")
-    shots.add_argument("--runs-dir", default="runs", help="Root directory for run data")
+    _add_global_dir_flag(shots, "--runs-dir", "Root directory for run data")
     shots.add_argument("--task", default=None, help="Only capture runs for this task id")
     shots.add_argument("--all", action="store_true", help="Re-capture even when screenshots are current")
     shots.set_defaults(func=cmd_shots)
 
     calibrate = sub.add_parser("calibrate", help="Judge-vs-human agreement metrics from a labels file")
     calibrate.add_argument("--labels", required=True, help="YAML labels file (labels: [{run_id, score, passed}])")
-    calibrate.add_argument("--runs-dir", default="runs", help="Root directory for run data")
+    _add_global_dir_flag(calibrate, "--runs-dir", "Root directory for run data")
     calibrate.add_argument("--json", action="store_true", help="Machine-readable output")
     calibrate.set_defaults(func=cmd_calibrate)
 
@@ -941,6 +980,11 @@ def main() -> None:
     serve.add_argument("--open", action="store_true", help="Open the observatory in a browser")
     serve.set_defaults(func=cmd_serve)
 
+    return p
+
+
+def main() -> None:
+    p = build_parser()
     args = p.parse_args()
     if not hasattr(args, "func"):
         p.print_help()

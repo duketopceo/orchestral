@@ -14,6 +14,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from orchestral.audit import audit_tree
 from orchestral.calibrate import agreement_metrics, collect_pairs, load_labels
 from orchestral.config import (
     ConfigError,
@@ -759,6 +760,21 @@ def cmd_scrub(args: argparse.Namespace) -> None:
         print(f"  {c}")
 
 
+def cmd_audit(args: argparse.Namespace) -> None:
+    """Static task-spec audit: can every declared check fire, and can a model pass without working?"""
+    report = audit_tree(
+        args.tasks_dir,
+        min_family=args.min_family,
+        similarity=args.similarity,
+    )
+    if args.json:
+        print(json.dumps(report.to_dict(), indent=2))
+    else:
+        print(report.to_text())
+    if args.strict and not report.ok:
+        sys.exit(1)
+
+
 def cmd_dashboard(args: argparse.Namespace) -> None:
     path = generate_dashboard(args.runs_dir, args.reports_dir)
     print(f"Dashboard generated: {path}")
@@ -935,6 +951,17 @@ def main() -> None:
     calibrate.add_argument("--runs-dir", default="runs", help="Root directory for run data")
     calibrate.add_argument("--json", action="store_true", help="Machine-readable output")
     calibrate.set_defaults(func=cmd_calibrate)
+
+    audit = sub.add_parser(
+        "audit",
+        help="Static task-spec audit — fail-open checks, structural-only graders, contamination risk",
+    )
+    audit.add_argument("--tasks-dir", default="tasks", help="Task spec directory")
+    audit.add_argument("--min-family", type=int, default=5, help="Specs sharing one prompt before it is a family")
+    audit.add_argument("--similarity", type=float, default=0.8, help="Prompt token Jaccard threshold for a family")
+    audit.add_argument("--json", action="store_true", help="Machine-readable output")
+    audit.add_argument("--strict", action="store_true", help="Exit non-zero when any error-severity finding exists")
+    audit.set_defaults(func=cmd_audit)
 
     serve = sub.add_parser("serve", help="Local web observatory — browse, launch, and cancel runs in a browser (localhost only)")
     serve.add_argument("--port", type=int, default=8787, help="Port to bind on 127.0.0.1 (default 8787)")

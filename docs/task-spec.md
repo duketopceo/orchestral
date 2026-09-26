@@ -23,7 +23,14 @@ metadata: {}                  # optional free-form map (video tasks read generat
 | `prompt` | str | required | Full task brief; the orchestrator decomposes it into subtasks |
 | `validation` | list[str] | `[]` | Check names; empty means the type's default set |
 | `assets` | list[str] | `[]` | Reserved; not consumed by the runner yet |
-| `metadata` | map | `{}` | Free-form; carried into run records. `video` tasks read `duration`, `resolution`, `aspect_ratio`, `generate_audio`, `seed`; `multi-file` tasks read `expected_paths`; `code` tasks read `module`, `tests`, `timeout_seconds`, `expected_paths`, plus quality bounds `max_code_lines`, `max_functions`, `max_complexity_lite`, `no_unsafe`, `no_external_deps`, `forbidden_patterns` |
+| `metadata` | map | `{}` | Free-form; carried into run records. `video` tasks read `duration`, `resolution`, `aspect_ratio`, `generate_audio`, `seed`; `multi-file` tasks read `expected_paths`; `code` tasks read `module`, `tests`, `timeout_seconds`, `expected_paths`, plus quality bounds `max_code_lines`, `max_functions`, `max_complexity_lite`, `no_unsafe`, `no_external_deps`, `forbidden_patterns`; every type reads `version` to label a spec revision (recorded as `task_version`) |
+
+Editing a spec changes its `task_hash` (sha256 of the spec content, recorded
+in the manifest). Runs recorded under the old hash stay valid artifacts but no
+longer pair with runs of the edited spec, so set `metadata.version` (recorded
+as `task_version`) to label the revision and note in the spec why it changed.
+That applies to a bug fix in the expected answer too: a corrected spec is a
+new hash.
 
 ## Task types
 
@@ -118,6 +125,41 @@ metadata: {}                  # optional free-form map (video tasks read generat
   can still burn CPU until the step cap trips). `validation:` entries are
   unused — the check set is fixed (`executed`, `matches_reference`). See
   `tasks/sql-monthly-revenue.yaml`.
+
+  The reference defines truth, so it must return at least one row. An empty
+  reference result is a broken spec (error, null score), not an empty answer
+  to match against — otherwise any candidate returning zero rows, including a
+  nonsense one, scores `1.0`. That is a liveness check only: a reference that
+  is wrong but non-empty still grades, so pin a spec's expected answer in a
+  test. Three rules keep a reference from answering nothing by accident, and
+  from answering more than the prompt asked for:
+
+  - **Round both sides of a comparison, or neither.** `ROUND(SUM(x), 2)`
+    compared against a bare `MAX(SUM(x)) OVER (...)` matches only while the
+    winning total already equals its own 2-decimal rounding, and stops matching
+    the moment it does not — `3 x 12.34` is `37.019999999999996`, which rounds
+    to `37.02`, so that month loses its only row. The condition is that rounding
+    gap, not binary representability: `0.1` is no more exactly representable
+    than `37.019999999999996`, but `ROUND(0.1, 2) = 0.1`, so its month still
+    answers. The reference therefore silently drops every month with a rounding
+    gap and keeps answering normally for the months without one. That partial
+    answer is harder to notice than a total failure, and a non-empty reference
+    passes the check above. Aggregate the rounded value:
+    `MAX(ROUND(SUM(x), 2)) OVER (...)`.
+  - **Seed values that exercise the comparison.** Prices like `30.0` and
+    `12.5` are exact binary fractions, so they hide the case above. Use prices
+    with a fractional cent (`12.34`) and quantities that are not powers of two.
+  - **Break ties, or say how to break them.** A comparison against the month's
+    maximum — `WHERE revenue = best` — matches *every* row tied at that
+    maximum, so a reference can return more rows than a prompt promising "one
+    row per month" ever asked for, and a candidate that resolves the tie is
+    graded wrong. Pick one: state the tie-break in the prompt and implement it
+    in the reference (`ROW_NUMBER() OVER (PARTITION BY month ORDER BY revenue
+    DESC, product ASC) = 1`), or state in the prompt that every tied product
+    gets a row. When `metadata.ordered` is true, the reference's `ORDER BY` must
+    fully determine row order either way, because the compare is positional.
+    `tasks/sql-monthly-revenue.yaml` is the worked example: its prompt names the
+    alphabetical tie-break and its `reference_sql` picks the same row.
 - **`extract`** — workers extract a JSON object per subtask; the orchestrator
   picks the best candidate (same selection flow as `image`/`video`); the
   chosen extraction is stored as `artifact.json` and graded deterministically.

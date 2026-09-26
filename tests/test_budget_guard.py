@@ -256,13 +256,14 @@ class WorkflowWiringTests(unittest.TestCase):
         self.assertIn("python3 -m orchestral.budget", self.guard["run"])
         self.assertIn("--max-cost-usd", self.guard["run"])
 
-    def test_guard_step_has_no_event_condition(self) -> None:
-        """The cap is a spend control: it must bind on dispatch too.
+    def test_guard_step_runs_even_when_the_eval_fails(self) -> None:
+        """A failed eval still spent money.
 
-        A pull_request-only guard left the dispatch input inert and gave a
-        manual paid run no ceiling at all.
+        Without `always()` the cap is skipped exactly when a run blew past it on
+        the way down — the step-level twin of reading a failed run's 0.0 total.
         """
-        self.assertNotIn("if", self.guard)
+        self.assertEqual(self.guard.get("if"), "always()")
+        self.assertNotIn("github.event_name", str(self.guard.get("if", "")))
 
     def test_guard_step_no_longer_compares_the_rate_card_estimate(self) -> None:
         self.assertNotIn("total_cost_usd FROM runs", self.text)

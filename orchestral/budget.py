@@ -34,6 +34,7 @@ from __future__ import annotations
 import argparse
 import sqlite3
 import sys
+from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -89,26 +90,24 @@ def read_billed_cost(db_path: str | Path) -> BilledCost:
     missing or pre-`api_cost_usd` database degrades to the estimate instead of
     raising.
     """
-    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=30.0)
-    try:
-        runs, first_at, last_at = conn.execute(
-            "SELECT COUNT(*), MIN(started_at), MAX(started_at) FROM runs"
-        ).fetchone()
-        calls, priced, billed, unpriced_estimate, estimate = conn.execute(
-            """
-            SELECT COUNT(*),
-                   COALESCE(SUM(api_cost_usd IS NOT NULL), 0),
-                   COALESCE(SUM(api_cost_usd), 0.0),
-                   COALESCE(SUM(CASE WHEN api_cost_usd IS NULL THEN cost_usd END), 0.0),
-                   COALESCE(SUM(cost_usd), 0.0)
-            FROM calls
-            WHERE dry_run = 0
-            """
-        ).fetchone()
-    except sqlite3.Error:
-        return BilledCost(0, 0, 0, 0.0, 0.0, 0.0, None, None)
-    finally:
-        conn.close()
+    with closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=30.0)) as conn:
+        try:
+            runs, first_at, last_at = conn.execute(
+                "SELECT COUNT(*), MIN(started_at), MAX(started_at) FROM runs"
+            ).fetchone()
+            calls, priced, billed, unpriced_estimate, estimate = conn.execute(
+                """
+                SELECT COUNT(*),
+                       COALESCE(SUM(api_cost_usd IS NOT NULL), 0),
+                       COALESCE(SUM(api_cost_usd), 0.0),
+                       COALESCE(SUM(CASE WHEN api_cost_usd IS NULL THEN cost_usd END), 0.0),
+                       COALESCE(SUM(cost_usd), 0.0)
+                FROM calls
+                WHERE dry_run = 0
+                """
+            ).fetchone()
+        except sqlite3.Error:
+            return BilledCost(0, 0, 0, 0.0, 0.0, 0.0, None, None)
     return BilledCost(
         runs=int(runs or 0),
         calls=int(calls or 0),

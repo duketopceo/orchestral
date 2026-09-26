@@ -95,7 +95,11 @@ jobs:
       # pull_request: the cap is a spend control, and a manual run spends the
       # same money. Fork PRs never reach it — the job-level `if` above skips
       # them before any step runs.
+      # always(): a failed eval still spent money. Without this the cap would
+      # be skipped exactly when a run blew past it on the way down, which is
+      # the same hole as reading a failed run's 0.0 total.
       - name: Enforce cost budget
+        if: always()
         run: python3 -m orchestral.budget --runs-dir runs --max-cost-usd "${MAX_COST_USD:-0.05}"
 
       # DECLINED as a blocking gate, on purpose (DUK-214 AC #3).

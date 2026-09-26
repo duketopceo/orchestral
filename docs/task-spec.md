@@ -131,7 +131,7 @@ metadata: {}                  # optional free-form map (video tasks read generat
     expected:             # deep-equality graded keys — defines truth
       name: "Ada"
       tier: "gold"
-    pass_threshold: 1.0   # min score to pass; required+type checks always apply
+    pass_threshold: 1.0   # score floor in (0, 1]; required+type checks always apply
   ```
 
   Score is the fraction of `expected` keys that match (partial credit);
@@ -139,6 +139,15 @@ metadata: {}                  # optional free-form map (video tasks read generat
   requires every `required` field present, all type/enum checks green, and
   `score >= pass_threshold`. Unparseable artifacts score null. See
   `tasks/extract-invoice.yaml`.
+
+  **`pass_threshold` is a score floor, not a dial to loosen.** A score is a
+  fraction, so a floor of `0` declares no floor at all: a wrong artifact scores
+  0.0, clears the gate, and passes with its value mismatches still reported. The
+  floor is therefore `(0, 1]`, and `bool` is refused rather than coerced —
+  `pass_threshold: no` reads as `float(False) == 0.0`. A value outside the range
+  or a non-number is recorded in the report's `errors` and fails the run closed
+  rather than being clamped. Leaving `pass_threshold:` blank means "not declared"
+  and takes the 1.0 default.
 
   **Every declared field must be graded.** A field is graded when it is
   `required: true` or named in `expected`. A field that is neither is

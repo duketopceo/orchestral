@@ -29,6 +29,7 @@ from orchestral.audit import (
     audit_spec,
     audit_suite,
     audit_tree,
+    check_holdout_arm,
     effective_checks,
     find_duplicate_families,
 )
@@ -1657,16 +1658,45 @@ _METADATA_KEYS = (
     "pattern", "reference_sql", "required", "tests",
 )
 
-# The names looked up on something *inside* metadata, reached by nesting a
-# hostile value rather than by naming the key. Computed, not listed.
-_NESTED_KEYS_REACHED: frozenset[str] = frozenset(
-    {"method", "path", "required", "type", "nested", "kite"}
-)
-
 _HOSTILE_VALUES = (
     5, 2.5, -3, True, 0, "", [], {}, "kite", "  ", ["kite"], {"kite": True},
     [None], [["kite"]], "((((", "^", 10**12,
 )
+
+
+def _nested_keys_reached() -> set[str]:
+    """Every string key that appears inside one of `_HOSTILE_NESTED`'s values.
+
+    Derived from the shapes, not listed beside them. The hand-written version was
+    a `frozenset` of six names that nothing tied to the shapes actually supplying
+    the coverage, so deleting all four `calls` entries — the only inputs that
+    reach `call.get("method")` — left the suite green. The `calls` shapes are the
+    F8 hole, and the fix for it was the one piece of F8 nothing verified.
+    """
+    return _keys_in(_HOSTILE_NESTED)
+
+
+def _keys_in(shapes: object) -> set[str]:
+    """Every string mapping key reachable inside `shapes`, at any depth.
+
+    `metadata.calls` holds a *list of mappings*, so a walker that only descends
+    into dicts sees none of it — which is the gap this derivation exists to close.
+    """
+    reached: set[str] = set()
+
+    def walk(value: object) -> None:
+        if isinstance(value, dict):
+            reached.update(key for key in value if isinstance(key, str))
+            for inner in value.values():
+                walk(inner)
+        elif isinstance(value, (list, tuple)):
+            for inner in value:
+                walk(inner)
+
+    for shape in shapes:  # type: ignore[union-attr]
+        for value in shape.values():  # type: ignore[union-attr]
+            walk(value)
+    return reached
 
 
 def _spec_with_metadata(**metadata: object) -> TaskSpec:
@@ -1766,10 +1796,15 @@ class TestUnusableRequiredDeclarationIsNamed(TestCase):
     that can name the defect.
     """
 
-    def test_a_scalar_required_is_reported_as_unanchored(self):
+    def test_a_scalar_required_is_reported_and_anchors_nothing(self):
+        """The grader raises on these, so they are an error rather than an
+        unanchored-spec warning. Both halves matter: the report, and the fact that
+        the declaration anchors nothing.
+        """
         for value in (5, 2.5, -3, True, 10**12):
             with self.subTest(required=value):
-                self.assertIn("structural_only", _rules(_spec_with_metadata(required=value)))
+                self.assertIn("unreadable_spec_fields", _rules(_spec_with_metadata(required=value)))
+                self.assertFalse(orchestral_audit._has_topic_anchor(_spec_with_metadata(required=value)))
 
     def test_a_falsy_or_empty_declaration_still_reports_nothing_wrong(self):
         """`0`, `""`, `[]` and `{}` are what the runner treats as empty, and the
@@ -1784,12 +1819,23 @@ class TestUnusableRequiredDeclarationIsNamed(TestCase):
                 self.assertIn("names nothing the grader can compare against", detail)
                 self.assertNotIn("the grader iterates it", detail)
 
+    def test_an_iterable_but_vacuous_required_is_still_only_a_warning(self):
+        """A bare string and a one-character token are readable by the grader, so
+        they are an unanchored spec rather than a spec that crashes. The severity
+        follows the grader's behaviour, not a preference.
+        """
+        for value in ("kite", ["a"], ["  "], "  "):
+            with self.subTest(required=repr(value)):
+                found = _rules(_spec_with_metadata(required=value))
+                self.assertIn("structural_only", found)
+                self.assertEqual(found["structural_only"][0].severity, WARN)
+
     def test_the_advice_names_the_shape_rather_than_the_topic(self):
         """`required: 5` is not a spec that needs a topic anchor, so telling the
         author to declare a list of words is the wrong instruction. That is the
         F6 defect again: advice that sends the author to fix the wrong thing.
         """
-        detail = _rules(_spec_with_metadata(required=5))["structural_only"][0].detail
+        detail = _rules(_spec_with_metadata(required=5))["unreadable_spec_fields"][0].detail
         self.assertIn("the grader iterates it", detail)
         self.assertIn("a int", detail)  # the shape, named
         self.assertIn("list of words", detail)
@@ -1894,17 +1940,25 @@ class TestMixedSuiteStaysSilentForTheRightReason(TestCase):
         self.assertIn("the audit does not strip", text)
         self.assertNotIn("the audit strips", text)
 
-    def test_the_doc_pins_the_strict_exit_code_for_a_raising_spec(self):
-        """QA's point was not the severity — it was that a spec whose grader
-        raises still passes `--strict`, and the doc did not say so. That is the
-        fact an author needs, so it is pinned in both directions.
+    def test_the_doc_pins_the_field_accounting(self):
+        """The claim is that all six `TaskSpec` fields are accounted for. Pinning
+        the sentence keeps a future field from being added without either a guard
+        or a note that nothing reads it.
         """
-        text = DOC.read_text(encoding="utf-8")
-        self.assertIn("`--strict` exits 0 on it", text)
-        # the sentence wraps across lines in the source, so normalise before pinning
-        flat = " ".join(text.split())
-        self.assertIn("The severity is a judgement, not a consequence", flat)
-        self.assertIn("so `--strict` exits 0 on it", flat)
+        flat = " ".join(DOC.read_text(encoding="utf-8").split())
+        self.assertIn("All six `TaskSpec` fields are accounted for", flat)
+        for field in ("`id`", "`type`", "`assets`"):
+            with self.subTest(field=field):
+                self.assertIn(field, flat)
+
+    def test_the_doc_pins_the_strict_exit_code_for_a_raising_spec(self):
+        """QA's point was that the doc did not say what happens to the gate, in
+        either direction. Pinned in both: a spec whose grader raises exits 1, and
+        the doc says so.
+        """
+        flat = " ".join(DOC.read_text(encoding="utf-8").split())
+        self.assertIn("`--strict` exits 1 on it", flat)
+        self.assertNotIn("`--strict` exits 0 on it", flat)
 
     def test_the_doc_states_the_silent_reason_as_a_cannot_inflate_score(self):
         text = DOC.read_text(encoding="utf-8")
@@ -1947,8 +2001,8 @@ class TestTheAuditAgreesWithTheRealGrader(TestCase):
         with self.assertRaises(TypeError):
             Runner()._validate(self._spec(5), self.ARTIFACTS["generic"])
         found = _rules(self._spec(5))
-        self.assertIn("structural_only", found)
-        self.assertIn("the grader iterates it", found["structural_only"][0].detail)
+        self.assertIn("unreadable_spec_fields", found)
+        self.assertIn("the grader iterates it", found["unreadable_spec_fields"][0].detail)
 
     def test_a_bare_string_anchors_only_when_the_grader_really_discriminates(self):
         """F4. `required: kite` is iterated per character, so the grader passes
@@ -2073,10 +2127,25 @@ class TestTheKeyListIsDerivedFromTheCode(TestCase):
         they are covered by nesting rather than by the key list. Dropping either
         coverage has to fail here.
         """
-        nested = _NESTED_KEYS_REACHED
+        nested = _nested_keys_reached()
         for name in sorted(_nested_keys_read_by_audit()):
             with self.subTest(key=name):
                 self.assertIn(name, nested)
+
+    def test_deleting_a_nested_shape_is_detected(self):
+        """The survivor QA found, as a test rather than as a mutation.
+
+        `method` and `path` are only reached by a `calls` entry, so if the `calls`
+        shapes go, so does the coverage — and the derived set is what notices.
+        """
+        reached = _nested_keys_reached()
+        self.assertIn("method", reached)
+        self.assertIn("path", reached)
+        without_calls = [
+            shape for shape in _HOSTILE_NESTED if "calls" not in shape
+        ]
+        self.assertNotIn("method", _keys_in(without_calls))
+        self.assertNotIn("path", _keys_in(without_calls))
 
     def test_the_derivation_itself_is_not_vacuous(self):
         """The previous version of this check compared a constant to itself, so
@@ -2208,3 +2277,247 @@ class TestTheFindingSetIsReproducible(TestCase):
             outputs[0], outputs[1],
             "the finding set is not reproducible across hash seeds",
         )
+
+
+class TestEveryTaskSpecFieldIsGuarded(TestCase):
+    """F13 and F14: the fourth and sixth fields, and the two live crashes.
+
+    `TaskSpec` has six fields. Three were guarded; `id` and `type` were not, and
+    each takes the whole tree's answer rather than one spec's finding — `id`
+    because the duplicate-family rule sorts it, `type` because the membership
+    test needs a hash. `assets` is the sixth field and nothing reads it, so not
+    guarding it is correct rather than an omission.
+    """
+
+    def test_an_unhashable_type_does_not_raise_in_audit_spec(self):
+        """The direct-caller half of F14. `load_task` rejects it first on the file
+        path, so this is the only thing covering the other route — and QA noted
+        both, while my first fix only tested the loader.
+        """
+        for value in (["a"], {"a": 1}, {"b", "a"}, 5, 2.5):
+            with self.subTest(type=repr(value)):
+                spec = TaskSpec(id="c-t", type=value, prompt="Write it.",
+                                validation=["html"], metadata={})
+                found = _rules(spec)
+                self.assertIn("unreadable_spec_fields", found)
+                self.assertIn("type", found["unreadable_spec_fields"][0].detail)
+
+    def test_a_non_string_id_is_reported_rather_than_crashing_the_sort(self):
+        spec = TaskSpec(id=5, type="html", prompt="Write it.", validation=["html"], metadata={})
+        self.assertIsInstance(audit_spec(spec), list)
+
+    def test_a_suite_with_one_non_string_id_still_answers(self):
+        """F13. `find_duplicate_families` sorts the ids of a family, so five
+        identical prompts with one `id: 5` is the smallest input that reaches it.
+        """
+        specs = [
+            TaskSpec(id=identifier, type="html",
+                     prompt="Create a product page with a headline and a button.",
+                     validation=["html"], metadata={})
+            for identifier in ("dup-00", "dup-01", "dup-02", "dup-03", 5)
+        ]
+        report = audit_suite(specs)
+        self.assertIn("unreadable_spec_fields", {f.rule for f in report.findings})
+
+    def test_an_unhashable_type_is_rejected_by_load_task_before_the_membership_test(self):
+        """F14. `type` is checked with `in TASK_TYPES` on a frozenset, which needs
+        a hash, so `type: [a]` raised before any isinstance guard could run.
+        """
+        for value in (["a"], {"a": 1}, {"b", "a"}, 5, 2.5, True):
+            with self.subTest(type=repr(value)), tempfile.TemporaryDirectory() as raw:
+                path = Path(raw) / "bad.yaml"
+                literal = value if isinstance(value, str) else repr(value)
+                path.write_text(
+                    f"id: bad\ntype: {literal}\nprompt: Write it.\nvalidation: [html]\n",
+                    encoding="utf-8",
+                )
+                with self.assertRaises(orchestral_config.ConfigError) as caught:
+                    orchestral_config.load_task(path)
+                self.assertIn("type", str(caught.exception))
+
+    def test_load_task_rejects_a_non_string_id(self):
+        for value in ("5", "[a]", "{a: 1}"):
+            with self.subTest(id=value), tempfile.TemporaryDirectory() as raw:
+                path = Path(raw) / "bad.yaml"
+                path.write_text(
+                    f"id: {value}\ntype: html\nprompt: Write it.\nvalidation: [html]\n",
+                    encoding="utf-8",
+                )
+                with self.assertRaises(orchestral_config.ConfigError) as caught:
+                    orchestral_config.load_task(path)
+                self.assertIn("id", str(caught.exception))
+
+    def test_a_well_formed_id_and_type_are_unaffected(self):
+        spec = TaskSpec(id="ok-1", type="html", prompt="Write it.",
+                        validation=["html"], metadata={})
+        self.assertNotIn("unreadable_spec_fields", _rules(spec))
+        self.assertIn("structural_only", _rules(spec))  # rules still ran
+
+
+class TestTheSuiteLevelExclusionIsPinned(TestCase):
+    """F15: `audit_suite` drops an unreadable spec from the suite-level rules.
+
+    Reverting that one line left the suite green while reinstating the original
+    crash, because no test called `audit_suite` with a spec it could not read.
+    This is the sixth pass's defect: a claim that the class is closed, shipped
+    inside the commit that closes it, with nothing behind it.
+    """
+
+    def test_audit_suite_answers_when_a_spec_carries_a_hostile_container(self):
+        specs = [
+            TaskSpec(id="broken", type="html", prompt="Write it.",
+                     validation=["html"], metadata=5),
+            TaskSpec(id="ordinary", type="html", prompt="Write it.",
+                     validation=["html", "has_required"],
+                     metadata={"required": ["kite"], "difficulty": "hard"}),
+        ]
+        report = audit_suite(specs)
+        rules = {f.rule for f in report.findings}
+        self.assertIn("unreadable_spec_fields", rules)
+        # and the readable spec still gets its own verdict
+        self.assertEqual(report.specs, 2)
+
+    def test_audit_suite_answers_when_a_spec_carries_a_non_string_id(self):
+        specs = [
+            TaskSpec(id=identifier, type="html",
+                     prompt="Create a product page with a headline and a button.",
+                     validation=["html"], metadata={})
+            for identifier in ("dup-00", "dup-01", "dup-02", "dup-03", 5)
+        ]
+        self.assertIsInstance(audit_suite(specs).findings, list)
+
+    def test_the_holdout_rule_would_crash_on_an_unreadable_spec(self):
+        """The control that makes the exclusion load-bearing.
+
+        `check_holdout_arm` reads `spec.metadata.get("holdout")` for every spec it
+        is given, so the exclusion is the only thing between a hostile container
+        and a tree-wide traceback. This asserts the danger is real, so the test
+        above cannot pass by the exclusion being unnecessary.
+        """
+        specs = [
+            TaskSpec(id="a", type="html", prompt="Write it.", validation=["html"], metadata={}),
+            TaskSpec(id="b", type="html", prompt="Write it.", validation=["html"], metadata=5),
+        ]
+        with self.assertRaises(AttributeError):
+            check_holdout_arm(specs)
+        self.assertIsInstance(audit_suite(specs).findings, list)
+
+
+class TestMalformedDeclarationsAreAllErrors(TestCase):
+    """F19: the severity split was my judgement, not a stated criterion, and it
+    was unpinned — a coordinated downgrade in the code and the doc left the suite
+    green.
+
+    `AuditReport.ok` says "errors mean a requested gate cannot fire", and a
+    non-iterable `required` is exactly that. My argument for a warning was that
+    the runner's abort is louder than any audit line, which is an argument about
+    noise, not about the criterion `--strict` is wired to. The answer to noise is
+    a precise message, which the finding already carries. So there is now one
+    severity, and it is the one the file's own policy states.
+    """
+
+    def test_a_non_iterable_required_is_an_error_not_a_warning(self):
+        rules = _rules(_spec_with_metadata(required=5))
+        self.assertEqual(rules["unreadable_spec_fields"][0].severity, ERROR)
+        # and the run is refused
+        with tempfile.TemporaryDirectory() as raw:
+            directory = Path(raw)
+            (directory / "bad.yaml").write_text(
+                textwrap.dedent("""\
+                    id: bad-req
+                    type: html
+                    prompt: Create a landing page. Output a single HTML file.
+                    validation: [html, has_required]
+                    metadata:
+                      difficulty: hard
+                      required: 5
+                    """),
+                encoding="utf-8",
+            )
+            result = subprocess.run(
+                [sys.executable, "harness.py", "audit", "--strict",
+                 "--tasks-dir", str(directory)],
+                capture_output=True, text=True,
+                cwd=str(Path(__file__).resolve().parent.parent),
+            )
+            self.assertNotEqual(result.returncode, 0,
+                                "a spec whose grader raises must not pass --strict")
+
+    def test_every_malformed_declaration_uses_the_same_severity(self):
+        """One severity for the whole class, so the next author cannot quietly
+        split it again and leave the suite green.
+        """
+        for value in (5, 2.5, -3, True, 10**12, 1.0):
+            with self.subTest(required=repr(value)):
+                found = _rules(_spec_with_metadata(required=value))
+                self.assertEqual(found["unreadable_spec_fields"][0].severity, ERROR)
+
+
+class TestSharedTermsAreTheDistinctiveOnes(TestCase):
+    """F17: alphabetical tie-breaks pick English function words.
+
+    `and`, `at` and `are` are in more than half the shipped corpus, so a finding
+    that lists them tells a reader nothing about the template. Ordering by
+    count, then by how rare the term is across the corpus, then by name, is
+    equally deterministic and actually informative.
+    """
+
+    #: The family under test, and a corpus around it. The corpus is the point: a
+    #: term in most of the suite carries no information about one family, and with
+    #: nothing else in the suite every term ties on both count and rarity, so the
+    #: tie-break falls through to the name and picks `and`.
+    FAMILY_PROMPT = (
+        "Create a landing page for a carbon offset marketplace. Write a headline, "
+        "a value proposition, feature bullets and a call-to-action button in one "
+        "self-contained HTML file."
+    )
+    CORPUS_PROMPT = (
+        "Summarise the quarterly revenue and margin table for the finance team in "
+        "plain prose, and flag anything that moved more than five percent."
+    )
+
+    def _family(self, count: int) -> list:
+        specs = [
+            TaskSpec(id=f"dup-{i:02d}", type="html", prompt=self.FAMILY_PROMPT,
+                     validation=["html"], metadata={})
+            for i in range(count)
+        ] + [
+            TaskSpec(id=f"x-{i:02d}", type="html", prompt=self.CORPUS_PROMPT,
+                     validation=["html"], metadata={})
+            for i in range(40)
+        ]
+        return audit_suite(specs).findings
+
+    def test_a_shared_family_does_not_report_corpus_wide_function_words(self):
+        # the corpus prompt forms a family of its own, so select by the ids named
+        families = [f for f in self._family(6) if f.rule == "near_duplicate_family"]
+        family = [f for f in families if "dup-" in f.detail]
+        self.assertEqual(len(family), 1, f"expected one dup family, got {len(family)}")
+        detail = family[0].detail
+        self.assertIn("Most shared terms:", detail)
+        listed = detail.split("Most shared terms:")[1]
+        for word in ("and", "the", "for", "with", "are", "that"):
+            with self.subTest(word=word):
+                self.assertNotIn(f"'{word}'", listed,
+                                 f"{word!r} is in most of the corpus and carries no information")
+
+    def test_the_ordering_is_reproducible_across_runs(self):
+        first = [f.detail for f in self._family(6)]
+        second = [f.detail for f in self._family(6)]
+        self.assertEqual(first, second)
+
+    def test_a_term_the_whole_corpus_shares_is_not_reported(self):
+        """The function words are in the *family* prompt too, so the only thing
+        that keeps them out is that the corpus contains them more widely. This
+        asserts the corpus actually does, so the test above cannot pass vacuously.
+        """
+        family = self._family(6)
+        self.assertEqual(
+            len([f for f in family if f.rule == "near_duplicate_family"]), 2,
+            "expected one family from the corpus prompt and one from the test prompt",
+        )
+
+    def test_a_rare_shared_term_is_reported(self):
+        families = [f for f in self._family(6) if f.rule == "near_duplicate_family"]
+        detail = next(f for f in families if "dup-" in f.detail).detail
+        self.assertIn("carbon", detail)

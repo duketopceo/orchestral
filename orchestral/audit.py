@@ -340,6 +340,25 @@ def _required_tokens(value: Any) -> list[str]:
     return [token for item in value for token in _scalar_token(item)]
 
 
+def _malformed_declaration(spec: TaskSpec) -> str | None:
+    """Name a requested topic check whose declaration the grader cannot read.
+
+    `runner.py` writes `for t in required`, so a `required` that is a number, a
+    bool or a date is not a weak declaration — it is one the grader cannot
+    iterate at all, and it raises at grading time. `metadata.pattern` is compiled
+    with `str()`, so any value is readable there and is never malformed.
+    """
+    if "has_required" not in effective_checks(spec):
+        return None
+    required = spec.metadata.get("required")
+    if required and not isinstance(required, _DECLARATION_SHAPES):
+        return (
+            f"metadata.required is a {type(required).__name__}, and the grader iterates it, so it "
+            "raises on this spec rather than comparing anything"
+        )
+    return None
+
+
 def _scalar_token(value: Any) -> list[str]:
     """One declared token, or nothing when the value is not a token at all.
 
@@ -1116,6 +1135,26 @@ def check_structural_only(spec: TaskSpec, path: Path | None = None) -> list[Find
         return []
     if spec.type not in VALIDATION_CHECKS:
         return []
+    # A declaration the grader cannot iterate is not an unanchored spec, it is a
+    # spec the grader will raise on. That is an error under this file's own
+    # policy — "errors mean a requested gate cannot fire" — and it was a warning
+    # because I argued the runner's abort is louder than any audit line, which is
+    # an argument about noise rather than about the criterion `--strict` is wired
+    # to. The message is precise, so the noise argument does not apply.
+    malformed = _malformed_declaration(spec)
+    if malformed is not None:
+        return [
+            Finding(
+                rule="unreadable_spec_fields",
+                severity=ERROR,
+                task_id=spec.id,
+                path=str(path) if path else None,
+                detail=(
+                    f"{malformed}, so the grader raises on this spec instead of grading it. "
+                    f"{_anchor_advice(spec)}"
+                ),
+            )
+        ]
     if _has_topic_anchor(spec):
         return []
     return [
@@ -1299,6 +1338,13 @@ def find_duplicate_families(
     difficulty. Union-find over prompt token Jaccard similarity.
     """
     tokens = [_tokens(spec.prompt) for spec in specs]
+    # How many specs in the corpus mention each term at all. A term in most of the
+    # suite carries no information about one family, so a tie on count is broken
+    # by rarity first: `and` and `at` are in more than half of the shipped
+    # prompts and would otherwise crowd out the words that identify the template.
+    # The third key keeps the result deterministic when two terms are equally
+    # common and equally rare.
+    rarity = Counter(t for token_set in tokens for t in token_set)
     parent = list(range(len(specs)))
 
     def find(i: int) -> int:
@@ -1330,7 +1376,7 @@ def find_duplicate_families(
         # the finding's *content* changed with PYTHONHASHSEED. Counting is stable;
         # it is the tie-break that was not, so it is made explicit and alphabetical.
         counts = Counter(t for i in members for t in tokens[i])
-        shared = sorted(counts.items(), key=lambda item: (-item[1], item[0]))[:6]
+        shared = sorted(counts.items(), key=lambda item: (-item[1], rarity[item[0]], item[0]))[:6]
         findings.append(
             Finding(
                 rule="near_duplicate_family",
@@ -1398,6 +1444,15 @@ def _unreadable_field(spec: TaskSpec) -> str | None:
     runs and speaks louder than any audit line; here the audit learned nothing
     about the spec at all, and nothing else is going to say so.
     """
+    if not isinstance(spec.id, str):
+        # `find_duplicate_families` sorts the ids of a family, so one non-string id
+        # raises `TypeError` inside a suite-level rule and takes every other spec's
+        # verdict with it. Three fields were guarded; this is the fourth.
+        return f"id is a {type(spec.id).__name__}, not a string"
+    if not isinstance(spec.type, str):
+        # `load_task` tests membership in a frozenset, which needs a hash, so
+        # `type: [a]` raised before any isinstance check could run.
+        return f"type is a {type(spec.type).__name__}, not a string"
     if not isinstance(spec.metadata, dict):
         return f"metadata is a {type(spec.metadata).__name__}, not a mapping"
     # `validation:` with nothing under it parses to None, and None has always meant
@@ -1423,8 +1478,11 @@ def audit_spec(spec: TaskSpec, path: Path | None = None) -> list[Finding]:
                 task_id=spec.id,
                 path=str(path) if path else None,
                 detail=(
-                    f"{unreadable}, so no check the spec asks for can fire and the grader cannot "
-                    "read it. load_task rejects this on the file path; fix the spec's shape."
+                    f"{unreadable}, so the rules that read it could not run and the grader cannot "
+                    "read the spec. Findings that need only the readable fields — an unknown check "
+                    "name, an unimplemented type — are suppressed too, because this rule returns "
+                    "before any rule runs. load_task rejects this on the file path; fix the spec's "
+                    "shape."
                 ),
             )
         ]

@@ -27,15 +27,43 @@ Warnings do not gate: they mark a gaming surface a human may have accepted on
 purpose, and the job of the audit is to make that choice visible, not to make
 it for you.
 
+**What the warn-does-not-gate policy does not cover.** One class of warning is
+not a judgement call, and it is error: a gate input the author declared that no
+check reads. The spec says "grade these two files" or "these tokens must be in
+this body", the grader looks at neither, and the audit names the exact fix and
+then exits 0. Deleting a token from `validation:` is then enough to reach green
+with no edit to the audit — which is the same evasion as a misspelled check name
+that the runner drops, and that one has always been an error. Two rules sit on
+this boundary:
+
+| Declared but never read | Severity | Rule |
+| --- | --- | --- |
+| a `validation:` name the runner cannot run | error | `unknown_validation_check` |
+| a `validation:` name on a type that ignores `validation:` | error | `ignored_validation_list` |
+| `metadata.expected_paths` with no `has_paths` covering it | error | `unanchored_fileset` |
+| `metadata.required_content` with no `has_content` | error | `unanchored_fileset` |
+
+`unanchored_fileset` was a warning until the promotion, on the reasoning that
+"a weak fileset is a surface a human may accept". That reasoning does not hold
+for the declared-but-unread states, because nothing in the spec can close them
+except editing the spec — which is the thing a gate exists to prevent. The
+other two states it also reports (a fileset that declares nothing, and one
+graded on names and byte counts only) are errors for the same reason: the
+grader measures nothing about the artifact, so the score cannot be a
+measurement. `has_paths` requested with an empty `metadata.required_content`
+stays inside the rule at the same severity because every artifact fails on it,
+so it is a broken spec rather than a scoring surface.
+
 ## Rules
 
 | Rule | Severity | Meaning |
 | --- | --- | --- |
 | `unknown_validation_check` | error | `validation:` names a check the runner does not implement for that type. Silently dropped today; the run reports a pass anyway. |
 | `ignored_validation_list` | error | `code` / `sql` / `extract` / `api` never read `validation:`. They compute a fixed check set from `metadata`, so anything declared there is a phantom gate. |
-| `absent_grading_contract` | error | A self-anchored type ships no anchor in `metadata`, so its grader has nothing to compare the artifact against: `code` with no `metadata.tests` (or a suite whose tests are no-ops), `extract` with neither a required `fields` entry nor `expected`, `sql` with no `reference_sql`, `api` with no `calls`. `sql` and `api` fail closed at runtime; `extract` does not — an empty contract grades `{}` as `passes=True score=1.0`. |
+| `absent_grading_contract` | error | A self-anchored type ships no anchor in `metadata`, so its grader has nothing to compare the artifact against: `code` with no `metadata.tests` (or a suite that is a tautology, or one that never names the module under test), `extract` with neither a required `fields` entry nor `expected`, `sql` with no `reference_sql`, `api` with no `calls`. `sql` and `api` fail closed at runtime; `extract` does not — an empty contract grades `{}` as `passes=True score=1.0`. |
+| `unanchored_fileset` | error | `multi-file` grades filenames and byte counts only, or nothing at all. A fileset is anchored only when the grader reads a body: `has_paths` plus `has_content` with tokens in `metadata.required_content`. Fires in every other state — no usable `metadata.expected_paths`, a declared input no requested check reads, declared paths checked only for existence, or `has_content` requested with nothing to look for. See the boundary above. |
+| `presence_only_extract_contract` | warn | An `extract` spec grades `required` fields with no `metadata.expected`. `required` is checked for presence and type and never compared to a value, so a fabricated value scores 1.0 exactly as a correct one and `field_results` stays empty. `orchestral/extract.py` treats `required` as a legitimate anchor on purpose, so this is a coverage gap and not a contradiction of the runner. |
 | `structural_only` | warn | Nothing in the grader requires topical content. `has_title` / `has_cta` / `has_form` prove markup exists, not that the artifact is about the task, so only `has_required`, `matches_pattern`, or — for text-producing types only — declared `metadata.required` clear this. `image` / `video` are exempt: their artifacts are bytes, so a text token is an unimplemented check rather than a loose one. See `judge_gated_media`. |
-| `unanchored_fileset` | warn | `multi-file` grades filenames and byte counts only. A fileset is anchored only when the grader reads a body: `has_paths` plus `has_content` with tokens in `metadata.required_content`. The finding fires in all four other states: no usable `metadata.expected_paths`, declared paths that `has_paths` was never asked to check, declared paths checked only for existence, or `has_content` requested with nothing to look for. |
 | `judge_gated_media` | info | An `image` / `video` artifact is encoded bytes, so no text check can anchor its subject. `png_signature` / `mp4_signature` prove format only; topicality rests on the vision judge, so a run without `--judge` grades these specs on file format alone. |
 | `prompt_states_the_answer` | warn | The prompt spells out graded output — an expected value, the reference query, or the expected call list. Recitation scores the same as reasoning. `extract` is exempt by design: its prompt carries the source document. |
 | `answer_derivable_from_prompt` | warn | Every graded value is readable in the prompt (`extract`, `sql`). The task ceiling is transcription and lookup, not problem solving. |
@@ -43,6 +71,7 @@ it for you.
 | `near_duplicate_family` | info | Several specs share one prompt shape. They are one problem counted many times, so an aggregate pass rate inherits that single template's difficulty. |
 | `no_holdout_arm` | info | No holdout arm exists, so every problem is also a published problem and contamination cannot be measured. Satisfied by a committed `metadata.holdout` spec **or** by a holdout arm that actually generates. |
 | `unlabeled_difficulty` | info | No `metadata.difficulty`, so the spec cannot be excluded from a headline result. |
+
 
 ## The holdout arm
 
@@ -132,7 +161,7 @@ which `validation:` names the runner implements per type, and `runner.py`
 imports it. If you add a check to a validator, add it to that table in the same
 change.
 
-Two tests in `tests/test_audit.py` hold the table to the runner:
+Three tests in `tests/test_audit.py` hold the table to its two other copies:
 
 - `test_registry_covers_every_task_type_exactly_once` — every `TASK_TYPES`
   entry appears in the registry exactly once, as either a `VALIDATION_CHECKS`
@@ -142,31 +171,64 @@ Two tests in `tests/test_audit.py` hold the table to the runner:
   `checks["<name>"] =` in the body of the `Runner` method that implements that
   registry entry, and every registry key has an entry in the test's
   `VALIDATOR_FOR_TYPE` map.
+- `test_every_registered_check_name_is_documented_in_the_task_spec` — every
+  registered name appears in the hand-maintained check table in
+  `docs/task-spec.md`, so a name cannot ship implemented, tested, and
+  undocumented.
 
-That second test is the only thing standing between the registry and a phantom
+The second test is the only thing standing between the registry and a phantom
 gate. The audit itself cannot catch a name that is registered but never
 assigned: it reads the same table the runner does, so a name added to
 `VALIDATION_CHECKS["image"]` with no matching assignment in `_validate_image`
 still audits clean and still returns exit 0 under `--strict`.
 
+**A third copy exists and is not a gate.** `orchestral/planners.py` carries
+`"success_criteria": ["parses", "non_empty", "has_title", "has_cta",
+"has_form"]` in two places. `parses` is not a registered name — the registry
+name is `html_parses` — so the list is one token out of date. Nothing reads
+`success_criteria`; it is an LLM prompt hint, so it cannot gate anything and no
+test guards it. It is recorded here rather than fixed, because the module is
+outside the scope of the gate work and correcting it would put an unrelated
+change in this diff. If a check is ever made load-bearing there, this list
+becomes a fourth copy to guard.
+
 ## What `absent_grading_contract` does and does not prove about a suite
 
-The rule parses `metadata.tests` and requires three things, all decidable from
+The rule parses `metadata.tests` and requires four things, all decidable from
 the source without executing it:
 
 - the suite parses;
 - it carries an assertion `unittest` will actually collect — inside a `test*`
   method of a `unittest.TestCase` subclass, since that is all the default loader
   collects;
-- that assertion is not a constant. `assert True`, `self.assertTrue(True)` and
-  `self.assertEqual(1, 1)` are flagged. Only provable constants are, so
-  `assert result is not None` is never mistaken for one.
+- that assertion is not a tautology. Three shapes are provable and are flagged:
+  an `assert` whose test folds to a truthy constant, a `unittest` assertion
+  whose argument constant-folds (`assertTrue(True)`, `assertEqual(1, 1+0)`,
+  `assertEqual(0, len(''))`), and a comparison assertion handed the same
+  expression twice or a container holding nothing but the needle
+  (`self.assertIs(s, s)`, `assertIn(x, [x])`).
+- the suite names `metadata.module` somewhere — as `import solution`, `from
+  solution import solve`, a bare `solution`, or
+  `importlib.import_module("solution")`. A suite that never names it cannot read
+  the artifact, so nothing it asserts is a function of the submitted code, and
+  that is decidable without running anything.
 
-**Not provable by a static read:** an assertion that can never fail because the
-test itself arranges it — `self.assertTrue(self.flag)` after setting
-`self.flag = True`, or `self.assertEqual(f(x), f(x))`. Detecting those needs
-execution: run the suite against a stub and require it to fail. This audit
-executes nothing, so it does not claim to catch them.
+Folding is what closes the arithmetic and comparison shapes.
+`ast.literal_eval` rejects `1 + 0` and `1 == 1` outright, so a suite asserting
+either audited clean while `assertEqual(1, 1)` did not. The folder in
+`orchestral/audit.py` folds the operators over already-foldable operands, plus
+`len`/`abs`/`str`/`int`/`float`/`bool` over a foldable argument. A name, an
+attribute, or a call it does not know is not a constant, so `assert result is
+not None` is never mistaken for one.
+
+**Not provable by a static read:** an assertion that repeats an expression
+*containing a call*. `self.assertEqual(f(x), f(x))` is textually the same shape
+as `assertIs(s, s)`, but `f` may read the artifact, so the outcome is not fixed
+and the doc keeps it as execution-only. A repeat with no call in it is a
+guaranteed pass and is flagged; a repeat with a call in it is not. Detecting the
+first kind of self-arranged assertion — `self.assertTrue(self.flag)` after the
+test sets it — needs execution: run the suite against a stub and require it to
+fail. This audit executes nothing, so it does not claim to catch those.
 
 **Why that matters here.** At this commit code execution is live:
 `run_unittest_suite` writes the suite to `task_tests.py` in a temp directory and

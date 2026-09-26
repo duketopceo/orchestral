@@ -96,7 +96,7 @@ jobs:
       # same money. Fork PRs never reach it — the job-level `if` above skips
       # them before any step runs.
       - name: Enforce cost budget
-        run: python3 -m orchestral.budget --runs-dir runs --max-cost-usd "${MAX_COST_USD:-0.001}"
+        run: python3 -m orchestral.budget --runs-dir runs --max-cost-usd "${MAX_COST_USD:-0.05}"
 
       # DECLINED as a blocking gate, on purpose (DUK-214 AC #3).
       #

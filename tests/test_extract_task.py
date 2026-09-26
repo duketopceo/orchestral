@@ -149,6 +149,23 @@ class TestCheckExtraction(unittest.TestCase):
         self.assertEqual(check_extraction(md, '{"name": "x"}')["score"], 1.0)
         self.assertEqual(check_extraction(md, '{"name": 1}')["score"], 0.0)
 
+    def test_list_fields_compare_elementwise(self):
+        # The list branch of _strict_eq pairs elements with zip(); a length
+        # mismatch must score 0 rather than pair the shorter prefix and pass.
+        md = {"expected": {"tags": ["a", "b"]}}
+        self.assertEqual(check_extraction(md, json.dumps({"tags": ["a", "b"]}))["score"], 1.0)
+        self.assertEqual(check_extraction(md, json.dumps({"tags": ["a"]}))["score"], 0.0)
+        self.assertEqual(check_extraction(md, json.dumps({"tags": ["a", "c"]}))["score"], 0.0)
+
+    def test_bool_nested_in_a_list_is_not_an_int(self):
+        # [True] == [1] in Python, so the elementwise walk must re-check the
+        # bool/int distinction instead of deferring to list __eq__.
+        md = {"expected": {"counts": [1, 2]}}
+        self.assertEqual(check_extraction(md, json.dumps({"counts": [1, 2]}))["score"], 1.0)
+        report = check_extraction(md, json.dumps({"counts": [True, 2]}))
+        self.assertEqual(report["score"], 0.0)
+        self.assertFalse(report["field_results"]["counts"])
+
 
 class TestExtractRunner(unittest.TestCase):
     def test_dry_run_passes_and_writes_artifact(self):

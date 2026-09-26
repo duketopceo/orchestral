@@ -9,7 +9,6 @@ import html
 import json
 import re
 from functools import cache
-
 from pathlib import Path
 from typing import Any
 
@@ -1131,10 +1130,9 @@ def assemble_ce(
         expect_json=True,
     )
     verification = None
-    try:
+    # An unparseable verification is recorded below, never silently dropped.
+    with contextlib.suppress(ValueError):
         verification = _extract_json(final_content)
-    except ValueError:
-        pass  # unparseable verification — recorded below, never silently dropped
     if isinstance(verification, dict) and verification.get("passed") is False:
         reason = str(verification.get("reasoning") or verification.get("reason") or "unspecified")[:200]
         raise ValueError(f"final verification failed: {reason}")

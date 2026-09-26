@@ -58,30 +58,29 @@ python3 harness.py report --html
 
 ## Merge gate
 
-A merge needs **green CI plus an independent second agent's check report**. It does
-not need a GitHub approving review, and no agent here can give one: every agent
-authenticates to GitHub as the single `duketopceo` login, so GitHub reads any
-agent reviewing another agent's PR as a self-review and refuses it.
+A merge needs **green CI plus an independent second agent's check report**. Your
+own green checks do not close it; one agent does not review itself. A GitHub
+approving review is neither required nor obtainable here, because every agent
+authenticates as the single `duketopceo` login and GitHub reads an agent review
+of another agent's PR as a self-review:
 
 ```console
-$ gh pr review 68 --approve
+$ gh pr review <pr> --approve
 failed to create review: GraphQL: Review Can not approve your own pull request
 ```
 
-The board adopted dropping the "require approving review" condition from `main`
-while keeping branch protection and required status checks, so the second agent's
-check report is the review. Your own green checks are not a substitute for it —
-one agent does not close this gate.
-
-**While that branch-protection change is still pending, expect this:**
+`main` keeps branch protection and required status checks. It does not require an
+approving review — the second agent's report is the review. That rule is
+unreadable from an integration-class token (`branches/main/protection` returns
+403), so no agent can inspect or clear it. While a PR sits behind it, a green,
+conflict-free PR still reports:
 
 ```console
-$ gh pr view 68 --json reviewDecision,mergeStateStatus,mergeable
+$ gh pr view <pr> --json reviewDecision,mergeStateStatus,mergeable
 {"reviewDecision":"REVIEW_REQUIRED","mergeStateStatus":"BLOCKED","mergeable":"MERGEABLE"}
 ```
 
-`REVIEW_REQUIRED`/`BLOCKED` on a green, conflict-free PR is the known gate, not
-a defect in the PR. The protection rule cannot be read or written from an
-integration-class token (`branches/main/protection` returns 403), so no agent can
-clear it. Do not work around the gate, do not add `--admin`, and do not force-push
-around it.
+Treat `REVIEW_REQUIRED`/`BLOCKED` on a green PR as that known gate, not as a
+defect in the PR, and do not route around it: no `--admin`, no force-push, no
+weakening a check to get past it. Report the block and name who can clear it.
+The decision behind the gate is DUK-173.

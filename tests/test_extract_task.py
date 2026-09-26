@@ -211,6 +211,57 @@ class TestUnanchoredContract(unittest.TestCase):
         self.assertFalse(report["passes"])
 
 
+class TestMalformedContract(unittest.TestCase):
+    """A wrong-shaped contract is the spec author's error, not a lost run.
+
+    The contract is read before the artifact is parsed, so a non-mapping reaches
+    every run. Before this, `fields` as a list raised `AttributeError` on any
+    parseable artifact and, once the read moved ahead of the parse, on unparseable
+    ones too — losing the run record over a typo.
+    """
+
+    WRONG_SHAPES = (["total"], "total", 7, None)
+
+    def test_non_mapping_fields_never_raise(self):
+        for value in self.WRONG_SHAPES:
+            for artifact in ('{"total": 1}', "not json at all", "{}", "[1, 2]"):
+                with self.subTest(fields=value, artifact=artifact):
+                    report = check_extraction({"fields": value}, artifact)
+                    self.assertFalse(report["passes"])
+
+    def test_non_mapping_expected_never_raises(self):
+        for value in ("total", 7, ["a"], None):
+            for artifact in ('{"a": 1}', "not json at all"):
+                with self.subTest(expected=value, artifact=artifact):
+                    report = check_extraction({"expected": value}, artifact)
+                    self.assertFalse(report["passes"])
+
+    def test_malformation_is_reported_not_swallowed(self):
+        report = check_extraction({"fields": ["total"]}, "{}")
+        self.assertTrue(any("not a mapping" in e for e in report["errors"]), report["errors"])
+
+    def test_absent_key_is_not_called_a_malformation(self):
+        """`fields: null` and a missing key both mean 'not declared'."""
+        for metadata in ({"fields": None}, {}, {"fields": {}}):
+            with self.subTest(metadata=metadata):
+                report = check_extraction(metadata, "{}")
+                self.assertFalse(any("not a mapping" in e for e in report["errors"]))
+
+    def test_dropped_fields_still_fails_closed_on_nothing_to_grade(self):
+        """A malformed `fields` plus no `expected` grades nothing, so it must fail."""
+        report = check_extraction({"fields": ["total"]}, "{}")
+        self.assertFalse(report["checks"]["contract_anchored"])
+        self.assertEqual(report["score"], 0.0)
+
+    def test_dropped_fields_leaves_expected_as_the_anchor(self):
+        """A malformed `fields` must not also discard a usable `expected`."""
+        report = check_extraction({"fields": "oops", "expected": {"a": "x"}}, '{"a": "x"}')
+        self.assertTrue(report["checks"]["contract_anchored"])
+        self.assertTrue(report["passes"])
+        self.assertEqual(report["score"], 1.0)
+
+
+
 class TestExtractRunner(unittest.TestCase):
     def test_dry_run_passes_and_writes_artifact(self):
         with tempfile.TemporaryDirectory() as tmp:

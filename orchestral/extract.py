@@ -82,6 +82,25 @@ def _type_ok(declared: str, value: Any) -> bool:
     return isinstance(value, types)
 
 
+def _as_mapping(metadata: dict[str, Any], key: str, errors: list[str]) -> dict[str, Any]:
+    """Read `metadata[key]` as a mapping; a malformed value contributes nothing.
+
+    The audit already treats a non-dict `fields` as declaring no fields, and a
+    contract is read before the artifact is parsed, so a wrong-shaped value is
+    reached on every run rather than only on a parseable artifact. Dropping it
+    keeps the grader total; recording why keeps the typo from being silent.
+    """
+    value = metadata.get(key)
+    if isinstance(value, dict):
+        return value
+    if value is not None:
+        errors.append(
+            f"metadata.{key} is a {type(value).__name__}, not a mapping, so it declares "
+            "nothing and was not applied to the grade."
+        )
+    return {}
+
+
 def _unanchored_fields(
     fields: dict[str, Any], expected: dict[str, Any]
 ) -> tuple[list[str], bool]:
@@ -123,8 +142,13 @@ def check_extraction(metadata: dict[str, Any], artifact_text: str) -> dict[str, 
     # Contract anchoring depends on metadata alone, so it is settled before the
     # artifact is looked at: a spec with no anchor fails closed whatever the
     # worker returned, and a parse failure must not be reported as a bad contract.
-    fields = metadata.get("fields") or {}
-    expected = metadata.get("expected") or {}
+    # Reading it this early means a malformed contract is reached before the parse
+    # early-returns, so both are normalised to a mapping: the audit treats a
+    # non-dict `fields` as declaring no fields, and a spec author's typo must not
+    # cost the run its record. A contract that ends up with nothing to grade still
+    # fails closed below.
+    fields = _as_mapping(metadata, "fields", report["errors"])
+    expected = _as_mapping(metadata, "expected", report["errors"])
     unanchored, has_anchor = _unanchored_fields(fields, expected)
     report["checks"]["contract_anchored"] = has_anchor and not unanchored
     if unanchored:

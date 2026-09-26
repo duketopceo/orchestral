@@ -5,6 +5,7 @@ from __future__ import annotations
 import inspect
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
 from orchestral.audit import (
@@ -17,10 +18,38 @@ from orchestral.audit import (
     effective_checks,
     find_duplicate_families,
 )
-from orchestral.config import TASK_TYPES, TaskSpec
+from orchestral.config import TASK_TYPES, TaskSpec, load_task
 from orchestral.runner import Runner
 
 REPO_TASKS = Path(__file__).resolve().parent.parent / "tasks"
+
+
+def replace_spec_metadata(spec: TaskSpec, **changes) -> TaskSpec:
+    """A copy of `spec` with fields replaced, so a fixture edit does not mutate the original."""
+    return replace(spec, **changes)
+
+
+def validation_check_table(doc: str) -> str:
+    """The `## Validation checks` section — the hand-maintained table of every name.
+
+    Scoped to the section rather than the whole file so a name that survives
+    somewhere in the prose does not stand in for its table row. A guard that
+    accepts any mention is a guard that cannot fail.
+    """
+    lines = doc.splitlines()
+    start = next((i for i, line in enumerate(lines) if line.strip() == "## Validation checks"), None)
+    if start is None:
+        raise AssertionError("docs/task-spec.md has no '## Validation checks' section")
+    rest = lines[start + 1 :]
+    end = next((i for i, line in enumerate(rest) if line.startswith("## ")), len(rest))
+    return "\n".join(rest[:end])
+
+
+def undocumented_names(names: set[str], doc: str) -> list[str]:
+    """Registered check names the hand-maintained doc table does not carry."""
+    table = validation_check_table(doc)
+    return sorted(name for name in names if f"| `{name}` |" not in table)
+
 
 # minimal well-formed media: PNG magic + IEND, and an ISO-BMFF leading ftyp box
 PNG_BYTES = b"\x89PNG\r\n\x1a\n" + b"body" + b"IEND\xaeB`\x82"
@@ -46,6 +75,39 @@ CONSTANT_ASSERT_TRUE = (
 CONSTANT_ASSERT_EQUAL = (
     "import unittest\n\n\nclass T(unittest.TestCase):\n    def test_x(self):\n        self.assertEqual(1, 1)\n"
 )
+
+
+def _suite(body: str, *, prelude: str = "import unittest\n\nimport solution\n") -> str:
+    """One collected test method in a TestCase, with `body` as its suite."""
+    return f"{prelude}\n\nclass T(unittest.TestCase):\n    def test_x(self):\n{body}\n"
+
+
+def _code(**metadata) -> TaskSpec:
+    base = {"id": "c-suite", "type": "code", "prompt": "Write it.", "metadata": {"module": "solution.py"}}
+    base["metadata"].update(metadata)
+    return TaskSpec(**base)
+
+
+# QC's nine tautology shapes, verbatim. The first four were already caught; the
+# next five each audited clean and each passed against a 4-byte artifact.
+TAUTOLOGY_BODIES = {
+    "assertTrue(True)": "        self.assertTrue(True)",
+    "assertEqual(1, 1)": "        self.assertEqual(1, 1)",
+    "assertTrue(1 == 1)": "        self.assertTrue(1 == 1)",
+    "assertEqual(1, 1+0)": "        self.assertEqual(1, 1+0)",
+    "assertEqual(2 * 3, 6)": "        self.assertEqual(2 * 3, 6)",
+    "assertIn(x, [x])": "        x = solution.solve('a b')\n        self.assertIn(x, [x])",
+    "assertIn(x, (x,))": "        x = solution.solve('a b')\n        self.assertIn(x, (x,))",
+    "self.assertIs(s, s)": "        s = solution.solve('a b')\n        self.assertIs(s, s)",
+    "self.assertEqual(x, x)": "        x = solution.solve('a b')\n        self.assertEqual(x, x)",
+    "assertEqual(0, len(''))": "        self.assertEqual(0, len(''))",
+}
+
+# A collected, non-constant assertion that reads the interpreter rather than the
+# module under test. It is not a tautology, so the only thing left to give it
+# away is the missing reference.
+MODULE_FREE_BODY = "        self.assertGreater(len(sys.argv), 0)"
+MODULE_FREE_PRELUDE = "import unittest\nimport sys\n"
 
 # Which `Runner` method implements each registry entry. The text-producing
 # types share `_validate`; the media and fileset types compute their own sets.
@@ -183,6 +245,27 @@ class TestCheckNamesFailClosed(unittest.TestCase):
         smuggled = {"image": frozenset({"non_empty", "html"})}
         self.assertEqual(unimplemented_names(smuggled, VALIDATION_SHORTHANDS, bodies.get), [("image", "html")])
 
+    def test_every_registered_check_name_is_documented_in_the_task_spec(self):
+        """`docs/task-spec.md` carries a hand-maintained table of every name.
+
+        Two other tests hold the registry to the runner. Nothing held it to the
+        doc, so a name could ship implemented, tested, and undocumented, and the
+        table would silently fall a row behind the registry.
+        """
+        from orchestral.audit import VALIDATION_CHECKS
+
+        names = {name for group in VALIDATION_CHECKS.values() for name in group}
+        self.assertEqual(undocumented_names(names, self._spec_doc()), [])
+
+    def test_the_doc_drift_guard_flags_a_name_the_table_omits(self):
+        """A guard that only ever sees a complete table cannot detect its own blind spot."""
+        self.assertEqual(undocumented_names({"has_paths", "has_novel_check"}, self._spec_doc()), ["has_novel_check"])
+        self.assertEqual(undocumented_names({"has_paths"}, self._spec_doc()), [])
+
+    @staticmethod
+    def _spec_doc() -> str:
+        return (REPO_TASKS.parent / "docs" / "task-spec.md").read_text()
+
 
 class TestAbsentGradingContract(unittest.TestCase):
     """A self-anchored type with no anchor grades anything as correct."""
@@ -200,10 +283,32 @@ class TestAbsentGradingContract(unittest.TestCase):
         self.assertIn("assert", found["absent_grading_contract"][0].detail)
 
     def test_code_suite_with_an_assertion_is_clean_of_that_error(self):
+        # `module` must name the file the suite imports, or the spec grades one
+        # file and tests another: the runner would demand `a.py` while the suite
+        # does `from solution import solve`, and the suite would ImportError.
         spec = TaskSpec(
-            id="c-3", type="code", prompt="Write it.", metadata={"module": "a.py", "tests": ASSERTING_SUITE}
+            id="c-3",
+            type="code",
+            prompt="Write it.",
+            metadata={"module": "solution.py", "tests": ASSERTING_SUITE},
         )
         self.assertNotIn("absent_grading_contract", _rules(spec))
+
+    def test_a_suite_that_tests_a_different_module_than_the_spec_grades_is_an_error(self):
+        """The declared module and the imported module are the same gate, twice.
+
+        This fixture was the shape the previous test used, and it passed because
+        nothing compared the two. A spec that grades `a.py` while its suite
+        imports `solution` can never pass a correct artifact, and the audit did
+        not say so.
+        """
+        spec = TaskSpec(
+            id="c-mismatch", type="code", prompt="Write it.",
+            metadata={"module": "a.py", "tests": ASSERTING_SUITE},
+        )
+        found = _rules(spec)
+        self.assertIn("absent_grading_contract", found)
+        self.assertIn("never names 'a.py'", found["absent_grading_contract"][0].detail)
 
     def test_word_assert_in_a_docstring_is_not_an_assertion(self):
         spec = TaskSpec(
@@ -314,6 +419,104 @@ class TestAbsentGradingContract(unittest.TestCase):
         for task_type in ("html", "constraint", "needle", "image", "video", "multi-file"):
             with self.subTest(type=task_type):
                 self.assertNotIn("absent_grading_contract", _rules(_task(id="t-x", type=task_type)))
+
+
+class TestSuiteTautologies(unittest.TestCase):
+    """A suite that reads nothing from the artifact cannot discriminate.
+
+    `docs/task-audit.md` discloses that an assertion the *test itself* arranges —
+    `self.assertTrue(self.flag)`, `self.assertEqual(f(x), f(x))` — needs
+    execution to detect, and the audit does not claim otherwise. The shapes here
+    are the ones that need no execution at all: the assertion is a tautology by
+    construction, so no artifact can turn it red.
+    """
+
+    # QC's nine shapes are in TAUTOLOGY_BODIES, at module scope.
+
+    def test_every_tautology_shape_is_an_error(self):
+        for label, body in TAUTOLOGY_BODIES.items():
+            with self.subTest(shape=label):
+                found = _rules(_code(tests=_suite(body)))
+                self.assertIn("absent_grading_contract", found, f"{label} audited clean")
+                self.assertEqual(found["absent_grading_contract"][0].severity, ERROR)
+
+    def test_a_real_suite_is_not_a_tautology(self):
+        """The control: reading the artifact must stay clean, or the rule is useless."""
+        for label, body in {
+            "equality against a return value": "        self.assertEqual(solution.solve('a b'), 'a-b')",
+            "smoke check on a return value": "        self.assertIsNotNone(solution.solve('a b'))",
+            "a length of a return value": "        self.assertEqual(len(solution.solve('a b')), 3)",
+            "membership of a return value": "        self.assertIn(solution.solve('a b'), ['a-b'])",
+        }.items():
+            with self.subTest(shape=label):
+                self.assertNotIn("absent_grading_contract", _rules(_code(tests=_suite(body))))
+
+    def test_a_repeated_call_is_left_to_execution(self):
+        """`f(x) == f(x)` repeats, but `f` may read the artifact.
+
+        The doc keeps this class as execution-only, so flagging it here would
+        claim a bound the audit does not have.
+        """
+        body = "        f = solution.solve\n        self.assertEqual(f('a b'), f('a b'))"
+        self.assertNotIn("absent_grading_contract", _rules(_code(tests=_suite(body))))
+
+    def test_a_negating_assertion_is_not_reported_as_a_tautology(self):
+        """`assertNotEqual(x, x)` can never pass — a broken suite, not a gate
+        that cannot fail, and naming it a tautology would misdescribe it."""
+        body = "        x = solution.solve('a b')\n        self.assertNotEqual(x, x)"
+        self.assertNotIn("absent_grading_contract", _rules(_code(tests=_suite(body))))
+
+    # A collected, non-constant assertion that reads the interpreter rather than
+    # the module under test. It is not a tautology, so the only thing left to
+    # give it away is the missing reference.
+    def test_a_suite_that_never_names_the_module_is_an_error(self):
+        """The assertion is not a constant, so only the module reference gives it away."""
+        spec = _code(tests=_suite(MODULE_FREE_BODY, prelude=MODULE_FREE_PRELUDE))
+        found = _rules(spec)
+        self.assertIn("absent_grading_contract", found)
+        self.assertIn("never names 'solution.py'", found["absent_grading_contract"][0].detail)
+
+    def test_every_way_of_naming_the_module_counts_as_a_reference(self):
+        """A real suite uses whichever reads best, so all of them must clear the rule.
+
+        The shipped `code-*` specs need two of these (`from calc import evaluate`,
+        `from lru import LRUCache`), so a check that only understood `import x`
+        would flag honest specs.
+        """
+        cases = {
+            "import module": (
+                "import unittest\nimport solution\n",
+                "        self.assertGreater(len(solution.__name__), 0)",
+            ),
+            "from module import name": (
+                "import unittest\nfrom solution import solve\n",
+                "        self.assertGreater(len(solve.__name__), 0)",
+            ),
+            "import_module by name": (
+                "import unittest\nimport importlib\n",
+                "        m = importlib.import_module('solution')\n        self.assertGreater(len(m.__name__), 0)",
+            ),
+        }
+        for label, (prelude, body) in cases.items():
+            with self.subTest(form=label):
+                self.assertNotIn(
+                    "absent_grading_contract", _rules(_code(tests=_suite(body, prelude=prelude))), label
+                )
+
+    def test_the_tautology_message_wins_over_the_module_message(self):
+        """A suite of constants is a tautology whether or not it names the module."""
+        spec = _code(tests=_suite("        assert True", prelude="import unittest\n"))
+        self.assertIn("constant", _rules(spec)["absent_grading_contract"][0].detail)
+
+    def test_the_declared_module_is_the_one_the_runner_looks_for(self):
+        """`metadata.module` overrides the default, so the reference check follows it."""
+        suite = _suite(MODULE_FREE_BODY, prelude="import unittest\nimport calc\nimport sys\n")
+        named = TaskSpec(
+            id="c-mod", type="code", prompt="Write it.", metadata={"module": "calc.py", "tests": suite}
+        )
+        self.assertNotIn("absent_grading_contract", _rules(named))
+        # the same suite, against the runner's default module, never names it
+        self.assertIn("absent_grading_contract", _rules(_code(tests=suite)))
 
 
 class TestGamingSurface(unittest.TestCase):
@@ -470,6 +673,196 @@ class TestGamingSurface(unittest.TestCase):
             metadata={"expected_paths": ["index.html"]},
         )
         self.assertIn("unanchored_fileset", _rules(spec))
+
+    def test_every_unanchored_fileset_state_is_an_error(self):
+        """Deleting one token from a spec must not be a route to green.
+
+        Warn was the hole: the audit named the exact fix and `--strict` still
+        exited 0, so a one-token deletion turned a declared gate off with no edit
+        to the audit itself. Same defect as `unknown_validation_check`, so same
+        severity.
+        """
+        unanchored = {
+            "expected_paths unread": {
+                "validation": ["non_empty", "zip_signature"],
+                "metadata": {"expected_paths": ["index.html", "style.css"]},
+                "names": "has_paths is not requested",
+            },
+            "required_content unread": {
+                "validation": ["non_empty", "zip_signature", "has_paths"],
+                "metadata": {
+                    "expected_paths": ["index.html", "style.css"],
+                    "required_content": {"index.html": ["pricing"]},
+                },
+                "names": "has_content is not requested",
+            },
+            "both unread": {
+                "validation": ["non_empty", "zip_signature"],
+                "metadata": {
+                    "expected_paths": ["index.html", "style.css"],
+                    "required_content": {"index.html": ["pricing"]},
+                },
+                "names": "has_paths is not requested",
+            },
+            "nothing declared": {
+                "validation": ["non_empty", "zip_signature"],
+                "metadata": {},
+                "names": "the fileset is unanchored",
+            },
+            "names and byte counts only": {
+                "validation": ["has_paths"],
+                "metadata": {"expected_paths": ["index.html", "style.css"]},
+                "names": "no check reads the file bodies",
+            },
+        }
+        for label, case in unanchored.items():
+            with self.subTest(state=label):
+                spec = TaskSpec(
+                    id="mf-e", type="multi-file", prompt="Build a site.",
+                    validation=case["validation"], metadata=case["metadata"],
+                )
+                found = _rules(spec)
+                self.assertIn("unanchored_fileset", found, label)
+                finding = found["unanchored_fileset"][0]
+                self.assertEqual(finding.severity, ERROR, label)
+                self.assertIn(case["names"], finding.detail, label)
+
+    def test_both_unread_inputs_are_named_in_one_finding(self):
+        """One finding, both shapes: the author gets the whole fix, not half of it."""
+        spec = TaskSpec(
+            id="mf-both",
+            type="multi-file",
+            prompt="Build a site.",
+            validation=["non_empty", "zip_signature"],
+            metadata={
+                "expected_paths": ["index.html"],
+                "required_content": {"index.html": ["pricing"]},
+            },
+        )
+        detail = _rules(spec)["unanchored_fileset"][0].detail
+        self.assertIn("has_paths is not requested", detail)
+        self.assertIn("has_content is not requested", detail)
+
+    def test_a_declared_path_the_body_check_does_not_cover_is_unread(self):
+        """`has_content` forces a body for every path it names, and no other.
+
+        A path in `expected_paths` that the body check does not cover is declared
+        and read by nobody, even though the fileset as a whole is anchored — which
+        is why the early return cannot be "any body check is enough".
+        """
+        spec = TaskSpec(
+            id="mf-partial",
+            type="multi-file",
+            prompt="Build a site.",
+            validation=["non_empty", "zip_signature", "has_content"],
+            metadata={
+                "expected_paths": ["index.html", "style.css"],
+                "required_content": {"index.html": ["pricing"]},
+            },
+        )
+        found = _rules(spec)
+        self.assertIn("unanchored_fileset", found)
+        self.assertEqual(found["unanchored_fileset"][0].severity, ERROR)
+        self.assertIn("has_paths is not requested", found["unanchored_fileset"][0].detail)
+
+    def test_has_paths_is_redundant_when_the_body_check_covers_every_declared_path(self):
+        """The converse: `has_content` on all declared paths reads them all, so
+        dropping `has_paths` costs the spec nothing and must not be reported."""
+        spec = TaskSpec(
+            id="mf-covered",
+            type="multi-file",
+            prompt="Build a site.",
+            validation=["non_empty", "zip_signature", "has_content"],
+            metadata={
+                "expected_paths": ["index.html", "style.css"],
+                "required_content": {"index.html": ["pricing"], "style.css": ["pricing"]},
+            },
+        )
+        self.assertNotIn("unanchored_fileset", _rules(spec))
+
+    def test_deleting_a_gate_token_from_the_shipped_spec_is_an_error(self):
+        """The shipped spec with a load-bearing token removed must stop passing.
+
+        `has_content` is load-bearing and `has_paths` is not: `has_content` needs
+        a body for every path it names, so it already forces both declared files
+        to exist. Dropping `has_paths` there costs the spec nothing, and saying
+        otherwise would train authors to ignore the error.
+        """
+        shipped = load_task(REPO_TASKS / "multi-file-site.yaml")
+        dropped = replace_spec_metadata(
+            shipped, validation=[c for c in shipped.validation if c != "has_content"]
+        )
+        found = _rules(dropped)
+        self.assertIn("unanchored_fileset", found)
+        self.assertEqual(found["unanchored_fileset"][0].severity, ERROR)
+        self.assertIn("has_content is not requested", found["unanchored_fileset"][0].detail)
+
+        redundant = replace_spec_metadata(
+            shipped, validation=[c for c in shipped.validation if c != "has_paths"]
+        )
+        self.assertNotIn("unanchored_fileset", _rules(redundant))
+
+
+class TestPresenceOnlyExtractContract(unittest.TestCase):
+    """`required` grades presence and type; it never compares a value."""
+
+    def test_required_fields_without_expected_is_a_warning(self):
+        spec = TaskSpec(
+            id="x-presence",
+            type="extract",
+            prompt="Pull the invoice number, date, and total.",
+            metadata={
+                "fields": {
+                    "invoice_number": {"type": "string", "required": True},
+                    "total": {"type": "number", "required": True},
+                }
+            },
+        )
+        found = _rules(spec)
+        self.assertIn("presence_only_extract_contract", found)
+        finding = found["presence_only_extract_contract"][0]
+        self.assertEqual(finding.severity, WARN)
+        self.assertIn("invoice_number", finding.detail)
+        self.assertIn("never compares a value", finding.detail)
+
+    def test_a_fabricated_value_scores_the_same_as_a_correct_one(self):
+        """Why the finding exists, stated as a fact about the runner."""
+        from orchestral.extract import check_extraction
+
+        spec = TaskSpec(
+            id="x-presence",
+            type="extract",
+            prompt="Pull the total.",
+            metadata={"fields": {"total": {"type": "number", "required": True}}},
+        )
+        report = check_extraction(spec.metadata, '{"total": 0.01}')
+        self.assertTrue(report["passes"])
+        self.assertEqual(report["score"], 1.0)
+        self.assertEqual(report["field_results"], {})
+
+    def test_expected_clears_the_finding(self):
+        spec = TaskSpec(
+            id="x-presence",
+            type="extract",
+            prompt="Pull the total.",
+            metadata={
+                "fields": {"total": {"type": "number", "required": True}},
+                "expected": {"total": 249.0},
+            },
+        )
+        self.assertNotIn("presence_only_extract_contract", _rules(spec))
+
+    def test_an_empty_contract_is_the_absent_contract_error_not_this_warning(self):
+        """No required field and no expected is already an error; do not double-report."""
+        spec = TaskSpec(id="x-empty", type="extract", prompt="Pull the total.", metadata={})
+        found = _rules(spec)
+        self.assertIn("absent_grading_contract", found)
+        self.assertNotIn("presence_only_extract_contract", found)
+
+    def test_other_types_are_untouched(self):
+        for task_type in ("html", "code", "sql", "api", "multi-file", "image"):
+            with self.subTest(type=task_type):
+                self.assertNotIn("presence_only_extract_contract", _rules(_task(id="t-p", type=task_type)))
 
 
 class TestMediaSpecsAreNotJudgedByTextChecks(unittest.TestCase):

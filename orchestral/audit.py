@@ -21,6 +21,7 @@ from __future__ import annotations
 import ast
 import re
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -399,12 +400,149 @@ def check_validation_names(spec: TaskSpec, path: Path | None = None) -> list[Fin
     ]
 
 
-def _literal(node: ast.AST) -> tuple[bool, Any]:
-    """Constant-fold a node. False when the node is not a literal expression."""
-    try:
-        return True, ast.literal_eval(node)
-    except (ValueError, SyntaxError, TypeError, MemoryError, RecursionError):
+# Builtins that are a total function of a foldable argument, so calling one on a
+# constant yields a constant. `len` is the idiom the tautology shapes use
+# (`assertEqual(0, len(''))`); the rest are the same one-line class.
+_FOLDABLE_BUILTINS: dict[str, Callable[[Any], Any]] = {
+    "len": len,
+    "abs": abs,
+    "str": str,
+    "int": int,
+    "float": float,
+    "bool": bool,
+}
+
+# unittest assertions that pass exactly when the condition they assert holds,
+# and that take the compared pair as their first two positional arguments. The
+# same expression on both sides therefore makes them pass for any artifact.
+#
+# The negating forms are absent on purpose: `assertNotEqual(x, x)` can never
+# pass, which is a broken suite rather than a gate that cannot fail, and
+# reporting it here would misname the defect.
+_SAME_OPERAND_PASSES = frozenset(
+    {
+        "assertEqual",
+        "assertIs",
+        "assertIn",
+        "assertSequenceEqual",
+        "assertMultiLineEqual",
+        "assertListEqual",
+        "assertTupleEqual",
+        "assertSetEqual",
+        "assertDictEqual",
+        "assertCountEqual",
+    }
+)
+
+
+_BINOPS: dict[type[ast.operator], Any] = {
+    ast.Add: lambda a, b: a + b,
+    ast.Sub: lambda a, b: a - b,
+    ast.Mult: lambda a, b: a * b,
+    ast.Div: lambda a, b: a / b,
+    ast.FloorDiv: lambda a, b: a // b,
+    ast.Mod: lambda a, b: a % b,
+    ast.Pow: lambda a, b: a**b,
+}
+
+_COMPARES: dict[type[ast.cmpop], Any] = {
+    ast.Eq: lambda a, b: a == b,
+    ast.NotEq: lambda a, b: a != b,
+    ast.Lt: lambda a, b: a < b,
+    ast.LtE: lambda a, b: a <= b,
+    ast.Gt: lambda a, b: a > b,
+    ast.GtE: lambda a, b: a >= b,
+    ast.In: lambda a, b: a in b,
+    ast.NotIn: lambda a, b: a not in b,
+    ast.Is: lambda a, b: a is b,
+    ast.IsNot: lambda a, b: a is not b,
+}
+
+
+def _fold(node: ast.AST) -> tuple[bool, Any]:
+    """Constant-fold a node, including arithmetic and comparison.
+
+    `ast.literal_eval` rejects anything that is not already a literal, so it
+    cannot fold `1 + 0` or `1 == 1` — which is why `assertEqual(1, 1+0)` and
+    `assertTrue(1 == 1)` audited clean while `assertEqual(1, 1)` did not. This
+    folds the operators over already-foldable operands, so a suite that asserts
+    an arithmetic or comparison identity is recognised as the tautology it is.
+
+    Only operators and calls that read nothing outside their own operands are
+    folded. A name, an attribute, or a call to anything not in
+    `_FOLDABLE_BUILTINS` is not a constant, so a real assertion against a value
+    the artifact produces still folds to False and is never mistaken for one.
+    """
+    if isinstance(node, ast.Constant):
+        return True, node.value
+    if isinstance(node, (ast.Tuple, ast.List, ast.Set)):
+        items: list[Any] = []
+        for element in node.elts:
+            ok, value = _fold(element)
+            if not ok:
+                return False, None
+            items.append(value)
+        return True, items if not isinstance(node, ast.Set) else set(items)
+    if isinstance(node, ast.UnaryOp):
+        ok, operand = _fold(node.operand)
+        if not ok:
+            return False, None
+        try:
+            if isinstance(node.op, ast.USub):
+                return True, -operand
+            if isinstance(node.op, ast.UAdd):
+                return True, +operand
+            if isinstance(node.op, ast.Not):
+                return True, not operand
+        except TypeError:
+            return False, None
         return False, None
+    if isinstance(node, ast.BinOp):
+        left_ok, left = _fold(node.left)
+        right_ok, right = _fold(node.right)
+        if not (left_ok and right_ok):
+            return False, None
+        operation = _BINOPS.get(type(node.op))
+        if operation is None:
+            return False, None
+        try:
+            return True, operation(left, right)
+        except (TypeError, ValueError, ZeroDivisionError, OverflowError):
+            return False, None
+    if isinstance(node, ast.BoolOp):
+        values: list[Any] = []
+        for value_node in node.values:
+            ok, value = _fold(value_node)
+            if not ok:
+                return False, None
+            values.append(value)
+        if isinstance(node.op, ast.And):
+            return True, all(values)
+        return True, any(values)
+    if isinstance(node, ast.Compare) and len(node.ops) == 1 and len(node.comparators) == 1:
+        left_ok, left = _fold(node.left)
+        right_ok, right = _fold(node.comparators[0])
+        if not (left_ok and right_ok):
+            return False, None
+        operation = _COMPARES.get(type(node.ops[0]))
+        if operation is None:
+            return False, None
+        try:
+            return True, operation(left, right)
+        except TypeError:
+            return False, None
+    if isinstance(node, ast.Call) and len(node.args) == 1 and not node.keywords:
+        func = node.func
+        name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+        builtin = _FOLDABLE_BUILTINS.get(name)
+        if builtin is not None:
+            ok, value = _fold(node.args[0])
+            if ok:
+                try:
+                    return True, builtin(value)
+                except (TypeError, ValueError):
+                    return False, None
+    return False, None
 
 
 def _is_test_case(node: ast.ClassDef, bases: dict[str, ast.ClassDef], seen: frozenset[str] = frozenset()) -> bool:
@@ -421,41 +559,140 @@ def _is_test_case(node: ast.ClassDef, bases: dict[str, ast.ClassDef], seen: froz
     return False
 
 
+def _assertion_name(node: ast.AST) -> str:
+    func = node.func if isinstance(node, ast.Call) else None
+    return func.attr if isinstance(func, ast.Attribute) else ""
+
+
+def _repeats_itself(args: list[ast.expr]) -> bool:
+    """Is the assertion comparing one expression against itself?
+
+    A repeated expression is the same value twice, so the comparison holds for
+    whatever it is bound to — `self.assertIs(s, s)` and `assertIn(x, [x])` are
+    both true for any value of `s` or `x`. Neither folds, because a name is not a
+    constant, which is why folding alone misses them.
+
+    A call disqualifies it. `self.assertEqual(f(x), f(x))` also repeats, but `f`
+    may read the artifact, so the doc keeps that class as execution-only rather
+    than claiming it here. Everything else in an expression — a name, an
+    attribute, a subscript, arithmetic — is a pure read of state that already
+    exists, so repeating it cannot change the outcome.
+    """
+    if len(args) < 2:
+        return False
+    left, right = args[0], args[1]
+    same = ast.dump(left) == ast.dump(right)
+    if not same and isinstance(right, (ast.List, ast.Tuple, ast.Set)) and len(right.elts) == 1:
+        # `assertIn(x, [x])`: the container holds nothing but the needle.
+        same = ast.dump(left) == ast.dump(right.elts[0])
+    if not same:
+        return False
+    return not any(isinstance(node, ast.Call) for node in ast.walk(left))
+
+
 def _is_constant_assertion(node: ast.AST) -> bool:
     """Can this assertion never fail, whatever the artifact is?
 
+    Three decidable shapes, all provable from the source alone:
+
+    - a bare `assert` whose test folds to a truthy constant;
+    - a `unittest` assertion whose argument folds to a constant, in which case
+      the outcome is fixed whatever the artifact is;
+    - a comparison assertion handed the *same* expression twice, or a
+      membership assertion whose container is the needle alone — true for any
+      value, so no artifact can turn it red.
+
+    The third shape is what the first two miss. `self.assertIs(s, s)` and
+    `assertIn(x, [x])` fold to nothing (`s` is a name), yet they hold whatever
+    the name is bound to, and a suite built from them cannot discriminate by
+    construction.
+
     Only provable constants are flagged, so a real smoke check such as
-    `assert result is not None` is never mistaken for one. `literal_eval`
-    fails on anything that reads a value, which is exactly the distinction.
+    `assert result is not None` is never mistaken for one. A name, an attribute,
+    or a call the folder does not know is not a constant, which is exactly the
+    distinction.
     """
     if isinstance(node, ast.Assert):
-        ok, value = _literal(node.test)
+        ok, value = _fold(node.test)
         return ok and bool(value)
     if not isinstance(node, ast.Call):
         return False
-    func = node.func
-    name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+    name = _assertion_name(node)
     args = node.args
+    if name in _SAME_OPERAND_PASSES and _repeats_itself(args):
+        return True
     if name in {"assertTrue", "assertFalse"} and len(args) == 1:
-        ok, value = _literal(args[0])
+        ok, value = _fold(args[0])
         return ok and bool(value) is (name == "assertTrue")
     if name in {"assertEqual", "assertNotEqual"} and len(args) == 2:
-        left_ok, left = _literal(args[0])
-        right_ok, right = _literal(args[1])
+        left_ok, left = _fold(args[0])
+        right_ok, right = _fold(args[1])
         if left_ok and right_ok and left == right:
             return name == "assertEqual"
+    if name in {"assertIs", "assertIsNot"} and len(args) == 2:
+        left_ok, left = _fold(args[0])
+        right_ok, right = _fold(args[1])
+        if left_ok and right_ok and left is right:
+            return name == "assertIs"
+    if name in {"assertIn", "assertNotIn"} and len(args) == 2:
+        needle_ok, needle = _fold(args[0])
+        container_ok, container = _fold(args[1])
+        if needle_ok and container_ok:
+            try:
+                return (needle in container) is (name == "assertIn")
+            except TypeError:
+                return False
     return False
 
 
-def _suite_gate_reason(tests_source: str) -> str | None:
+def _declared_module(spec: TaskSpec) -> str:
+    """The module a `code` suite is expected to import, matching the runner."""
+    return str(spec.metadata.get("module") or "solution.py")
+
+
+def _references_module(tree: ast.Module, module: str) -> bool:
+    """Does the suite name `metadata.module` anywhere?
+
+    A suite that never names the module under test cannot read it, so nothing it
+    asserts is a function of the artifact — the suite passes for every input,
+    including a stub. That is decidable without executing anything, and it is
+    the property that separates the shapes this file can catch from the ones
+    that need a run: `self.assertTrue(self.flag)` names nothing either, but it
+    at least touches a value the artifact could have set, so only execution
+    settles it.
+
+    All four spelling forms count, because a real suite uses whichever reads
+    best: `import solution`, `from solution import solve`, a bare `solution`
+    name, or `importlib.import_module("solution")`.
+    """
+    stem = module.rsplit("/", 1)[-1]
+    if stem.endswith(".py"):
+        stem = stem[:-3]
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and node.id == stem:
+            return True
+        if isinstance(node, ast.ImportFrom) and node.module and node.module.rsplit(".", 1)[-1] == stem:
+            return True
+        if isinstance(node, ast.Import) and any(
+            alias.name.rsplit(".", 1)[-1] == stem for alias in node.names
+        ):
+            return True
+        if isinstance(node, ast.Constant) and node.value in (stem, module):
+            return True
+    return False
+
+
+def _suite_gate_reason(tests_source: str, module: str = "solution.py") -> str | None:
     """Why the suite cannot gate anything, or None when it can.
 
-    Three properties are decidable from the source alone, and only these:
+    Four properties are decidable from the source alone, and only these:
 
     - the suite parses — code that cannot be imported cannot gate anything;
     - it carries an assertion `unittest` will actually collect, which means
       inside a `test*` method of a `unittest.TestCase` subclass;
-    - that assertion is not a constant.
+    - that assertion is not a constant;
+    - the suite names `metadata.module` somewhere, so it can read the artifact
+      at all.
 
     A self-referential assertion (`self.assertTrue(self.flag)`, set by the test
     itself) can never fail and needs execution to detect, which a static read
@@ -467,6 +704,7 @@ def _suite_gate_reason(tests_source: str) -> str | None:
         return "metadata.tests does not parse, so it cannot be a suite the runner can import."
     bases = {n.name: n for n in ast.walk(tree) if isinstance(n, ast.ClassDef)}
     found = False
+    every_constant = True
     for node in ast.walk(tree):
         if not isinstance(node, ast.ClassDef) or not _is_test_case(node, bases):
             continue
@@ -476,21 +714,29 @@ def _suite_gate_reason(tests_source: str) -> str | None:
             if not member.name.startswith("test"):
                 continue
             for inner in ast.walk(member):
-                if isinstance(inner, ast.Assert) or (
-                    isinstance(inner, ast.Call) and getattr(inner.func, "attr", "").startswith("assert")
-                ):
+                if isinstance(inner, ast.Assert) or _assertion_name(inner).startswith("assert"):
                     found = True
                     if not _is_constant_assertion(inner):
-                        return None
+                        every_constant = False
     if not found:
         return (
             "metadata.tests has no assertion inside a test* method of a unittest.TestCase, so "
             "unittest collects nothing that can fail. The suite passes for any artifact."
         )
-    return (
-        "every assertion in metadata.tests is a constant, so the suite can never fail. A tautology "
-        "is not a gate; assert against a value the artifact produces."
-    )
+    # The tautology is the more specific finding, so it is reported first: a
+    # suite of constants is a tautology whether or not it also names the module.
+    if every_constant:
+        return (
+            "every assertion in metadata.tests is a constant, so the suite can never fail. A "
+            "tautology is not a gate; assert against a value the artifact produces."
+        )
+    if not _references_module(tree, module):
+        return (
+            f"metadata.tests never names {module!r}, so it cannot read the artifact and nothing it "
+            "asserts is a function of the submitted code. Import the module under test and assert "
+            "against a value it returns."
+        )
+    return None
 
 
 def _has_required_field(metadata: dict[str, Any]) -> bool:
@@ -540,7 +786,7 @@ def check_absent_grading_contract(spec: TaskSpec, path: Path | None = None) -> l
     """
     reason = _absent_contract_reason(spec)
     if reason is None and spec.type == "code":
-        reason = _suite_gate_reason(str(spec.metadata.get("tests") or ""))
+        reason = _suite_gate_reason(str(spec.metadata.get("tests") or ""), _declared_module(spec))
     if reason is None:
         return []
     return [
@@ -550,6 +796,40 @@ def check_absent_grading_contract(spec: TaskSpec, path: Path | None = None) -> l
             task_id=spec.id,
             path=str(path) if path else None,
             detail=reason,
+        )
+    ]
+
+
+def check_presence_only_extract_contract(spec: TaskSpec, path: Path | None = None) -> list[Finding]:
+    """An `extract` contract of `required` fields and no `expected` grades presence.
+
+    `orchestral/extract.py` treats `required` as a legitimate anchor and grades
+    it on presence and type, never on a value — a deliberate choice, not a bug,
+    so this is a warning and not a contradiction of the runner. But it means a
+    fabricated value scores exactly as a correct one, `field_results` stays
+    empty, and `score` falls out of the all-checks-pass branch at 1.0. The
+    author is graded on having written the right keys with plausible types.
+    """
+    if spec.type != "extract":
+        return []
+    if not _has_required_field(spec.metadata) or spec.metadata.get("expected"):
+        return []
+    fields = sorted(
+        name
+        for name, field_spec in (spec.metadata.get("fields") or {}).items()
+        if isinstance(field_spec, dict) and field_spec.get("required")
+    )
+    return [
+        Finding(
+            rule="presence_only_extract_contract",
+            severity=WARN,
+            task_id=spec.id,
+            path=str(path) if path else None,
+            detail=(
+                f"metadata.expected is absent, so the contract grades presence and type on "
+                f"{fields} and never compares a value: a fabricated value scores 1.0 exactly as a "
+                "correct one. Declare metadata.expected."
+            ),
         )
     ]
 
@@ -643,9 +923,15 @@ def check_unanchored_fileset(spec: TaskSpec, path: Path | None = None) -> list[F
 
     A fileset is anchored only when the grader reads a file *body*: `has_paths`
     plus `has_content` with tokens in `metadata.required_content`. Every other
-    `multi-file` spec lands in one of four states — no usable declared paths,
-    declared paths the grader never looks for, declared paths checked only for
-    existence, or a body check with nothing to look for.
+    `multi-file` spec lands in one of these states — a declared input no
+    requested check reads, nothing usable declared at all, declared paths
+    checked only for existence, or a body check with nothing to look for.
+
+    Error, not warn, because two of those states are the same defect as
+    `unknown_validation_check`: the author declared a gate input and no check
+    reads it, so deleting one token from `validation:` is enough to turn the
+    declared gate off and reach green with no edit here. The gate naming the fix
+    while exiting 0 was the hole. See `docs/task-audit.md`.
     """
     if spec.type != "multi-file":
         return []
@@ -653,28 +939,42 @@ def check_unanchored_fileset(spec: TaskSpec, path: Path | None = None) -> list[F
     # the same normalisation the runner uses, so the reported set is the set it
     # will actually look for
     declared = expected_paths(spec.metadata)
-    # A body-reading check anchors the fileset only once it has tokens to look
-    # for. Requested-but-unconfigured, `has_content` fails every artifact, so
-    # the gate fires but the spec is not a graded site and the finding stands.
-    if requested & FILESET_BODY_CHECKS and required_content(spec.metadata):
+    content = required_content(spec.metadata)
+    # `has_content` needs a body to exist for every path it names, so a declared
+    # path it covers is read even with `has_paths` absent — and one it does not
+    # cover is declared and unread, which is the hole this rule exists to close.
+    covered = set(content) if requested & FILESET_BODY_CHECKS else set()
+
+    # Declared-but-unread is the family the severity rests on, so each input the
+    # author declared is reported against the check that would have read it.
+    unread: list[str] = []
+    if declared and "has_paths" not in requested and not set(declared) <= covered:
+        unread.append(f"metadata.expected_paths declares {sorted(declared)} but has_paths is not requested")
+    if content and "has_content" not in requested:
+        unread.append(
+            f"metadata.required_content declares tokens for {sorted(content)} but has_content is "
+            "not requested"
+        )
+
+    if unread:
+        detail = (
+            f"{'; '.join(unread)}. The grader never reads what the spec declares, so deleting the "
+            "matching validation token is enough to reach green with no edit to the spec's intent. "
+            "Add it to validation."
+        )
+    elif covered:
         return []
-    if not declared:
+    elif not declared and not content:
         detail = (
             "the fileset is unanchored: metadata.expected_paths yields no usable path, so any "
             "readable zip passes, including one containing junk.txt. Declare a list of paths and "
             "request has_paths."
-        )
-    elif "has_paths" not in requested:
-        detail = (
-            f"metadata.expected_paths declares {sorted(declared)} but has_paths is not requested, "
-            "so the grader never looks for them. Add has_paths to validation."
         )
     elif requested & FILESET_BODY_CHECKS:
         detail = (
             "has_content is requested but metadata.required_content is empty, so every "
             "artifact fails on an unconfigured gate rather than on its contents."
         )
-
     else:
         detail = (
             f"has_paths only checks that {sorted(declared)} exist and are non-empty. "
@@ -683,7 +983,7 @@ def check_unanchored_fileset(spec: TaskSpec, path: Path | None = None) -> list[F
     return [
         Finding(
             rule="unanchored_fileset",
-            severity=WARN,
+            severity=ERROR,
             task_id=spec.id,
             path=str(path) if path else None,
             detail=detail,
@@ -922,6 +1222,7 @@ def check_holdout_arm(specs: list[TaskSpec], *, probe: Any = None) -> list[Findi
 PER_SPEC_RULES = (
     check_validation_names,
     check_absent_grading_contract,
+    check_presence_only_extract_contract,
     check_structural_only,
     check_judge_gated_media,
     check_unanchored_fileset,

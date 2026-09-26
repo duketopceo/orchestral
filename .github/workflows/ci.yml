@@ -23,6 +23,11 @@ jobs:
       - name: Tests
         run: python -m unittest discover -s tests
 
+      - name: Task-spec audit
+        # Fails the build when a spec requests a check the runner cannot run.
+        # Warnings are reported but do not gate: they mark known gaming surface.
+        run: python harness.py audit --strict
+
       - name: Lint
         run: ruff check .
 

@@ -133,6 +133,11 @@ def _rules(spec: TaskSpec) -> dict[str, list]:
     return grouped
 
 
+def _rules_ok(grouped: dict[str, list]) -> bool:
+    """Would `audit_spec` on this spec leave the report passing?"""
+    return not any(finding.severity == ERROR for items in grouped.values() for finding in items)
+
+
 class TestCheckNamesFailClosed(unittest.TestCase):
     """A misspelled check name must not silently drop a gate."""
 
@@ -229,6 +234,60 @@ class TestCheckNamesFailClosed(unittest.TestCase):
         bodies = {"image": '    # checks["has_alpha"] = False\n    checks["non_empty"] = True\n'}
         phantom = {"image": frozenset({"non_empty", "has_alpha"})}
         self.assertEqual(unimplemented_names(phantom, {}, bodies.get), [("image", "has_alpha")])
+
+
+class TestInertMetadataRequired(unittest.TestCase):
+    """`metadata.required` grades nothing unless a check the runner runs reads it."""
+
+    def test_image_declaration_is_an_error_not_a_warning(self):
+        """The D4 case: a blank PNG passes a spec that demands a subject, so the
+        declaration must fail the audit rather than pass it as a warning."""
+        spec = _task(
+            id="i-3",
+            type="image",
+            prompt="Draw a latte on a wooden table.",
+            validation=["non_empty", "png_signature"],
+            metadata={"required": ["latte", "wooden table"]},
+        )
+        found = _rules(spec)
+        self.assertIn("ignored_metadata_required", found)
+        self.assertEqual(found["ignored_metadata_required"][0].severity, ERROR)
+        self.assertIn("latte", found["ignored_metadata_required"][0].detail)
+        self.assertIn("never reads it", found["ignored_metadata_required"][0].detail)
+        self.assertFalse(_rules_ok(found), "an inert subject declaration must not leave the audit clean")
+
+    def test_it_does_not_clear_structural_only(self):
+        """Both findings fire: the key grades nothing, and the spec is unanchored."""
+        spec = _task(
+            id="i-4",
+            type="video",
+            prompt="Record a barista pulling a shot.",
+            validation=["non_empty", "mp4_signature"],
+            metadata={"required": ["barista"]},
+        )
+        self.assertIn("structural_only", _rules(spec))
+
+    def test_text_type_without_has_required_is_an_error(self):
+        """The same hole in a text type: nothing requests the check that reads it."""
+        found = _rules(_task(validation=["html"], metadata={"required": ["kite"]}))
+        self.assertIn("ignored_metadata_required", found)
+        self.assertIn("add has_required", found["ignored_metadata_required"][0].detail)
+
+    def test_requested_has_required_is_clean(self):
+        spec = _task(validation=["html", "has_required"], metadata={"required": ["kite"]})
+        found = _rules(spec)
+        self.assertNotIn("ignored_metadata_required", found)
+        self.assertNotIn("structural_only", found)
+
+    def test_self_anchored_type_declaration_points_at_its_own_contract(self):
+        found = _rules(
+            TaskSpec(id="x-9", type="extract", prompt="Pull the total.", metadata={"required": ["total"]})
+        )
+        detail = found["ignored_metadata_required"][0].detail
+        self.assertIn("fields or expected", detail)
+
+    def test_no_declaration_is_clean(self):
+        self.assertNotIn("ignored_metadata_required", _rules(_task(validation=["html"])))
 
 
 class TestAbsentGradingContract(unittest.TestCase):
@@ -677,6 +736,14 @@ class TestShippedSuite(unittest.TestCase):
         report = audit_tree(REPO_TASKS)
         ignored = report.by_rule().get("ignored_validation_list", [])
         self.assertEqual(ignored, [], [f.detail for f in ignored])
+
+    def test_shipped_specs_declare_no_inert_required_key(self):
+        report = audit_tree(REPO_TASKS)
+        inert = report.by_rule().get("ignored_metadata_required", [])
+        self.assertEqual(inert, [], [f.detail for f in inert])
+
+    def test_shipped_suite_reports_no_errors(self):
+        self.assertEqual(audit_tree(REPO_TASKS).errors, [])
 
     def test_shipped_code_specs_all_carry_a_real_test_suite(self):
         report = audit_tree(REPO_TASKS)

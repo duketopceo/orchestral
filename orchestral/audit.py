@@ -440,6 +440,39 @@ _FOLDABLE_CALLS: dict[str, Callable[..., Any]] = {
     "ord": ord,
 }
 _FOLD_FAILURE = (ValueError, TypeError, ZeroDivisionError, OverflowError, IndexError, KeyError, AttributeError)
+def check_inert_metadata_required(spec: TaskSpec, path: Path | None = None) -> list[Finding]:
+    """Flag a `metadata.required` declaration no grader will read.
+
+    `has_required` is the only consumer, and only on the text-producing types,
+    so the key grades nothing unless that check is requested. A declaration
+    that nothing reads is a phantom gate: it must be an error, not a warning,
+    because the artifact is graded on structure alone while the spec claims a
+    subject.
+    """
+    declared = spec.metadata.get("required")
+    if not declared or "has_required" in effective_checks(spec):
+        return []
+    shown = sorted(declared) if isinstance(declared, (list, tuple, set)) else [declared]
+    if spec.type in IGNORES_VALIDATION:
+        fix = f"anchor it with {' or '.join(GRADING_CONTRACT[spec.type])} instead"
+        reads = f"type '{spec.type}' never reads it; it computes {COMPUTED_CHECKS[spec.type]}"
+    else:
+        fix = "add has_required to validation:, or remove the key"
+        reads = f"has_required is not requested, so the {spec.type} grader never reads it"
+    return [
+        Finding(
+            rule="ignored_metadata_required",
+            severity=ERROR,
+            task_id=spec.id,
+            path=str(path) if path else None,
+            detail=(
+                f"metadata.required is declared as {shown} but {reads}. The declaration grades "
+                f"nothing: {fix}."
+            ),
+        )
+    ]
+
+
 
 
 def _const(node: ast.AST) -> tuple[bool, Any]:
@@ -768,9 +801,9 @@ def check_structural_only(spec: TaskSpec, path: Path | None = None) -> list[Find
 
     Element checks (`has_title`, `has_cta`, `has_form`, `has_viewport`,
     `no_placeholder`) prove markup exists, not that the artifact is about the
-    task's subject, so they do not clear this finding. Only `has_required`,
-    `matches_pattern`, or — for the text-producing types only — declared
-    `metadata.required` do.
+    task's subject, so they do not clear this finding. Only a topic check the
+    runner will actually run — `has_required` or `matches_pattern` — clears it.
+    A `metadata.required` the grader never reads is `ignored_metadata_required`.
     """
     if spec.type in SELF_ANCHORED_TYPES:
         return []
@@ -1030,6 +1063,7 @@ def check_holdout_arm(specs: list[TaskSpec]) -> list[Finding]:
 
 PER_SPEC_RULES = (
     check_validation_names,
+    check_inert_metadata_required,
     check_absent_grading_contract,
     check_structural_only,
     check_unanchored_fileset,

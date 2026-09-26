@@ -10,7 +10,8 @@
 orchestral grid --task landing-page-coffee --jobs 4
 
 # 2. Scrub into runs-pub/
-orchestral scrub                      # or --runs-dir X --scrub-dir Y
+orchestral scrub                      # or --runs-dir X --scrub-dir Y, in
+                                       # either position
 
 # 3. INSPECT the output before publishing — scrubbing is conservative,
 #    not exhaustive. Grep for anything you don't want public.
@@ -20,11 +21,58 @@ grep -rniE "key|token|secret|/home/|/Users/" runs-pub/ | less
 #    (a separate results repo, a gh-pages branch, a docs subtree — your call)
 ```
 
+## Cheap release verification
+
+Run these checks from the repository root after installing the development
+dependencies. They use dry runs and do not require a provider API key.
+
+```bash
+python3 -m compileall orchestral harness.py
+python3 harness.py init
+python3 harness.py run \
+  --task landing-page-coffee \
+  --orchestrator deepseek/deepseek-v4-flash-0731 \
+  --worker z-ai/glm-5.3-flash \
+  --planner raw \
+  --dry-run
+python3 harness.py run \
+  --task landing-page-coffee \
+  --orchestrator deepseek/deepseek-v4-flash-0731 \
+  --worker z-ai/glm-5.3-flash \
+  --planner ce-plan \
+  --dry-run
+python3 harness.py report --html
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest tests
+```
+
+Record the command, exit status, and concise output for every check. Release
+verification passes only when:
+
+- compilation completes without errors;
+- initialization finds or creates the run store;
+- both planner commands exit successfully and record `dry_run: true` runs with
+  their requested planner values;
+- `reports/index.html` exists after HTML report generation; and
+- pytest reports no failures.
+
+These checks prove that the checkout runs. They do not prove that example
+results are publishable. Publishing still requires an approved set of real runs,
+a freshly generated `runs-pub/manifest.json`, review of `scrub_omissions`, and a
+sensitive-data inspection of the complete scrubbed tree. Never use dry-run data
+as release evidence.
+
 ## What scrub does
 
 Publication is a fail-closed allow, not a deny list. A file is copied only if it
 is allowlisted by name *and* its type is approved for verbatim copying;
-everything else is withheld and recorded.
+everything else is withheld and recorded, and `scrub` exits non-zero when the
+manifest records any withheld file.
+
+- **Refuses an unusable source**: if `--runs-dir` names a directory that does
+  not exist, or one with no `run.json` in it, `scrub` exits non-zero and writes
+  nothing. It checks *before* touching the output, so a bad `--runs-dir` cannot
+  wipe a previous `runs-pub/`. A silent "Scrubbed 0 runs" is not a success
+  signal and is not reported as one.
 
 - **Redacts** in text/JSON/JSONL: OpenRouter/OpenAI/Anthropic/Groq/xAI/Google/
   GitHub/AWS-shaped keys, `Bearer` tokens, PEM private keys, URL userinfo

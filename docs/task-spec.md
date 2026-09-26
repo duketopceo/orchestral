@@ -69,19 +69,39 @@ new hash.
   paths, sizes, and hashes only. Declare the files the task must produce in
   `metadata.expected_paths` for the `has_paths` check.
 - **`code`** — same file-set contract as `multi-file` (workers return
-  `{"files": [...]}`, merged into `artifact.zip`), but validation executes
-  hidden tests: the file set plus the task's `metadata.tests` (a unittest
-  source string, never sent to workers) are materialized into a temp dir and
-  run via `python -Es -m unittest` in a subprocess. `metadata.module` names
-  the required file (default `solution.py`; also the `expected_paths`
-  default). `metadata.timeout_seconds` caps execution (default 30). `passes`
-  requires every expected file present *and* the suite green; `score` is the
-  fraction of tests passed (0.0 when the suite crashes, errors on import, or
-  times out — `None` only when the suite never ran). Replicates give pass@k.
-  The subprocess runs `-Es` with a stripped environment in a fresh temp dir —
-  containment, not a security sandbox: generated code still runs with your OS
-  privileges, so only pair trusted models with this task type. Dry runs skip
-  execution and compile-check `.py` files instead (`executed: false`).
+  `{"files": [...]}`, merged into `artifact.zip`). In this release, live
+  validation is disabled by default and cannot fall back to a host subprocess.
+  `metadata.module` names the required file (default `solution.py`; also the
+  `expected_paths` default). A live validation report returns `executed: false`,
+  `runtime: disabled`, and a non-passing result because no isolated runtime is
+  configured. Dry runs skip execution and compile-check `.py` files instead
+  (`executed: false`). `metadata.timeout_seconds` remains part of the task
+  contract and is recorded for a future isolated runtime.
+
+#### Code execution threat model and configuration boundary
+
+Generated worker output is untrusted. A host subprocess would expose the
+harness account, host filesystem, network, process table, and other tenants'
+data. A temporary directory, a short timeout, a stripped environment, and the
+`no_unsafe` regex heuristic are not a security boundary.
+
+The process-level setting `ORCHESTRAL_CODE_RUNTIME` is fail closed:
+
+- The default is `disabled`.
+- `host` and unknown values are rejected; they never select a subprocess.
+- `isolated` is an explicit request, but is rejected until a real isolated
+  runtime adapter is wired in. The setting alone does not enable execution.
+
+A future adapter must be outside the host process and enforce all of these
+properties before the setting can enable execution: no host filesystem mounts,
+an empty environment with no inherited credentials, denied network, and CPU,
+memory, process-count, and wall-time limits. Task metadata may request a lower
+timeout but cannot raise the adapter's hard resource ceilings.
+The adapter must own materialization, execution, and output truncation. It must
+not accept a host command, environment passthrough, or fallback from a failed
+isolation check. This configuration is process-owned; task metadata and
+`no_unsafe` cannot turn it on.
+
 - **`constraint`** — workers produce candidate text per subtask; the
   orchestrator picks the best (same selection flow as `image`/`video`); the
   chosen text is stored as `artifact.txt` and checked against hard
@@ -212,11 +232,13 @@ new hash.
   | `forbidden_patterns` | list of regexes — any hit always violates |
 
   Caveats: regex-based unsafe detection has false positives *and* negatives;
-  a clean `unsafe_hits` is not proof of safety. `complexity_lite` and
-  `code_lines` are lean-ness proxies, not performance measurements. The
-  `code-*` task specs form a difficulty ladder (fizzbuzz → slugify →
-  lru-cache → expr-parser) so a pairing's breakpoint shows up as the first
-  task where `score` drops below 1.0 or `passes` flips false.
+  a clean `unsafe_hits` is not proof of safety, and `no_unsafe` is only a
+  declared quality gate. It is never a substitute for the isolated runtime
+  boundary. `complexity_lite` and `code_lines` are lean-ness proxies, not
+  performance measurements. The `code-*` task specs form a difficulty ladder
+  (fizzbuzz → slugify → lru-cache → expr-parser) so a pairing's breakpoint
+  shows up as the first task where `score` drops below 1.0 or `passes` flips
+  false.
 
 ## Validation checks
 
@@ -255,14 +277,15 @@ new hash.
 | `zip_signature` | the archive opens as a zip |
 | `has_paths` | every path in `metadata.expected_paths` is present as a non-empty regular file |
 
-`code` tasks ignore `validation:` — the check is execution:
+`code` tasks ignore `validation:` — the check is the isolated-runtime gate:
 
 | Check | Passes when |
 |---|---|
 | `expected_paths` | `metadata.module` (and any declared `expected_paths`) are present non-empty |
 | `quality_ok` | no declared quality bound was violated |
 | `compiles` | (dry-run only) every `.py` file compiles |
-| `tests_pass` | `python -Es -m unittest task_tests` exits 0 with ≥1 test run |
+| `tests_pass` | an isolated runtime ran the suite and it exited 0 with ≥1 test; unavailable in this release |
+
 Constraint checks — for `constraint` tasks, or composable onto any text task.
 Each fails closed when requested but its metadata key is missing:
 

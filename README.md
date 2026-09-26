@@ -150,9 +150,9 @@ Implemented task types: **HTML page generation**, **image generation**
 submit/poll/download; `--judge` is skipped for video runs), **multi-file
 projects** (workers return a JSON file set, merged into a reproducible
 `artifact.zip`; archives are never published by `scrub`), **code tasks**
-(same file-set contract; hidden `metadata.tests` run via `python -Es -m
-unittest` in a subprocess — score = fraction of tests passed, replicates
-give pass@k), and **constraint tasks** (workers produce text under hard
+(same file-set contract; live validation is disabled in this release until an
+isolated runtime exists, with no host-subprocess fallback; dry runs compile
+without executing), and **constraint tasks** (workers produce text under hard
 constraints — word/char budgets, required and forbidden tokens, regex
 patterns — the orchestrator picks the best candidate, deterministic
 validators check every constraint), and **long-context needle** tasks (`metadata.document` haystack injected into each subtask; the answer must name the true token and no decoys), and **SQL analytics** (workers produce candidate queries, the orchestrator picks one, and the harness executes it read-only against a fixture SQLite database and compares to `metadata.reference_sql` — fully deterministic scoring), and **structured extraction** (workers return JSON per a declared `metadata.fields` schema, graded per-field against `metadata.expected` — deterministic, partial credit), and **API integration** (workers produce a JSON request plan, replayed over real loopback HTTP against a stub server built from `metadata.stub`; scored by which expected calls actually arrived).
@@ -212,16 +212,41 @@ replicate/variance analysis.
 ## Publishing results
 
 `orchestral scrub` copies allowlisted run artifacts into `runs-pub/`, redacts
-credentials/paths/endpoints, preserves binary files byte-for-byte, and writes a
-`manifest.json` index. See [docs/publishing.md](docs/publishing.md).
+credentials/paths/endpoints, preserves approved media and font files byte-for-byte,
+blocks opaque archives, databases, and unknown binary content, and writes a
+`manifest.json` index with explicit publication-review requirements. See
+[docs/publishing.md](docs/publishing.md).
 
 ## GitHub Action
+
+Paid evaluations in this repository are disabled for pull requests. The
+`orchestral eval` workflow runs only through `workflow_dispatch` and targets
+the protected `paid-eval` GitHub environment.
+
+Before the first manual run:
+
+1. Create the `paid-eval` environment and require reviewer approval.
+2. Restrict its deployment branches to the repository default branch.
+3. Store `OPENROUTER_API_KEY` as an environment secret, not a repository or PR
+   secret.
+
+The workflow checks out the default branch, grants only `contents: read`, and
+scopes the provider secret to the `Run eval` step. It uploads reports but does
+not comment on pull requests. `.github/workflows/ci.yml` runs tests, lint, and
+types on every PR with no secrets required.
+
+Rotate `OPENROUTER_API_KEY` immediately if it appears in logs, artifacts, an
+issue, a pull request, an unapproved branch, or any other unauthorized context.
+Also rotate it after suspected provider or repository-access compromise, or
+when a person with access to the environment leaves. Replace the environment
+secret, cancel active evaluations, and follow the provider's incident process;
+never put the credential value in this repository or an issue.
 
 To run evals in *another* repo, install orchestral from git inside your
 workflow rather than copying this repo's workflow:
 
 ```yaml
-- uses: actions/setup-python@v5
+- uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38
   with: {python-version: "3.11"}
 - run: pip install "orchestral @ git+https://github.com/duketopceo/orchestral"
 - run: orchestral run --task landing-page-coffee --orchestrator "$ORCH" --worker "$WORK"
@@ -229,9 +254,6 @@ workflow rather than copying this repo's workflow:
     OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
 ```
 
-This repo's own `.github/workflows/orchestral.yml` dogfoods the harness on
-internal PRs (skipped on forks, which can't see the secret). `.github/workflows/ci.yml`
-runs tests, lint, and types on every PR with no secrets required.
 
 ## License
 

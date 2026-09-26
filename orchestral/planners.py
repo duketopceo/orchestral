@@ -11,7 +11,7 @@ import json
 import re
 from functools import cache
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from orchestral.apistub import parse_plan
 from orchestral.config import ModelConfig, TaskSpec
@@ -222,11 +222,48 @@ def _llm_call(
 # punctuation only — never words.
 _SKELETON_CHARS = frozenset('{}[]()",:\\')
 _SKELETON_EDGE_CHARS = 200
+_DIGEST_CHARS = 12
+
+# The three ways a model response can fail to become JSON. A truncation is a
+# transport fault and re-running may fix it; the other two are the model
+# breaking the output contract, and re-running just costs the same call twice.
+PlanParseFaultKind = Literal["no_json", "unbalanced", "balanced_invalid"]
+
+
+class PlanParseFault(ValueError):
+    """A model response `_extract_json` could not turn into JSON, and which fault.
+
+    `kind` is what a caller branches on. The message names the same fault in
+    prose, and matching on that prose is exactly the coupling that made a
+    transport fault look like a harness regression in DUK-159.
+
+    It subclasses `ValueError` because every existing caller of `_extract_json`
+    already catches `ValueError` or `Exception` (`delegate`, `delegate_multi`,
+    `assemble_media`, `assemble_ce`, `judge_artifact`), so naming the fault
+    changes no existing handler's behavior.
+    """
+
+    kind: PlanParseFaultKind
+
+    def __init__(self, message: str, kind: PlanParseFaultKind) -> None:
+        super().__init__(message)
+        self.kind = kind
 
 
 def _skeleton(text: str) -> str:
     """A response's delimiters and punctuation, with none of its content."""
     return "".join(ch for ch in text if ch in _SKELETON_CHARS)
+
+
+def _response_digest(text: str) -> tuple[int, str]:
+    """A response's `(length, short sha256)` — enough to identify it, no text.
+
+    The one place a response is fingerprinted. Both the fault message and the
+    `orchestrator.plan_parse_fault` event read the same digest, so a fault in a
+    log line and a fault in the event stream name the same response.
+    """
+    digest = hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()[:_DIGEST_CHARS]
+    return len(text), digest
 
 
 def _response_fingerprint(text: str) -> str:
@@ -242,11 +279,11 @@ def _response_fingerprint(text: str) -> str:
     a reporter that is misbehaving, and an ambiguous log is the thing this
     message exists to prevent.
     """
-    digest = hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()[:12]
-    if len(text) <= 2 * _SKELETON_EDGE_CHARS:
-        return f"{len(text)} chars sha256:{digest} whole={_skeleton(text)!r}"
+    chars, digest = _response_digest(text)
+    if chars <= 2 * _SKELETON_EDGE_CHARS:
+        return f"{chars} chars sha256:{digest} whole={_skeleton(text)!r}"
     return (
-        f"{len(text)} chars sha256:{digest} "
+        f"{chars} chars sha256:{digest} "
         f"head={_skeleton(text[:_SKELETON_EDGE_CHARS])!r} "
         f"tail={_skeleton(text[-_SKELETON_EDGE_CHARS:])!r}"
     )
@@ -273,7 +310,9 @@ def _extract_json(content: str) -> Any:
             break
     if start is None:
         # no delimiter anywhere: the model never produced JSON at all
-        raise ValueError(f"No JSON found in model response: {_response_fingerprint(text)}")
+        raise PlanParseFault(
+            f"No JSON found in model response: {_response_fingerprint(text)}", "no_json"
+        )
     # naive brace matching
     depth = 0
     in_string = False
@@ -304,17 +343,44 @@ def _extract_json(content: str) -> Any:
                 except json.JSONDecodeError as exc:
                     # delimiters balanced, so the response is whole; the model
                     # emitted something that is not valid JSON
-                    raise ValueError(
+                    raise PlanParseFault(
                         f"Balanced JSON in model response did not parse: {exc.msg} at position "
-                        f"{exc.pos} of the block at offset {start}: {_response_fingerprint(block)}"
+                        f"{exc.pos} of the block at offset {start}: {_response_fingerprint(block)}",
+                        "balanced_invalid",
                     ) from exc
     # a delimiter was found but never closed: the response was cut off, or a
     # brace inside a string escaped the matcher
-    raise ValueError(
+    raise PlanParseFault(
         f"Unbalanced JSON in model response: candidate at offset {start} never closed, so the "
         f"response was truncated or a brace inside a string escaped the matcher: "
-        f"{_response_fingerprint(text)}"
+        f"{_response_fingerprint(text)}",
+        "unbalanced",
     )
+
+
+def _parse_plan(*, logger: EventLogger, content: str, step: int) -> Any:
+    """Parse a plan response, recording the fault class if it cannot be parsed.
+
+    The plan phase has no retry, so "does it need one?" can only be answered
+    from a measured rate, and a rate needs a countable event. One
+    `orchestrator.plan_parse_fault` per fault, carrying the fault class and the
+    response digest and nothing else, is that count. The exception still
+    propagates: measuring a fault must not change the response to it.
+    """
+    try:
+        return _extract_json(content)
+    except PlanParseFault as exc:
+        chars, digest = _response_digest(content)
+        logger.lifecycle(
+            "orchestrator.plan_parse_fault",
+            phase="plan",
+            role="orchestrator",
+            step=step,
+            fault=exc.kind,
+            chars=chars,
+            sha256=digest,
+        )
+        raise
 
 
 def _fake_output(input_data: dict[str, Any], phase: str) -> Any:
@@ -370,7 +436,7 @@ def plan_raw(
         expect_json=True,
         system_override=load_prompt_variant(prompt_variant) if prompt_variant else None,
     )
-    plan = _extract_json(content)
+    plan = _parse_plan(logger=logger, content=content, step=step)
     if not isinstance(plan, dict):
         raise ValueError("orchestrator plan must be a JSON object")
     plan["task_id"] = task.id
@@ -1104,7 +1170,7 @@ def plan_ce(
         expect_json=True,
         system_override=load_prompt_variant(prompt_variant) if prompt_variant else None,
     )
-    plan = _extract_json(content)
+    plan = _parse_plan(logger=logger, content=content, step=step)
     if not isinstance(plan, dict):
         raise ValueError("orchestrator plan must be a JSON object")
     plan["task_id"] = task.id

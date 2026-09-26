@@ -32,7 +32,7 @@ _CALL_EVENT_TYPES = ("llm_call", "worker_error")
 # view can render progress without understanding call payloads.
 LIFECYCLE_EVENTS = frozenset({
     "run.created", "task.loaded", "run.started",
-    "orchestrator.started", "orchestrator.completed",
+    "orchestrator.started", "orchestrator.completed", "orchestrator.plan_parse_fault",
     "delegation.created",
     "worker.started", "worker.progress", "worker.completed", "worker.failed",
     "synthesis.started", "synthesis.completed",

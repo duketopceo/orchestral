@@ -25,6 +25,9 @@ class StatusBar(Static):
         self._runs = 0
         self._cost = 0.0
         self._jobs: list[Job] = []
+        # Own widget state — never Textual privates (Static._message was
+        # removed upstream; reading it raised AttributeError on refresh).
+        self._note = ""
 
     def set_counts(self, runs: int, total_cost: float) -> None:
         self._runs = runs
@@ -35,6 +38,11 @@ class StatusBar(Static):
         self._jobs = jobs
         self._render_text()
 
+    def set_note(self, note: str) -> None:
+        """Trailing one-line note shown after counts/jobs."""
+        self._note = note
+        self._render_text()
+
     def _render_text(self) -> None:
         parts = [f"{self._runs} runs", f"${self._cost:.4f}"]
         active = [j for j in self._jobs if j.active]
@@ -43,6 +51,6 @@ class StatusBar(Static):
             if len(active) > 3:
                 labels += f" +{len(active) - 3} more"
             parts.append(f"jobs: {labels}")
-        if self._message:
-            parts.append(self._message)
+        if self._note:
+            parts.append(self._note)
         self.update("  ·  ".join(parts))

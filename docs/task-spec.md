@@ -172,6 +172,7 @@ new hash.
       tier: {type: str, enum: [gold, silver, bronze]}
     expected:             # deep-equality graded keys — defines truth
       name: "Ada"
+      tier: "gold"
     pass_threshold: 1.0   # min score to pass; required+type checks always apply
   ```
 
@@ -180,6 +181,16 @@ new hash.
   requires every `required` field present, all type/enum checks green, and
   `score >= pass_threshold`. Unparseable artifacts score null. See
   `tasks/extract-invoice.yaml`.
+
+  **Every declared field must be graded.** A field is graded when it is
+  `required: true` or named in `expected`. A field that is neither is
+  decorative — absent, it is skipped; present, only its type is read — so an
+  absent field and any fabricated value score the same. The grader reports
+  `contract_anchored: false` and fails closed rather than scoring 1.0 on a
+  fabrication. A contract with no `required` field and no `expected` is
+  rejected the same way. The grader is the only line of defence here: a
+  hand-written spec that bypasses the task-spec audit still reaches it, so the
+  runtime check holds on its own.
 - **`api`** — workers produce a JSON *request plan* per subtask (a list of
   `{method, path, json?, params?}` calls); the orchestrator picks the best;
   the harness starts a real loopback `http.server` stubbed from

@@ -21,6 +21,9 @@ METADATA = {
     "expected": {"name": "Ada", "age": 36, "vip": True, "tier": "gold"},
 }
 
+# DUK-94: `total` is declared but neither required nor expected, so nothing grades it.
+UNANCHORED = {"fields": {"total": {"type": "number"}}}
+
 
 def _model(slug: str, role: str) -> ModelConfig:
     return ModelConfig(
@@ -149,6 +152,178 @@ class TestCheckExtraction(unittest.TestCase):
         self.assertEqual(check_extraction(md, '{"name": "x"}')["score"], 1.0)
         self.assertEqual(check_extraction(md, '{"name": 1}')["score"], 0.0)
 
+    def test_list_fields_compare_elementwise(self):
+        # The list branch of _strict_eq pairs elements with zip(); a length
+        # mismatch must score 0 rather than pair the shorter prefix and pass.
+        md = {"expected": {"tags": ["a", "b"]}}
+        self.assertEqual(check_extraction(md, json.dumps({"tags": ["a", "b"]}))["score"], 1.0)
+        self.assertEqual(check_extraction(md, json.dumps({"tags": ["a"]}))["score"], 0.0)
+        self.assertEqual(check_extraction(md, json.dumps({"tags": ["a", "c"]}))["score"], 0.0)
+
+    def test_bool_nested_in_a_list_is_not_an_int(self):
+        # [True] == [1] in Python, so the elementwise walk must re-check the
+        # bool/int distinction instead of deferring to list __eq__.
+        md = {"expected": {"counts": [1, 2]}}
+        self.assertEqual(check_extraction(md, json.dumps({"counts": [1, 2]}))["score"], 1.0)
+        report = check_extraction(md, json.dumps({"counts": [True, 2]}))
+        self.assertEqual(report["score"], 0.0)
+        self.assertFalse(report["field_results"]["counts"])
+
+
+class TestUnanchoredContract(unittest.TestCase):
+    """A declared field that nothing grades must not score like a graded one."""
+
+    def test_absent_field_no_longer_scores_one(self):
+        """The DUK-94 repro: an empty artifact passed a contract that graded nothing."""
+        report = check_extraction(UNANCHORED, "{}")
+        self.assertFalse(report["checks"]["contract_anchored"])
+        self.assertFalse(report["passes"])
+        self.assertEqual(report["score"], 0.0)
+
+    def test_fabricated_value_no_longer_scores_like_an_absent_one(self):
+        """A right-typed fabrication used to be indistinguishable from absence."""
+        absent = check_extraction(UNANCHORED, "{}")
+        fabricated = check_extraction(UNANCHORED, '{"total": 99999}')
+        self.assertEqual(absent["passes"], fabricated["passes"])
+        self.assertFalse(fabricated["passes"])
+        self.assertFalse(fabricated["checks"]["contract_anchored"])
+
+    def test_empty_contract_fails_closed(self):
+        report = check_extraction({}, "{}")
+        self.assertFalse(report["checks"]["contract_anchored"])
+        self.assertFalse(report["passes"])
+        self.assertEqual(report["score"], 0.0)
+
+    def test_error_names_the_offending_field_and_the_fix(self):
+        report = check_extraction(UNANCHORED, "{}")
+        detail = " ".join(report["errors"])
+        self.assertIn("total", detail)
+        self.assertIn("required: true", detail)
+
+    def test_decorative_field_beside_a_graded_one_still_fails(self):
+        """`a` anchors the contract, so the audit is clean — `b` is still ungraded."""
+        md = {"fields": {"a": {"type": "str", "required": True}, "b": {"type": "int"}},
+              "expected": {"a": "x"}}
+        for artifact in ('{"a": "x"}', '{"a": "x", "b": 7}'):
+            report = check_extraction(md, artifact)
+            self.assertFalse(report["checks"]["contract_anchored"], artifact)
+            self.assertFalse(report["passes"], artifact)
+
+    def test_zero_threshold_cannot_rescue_an_unanchored_contract(self):
+        md = dict(UNANCHORED, pass_threshold=0.0)
+        self.assertFalse(check_extraction(md, '{"total": 1}')["passes"])
+
+    def test_a_graded_field_is_enough(self):
+        md = {"fields": {"total": {"type": "number", "required": True}}}
+        report = check_extraction(md, '{"total": 1}')
+        self.assertTrue(report["checks"]["contract_anchored"])
+        self.assertTrue(report["passes"])
+
+    def test_contract_anchoring_is_independent_of_the_artifact(self):
+        """A parse failure must not be reported as a contract that grades nothing."""
+        report = check_extraction(METADATA, "I cannot help with that.")
+        self.assertFalse(report["parsed"])
+        self.assertTrue(report["checks"]["contract_anchored"])
+        self.assertNotIn("contract_anchored", " ".join(report["errors"]))
+        self.assertFalse(report["passes"])
+
+
+class TestMalformedContract(unittest.TestCase):
+    """A wrong-shaped contract is the spec author's error, not a lost run.
+
+    The contract is read before the artifact is parsed, so a non-mapping reaches
+    every run. Before this, `fields` as a list raised `AttributeError` on any
+    parseable artifact and, once the read moved ahead of the parse, on unparseable
+    ones too — losing the run record over a typo.
+    """
+
+    WRONG_SHAPES = (["total"], "total", 7, None)
+
+    def test_non_mapping_fields_never_raise(self):
+        for value in self.WRONG_SHAPES:
+            for artifact in ('{"total": 1}', "not json at all", "{}", "[1, 2]"):
+                with self.subTest(fields=value, artifact=artifact):
+                    report = check_extraction({"fields": value}, artifact)
+                    self.assertFalse(report["passes"])
+
+    def test_non_mapping_expected_never_raises(self):
+        for value in ("total", 7, ["a"], None):
+            for artifact in ('{"a": 1}', "not json at all"):
+                with self.subTest(expected=value, artifact=artifact):
+                    report = check_extraction({"expected": value}, artifact)
+                    self.assertFalse(report["passes"])
+
+    def test_malformation_is_reported_not_swallowed(self):
+        report = check_extraction({"fields": ["total"]}, "{}")
+        self.assertTrue(any("not a mapping" in e for e in report["errors"]), report["errors"])
+
+    def test_malformed_expected_cannot_leave_a_presence_only_pass(self):
+        """A required field plus an unreadable `expected` is the DUK-94 fail-open.
+
+        `_as_mapping` drops the malformed value, so the contract quietly degrades
+        to a presence check: `{"name": "Eve"}` scored 1.0 and passed even though the
+        author declared value grades that never ran. The malformation is still
+        reported, and it must also stop the pass.
+        """
+        # `None` is excluded: it means "not declared", so it is not a dropped grade.
+        for value in [v for v in self.WRONG_SHAPES if v is not None]:
+            for artifact in ('{"name": "Eve"}', '{"name": "Anyone At All"}'):
+                with self.subTest(expected=value, artifact=artifact):
+                    md = {
+                        "fields": {"name": {"type": "str", "required": True}},
+                        "expected": value,
+                    }
+                    report = check_extraction(md, artifact)
+                    self.assertFalse(report["passes"])
+                    self.assertFalse(report["checks"]["contract_anchored"])
+                    self.assertEqual(report["score"], 0.0)
+                    self.assertTrue(
+                        any("metadata.expected" in e and "not a mapping" in e
+                            for e in report["errors"]),
+                        report["errors"],
+                    )
+
+    def test_well_formed_required_only_contract_still_passes(self):
+        """The fix targets a dropped `expected`, not the deliberate schema-only form."""
+        md = {"fields": {"name": {"type": "str", "required": True}}}
+        report = check_extraction(md, '{"name": "Eve"}')
+        self.assertTrue(report["checks"]["contract_anchored"])
+        self.assertTrue(report["passes"])
+
+    def test_numeric_field_name_reports_instead_of_raising(self):
+        """YAML keeps `7:` as an int key; joining the names raised TypeError.
+
+        The raise escaped `check_extraction`, so the malformed contract produced no
+        report at all — the run record the finding exists to produce was lost.
+        """
+        report = check_extraction({"fields": {7: {"type": "number"}}}, "{}")
+        self.assertFalse(report["passes"])
+        self.assertFalse(report["checks"]["contract_anchored"])
+        detail = " ".join(report["errors"])
+        self.assertIn("declares 7", detail)
+        self.assertIn("required: true", detail)
+
+    def test_absent_key_is_not_called_a_malformation(self):
+        """`fields: null` and a missing key both mean 'not declared'."""
+        for metadata in ({"fields": None}, {}, {"fields": {}}):
+            with self.subTest(metadata=metadata):
+                report = check_extraction(metadata, "{}")
+                self.assertFalse(any("not a mapping" in e for e in report["errors"]))
+
+    def test_dropped_fields_still_fails_closed_on_nothing_to_grade(self):
+        """A malformed `fields` plus no `expected` grades nothing, so it must fail."""
+        report = check_extraction({"fields": ["total"]}, "{}")
+        self.assertFalse(report["checks"]["contract_anchored"])
+        self.assertEqual(report["score"], 0.0)
+
+    def test_dropped_fields_leaves_expected_as_the_anchor(self):
+        """A malformed `fields` must not also discard a usable `expected`."""
+        report = check_extraction({"fields": "oops", "expected": {"a": "x"}}, '{"a": "x"}')
+        self.assertTrue(report["checks"]["contract_anchored"])
+        self.assertTrue(report["passes"])
+        self.assertEqual(report["score"], 1.0)
+
+
 
 class TestExtractRunner(unittest.TestCase):
     def test_dry_run_passes_and_writes_artifact(self):
@@ -210,6 +385,20 @@ class TestExtractRunner(unittest.TestCase):
             ).run(_task(), _model("org/x", "orchestrator"), _model("wrk/ex", "worker"))
             self.assertFalse(meta.passes)
             self.assertIsNone(meta.score)
+
+    def test_unanchored_contract_fails_through_the_runner(self):
+        """A perfect extraction still fails when the contract grades nothing."""
+        with tempfile.TemporaryDirectory() as tmp:
+            task = _task(metadata={"fields": {"total": {"type": "number"}}})
+            client = _FakeClient(payloads=['{"total": 99999}'])
+            meta = Runner(
+                runs_dir=tmp, planner="raw",
+                clients={"orchestrator": client, "worker": client},
+            ).run(task, _model("org/x", "orchestrator"), _model("wrk/ex", "worker"))
+            self.assertFalse(meta.passes)
+            self.assertEqual(meta.score, 0.0)
+            report = json.loads((Path(meta.run_dir) / "report.json").read_text())
+            self.assertFalse(report["checks"]["contract_anchored"])
 
 
 if __name__ == "__main__":

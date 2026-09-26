@@ -115,10 +115,45 @@ def load_task(path: Path | str) -> TaskSpec:
         task = TaskSpec(**data)
     except TypeError as exc:
         raise ConfigError(f"task spec {path}: {exc}") from exc
+    # Checked before the membership test below, because that test hashes: a
+    # `type: [a]` raised `TypeError: unhashable type` from inside the tool
+    # instead of naming the spec.
+    if not isinstance(task.type, str):
+        raise ConfigError(
+            f"task spec {path}: type must be a string, got {type(task.type).__name__}"
+        )
     if task.type not in TASK_TYPES:
         raise ConfigError(
             f"task spec {path}: unknown type '{task.type}' "
             f"— expected one of {', '.join(sorted(TASK_TYPES))}"
+        )
+    if not isinstance(task.id, str):
+        raise ConfigError(
+            f"task spec {path}: id must be a string, got {type(task.id).__name__}"
+        )
+    # TaskSpec is a dataclass with no runtime type check, so these three fields
+    # accept anything the YAML parser produces. A value of the wrong type then
+    # reaches the grader and the audit as a bare `AttributeError` or `TypeError`
+    # from deep inside a rule, which reads as a bug in the tool rather than a typo
+    # in the spec. `type` is checked here for the same reason.
+    if not isinstance(task.metadata, dict):
+        raise ConfigError(
+            f"task spec {path}: metadata must be a YAML mapping, "
+            f"got {type(task.metadata).__name__}"
+        )
+    # A bare `validation:` key parses to None and has always meant "no explicit
+    # checks", so only a wrong *type* is rejected here.
+    if task.validation is not None and (
+        not isinstance(task.validation, list)
+        or any(not isinstance(name, str) for name in task.validation)
+    ):
+        raise ConfigError(
+            f"task spec {path}: validation must be a list of check-name strings, "
+            f"got {task.validation!r}"
+        )
+    if not isinstance(task.prompt, str):
+        raise ConfigError(
+            f"task spec {path}: prompt must be a string, got {type(task.prompt).__name__}"
         )
     return task
 

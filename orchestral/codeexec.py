@@ -1,27 +1,27 @@
-"""Execution validator for `code` tasks — run hidden tests against a fileset.
+"""Execution validator for `code` tasks.
 
-A code task's workers return a file set (same contract as multi-file). The
-harness materializes it into a temp dir, writes the task's test source, and
-runs `python -Es -m unittest` in a subprocess. Workers never see the tests —
-they are evaluation evidence, not part of the spec.
+A code task's workers return a file set (same contract as multi-file). Live
+execution is disabled in this release because no isolated runtime exists yet.
+The dry-run path still performs a compile-only check through the runner.
 
-Honesty note: `-Es` + a fresh temp dir + a timeout + a stripped environment
-is *containment*, not a security sandbox — the code still runs with the
-user's OS privileges. Only use this task type with models you would let
-write code you execute locally.
+The ``ORCHESTRAL_CODE_RUNTIME`` setting is a configuration boundary, not a
+sandbox switch. Only an explicit isolated runtime adapter may replace the
+current disabled result; host subprocess execution is not a supported fallback.
 """
 
 from __future__ import annotations
 
 import ast
+import os
 import re
-import subprocess
 import sys
-import tempfile
 from pathlib import Path
 from typing import Any
 
 DEFAULT_TIMEOUT_SECONDS = 30
+CODE_RUNTIME_ENV = "ORCHESTRAL_CODE_RUNTIME"
+DISABLED_CODE_RUNTIME = "disabled"
+ISOLATED_CODE_RUNTIME = "isolated"
 
 # Patterns that flag unsafe generated code — always scanned into the report's
 # quality section; gating happens only when the task declares `no_unsafe`.
@@ -41,11 +41,28 @@ UNSAFE_PATTERNS: dict[str, str] = {
 }
 _COMPILED_UNSAFE = {name: re.compile(p) for name, p in UNSAFE_PATTERNS.items()}
 _BRANCH_TOKENS = {"if", "elif", "else", "for", "while", "except", "and", "or", "assert", "with"}
-# unittest's summary lines, e.g. "FAILED (failures=2, errors=1, skipped=1)"
-_RAN_RE = re.compile(r"Ran (\d+) tests? in [\d.]+s")
-_FAILED_RE = re.compile(r"FAILED \(([^)]*)\)")
-_COUNT_RE = re.compile(r"(\w+)=(\d+)")
-_TAIL_BYTES = 2000
+
+
+def _configured_code_runtime() -> str:
+    value = os.environ.get(CODE_RUNTIME_ENV, DISABLED_CODE_RUNTIME).strip().lower()
+    return value or DISABLED_CODE_RUNTIME
+
+
+def _disabled_execution_report(error: str, timeout_seconds: float) -> dict[str, Any]:
+    return {
+        "executed": False,
+        "tests_run": 0,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0,
+        "ok": False,
+        "timed_out": False,
+        "returncode": None,
+        "output_tail": "",
+        "runtime": DISABLED_CODE_RUNTIME,
+        "requested_timeout_seconds": timeout_seconds,
+        "error": error,
+    }
 
 
 def materialize(files: dict[str, str], dest: Path) -> None:
@@ -62,66 +79,20 @@ def run_unittest_suite(
     *,
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
 ) -> dict[str, Any]:
-    """Run the task's unittest source against `files`; return a report.
+    """Return a fail-closed report until an isolated runtime is configured.
 
-    The report carries counts and a truncated output tail — never full file
-    contents. `executed=False` means the subprocess never ran (e.g. no test
-    source), distinct from a suite that ran and failed.
+    ``files`` and ``tests_source`` are intentionally not materialized in this
+    release. A future runtime adapter must own materialization, execution, and
+    output parsing outside the host process.
     """
-    report: dict[str, Any] = {
-        "executed": False,
-        "tests_run": 0,
-        "failures": 0,
-        "errors": 0,
-        "skipped": 0,
-        "ok": False,
-        "timed_out": False,
-        "returncode": None,
-        "output_tail": "",
-    }
-    if not tests_source.strip():
-        report["error"] = "code task has no metadata.tests"
-        return report
-
-    with tempfile.TemporaryDirectory(prefix="orchestral-code-") as tmp:
-        dest = Path(tmp)
-        materialize(files, dest)
-        test_path = dest / "task_tests.py"
-        test_path.write_text(tests_source, encoding="utf-8")
-        try:
-            proc = subprocess.run(
-                # -Es: ignore PYTHON* env vars and user site-packages, but
-                # keep cwd importable (unlike -I, which would hide task_tests)
-                [sys.executable, "-Es", "-m", "unittest", "-v", "task_tests"],
-                cwd=dest,
-                capture_output=True,
-                timeout=timeout_seconds,
-                # no env passthrough — no secrets in the child's environment
-                env={"PATH": "/usr/bin:/bin"},
-            )
-        except subprocess.TimeoutExpired:
-            report["timed_out"] = True
-            report["executed"] = True
-            report["output_tail"] = f"tests exceeded {timeout_seconds}s"
-            return report
-
-    report["executed"] = True
-    report["returncode"] = proc.returncode
-    out = (proc.stdout + proc.stderr).decode("utf-8", errors="replace")
-    report["output_tail"] = out[-_TAIL_BYTES:]
-
-    ran = _RAN_RE.search(out)
-    if ran:
-        report["tests_run"] = int(ran.group(1))
-    failed = _FAILED_RE.search(out)
-    if failed:
-        for name, count in _COUNT_RE.findall(failed.group(1)):
-            if name in ("failures", "errors", "skipped", "expected_failures", "unexpected_successes"):
-                report[name if name in report else "errors"] = int(count)
-    # a suite that ran zero tests is not a pass — import/collection failures
-    # exit nonzero with no "Ran N tests" line at all
-    report["ok"] = proc.returncode == 0 and ran is not None and report["tests_run"] > 0 and "OK" in out
-    return report
+    runtime = _configured_code_runtime()
+    if runtime == DISABLED_CODE_RUNTIME:
+        error = "code execution disabled: no isolated runtime is configured"
+    elif runtime == ISOLATED_CODE_RUNTIME:
+        error = "code execution unavailable: isolated runtime adapter is not configured"
+    else:
+        error = "code execution rejected: host subprocess fallback is disabled; use an isolated runtime"
+    return _disabled_execution_report(error, timeout_seconds)
 
 
 def score_from_report(report: dict[str, Any]) -> float | None:

@@ -12,3 +12,28 @@ data/
 build/
 dist/
 reports/shots/
+
+# --- DUK-115: shared-checkout hygiene ---
+# Nested worktrees created inside the shared checkout. 149M and growing; a
+# `git add -A` in that tree would otherwise try to stage every one of them.
+# Registered worktrees live in .git/worktrees; these are on-disk copies.
+/.worktrees/
+/wt-*/
+
+# Control-plane API payloads that runs write into the repo root as scratch.
+# These are operational metadata, not source. Not a credential store - scanned
+# for Bearer/sk-/ghp_/*_API_KEY/apiKey/password and PAPERCLIP_* values, no hits -
+# but a `git add -A` in the shared checkout would still commit them.
+/c.json
+/i.json
+/p.json
+/st.json
+/mon.json
+/mon2.json
+/monresp.json
+/monresp2.json
+/co*.json
+/iss-*.json
+/wp*.json
+/comment-resp.json
+/uv.lock

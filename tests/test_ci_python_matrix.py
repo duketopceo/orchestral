@@ -7,6 +7,11 @@ can be green at the floor and broken everywhere else without anyone finding out.
 
 DUK-161. The defect these guard against is the `textual` trap one level up: a
 check reporting success for a property it only ever measured in one environment.
+
+The range is open at the top, so nothing in the repo states where it ends. The
+floor is read out of `requires-python`; the ceiling is the pinned constant
+`_NEWEST_SUPPORTED_MINOR` below, a hand-maintained claim about which minors the
+suite has actually been run on. DUK-225.
 """
 
 from __future__ import annotations
@@ -23,6 +28,19 @@ PYPROJECT = REPO_ROOT / "pyproject.toml"
 _MATRIX = re.compile(r"python-version:\s*\[(?P<versions>[^\]]*)\]")
 _REQUIRES_PYTHON = re.compile(r'requires-python\s*=\s*"\s*>=\s*(?P<floor>\d+)\.(?P<patch>\d+)\s*"')
 _QUOTED = re.compile(r'"(?P<version>\d+\.\d+)"')
+
+# The top of the declared range. `requires-python` is `>=` with no ceiling, so a
+# matrix that stops below this is an untested support claim, not a passing check.
+# Bump it on the next CPython minor release, and add that minor to ci.yml with it.
+#
+# This is a floor on the matrix, not an exact match: a row above it is extra
+# coverage, not a failure. Do not satisfy the guard below by making the matrix
+# float — a bare "3.14" silently becomes 3.15 and reopens the gap.
+_NEWEST_SUPPORTED_MINOR = "3.14"
+
+
+def _version_key(version: str) -> tuple[int, ...]:
+    return tuple(int(part) for part in version.split("."))
 
 
 def _declared_floor() -> tuple[int, ...]:
@@ -80,6 +98,36 @@ class TestCiPythonMatrix(unittest.TestCase):
                 f"ci.yml runs {version}, which is below the declared floor "
                 f"{'.'.join(str(p) for p in floor)}",
             )
+
+    def test_matrix_runs_the_newest_supported_minor(self) -> None:
+        """The ceiling half of the range. The floor half is the two tests above.
+
+        Nothing in the repo states where the open-ended `>=3.11` range stops, so
+        the matrix can lose its newest row and every floor-side assertion still
+        passes. That reports success for a range measured only at the bottom,
+        and the top goes unverified silently.
+
+        This is the trade the paid-eval guard below makes in the same file: a
+        pinned constant standing in for a fact the repository cannot derive. It
+        trips when the matrix shrinks. It does not know whether 3.15 has
+        shipped, so a constant left stale here is still an untested claim, just
+        one that now fails loudly instead of passing quietly.
+        """
+        versions = _matrix_versions()
+        self.assertIn(
+            _NEWEST_SUPPORTED_MINOR,
+            versions,
+            f"the top of the range went unverified: ci.yml's newest row is "
+            f"{max(versions, key=_version_key) if versions else 'absent'}, but "
+            f"{_NEWEST_SUPPORTED_MINOR} is the newest minor this project claims "
+            f"to support. requires-python is "
+            f"'>={'.'.join(str(part) for part in _declared_floor())}' with no "
+            f"ceiling, so {_NEWEST_SUPPORTED_MINOR} is claimed whether or not "
+            f"ci.yml runs it. Put the row back. To widen the range instead, "
+            f"bump _NEWEST_SUPPORTED_MINOR and ci.yml together — do not float "
+            f'the version, since a bare "{_NEWEST_SUPPORTED_MINOR}" silently '
+            f"becomes the next minor.",
+        )
 
     def test_workflow_expands_the_matrix_in_setup_python(self) -> None:
         text = CI_WORKFLOW.read_text()

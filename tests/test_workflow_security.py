@@ -17,6 +17,12 @@ def _load_workflow(path: Path) -> dict[str, Any]:
     return yaml.load(path.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
 
 
+def _workflow_files() -> list[Path]:
+    # Actions runs both extensions. A check that globs one of them leaves a
+    # workflow free to reach a secret by renaming its file.
+    return sorted(WORKFLOW_DIR.glob("*.yml")) + sorted(WORKFLOW_DIR.glob("*.yaml"))
+
+
 def _trigger_names(workflow: dict[str, Any]) -> set[str]:
     triggers = workflow.get("on", {})
     if isinstance(triggers, str):
@@ -49,6 +55,12 @@ class WorkflowSecurityTests(unittest.TestCase):
         self.assertEqual(self.eval_job["environment"], "paid-eval")
         self.assertEqual(self.eval_job["permissions"], {"contents": "read"})
 
+    def test_paid_eval_job_is_closed_by_default(self) -> None:
+        guard = str(self.eval_job.get("if", ""))
+        self.assertIn("PAID_EVAL_ENABLED", guard)
+        self.assertIn("'true'", guard)
+        self.assertIn("PAID_EVAL_ENABLED", self.workflow_text)
+
     def test_provider_secret_is_scoped_to_eval_step(self) -> None:
         job_env = self.eval_job.get("env", {})
         self.assertNotIn("OPENROUTER_API_KEY", job_env)
@@ -80,7 +92,7 @@ class WorkflowSecurityTests(unittest.TestCase):
         self.assertIn("default_branch", self.workflow_text)
 
     def test_all_workflow_actions_are_pinned_to_full_shas(self) -> None:
-        for path in sorted(WORKFLOW_DIR.glob("*.yml")):
+        for path in _workflow_files():
             workflow = _load_workflow(path)
             for job in workflow["jobs"].values():
                 for step in job["steps"]:
@@ -93,7 +105,7 @@ class WorkflowSecurityTests(unittest.TestCase):
                         )
 
     def test_no_pull_request_triggered_workflow_references_secrets(self) -> None:
-        for path in sorted(WORKFLOW_DIR.glob("*.yml")):
+        for path in _workflow_files():
             if "pull_request" not in _trigger_names(_load_workflow(path)):
                 continue
             self.assertNotIn(
@@ -107,7 +119,7 @@ class WorkflowSecurityTests(unittest.TestCase):
             )
 
     def test_run_blocks_do_not_interpolate_workflow_inputs(self) -> None:
-        for path in sorted(WORKFLOW_DIR.glob("*.yml")):
+        for path in _workflow_files():
             for job_name, step in _steps(_load_workflow(path)):
                 run = str(step.get("run", ""))
                 for context in ("${{ inputs.", "${{ github.event.inputs."):
@@ -122,7 +134,7 @@ class WorkflowSecurityTests(unittest.TestCase):
                     )
 
     def test_run_blocks_do_not_escape_variable_references(self) -> None:
-        for path in sorted(WORKFLOW_DIR.glob("*.yml")):
+        for path in _workflow_files():
             for job_name, step in _steps(_load_workflow(path)):
                 run = str(step.get("run", ""))
                 self.assertNotIn(

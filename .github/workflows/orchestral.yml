@@ -39,10 +39,17 @@ permissions: {}
 jobs:
   eval:
     runs-on: ubuntu-latest
+    # Closed by default. A referenced environment that does not exist yet is
+    # created by GitHub with no protection rules, so a dispatcher would reach
+    # OPENROUTER_API_KEY on any branch with nobody to approve it. Every agent in
+    # this company dispatches as the same write-access identity, so "only a
+    # trusted person can dispatch" is not true here. Set the repository variable
+    # PAID_EVAL_ENABLED=true, with the paid-eval environment's required reviewers
+    # configured, to open this path. docs/ci-security.md has the steps.
+    if: vars.PAID_EVAL_ENABLED == 'true'
     # The paid-eval environment is the human gate on provider spend. It is only a
     # gate if the environment has required reviewers configured; as of this commit
-    # the repository has no environments at all, so this key gates nothing until
-    # someone creates it. See docs/ci-security.md.
+    # the repository has no environments at all. See docs/ci-security.md.
     environment: paid-eval
     permissions:
       contents: read
@@ -98,8 +105,12 @@ jobs:
           name: orchestral-reports
           path: reports/
 
-      # A cost cap bounds spend. It is not a containment control, and never was.
-      - name: Enforce cost budget
+      # MAX_COST_USD does not cap anything. The eval above has already been paid
+      # for by the time this reads the database; this step reports the figure
+      # after the fact and fails the run, which is an alarm, not a limit. Real
+      # spend control is the environment's required reviewer plus the disabled
+      # default above.
+      - name: Report run cost
         run: |
           cost=$(python3 - << 'PY'
           import sqlite3

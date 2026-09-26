@@ -17,8 +17,9 @@ not a boundary here. Any account that can push a branch to this repository can
 open a pull request whose code then executes in a job holding the provider key
 and a `pull-requests: write` token. It also ran 161 times across 41 branches with
 no approver and no way to bound repository-wide spend, because `MAX_COST_USD` is
-a per-job env var and the trigger was unbounded. The cap limits spend; it does
-nothing to stop exfiltration, so it was never a containment control.
+a per-job env var and the trigger was unbounded. The check reports spend after the
+fact; it does nothing to stop exfiltration, so it was never a containment
+control.
 
 The fix is not a better `if:` condition. It is removing the trigger. The paid eval
 is manual and environment-gated.
@@ -51,6 +52,22 @@ It does weaken the containment. Read this before you approve a dispatch.
   a `run:` line. Otherwise a crafted ref executes before any reviewer sees the
   run. `test_run_blocks_do_not_interpolate_workflow_inputs` enforces this.
 
+## The dispatch path ships closed
+
+The `eval` job carries `if: vars.PAID_EVAL_ENABLED == 'true'`, and the repository
+does not set that variable. **A dispatch today runs nothing and reaches nothing.**
+
+This is deliberate, and it is not in the workflow for decoration. GitHub creates a
+referenced environment that does not exist, with no protection rules. So shipping
+`environment: paid-eval` on its own would have been a gate that gates nothing: any
+dispatcher would run any branch's code with `OPENROUTER_API_KEY` and nobody would
+be asked. Every agent in this company dispatches as the same write-access GitHub
+identity, so "only trusted people can dispatch" is not a property this repository
+has. Defaulting closed costs the pre-merge eval until a human opens it, and that
+is the correct trade while the gate is missing.
+
+`test_paid_eval_job_is_closed_by_default` fails if that `if:` is dropped.
+
 ## One-time human action required
 
 `environment: paid-eval` is only a gate once the environment has reviewers. As of
@@ -58,16 +75,33 @@ this commit the repository has **no environments at all**, so the reference gate
 nothing. The CTO's integration token is refused `403` on
 `repos/duketopceo/orchestral/environments`, so this cannot be done from an agent.
 
+Do these in order. The order matters: step 3 without step 2 opens an unapproved
+key-bearing path.
+
 1. Create the `paid-eval` environment: repo Settings, Environments, New environment.
 2. Add required reviewers to it, at least one person who is not the dispatcher.
    Turn on "prevent self-review" so a dispatcher cannot approve their own ref.
-3. Add a deployment branch rule. Do **not** restrict it to `main`: the `ref`
-   input is the point of the feature, and a `main`-only rule would silently break
-   every pre-merge eval.
+3. Set the repository variable `PAID_EVAL_ENABLED` to `true`: repo Settings,
+   Secrets and variables, Actions, New repository variable. This is what opens
+   the `if:` above. Do it only after step 2.
+
+### The deployment branch rule, precisely
+
+The environment's branch policy is matched against the ref the **workflow was
+dispatched from** (`github.ref`), **not** against `inputs.ref`. These are two
+different things and confusing them produces a failure that looks like the feature
+is broken.
+
+- Dispatch the workflow from `main`, and pass the branch you want measured in the
+  `ref` input. That is the supported flow.
+- Do **not** set a `main`-only deployment branch rule. It is tempting, because
+  `main` is the safe default, and it is wrong: it blocks the run whenever anyone
+  dispatches from a feature branch, and nothing reports the reason. The
+  pre-merge eval then fails silently every time.
+- "All branches" is correct, given `inputs.ref` is what selects the evaluated code
+  and a required reviewer is what gates it.
 
 The repo is public, so required reviewers are available on the current plan.
-Until step 2 is done, the environment reference is a label, not a control, and
-this workflow has no human gate on provider spend.
 
 ## When to rotate `OPENROUTER_API_KEY`
 
@@ -97,13 +131,16 @@ means a failed update does not leave the eval unable to run.
 
 ## Reading the cost guard
 
-`MAX_COST_USD` is a per-run cap, not a budget. A cap on one job cannot bound a
-repository with an unbounded number of dispatches, which is what made the old
-push trigger expensive. Repository-level spend is [DUK-212](/DUK/issues/DUK-212)'s
-question to answer.
+`MAX_COST_USD` is not a cap and not a budget. It is a post-run threshold. The eval
+has already been paid for by the time the step reads `runs/index.db`; the step
+reports the figure and fails the job. That is an alarm, not a limit. Nothing in
+this workflow prevents a run from overspending, and nothing in the old workflow
+did either: `MAX_COST_USD` was a per-job env var under an unbounded trigger,
+which is why 161 runs were possible. Repository-level spend is
+[DUK-212](/DUK/issues/DUK-212)'s question to answer.
 
-The guard itself was, until this change, an observability defect: both `echo`
-lines escaped their variables, so a passing run logged the literal text
+The guard was, until this change, an observability defect on top of that: both
+`echo` lines escaped their variables, so a passing run logged the literal text
 `${MAX_COST_USD}` and a failing run logged the literal `${cost}`. The comparison
 was always correct, and the cost was always recorded in the run and in
 `harness.py`; the log just did not say so. `test_run_blocks_do_not_escape_variable_references`
@@ -120,3 +157,12 @@ that rule is broken, in every workflow, not just this one.
 A `workflow_dispatch` input must never be interpolated into a `run:` line. Pass
 it through `env:`. `test_run_blocks_do_not_interpolate_workflow_inputs` fails the
 moment that rule is broken.
+
+Every check here scans both `.yml` and `.yaml`, because Actions runs both. A
+check that globs one extension lets a workflow reach a secret by renaming its
+file. `_workflow_files()` is the single place that knows this; do not reintroduce
+a bare `glob("*.yml")`.
+
+A secret-bearing job must be closed by default, so that merging the fix cannot
+open a path the environment is not yet protecting. `test_paid_eval_job_is_closed_by_default`
+fails if that guard is dropped.

@@ -105,6 +105,36 @@ class TestTruncationIsDiagnosable(unittest.TestCase):
         self.assertTrue(head.group(1).startswith("{"), head.group(1))
         self.assertFalse(tail.group(1).endswith("}"), tail.group(1))
 
+    def test_short_response_is_reported_once_as_whole(self):
+        """A response that fits in both edge windows must not print the same
+        skeleton twice: two identical labels read as a reporter bug, which is
+        the ambiguity this message exists to remove."""
+        payload = '{"plan": "cut off mid'
+        msg = _message(payload)
+        self.assertIn("whole=", msg)
+        self.assertNotIn("head=", msg)
+        self.assertNotIn("tail=", msg)
+        # the single skeleton is not vacuous: it still shows the shape
+        whole = re.search(r"whole='([^']*)'", msg)
+        self.assertIsNotNone(whole, msg)
+        self.assertTrue(whole.group(1).startswith('{"'))
+
+    def test_the_two_labels_never_collide(self):
+        """Across the boundary, exactly one of whole= / head=+tail= appears."""
+        for size in (1, 199, 200, 399, 400, 401, 900):
+            with self.subTest(size=size):
+                payload = '{"a": "' + "x" * size
+                msg = _message(payload)
+                self.assertEqual(bool(re.search(r"whole=", msg)), len(payload) <= 400)
+                self.assertEqual(bool(re.search(r"head=", msg)), len(payload) > 400)
+                self.assertEqual(bool(re.search(r"tail=", msg)), len(payload) > 400)
+                # no label pair can be two copies of the same string
+                if len(payload) > 400:
+                    self.assertNotEqual(
+                        re.search(r"head='([^']*)'", msg).group(1),
+                        re.search(r"tail='([^']*)'", msg).group(1),
+                    )
+
     def test_offset_of_the_candidate_is_reported(self):
         payload = 'Here is the plan.\n\n{"plan": "cut off mid'
         msg = _message(payload)

@@ -236,8 +236,15 @@ def _response_fingerprint(text: str) -> str:
     skeletons say whether it stopped mid-object or mid-string, which is what
     separates a truncated response from a well-formed response that breaks the
     plan contract.
+
+    A response that fits in both edge windows is reported once as `whole`.
+    Printing the same skeleton twice under two labels is indistinguishable from
+    a reporter that is misbehaving, and an ambiguous log is the thing this
+    message exists to prevent.
     """
     digest = hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()[:12]
+    if len(text) <= 2 * _SKELETON_EDGE_CHARS:
+        return f"{len(text)} chars sha256:{digest} whole={_skeleton(text)!r}"
     return (
         f"{len(text)} chars sha256:{digest} "
         f"head={_skeleton(text[:_SKELETON_EDGE_CHARS])!r} "

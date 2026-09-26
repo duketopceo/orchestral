@@ -8,6 +8,12 @@ on:
 permissions:
   contents: read
 
+# One gate per job, on purpose. GitHub Actions skips every remaining step in a
+# job as soon as one step fails, so a single job meant a red `Tests` step
+# silently skipped `Lint` and `Types` and the run could still look green.
+# Separate jobs report independently: one red never hides the others.
+# The `test` job keeps its original name so a branch-protection required check
+# by that name still reports. tests/test_ci_gate_independence.py enforces this.
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -23,8 +29,30 @@ jobs:
       - name: Tests
         run: python -m unittest discover -s tests
 
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install
+        run: pip install -e .[dev,tui]
+
       - name: Lint
         run: ruff check .
+
+  types:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install
+        run: pip install -e .[dev,tui]
 
       - name: Types
         run: mypy orchestral harness.py

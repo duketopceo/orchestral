@@ -198,10 +198,31 @@ class TestCiPythonMatrix(unittest.TestCase):
         `python-version` matrix nor expands one. It is not a spend cap, and the
         name used to claim it was.
 
-        `_MATRIX` needs a literal `[`. A block-style `strategy.matrix` written
-        without brackets is not matched, and is then caught by the second
-        assertion anyway, because expanding that block into `setup-python`
-        writes `matrix.python-version` into the file.
+        Dropping the brackets defeats the first assertion only. `_MATRIX` needs
+        a literal `[`, so a block-sequence `python-version` slips past it — and
+        is then caught by the second, because expanding that block into
+        `setup-python` writes `matrix.python-version` into the file. A
+        block-sequence matrix that is never expanded clears both, and this file
+        claims nothing about what that costs. An earlier revision of this
+        comment said such a matrix bills once, because every job still runs the
+        pinned interpreter; that reads which interpreter a job runs as how many
+        jobs run. The job count is the matrix entry count, and the eval step is
+        in every one of those jobs, so the accessor `setup-python` happens to
+        read does not settle it. DUK-241.
+
+        Written `!seq`, the block is not something a workflow here can rely on
+        loading. `!!seq` is YAML's own verb for a sequence and a single `!` is a
+        local tag, so a spec-conforming consumer refuses the document:
+
+            $ python3 -c "import yaml; yaml.safe_load('v: !seq [1, 2]')"
+            yaml.constructor.ConstructorError: could not determine a constructor for the tag '!seq'
+
+        `!seq` is Ansible's tag rather than a workflow one, it appears nowhere
+        under `.github/`, and `actionlint` 1.7.12 tolerates it, exiting 0. One
+        linter's tolerance is not evidence about GitHub's own parser, and
+        nothing here has run that parser, so this file takes no position on
+        whether such a workflow loads at all.
+
 
         Five shapes do get past both while multiplying a real bill. All five are
         green here today, each measured by expanding the job as Actions does and

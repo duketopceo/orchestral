@@ -207,6 +207,11 @@ def _rules(spec: TaskSpec) -> dict[str, list]:
     return grouped
 
 
+def _rules_ok(grouped: dict[str, list]) -> bool:
+    """Would `audit_spec` on this spec leave the report passing?"""
+    return not any(finding.severity == ERROR for items in grouped.values() for finding in items)
+
+
 class TestCheckNamesFailClosed(unittest.TestCase):
     """A misspelled check name must not silently drop a gate."""
 
@@ -303,6 +308,61 @@ class TestCheckNamesFailClosed(unittest.TestCase):
         bodies = {"image": '    # checks["has_alpha"] = False\n    checks["non_empty"] = True\n'}
         phantom = {"image": frozenset({"non_empty", "has_alpha"})}
         self.assertEqual(unimplemented_names(phantom, {}, bodies.get), [("image", "has_alpha")])
+
+
+class TestInertMetadataRequired(unittest.TestCase):
+    """`metadata.required` grades nothing unless a check the runner runs reads it."""
+
+    def test_image_declaration_is_an_error_not_a_warning(self):
+        """The D4 case: a blank PNG passes a spec that demands a subject, so the
+        declaration must fail the audit rather than pass it as a warning."""
+        spec = _task(
+            id="i-3",
+            type="image",
+            prompt="Draw a latte on a wooden table.",
+            validation=["non_empty", "png_signature"],
+            metadata={"required": ["latte", "wooden table"]},
+        )
+        found = _rules(spec)
+        self.assertIn("ignored_metadata_required", found)
+        self.assertEqual(found["ignored_metadata_required"][0].severity, ERROR)
+        self.assertIn("latte", found["ignored_metadata_required"][0].detail)
+        self.assertIn("never reads it", found["ignored_metadata_required"][0].detail)
+        self.assertFalse(_rules_ok(found), "an inert subject declaration must not leave the audit clean")
+
+    def test_it_does_not_clear_structural_only(self):
+        """Both findings fire: the key grades nothing, and the spec is unanchored."""
+        spec = _task(
+            id="i-4",
+            prompt="Write a page about baristas.",
+            validation=["html", "has_title"],
+            metadata={"required": ["barista"]},
+        )
+        found = _rules(spec)
+        self.assertIn("ignored_metadata_required", found)
+        self.assertIn("structural_only", found)
+
+    def test_text_type_without_has_required_is_an_error(self):
+        """The same hole in a text type: nothing requests the check that reads it."""
+        found = _rules(_task(validation=["html"], metadata={"required": ["kite"]}))
+        self.assertIn("ignored_metadata_required", found)
+        self.assertIn("add has_required", found["ignored_metadata_required"][0].detail)
+
+    def test_requested_has_required_is_clean(self):
+        spec = _task(validation=["html", "has_required"], metadata={"required": ["kite"]})
+        found = _rules(spec)
+        self.assertNotIn("ignored_metadata_required", found)
+        self.assertNotIn("structural_only", found)
+
+    def test_self_anchored_type_declaration_points_at_its_own_contract(self):
+        found = _rules(
+            TaskSpec(id="x-9", type="extract", prompt="Pull the total.", metadata={"required": ["total"]})
+        )
+        detail = found["ignored_metadata_required"][0].detail
+        self.assertIn("fields or expected", detail)
+
+    def test_no_declaration_is_clean(self):
+        self.assertNotIn("ignored_metadata_required", _rules(_task(validation=["html"])))
 
 
 class TestAbsentGradingContract(unittest.TestCase):
@@ -873,6 +933,7 @@ class TestGamingSurface(unittest.TestCase):
 
     def test_multi_file_reading_bodies_is_not_flagged(self):
         """`has_paths` plus a body-reading check with tokens is an anchored fileset."""
+
         spec = TaskSpec(
             id="mf-2",
             type="multi-file",
@@ -914,6 +975,7 @@ class TestGamingSurface(unittest.TestCase):
             prompt="Build a site.",
             validation=["non_empty", "zip_signature"],
             metadata={"expected_paths": ["index.html"]},
+
         )
         found = _rules(spec)
         self.assertIn("unanchored_fileset", found)
@@ -934,6 +996,37 @@ class TestGamingSurface(unittest.TestCase):
             metadata={"expected_paths": ["index.html"]},
         )
         self.assertIn("unanchored_fileset", _rules(spec))
+
+    def test_multi_file_without_expected_paths_is_flagged(self):
+        """The guard used to require `has_paths`, so the unanchored case never fired."""
+        spec = TaskSpec(id="mf-5", type="multi-file", prompt="Build a site.", validation=["non_empty", "zip_signature"])
+        found = _rules(spec)
+        self.assertIn("unanchored_fileset", found)
+        self.assertIn("the fileset is unanchored", found["unanchored_fileset"][0].detail)
+
+    def test_unusable_expected_paths_counts_as_unanchored(self):
+        """`expected_paths()` drops a non-list, so the grader looks for nothing."""
+        spec = TaskSpec(
+            id="mf-4",
+            type="multi-file",
+            prompt="Build a site.",
+            validation=["has_paths"],
+            metadata={"expected_paths": "index.html"},
+        )
+        found = _rules(spec)
+        self.assertIn("unanchored_fileset", found)
+        self.assertIn("the fileset is unanchored", found["unanchored_fileset"][0].detail)
+
+    def test_declared_paths_without_has_paths_are_flagged(self):
+        spec = TaskSpec(
+            id="mf-6",
+            type="multi-file",
+            prompt="Build a site.",
+            validation=["non_empty", "zip_signature"],
+            metadata={"expected_paths": ["index.html"]},
+        )
+        self.assertIn("unanchored_fileset", _rules(spec))
+
 
 
 class TestMediaSpecsAreNotJudgedByTextChecks(unittest.TestCase):
@@ -980,6 +1073,10 @@ class TestMediaSpecsAreNotJudgedByTextChecks(unittest.TestCase):
         found = _rules(spec)
         self.assertIn("unknown_validation_check", found)
         self.assertNotIn("structural_only", found)
+
+    def test_html_is_unaffected(self):
+        self.assertIn("structural_only", _rules(_task(validation=["html"])))
+
 
     def test_structural_only_advice_still_names_the_text_checks(self):
         detail = _rules(_task(validation=["html"]))["structural_only"][0].detail
@@ -1030,6 +1127,9 @@ class TestMediaSpecsAreNotJudgedByTextChecks(unittest.TestCase):
         # Nothing in the spec can clear this one: `metadata.required` is inert
         # for a PNG, so the finding that remains is the honest one — the
         # artifact is gated on the run carrying `--judge`, not on the spec.
+        # A byte artifact is never structural_only: nothing in the spec can
+        # clear it, so the honest finding is that topicality needs --judge.
+
         self.assertNotIn("structural_only", found)
         self.assertIn("judge_gated_media", found)
 
@@ -1122,6 +1222,14 @@ class TestShippedSuite(unittest.TestCase):
         report = audit_tree(REPO_TASKS)
         ignored = report.by_rule().get("ignored_validation_list", [])
         self.assertEqual(ignored, [], [f.detail for f in ignored])
+
+    def test_shipped_specs_declare_no_inert_required_key(self):
+        report = audit_tree(REPO_TASKS)
+        inert = report.by_rule().get("ignored_metadata_required", [])
+        self.assertEqual(inert, [], [f.detail for f in inert])
+
+    def test_shipped_suite_reports_no_errors(self):
+        self.assertEqual(audit_tree(REPO_TASKS).errors, [])
 
     def test_shipped_code_specs_all_carry_a_real_test_suite(self):
         report = audit_tree(REPO_TASKS)

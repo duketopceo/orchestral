@@ -223,9 +223,50 @@ def read_json(path: Path) -> Any | None:
         return None
 
 
+def read_json_why(path: Path) -> tuple[Any | None, str]:
+    """``read_json`` plus the reason it failed, for claims that must be honest.
+
+    ``read_json`` collapses "missing" and "unparseable" into ``None``, which is
+    right for display and wrong for a verdict: a report truncated by a kill
+    looks exactly like a report that carries no judge block. Returns
+    ``(value, "")`` on success and ``(None, reason)`` on failure.
+    """
+    try:
+        return json.loads(path.read_text(encoding="utf-8", errors="replace")), ""
+    except FileNotFoundError:
+        return None, f"{path.name} is missing"
+    except json.JSONDecodeError as exc:
+        return None, f"{path.name} is unreadable ({exc.msg} at line {exc.lineno})"
+    except OSError as exc:
+        return None, f"{path.name} could not be read ({exc.strerror or exc})"
+
+
 def _mapping(value: Any) -> dict[str, Any]:
     """Return a mapping-shaped JSON value without trusting its shape."""
     return value if isinstance(value, dict) else {}
+
+
+def _judge_block(run_dir: Path | str) -> tuple[dict[str, Any], str]:
+    """A run's judge block, plus the reason the report could not be read.
+
+    ``({}, "")`` means the report read clean and simply has no judge block — a
+    real, statable absence. A non-empty reason means the judge axis is
+    *unknown*: the judge may well have run and had its verdict lost, which is
+    a different claim and must never be counted as zero.
+    """
+    report, why = read_json_why(Path(run_dir) / "report.json")
+    if why:
+        return {}, why
+    if not isinstance(report, dict):
+        return {}, "report.json is not a JSON object"
+    return _mapping(report.get("judge")), ""
+
+
+def _unreadable_caveat(unreadable_n: int) -> str:
+    """Trailing qualifier so a partial judge axis is not read as a full one."""
+    if not unreadable_n:
+        return ""
+    return f" · {unreadable_n} judge report(s) unreadable — semantic axis incomplete"
 
 
 def live_payload(run_dir: Path, after: int, started_at: str | None = None,
@@ -384,12 +425,15 @@ def judge_state(meta) -> tuple[str, str]:
     "Unjudged" was four different situations rendered identically; the UI
     needs to say which: ``judged`` | ``inconclusive`` (a verdict was attempted
     but couldn't be parsed) | ``not_judged`` (never attempted, or the run
-    never finished) | ``not_judgeable`` (no artifact survives to score).
+    never finished) | ``not_judgeable`` (no artifact survives to score) |
+    ``unreadable`` (report.json could not be read, so whether the judge ran is
+    genuinely unknown). ``unreadable`` earns its own state because collapsing
+    it into ``not_judged`` asserts the judge never ran — a claim about work
+    this function cannot see.
     """
     if meta.judge_score is not None:
         return "judged", ""
-    report = _mapping(read_json(Path(meta.run_dir) / "report.json"))
-    j = _mapping(report.get("judge"))
+    j, read_why = _judge_block(meta.run_dir)
     if j:
         reason = str(j.get("reasoning") or "").strip()
         if j.get("inconclusive"):
@@ -403,6 +447,8 @@ def judge_state(meta) -> tuple[str, str]:
         return "not_judgeable", "no artifact survives to judge"
     if meta.dry_run:
         return "not_judged", "dry run — nothing real to judge"
+    if read_why:
+        return "unreadable", f"judge verdict unknown — {read_why}"
     return "not_judged", "judge wasn't run for this run"
 
 
@@ -1247,7 +1293,16 @@ def _story_signals(
                 "claim": "The run passed its mechanical gate with a strong judge score.",
                 "evidence": {"judge_score": payload.get("judge_score")},
             })
-        if payload.get("judge_state") != "judged":
+        if payload.get("judge_state") == "unreadable":
+            signals.append({
+                "id": "judge_axis_unknown",
+                "label": "judge axis unknown",
+                "tone": "warn",
+                "claim": ("The judge verdict could not be read, so whether the judge ran "
+                          "is unknown — not absent."),
+                "evidence": {"judge_state": "unreadable"},
+            })
+        elif payload.get("judge_state") != "judged":
             signals.append({
                 "id": "weak_confidence",
                 "label": "weak confidence",
@@ -1327,14 +1382,26 @@ def _story_signals(
 
     ci = payload.get("pass_ci") or []
     wide = len(ci) == 2 and float(ci[1]) - float(ci[0]) >= 0.40
+    unreadable = int(payload.get("judge_reports_unreadable") or 0)
     if int(payload.get("finished") or 0) < 3 or wide or not payload.get("judged"):
-        reason = "the sample is thin" if int(payload.get("finished") or 0) < 3 else "the confidence interval is wide" if wide else "no judge verdicts are available"
+        if unreadable:
+            # A read failure outranks the statistical hedges: it is a fact
+            # about the data, and it must never read as "nothing judged yet".
+            reason = (f"{unreadable} judge report(s) could not be read, so the "
+                      "judge verdicts behind this card are unknown")
+        elif int(payload.get("finished") or 0) < 3:
+            reason = "the sample is thin"
+        elif wide:
+            reason = "the confidence interval is wide"
+        else:
+            reason = "no judge verdicts are available"
         signals.append({
             "id": "weak_confidence",
             "label": "weak confidence",
             "tone": "warn",
             "claim": f"Treat this as directional evidence: {reason}.",
-            "evidence": {"finished": payload.get("finished"), "ci": payload.get("pass_ci")},
+            "evidence": {"finished": payload.get("finished"), "ci": payload.get("pass_ci"),
+                         "judge_reports_unreadable": unreadable},
         })
     return signals
 
@@ -1347,7 +1414,9 @@ def _story_caption(payload: dict[str, Any], claim: str) -> str:
         context = f"{payload.get('finished', 0)}/{payload.get('runs', 0)} finished"
         if ci:
             context += f" · 95% CI {round(float(ci[0]) * 100)}–{round(float(ci[1]) * 100)}%"
-        context += f" · {payload.get('judged', 0)} judge-reviewed"
+        unreadable = int(payload.get("judge_reports_unreadable") or 0)
+        context += (f" · {payload.get('judged', 0)} judge-reviewed"
+                    + (f", {unreadable} report(s) unreadable" if unreadable else ""))
     return _bounded_text(f"{claim} {context}.", max_bytes=270, max_lines=4)
 
 
@@ -1520,6 +1589,7 @@ def card_payload(
         failures: dict[str, int] = {}
         judged_scores: list[float] = []
         judged_n = 0
+        unreadable_n = 0
         judge_passed_n = 0
         judge_models: set[str] = set()
         for m in cell:
@@ -1529,8 +1599,9 @@ def card_payload(
                 st = per_type.setdefault(types.get(m.task_id, "?"), [0, 0])
                 st[1] += 1
                 st[0] += 1 if m.passes else 0
-                report = _mapping(read_json(Path(m.run_dir) / "report.json"))
-                j = _mapping(report.get("judge"))
+                j, read_why = _judge_block(m.run_dir)
+                if read_why:
+                    unreadable_n += 1
                 if any(j.get(key) is not None for key in ("score", "noul", "passed")):
                     judged_n += 1
                 if j.get("score") is not None:
@@ -1547,18 +1618,25 @@ def card_payload(
         strong = sorted(((t, p, n) for t, (p, n) in per_type.items() if n),
                         key=lambda x: (-(x[1] / x[2]), x[0]))
         best, worst = (strong[0] if strong else None), (strong[-1] if strong else None)
-        if judged_n and pr is not None:
-            jp = judge_passed_n / judged_n
-            if pr - jp > 0.15:
-                line = f"{round(pr * 100)}% pass structure, {round(jp * 100)}% survive semantic review"
-            elif jp - pr > 0.05:
-                line = f"{round(pr * 100)}% clear the full gate — judge alone approves {round(jp * 100)}%"
-            else:
-                line = "mechanical and judge axes agree"
-        elif judged_n:
-            line = f"{judged_n} runs judged — semantic axis active"
+        if unreadable_n and not judged_n:
+            # The semantic axis is unknown, not absent. "nothing judged yet"
+            # would assert the judge never ran — a claim the data cannot make.
+            line = (f"judge verdict unknown for {unreadable_n} of {len(finished)} "
+                    "finished run(s) — report.json could not be read")
         else:
-            line = "mechanical grading only — nothing judged yet"
+            if judged_n and pr is not None:
+                jp = judge_passed_n / judged_n
+                if pr - jp > 0.15:
+                    line = f"{round(pr * 100)}% pass structure, {round(jp * 100)}% survive semantic review"
+                elif jp - pr > 0.05:
+                    line = f"{round(pr * 100)}% clear the full gate — judge alone approves {round(jp * 100)}%"
+                else:
+                    line = "mechanical and judge axes agree"
+            elif judged_n:
+                line = f"{judged_n} runs judged — semantic axis active"
+            else:
+                line = "mechanical grading only — nothing judged yet"
+            line += _unreadable_caveat(unreadable_n)
         payload = {
             "kind": "pairing", "target": target, "suite": SUITE_VERSION,
             "target_pair": target,
@@ -1567,6 +1645,7 @@ def card_payload(
             "pass_rate": pr, "pass_ci": ci, "verdict_line": line,
             "score_mean": round(sum(scores) / len(scores), 3) if scores else None,
             "judged": judged_n,
+            "judge_reports_unreadable": unreadable_n,
             "judge_approved": judge_passed_n,
             "judge_pass_rate": judge_passed_n / judged_n if judged_n else None,
             "judge_score_mean": round(sum(judged_scores) / len(judged_scores), 3) if judged_scores else None,
@@ -1614,6 +1693,7 @@ def card_payload(
         judge_nouls: list[float] = []
         card_judge_models: set[str] = set()
         judged_n = 0
+        unreadable_n = 0
         judge_passed_n = 0
         # comparable rows — per-task split is always meaningful; per-pairing
         # rows matter when the eval set ran more than one pairing
@@ -1635,8 +1715,9 @@ def card_payload(
             ps[1] += 1
             ps[0] += 1 if m.passes else 0
             pair_cost[key] = pair_cost.get(key, 0.0) + (m.total_cost_usd or 0.0)
-            report = _mapping(read_json(Path(m.run_dir) / "report.json"))
-            j = _mapping(report.get("judge"))
+            j, read_why = _judge_block(m.run_dir)
+            if read_why:
+                unreadable_n += 1
             has_judge = any(j.get(key) is not None for key in ("score", "noul", "passed"))
             if has_judge:
                 judged_n += 1
@@ -1658,18 +1739,25 @@ def card_payload(
         running_n = sum(1 for m in metas if m.status == "running")
         if not card_judge_models and judged_n:
             card_judge_models = set(store.judge_slugs({m.task_id for m in metas}))
-        if judged_n and jp_rate is not None and g["pass_rate"] is not None:
-            mech_pct, jp_pct = round(g["pass_rate"] * 100), round(jp_rate * 100)
-            if g["pass_rate"] - jp_rate > 0.15:
-                line = f"{mech_pct}% pass structure, {jp_pct}% survive semantic review"
-            elif jp_rate - g["pass_rate"] > 0.05:
-                line = f"{mech_pct}% clear the full gate — judge alone approves {jp_pct}%"
-            else:
-                line = "mechanical and judge axes agree"
-        elif judged_n:
-            line = f"{judged_n} runs judged — semantic axis active"
+        if unreadable_n and not judged_n:
+            # The semantic axis is unknown, not absent. "nothing judged yet"
+            # would assert the judge never ran — a claim the data cannot make.
+            line = (f"judge verdict unknown for {unreadable_n} of {g['finished']} "
+                    "finished run(s) — report.json could not be read")
         else:
-            line = "mechanical grading only — nothing judged yet"
+            if judged_n and jp_rate is not None and g["pass_rate"] is not None:
+                mech_pct, jp_pct = round(g["pass_rate"] * 100), round(jp_rate * 100)
+                if g["pass_rate"] - jp_rate > 0.15:
+                    line = f"{mech_pct}% pass structure, {jp_pct}% survive semantic review"
+                elif jp_rate - g["pass_rate"] > 0.05:
+                    line = f"{mech_pct}% clear the full gate — judge alone approves {jp_pct}%"
+                else:
+                    line = "mechanical and judge axes agree"
+            elif judged_n:
+                line = f"{judged_n} runs judged — semantic axis active"
+            else:
+                line = "mechanical grading only — nothing judged yet"
+            line += _unreadable_caveat(unreadable_n)
         payload = {
             "kind": "group", "target": target, "suite": SUITE_VERSION,
             "runs": g["runs"], "finished": g["finished"], "passed": g["passed"],
@@ -1677,7 +1765,8 @@ def card_payload(
             "pass_rate": g["pass_rate"], "score_median": g["score_median"],
             "judge_score_median": g["judge_score_median"],
             "pass_ci": ci, "verdict_line": line,
-            "judged": judged_n, "judge_approved": judge_passed_n,
+            "judged": judged_n, "judge_reports_unreadable": unreadable_n,
+            "judge_approved": judge_passed_n,
             "judge_pass_rate": jp_rate,
             "judge_score_mean": (round(sum(judge_scores) / len(judge_scores), 3)
                                  if judge_scores else None),

@@ -10,6 +10,7 @@ import threading
 import time
 import unittest
 import urllib.error
+import urllib.parse
 import urllib.request
 import zipfile
 from http.server import ThreadingHTTPServer
@@ -255,6 +256,7 @@ class TestPureLayer(unittest.TestCase):
             st, why = state.judge_state(store.get_run(rid))
             self.assertEqual(st, "not_judgeable")
             self.assertIn("no artifact", why)
+
 
     def test_load_groups_validates_shape(self):
         from orchestral.config import ConfigError, load_groups
@@ -696,6 +698,197 @@ class TestHttpRoutes(unittest.TestCase):
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, *a, **kw):
         return None
+
+
+def _finished_run(runs_dir: str, *, group: str, task_id: str,
+                  report_body: str | None, orchestrator: str = "o/m",
+                  worker: str = "w/m", artifact: bool = True,
+                  dry_run: bool = False) -> str:
+    """A finished run whose report.json is written verbatim (or not at all).
+
+    `report_body=None` writes no report at all, which is how a run killed
+    before its report lands looks on disk.
+    """
+    store = RunStore(runs_dir)
+    run_id, run_dir = store.new_run(
+        orchestrator, task_id, worker, {"dry_run": dry_run}, run_group=group)
+    meta = store.get_run(run_id)
+    assert meta is not None
+    meta.status = "finished"
+    meta.passes = True
+    meta.score = 1.0
+    meta.dry_run = dry_run
+    meta.started_at = "2026-09-23T00:00:00+00:00"
+    meta.finished_at = meta.started_at
+    if report_body is not None:
+        (run_dir / "report.json").write_text(report_body, encoding="utf-8")
+    if artifact:
+        (run_dir / "artifact.py").write_text("x = 1\n", encoding="utf-8")
+    store.update_meta(meta)
+    return run_id
+
+
+_HEALTHY_REPORT = json.dumps({
+    "passes": True, "score": 1.0, "checks": {"tests_pass": True},
+    "judge": {"score": 0.9, "noul": 0.0, "passed": True, "model": "j/m"},
+})
+# what a kill -9 mid-write leaves behind: valid prefix, no closing brace
+_TRUNCATED_REPORT = _HEALTHY_REPORT[: len(_HEALTHY_REPORT) // 2]
+
+
+class TestUnreadableJudgeReport(unittest.TestCase):
+    """An unreadable report.json means the judge axis is *unknown*, not absent.
+
+    `read_json` collapses missing and unparseable into None, so a report
+    truncated by a kill used to be announced as "judge wasn't run for this
+    run" — a false claim about work that may well have been performed.
+    """
+
+    def test_truncated_report_is_not_reported_as_never_judged(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rid = _finished_run(tmp, group="g", task_id="t1",
+                                report_body=_TRUNCATED_REPORT)
+            st, why = state.judge_state(RunStore(tmp).get_run(rid))
+            self.assertEqual(st, "unreadable")
+            self.assertNotIn("judge wasn't run", why)
+            self.assertIn("unreadable", why)
+
+    def test_missing_report_is_unknown_not_never_ran(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rid = _finished_run(tmp, group="g", task_id="t1", report_body=None)
+            st, why = state.judge_state(RunStore(tmp).get_run(rid))
+            self.assertEqual(st, "unreadable")
+            self.assertIn("missing", why)
+            self.assertNotIn("judge wasn't run", why)
+
+    def test_report_that_is_not_an_object_is_unknown(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rid = _finished_run(tmp, group="g", task_id="t1", report_body="[1, 2]")
+            self.assertEqual(state.judge_state(RunStore(tmp).get_run(rid))[0],
+                             "unreadable")
+
+    def test_healthy_report_still_reads_judged(self):
+        """Control: the fix must not disturb a run whose report reads clean."""
+        with tempfile.TemporaryDirectory() as tmp:
+            store = RunStore(tmp)
+            rid = _finished_run(tmp, group="g", task_id="t1",
+                                report_body=_HEALTHY_REPORT)
+            self.assertEqual(state.judge_state(store.get_run(rid)), ("judged", ""))
+            # readable report, no judge block at all → a real, statable absence
+            rid2 = _finished_run(tmp, group="g", task_id="t2", report_body="{}")
+            st, why = state.judge_state(store.get_run(rid2))
+            self.assertEqual(st, "not_judged")
+            self.assertEqual(why, "judge wasn't run for this run")
+
+    def test_lifecycle_states_still_win_over_read_failures(self):
+        """A run that never finished, or has nothing to judge, is described by
+        that fact — not by a read failure on a report it never wrote."""
+        with tempfile.TemporaryDirectory() as tmp:
+            store = RunStore(tmp)
+            rid = _finished_run(tmp, group="g", task_id="t1", report_body=None,
+                                dry_run=True)
+            st, why = state.judge_state(store.get_run(rid))
+            self.assertEqual(st, "not_judged")
+            self.assertIn("dry run", why)
+
+            rid2 = _finished_run(tmp, group="g", task_id="t2", report_body=None,
+                                 artifact=False)
+            st, why = state.judge_state(store.get_run(rid2))
+            self.assertEqual(st, "not_judgeable")
+            self.assertIn("no artifact", why)
+
+    def test_card_does_not_announce_a_judged_cohort_as_never_judged(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = RunStore(tmp)
+            for i in range(3):
+                _finished_run(tmp, group="g", task_id=f"t{i}",
+                              report_body=_TRUNCATED_REPORT, orchestrator=f"o/{i}")
+            for kind, target in (("group", "g"), ("pairing", "o/0|w/m")):
+                card = state.card_payload(store, kind, target)
+                self.assertEqual(card["judged"], 0, kind)
+                self.assertEqual(card["judge_reports_unreadable"],
+                                 3 if kind == "group" else 1, kind)
+                self.assertNotIn("nothing judged yet", card["verdict_line"])
+                self.assertIn("could not be read", card["verdict_line"])
+                claims = " ".join(s["claim"] for s in card["story"]["signals"])
+                self.assertNotIn("no judge verdicts are available", claims)
+                self.assertIn("could not be read", claims)
+
+    def test_card_keeps_the_judge_axis_but_flags_it_incomplete(self):
+        """A cohort where some verdicts read and some don't must not present
+        the readable subset's rate as the whole cohort's rate."""
+        with tempfile.TemporaryDirectory() as tmp:
+            store = RunStore(tmp)
+            _finished_run(tmp, group="g", task_id="t1", report_body=_HEALTHY_REPORT)
+            _finished_run(tmp, group="g", task_id="t2", report_body=_HEALTHY_REPORT)
+            _finished_run(tmp, group="g", task_id="t3",
+                          report_body=_TRUNCATED_REPORT)
+            card = state.card_payload(store, "group", "g")
+            self.assertEqual(card["judged"], 2)
+            self.assertEqual(card["judge_reports_unreadable"], 1)
+            self.assertIn("unreadable", card["verdict_line"])
+            self.assertIn("semantic axis incomplete", card["verdict_line"])
+
+    def test_run_card_carries_the_unknown_state(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = RunStore(tmp)
+            rid = _finished_run(tmp, group="g", task_id="t1",
+                                report_body=_TRUNCATED_REPORT)
+            card = state.card_payload(store, "run", rid)
+            self.assertEqual(card["judge_state"], "unreadable")
+            self.assertIn("unreadable", card["judge_state_reason"])
+            self.assertIn("unknown",
+                          " ".join(s["claim"] for s in card["story"]["signals"]))
+
+
+class TestThreadRefusesUnreadableCard(unittest.TestCase):
+    """POST /api/thread must not publish a card whose judge numbers are
+    missing because report.json could not be read."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.mkdtemp()
+        _finished_run(cls.tmp, group="g-lost", task_id="t1",
+                      report_body=_TRUNCATED_REPORT)
+        _finished_run(cls.tmp, group="g-ok", task_id="t1",
+                      report_body=_HEALTHY_REPORT)
+        cls.tasks, cls.models = _write_specs(Path(cls.tmp))
+        cls.httpd = ThreadingHTTPServer(
+            ("127.0.0.1", 0),
+            make_handler(Observatory(Path(cls.tmp), cls.tasks, cls.models)))
+        cls.port = cls.httpd.server_address[1]
+        cls.thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
+        cls.thread.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+        cls.httpd.server_close()
+
+    def _post_thread(self, kind: str, target: str) -> tuple[int, str]:
+        data = urllib.parse.urlencode({"kind": kind, "target": target, "n": "3"})
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{self.port}/api/thread", data=data.encode(),
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            method="POST")
+        try:
+            with urllib.request.urlopen(req) as r:
+                return r.status, r.read().decode()
+        except urllib.error.HTTPError as e:
+            return e.code, e.read().decode()
+
+    def test_group_card_with_unreadable_reports_is_not_publishable(self):
+        code, body = self._post_thread("group", "g-lost")
+        self.assertEqual(code, 409)
+        self.assertIn("could not be read", body)
+        self.assertIn("recoverable", body)
+        self.assertNotIn("posts", body)
+
+    def test_healthy_card_still_drafts(self):
+        """Control: the guard must not block a card whose judge axis is real."""
+        code, body = self._post_thread("group", "g-ok")
+        self.assertEqual(code, 200)
+        self.assertIn("posts", body)
 
 
 if __name__ == "__main__":

@@ -79,6 +79,8 @@ function judgeChip(r) {
   const why = esc(r.judge_reason || "");
   if (st === "inconclusive")
     return `<span class="chip chip-warn" title="${why}">judge inconclusive</span>`;
+  if (st === "unreadable")
+    return `<span class="chip chip-warn" title="${why || "report.json could not be read — whether the judge ran is unknown"}">judge unknown</span>`;
   if (st === "not_judgeable")
     return `<span class="chip chip-dim" title="${why}">not judgeable</span>`;
   return `<span class="chip chip-dim" title="${why || "judge wasn't run for this run"}">not judged</span>`;
@@ -1126,6 +1128,9 @@ async function viewAbout() {
             never counts as a rejection.</td></tr>
         <tr><td><span class="chip chip-dim">not judgeable</span></td>
             <td>No artifact survives to score — nothing to show the judge.</td></tr>
+        <tr><td><span class="chip chip-warn">judge unknown</span></td>
+            <td>report.json could not be read, so whether the judge ran is
+            unknown. The verdict may have been lost, not never produced.</td></tr>
       </table>
     </div>
 

@@ -428,6 +428,19 @@ def make_handler(obs: Observatory) -> type[BaseHTTPRequestHandler]:
             )
             if card is None:
                 return self._json({"error": f"no {kind} '{target}'"}, 404)
+            # A card whose judge axis is missing because report.json could not
+            # be read must not reach a public post: "nothing judged yet" on a
+            # cohort that was judged is a false claim about real work.
+            unreadable = int(card.get("judge_reports_unreadable") or 0)
+            if card.get("judge_state") == "unreadable":
+                unreadable = max(unreadable, 1)
+            if unreadable:
+                return self._json({
+                    "error": (f"{unreadable} judge report(s) could not be read — this card's "
+                              "judge numbers are incomplete, so it is not publishable"),
+                    "judge_reports_unreadable": unreadable,
+                    "recoverable": "restore or re-run the affected run(s), then draft again",
+                }, 409)
             try:
                 n = max(1, min(4, int(form.get("n", "3"))))
             except ValueError:

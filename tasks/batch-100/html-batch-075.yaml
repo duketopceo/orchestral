@@ -6,3 +6,10 @@ prompt: Create a landing page for a carbon offset marketplace targeted at climat
   inline CSS.
 validation:
 - html
+- has_required
+- matches_pattern
+metadata:
+  required:
+  - carbon
+  pattern: climate|carbon|sustainab|eco[ -]?friendly|emission|planet|renewable|footprint|greenhouse|net[
+    -]zero|lower your impact|environmentally

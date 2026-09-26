@@ -1,0 +1,77 @@
+version: 1
+source: runs/
+selection:
+  status: finished
+  config_dry_run: false
+  report_present: true
+  artifact_present: true
+  judge_present: true
+  run_group: duk109-media
+  tasks: [image-hero-coffee, image-logo-minimal]
+  review_method: >-
+    Sensitivity variant of labels-media.yaml. Same blind review, same artifacts,
+    two requirements relaxed because measurement showed they are unsatisfiable by
+    the current image workers rather than merely failed:
+      hero  - requirement 7 (16:9 aspect) dropped; 0 of 9 hero artifacts were 16:9
+      logo  - requirement 5 (transparent or solid dark background) treated as met
+              by a flat opaque background; 0 of 18 PNGs carry an alpha channel
+    Everything else is scored exactly as in the strict file.
+  reviewed_on: 2026-09-26
+  judge_under_test: google/gemini-3.1-flash-lite
+labels:
+  # --- image-hero-coffee: 7 requirements (16:9 dropped) ---
+  - run_id: 22d5462ee2df   # m01 6/7
+    score: 0.86
+    passed: false
+  - run_id: b99f70fc76c7   # m02 7/7
+    score: 1.0
+    passed: true
+  - run_id: 02404be718c5   # m04 4/7
+    score: 0.57
+    passed: false
+  - run_id: 74f45aa95fab   # m07 2/7
+    score: 0.29
+    passed: false
+  - run_id: 63e956d02aef   # m11 7/7
+    score: 1.0
+    passed: true
+  - run_id: 0e20e326ec9e   # m12 7/7
+    score: 1.0
+    passed: true
+  - run_id: 18a19db364b3   # m15 7/7
+    score: 1.0
+    passed: true
+  - run_id: f89a511bc85d   # m16 3/7
+    score: 0.43
+    passed: false
+  - run_id: 84206f8da416   # m17 5/7
+    score: 0.71
+    passed: false
+  # --- image-logo-minimal: 7 requirements (background clause relaxed) ---
+  - run_id: e02b3f226a88   # m03 5/7
+    score: 0.71
+    passed: false
+  - run_id: 53b22f20042b   # m05 6/7
+    score: 0.86
+    passed: false
+  - run_id: 4e4c28ea9432   # m06 3/7
+    score: 0.43
+    passed: false
+  - run_id: 9bf7133a6952   # m08 7/7
+    score: 1.0
+    passed: true
+  - run_id: fe0c7825b2f0   # m09 7/7
+    score: 1.0
+    passed: true
+  - run_id: fc7521e217aa   # m10 7/7
+    score: 1.0
+    passed: true
+  - run_id: 47c17c9849f6   # m13 6/7
+    score: 0.86
+    passed: false
+  - run_id: 76e85c1e0900   # m14 6/7
+    score: 0.86
+    passed: false
+  - run_id: c939566c9e8b   # m18 6/7
+    score: 0.86
+    passed: false

@@ -6,3 +6,10 @@ prompt: Create a landing page for a carbon offset marketplace targeted at indie 
   CSS.
 validation:
 - html
+- has_required
+- matches_pattern
+metadata:
+  required:
+  - carbon
+  pattern: indie|hacker|solo founder|bootstrapped|side project|side hustle|one[ -]person|ship
+    fast|build in public|\bdoer\b

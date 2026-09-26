@@ -288,10 +288,11 @@ class TestRunnerObservability(unittest.TestCase):
             metrics = json.loads((run_dir / "metrics.json").read_text())
             self.assertGreater(metrics["phases"]["plan"]["orchestrator"]["calls"], 0)
 
-            # calls table has the three llm_calls
+            # calls table has the three llm_calls; the mocked clients report no
+            # provider cost, so the rate-card fallback label is the correct one
             calls = store.calls_for_run(meta.run_id)
             self.assertEqual(len(calls), 3)
-            self.assertTrue(all(c["pricing_source"] == "configured" for c in calls))
+            self.assertTrue(all(c["pricing_source"] == "configured_estimate" for c in calls))
 
             # run.json + run.started carry the labels
             run_json = json.loads((run_dir / "run.json").read_text())

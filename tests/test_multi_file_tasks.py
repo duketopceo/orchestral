@@ -10,7 +10,7 @@ import zipfile
 from pathlib import Path
 
 from orchestral.config import ModelConfig, TaskSpec
-from orchestral.fileset import FilesetError
+from orchestral.fileset import FilesetError, required_content
 from orchestral.runner import Runner
 
 
@@ -265,6 +265,116 @@ class TestMultiFileValidation(unittest.TestCase):
         )
         self.assertFalse(passes)
         self.assertTrue(report["checks"]["zip_signature"])
+
+
+class TestMultiFileContentCheck(unittest.TestCase):
+    """`has_content` reads file bodies; `has_paths` never did.
+
+    `has_paths` accepts a one-byte file per declared name, so a spec could
+    request a stylesheet and a landing page and get two placeholder bytes
+    graded as a site. `metadata.required_content` maps a path to the tokens
+    that path must contain.
+    """
+
+    def _runner(self) -> Runner:
+        return Runner(runs_dir=tempfile.mkdtemp(), dry_run=True)
+
+    @staticmethod
+    def _zip(files: dict[str, str]) -> bytes:
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as archive:
+            for path, body in files.items():
+                archive.writestr(path, body)
+        return buffer.getvalue()
+
+    def _task(self, content=None, **kwargs) -> TaskSpec:
+        metadata = {"expected_paths": ["index.html", "style.css"]}
+        if content is not None:
+            metadata["required_content"] = content
+        return _task(metadata=metadata, **kwargs)
+
+    def test_body_tokens_per_declared_path_pass(self):
+        task = self._task(
+            validation=["non_empty", "zip_signature", "has_paths", "has_content"],
+            content={"index.html": ["pricing"], "style.css": ["pricing"]},
+        )
+        passes, report = self._runner()._validate_multi(
+            task, self._zip({"index.html": "<h2>pricing</h2>", "style.css": ".pricing{}"})
+        )
+        self.assertTrue(passes, report["errors"])
+        self.assertTrue(report["checks"]["has_content"])
+
+    def test_one_byte_file_per_name_fails(self):
+        """The exact artifact that passed before `has_content` existed."""
+        task = self._task(
+            validation=["non_empty", "zip_signature", "has_paths", "has_content"],
+            content={"index.html": ["pricing"], "style.css": ["pricing"]},
+        )
+        passes, report = self._runner()._validate_multi(
+            task, self._zip({"index.html": "x", "style.css": "x"})
+        )
+        self.assertTrue(report["checks"]["has_paths"])
+        self.assertFalse(passes)
+        self.assertFalse(report["checks"]["has_content"])
+
+    def test_token_in_the_wrong_file_does_not_satisfy_the_right_file(self):
+        """Tokens are scoped to their path, so one file cannot vouch for another."""
+        task = self._task(
+            validation=["non_empty", "zip_signature", "has_paths", "has_content"],
+            content={"index.html": ["pricing"], "style.css": ["pricing"]},
+        )
+        passes, report = self._runner()._validate_multi(
+            task, self._zip({"index.html": "pricing pricing", "style.css": ".a{}"})
+        )
+        self.assertFalse(passes)
+        self.assertIn("style.css:pricing", " ".join(report["errors"]))
+
+    def test_missing_declared_path_has_no_body_to_read(self):
+        task = self._task(
+            validation=["non_empty", "zip_signature", "has_paths", "has_content"],
+            content={"index.html": ["pricing"], "style.css": ["pricing"]},
+        )
+        passes, report = self._runner()._validate_multi(task, self._zip({"index.html": "pricing"}))
+        self.assertFalse(passes)
+        self.assertIn("No file body to read for: style.css", " ".join(report["errors"]))
+
+    def test_requested_without_required_content_fails_closed(self):
+        """A gate the spec asked for but did not configure must not pass open."""
+        task = _task(validation=["non_empty", "zip_signature", "has_content"])
+        passes, report = self._runner()._validate_multi(task, self._zip({"index.html": "x"}))
+        self.assertFalse(passes)
+        self.assertIn("metadata.required_content is empty", " ".join(report["errors"]))
+
+    def test_malformed_required_content_is_treated_as_absent(self):
+        task = self._task(
+            validation=["non_empty", "zip_signature", "has_content"], content="not-a-mapping"
+        )
+        passes, report = self._runner()._validate_multi(task, self._zip({"index.html": "x"}))
+        self.assertFalse(passes)
+        self.assertIn("metadata.required_content is empty", " ".join(report["errors"]))
+
+    def test_unreadable_zip_fails_the_content_check_too(self):
+        task = self._task(
+            validation=["non_empty", "zip_signature", "has_paths", "has_content"],
+            content={"index.html": ["pricing"]},
+        )
+        passes, report = self._runner()._validate_multi(task, b"not-a-zip")
+        self.assertFalse(passes)
+        self.assertFalse(report["checks"]["has_content"])
+
+    def test_declared_path_cannot_escape_the_archive(self):
+        """`required_content` keys go through the same sanitiser as the paths.
+
+        A traversing key is a spec bug, and it raises the same way
+        `metadata.expected_paths` does rather than being quietly dropped — a
+        silently dropped key would turn the content check into a no-op.
+        """
+        task = self._task(
+            validation=["non_empty", "zip_signature", "has_paths", "has_content"],
+            content={"../../etc/passwd": ["root"]},
+        )
+        with self.assertRaises(FilesetError):
+            required_content(task.metadata)
 
 
 if __name__ == "__main__":

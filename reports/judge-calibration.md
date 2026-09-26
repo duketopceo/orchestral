@@ -59,3 +59,8 @@ subject overstates what was measured. As the Limitation section above says, ther
 LLM-judge output in this data: `non_null_judge_outputs` is 0, and the score side of the comparison
 is `collect_pairs` falling back to the stored run-level `score` and `passes`. This is a
 human-label-versus-validator-fallback agreement baseline, not a judge-quality calibration.
+
+## Consequence
+
+Because the judge column is empty, this calibration did not establish that the judge owns `report["score"]` or `passes`. **Correction:** the runner now merges the judge's `score` and ANDs its `passed` into the stored verdict (see `runner.py`), so this file is historical record of the pre-merge measurement, not a statement of current policy. Re-run this calibration on judged runs to justify that authority.
+

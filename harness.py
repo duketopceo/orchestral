@@ -930,32 +930,6 @@ def cmd_scrub(args: argparse.Namespace) -> int:
         return 1
     return 0
 
-    print(f"Scrubbed {len(copied)} runs to {args.scrub_dir}")
-    for c in copied:
-        print(f"  {c}")
-
-    blocked: list[str] = []
-    manifest_path = Path(args.scrub_dir) / "manifest.json"
-    try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        manifest = []
-    for entry in manifest:
-        for item in entry.get("scrub_blocked") or []:
-            blocked.append(f"{entry.get('run', '?')}/{item.get('file', '?')}")
-
-    if blocked:
-        print(
-            f"error: {len(blocked)} file(s) were withheld from publication and are "
-            "listed under `scrub_blocked` in the manifest. This run's output is "
-            "incomplete until each is reviewed:",
-            file=sys.stderr,
-        )
-        for name in blocked:
-            print(f"  {name}", file=sys.stderr)
-        return 1
-    return 0
-
 
 def cmd_audit(args: argparse.Namespace) -> None:
     """Static task-spec audit: can every declared check fire, and can a model pass without working?"""
@@ -1198,7 +1172,7 @@ def build_parser() -> argparse.ArgumentParser:
         "audit",
         help="Static task-spec audit — fail-open checks, structural-only graders, contamination risk",
     )
-    audit.add_argument("--tasks-dir", default="tasks", help="Task spec directory")
+    audit.add_argument("--tasks-dir", default=argparse.SUPPRESS, help="Task spec directory")
     audit.add_argument("--min-family", type=int, default=5, help="Specs sharing one prompt before it is a family")
     audit.add_argument("--similarity", type=float, default=0.8, help="Prompt token Jaccard threshold for a family")
     audit.add_argument("--json", action="store_true", help="Machine-readable output")

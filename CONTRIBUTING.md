@@ -32,7 +32,7 @@ ruff check .
 mypy orchestral harness.py
 ```
 
-All four run in CI on every PR with no secrets needed — tests, lint, and types
+All three run in CI on every PR with no secrets needed — tests, lint, and types
 each as their own job, so a failure in one never stops the others from
 reporting; the task-spec audit runs as a step in the `test` job. A skipped test
 is not a passing test, and `python -m compileall` is not a substitute. The paid
@@ -136,7 +136,7 @@ dropped before that PR is reopened, or it will re-add them.
 Types` sequential steps with no `continue-on-error` — the coupling its own body
 names as the root cause — are still in place, so a red `Tests` step still skips
 both gates. The commit made the code clean; it did not make the gates
-reachable. The "All four run in CI on every PR" line above is therefore not
+reachable. The "All three run in CI on every PR" line above is therefore not
 yet true for `Lint` and `Types`.
 
 ## PR checklist

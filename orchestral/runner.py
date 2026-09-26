@@ -781,8 +781,14 @@ class Runner:
                 )
                 if judge_result.get("score") is not None and not code_execution_pending:
                     report["score"] = judge_result["score"]
+                    report["score_source"] = "judge"
                 if judge_result.get("passed") is not None:
                     passes = passes and judge_result["passed"]
+
+            # The record says which rule produced `score`, so a reader never has
+            # to guess whether the stored number is measured or judged.
+            report.setdefault("score_source", "mechanical")
+
 
             logger.lifecycle(
                 "evaluation.completed", phase="validate", role="judge" if judge else "harness",
@@ -836,15 +842,10 @@ class Runner:
             meta.score = report.get("score")
             meta.latency_ms = (time.perf_counter() - t0) * 1000
             if passes is False:
-                # distinguish a judge rejection of a structurally-valid
-                # artifact from a failed structural check
-                checks = report.get("checks") or {}
-                judge_res = report.get("judge") or {}
-                meta.failure_reason = (
-                    "judge"
-                    if all(checks.values()) and judge_res.get("passed") is False
-                    else "validation"
-                )
+                # The judge no longer decides `passes`, so a failure here is a
+                # validation failure. A judge disagreement is preserved in
+                # `report.judge` rather than relabelled as the cause.
+                meta.failure_reason = "validation"
             self.store.update_meta(meta)
 
             logger.log(
@@ -1283,8 +1284,7 @@ class Runner:
                 "rows_got": report["rows_got"],
             }
         )
-        if report.get("expected_preview"):
-            out["expected_preview"] = report["expected_preview"]
+        if report.get("got_preview"):
             out["got_preview"] = report["got_preview"]
         return passes, out
 

@@ -45,7 +45,7 @@ permissions: {}
 # The one case this does not cover is a cancelled run with no successor on the
 # same ref — so do not cancel these runs by hand. (DUK-198)
 concurrency:
-  group: orchestral-eval-${{ github.event.pull_request.number || github.ref }}
+  group: orchestral-eval-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:

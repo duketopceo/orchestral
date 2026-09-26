@@ -68,6 +68,8 @@ class TestEndToEndMockedProviders(unittest.TestCase):
             self.assertTrue((run_dir / "run.json").exists())
             report = json.loads((run_dir / "report.json").read_text())
             self.assertEqual(report["judge"]["score"], 9)
+            self.assertTrue(report["judge"]["passed"])
+            self.assertEqual(report["score_source"], "judge")
 
             # per-role routing: each mock got calls; judge saw the artifact
             self.assertEqual(orch.chat.call_count, 2)   # plan + assemble
@@ -75,6 +77,39 @@ class TestEndToEndMockedProviders(unittest.TestCase):
             self.assertEqual(judge.chat.call_count, 1)
             judge_msgs = judge.chat.call_args.kwargs["messages"]
             self.assertIn("expert judge", judge_msgs[0]["content"])
+
+    def test_judge_rejection_fails_the_run(self):
+        """A judge that says "fail" fails a run the mechanical grade passed.
+
+        The judge is authoritative when it returns a verdict: its `passed` is
+        ANDed into the run's verdict and its `score` becomes the stored score.
+        """
+        orch = _chat_client("")
+        orch.chat.side_effect = [
+            {"content": json.dumps({"subtasks": [{"id": 0, "description": "s"}]}),
+             "usage": {"prompt_tokens": 10, "completion_tokens": 5}, "latency_ms": 1, "id": "p"},
+            {"content": "<html><head><title>T</title></head><body>ok</body></html>",
+             "usage": {"prompt_tokens": 10, "completion_tokens": 5}, "latency_ms": 1, "id": "a"},
+        ]
+        worker = _chat_client("<section>s</section>")
+        judge = _chat_client(json.dumps({"score": 1, "passed": False, "reasoning": "weak"}))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            runner = Runner(
+                runs_dir=tmp, store=RunStore(tmp),
+                clients={"orchestrator": orch, "worker": worker, "judge": judge},
+            )
+            meta = runner.run(
+                TaskSpec(id="t3", type="html", prompt="build a page"),
+                _model("o/m", "orchestrator"),
+                _model("w/m", "worker"),
+                _model("j/m", "judge"),
+            )
+
+            report = json.loads((Path(meta.run_dir) / "report.json").read_text())
+            self.assertFalse(meta.passes)
+            self.assertEqual(report["judge"]["passed"], False)
+            self.assertEqual(report["score_source"], "judge")
 
     def test_injected_clients_not_closed_by_runner(self):
         """Caller-owned injected clients outlive the run (a grid reuses them)."""

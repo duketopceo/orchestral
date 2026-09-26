@@ -129,8 +129,8 @@ new hash.
   The reference defines truth, so it must return at least one row. An empty
   reference result is a broken spec (error, null score), not an empty answer
   to match against — otherwise any candidate returning zero rows, including a
-  nonsense one, scores `1.0`. Two rules keep a reference from answering
-  nothing by accident:
+  nonsense one, scores `1.0`. Three rules keep a reference from answering
+  nothing by accident, and from answering more than the prompt asked for:
 
   - **Round both sides of a comparison, or neither.** `ROUND(SUM(x), 2)`
     compared against a bare `MAX(SUM(x)) OVER (...)` is unequal for any value
@@ -140,6 +140,18 @@ new hash.
   - **Seed values that exercise the comparison.** Prices like `30.0` and
     `12.5` are exact binary fractions, so they hide the case above. Use prices
     with a fractional cent (`12.34`) and quantities that are not powers of two.
+  - **Break ties, or say how to break them.** A comparison against the month's
+    maximum — `WHERE revenue = best` — matches *every* row tied at that
+    maximum, so a reference can return more rows than a prompt promising "one
+    row per month" ever asked for, and a candidate that resolves the tie is
+    graded wrong. Pick one: state the tie-break in the prompt and implement it
+    in the reference (`ROW_NUMBER() OVER (PARTITION BY month ORDER BY revenue
+    DESC, product ASC) = 1`), or state in the prompt that every tied product
+    gets a row. The reference's `ORDER BY` must fully determine row order either
+    way, because `metadata.ordered` compares positionally.
+    `tasks/sql-monthly-revenue.yaml` is the worked example: its prompt names the
+    alphabetical tie-break and its `reference_sql` picks the same row
+    (DUK-117).
 - **`extract`** — workers extract a JSON object per subtask; the orchestrator
   picks the best candidate (same selection flow as `image`/`video`); the
   chosen extraction is stored as `artifact.json` and graded deterministically.

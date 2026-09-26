@@ -13,8 +13,8 @@ validation: []
 assets: []
 metadata:
   # v2: reference_sql compared a rounded revenue against an unrounded window
-  # max, so it silently dropped every month whose winning total was not
-  # exactly representable. Same answer on the fixture below.
+  # max, so it dropped every month whose winning total did not already equal
+  # its own 2-decimal rounding. Same answer on the fixture below.
   # v3: the prompt promised one row per month, but "WHERE revenue = best"
   # returned a row for every product tied at the month's maximum, so a correct
   # candidate that broke the tie was graded wrong. The prompt now states the

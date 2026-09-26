@@ -135,13 +135,17 @@ new hash.
   from answering more than the prompt asked for:
 
   - **Round both sides of a comparison, or neither.** `ROUND(SUM(x), 2)`
-    compared against a bare `MAX(SUM(x)) OVER (...)` is unequal for any value
-    that is not exactly representable in binary floating point — `3 x 12.34` is
-    `37.019999999999996` — so the reference silently drops every month whose
-    winning total is not exactly representable, and keeps answering normally
-    for the months that are. That partial answer is harder to notice than a
-    total failure, and a non-empty reference passes the check above. Aggregate
-    the rounded value: `MAX(ROUND(SUM(x), 2)) OVER (...)`.
+    compared against a bare `MAX(SUM(x)) OVER (...)` matches only while the
+    winning total already equals its own 2-decimal rounding, and stops matching
+    the moment it does not — `3 x 12.34` is `37.019999999999996`, which rounds
+    to `37.02`, so that month loses its only row. The condition is that rounding
+    gap, not binary representability: `0.1` is no more exactly representable
+    than `37.019999999999996`, but `ROUND(0.1, 2) = 0.1`, so its month still
+    answers. The reference therefore silently drops every month with a rounding
+    gap and keeps answering normally for the months without one. That partial
+    answer is harder to notice than a total failure, and a non-empty reference
+    passes the check above. Aggregate the rounded value:
+    `MAX(ROUND(SUM(x), 2)) OVER (...)`.
   - **Seed values that exercise the comparison.** Prices like `30.0` and
     `12.5` are exact binary fractions, so they hide the case above. Use prices
     with a fractional cent (`12.34`) and quantities that are not powers of two.

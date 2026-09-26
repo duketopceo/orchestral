@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import TaskSpec, load_task
-from .fileset import expected_paths
+from .fileset import expected_paths, required_content
 
 ERROR = "error"
 WARN = "warn"
@@ -65,7 +65,7 @@ VALIDATION_CHECKS: dict[str, frozenset[str]] = {
     "needle": TEXT_CHECKS,
     "image": frozenset({"non_empty", "png_signature"}),
     "video": frozenset({"non_empty", "mp4_signature"}),
-    "multi-file": frozenset({"non_empty", "zip_signature", "has_paths"}),
+    "multi-file": frozenset({"non_empty", "zip_signature", "has_paths", "has_content"}),
 }
 
 # Registry names a validator expands into other checks instead of assigning
@@ -93,6 +93,16 @@ GRADING_CONTRACT: dict[str, tuple[str, ...]] = {
 # Types whose grader never reads `validation:` — they compute a fixed check set
 # from `metadata` instead. Declaring checks on these specs is always a mistake.
 IGNORES_VALIDATION = frozenset({"code", "sql", "extract", "api"})
+
+# Types whose artifact is bytes the text checks cannot read. A `has_required`
+# token on a PNG is not a weaker gate, it is an unimplemented one — the audit
+# would be asking for a check the runner drops as `unknown_validation_check`.
+# Their topicality is the vision judge's job, so it is reported as
+# `judge_gated_media` instead of pretending `validation:` can close it.
+BYTE_ARTIFACT_TYPES = frozenset({"image", "video"})
+
+# `multi-file` checks that read a file body rather than a name and byte count.
+FILESET_BODY_CHECKS = frozenset({"has_content"})
 
 # The fixed checks those types actually produce, for the error message.
 COMPUTED_CHECKS: dict[str, str] = {
@@ -1164,9 +1174,15 @@ def check_structural_only(spec: TaskSpec, path: Path | None = None) -> list[Find
     task's subject, so they do not clear this finding. Only a topic check that
     is requested *and* backed by a non-empty declaration does — see
     `_has_topic_anchor` for why either half alone proves nothing.
+
+    `image` / `video` are out of scope here: the artifact is encoded bytes, so
+    a text token is not a looser anchor but an unimplemented one. See
+    `check_judge_gated_media`.
     A `metadata.required` the grader never reads is `ignored_metadata_required`.
     """
     if spec.type in SELF_ANCHORED_TYPES:
+        return []
+    if spec.type in BYTE_ARTIFACT_TYPES:
         return []
     if spec.type not in VALIDATION_CHECKS:
         return []
@@ -1206,6 +1222,32 @@ def check_structural_only(spec: TaskSpec, path: Path | None = None) -> list[Find
     ]
 
 
+def check_judge_gated_media(spec: TaskSpec, path: Path | None = None) -> list[Finding]:
+    """Media specs are topical only if a run actually carries a judge.
+
+    `png_signature` / `mp4_signature` prove the bytes are a file of that
+    format. Nothing in `validation:` can read pixels, so the topicality of an
+    image or video artifact rests entirely on the vision judge — and a run
+    invoked without `--judge` grades those specs on file format alone.
+    """
+    if spec.type not in BYTE_ARTIFACT_TYPES:
+        return []
+    return [
+        Finding(
+            rule="judge_gated_media",
+            severity=INFO,
+            task_id=spec.id,
+            path=str(path) if path else None,
+            detail=(
+                f"a {spec.type} artifact is encoded bytes, so no text check can anchor its "
+                f"subject. checks {sorted(effective_checks(spec))} prove format only; topicality "
+                "rests on the vision judge. Score this spec from a run invoked with --judge, or "
+                "exclude it from a headline number."
+            ),
+        )
+    ]
+
+
 def check_unanchored_fileset(spec: TaskSpec, path: Path | None = None) -> list[Finding]:
     """`multi-file` grades names and byte counts; nothing checks the contents.
 
@@ -1214,6 +1256,12 @@ def check_unanchored_fileset(spec: TaskSpec, path: Path | None = None) -> list[F
     only for existence. None of them reads a file body.
     """
     if spec.type != "multi-file":
+        return []
+    requested = set(spec.validation or [])
+    # A body-reading check only anchors the fileset once it has tokens to look
+    # for. Requested-but-unconfigured, `has_content` fails every artifact, so
+    # the gate fires but the spec is not a graded site and the finding stands.
+    if requested & FILESET_BODY_CHECKS and required_content(spec.metadata):
         return []
     # the same normalisation the runner uses, so the reported set is the set it
     # will actually look for
@@ -1224,10 +1272,15 @@ def check_unanchored_fileset(spec: TaskSpec, path: Path | None = None) -> list[F
             "readable zip passes, including one containing junk.txt. Declare a list of paths and "
             "request has_paths."
         )
-    elif "has_paths" not in set(spec.validation or ()):
+    elif "has_paths" not in requested:
         detail = (
             f"metadata.expected_paths declares {sorted(declared)} but has_paths is not requested, "
             "so the grader never looks for them. Add has_paths to validation."
+        )
+    elif requested & FILESET_BODY_CHECKS:
+        detail = (
+            "has_content is requested but metadata.required_content is empty, so every "
+            "artifact fails on an unconfigured gate rather than on its contents."
         )
     else:
         detail = (
@@ -1489,6 +1542,7 @@ PER_SPEC_RULES = (
     check_inert_metadata_required,
     check_absent_grading_contract,
     check_structural_only,
+    check_judge_gated_media,
     check_unanchored_fileset,
     check_prompt_states_answer,
     check_answer_derivable,

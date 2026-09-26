@@ -6,3 +6,10 @@ prompt: Create a landing page for a electric bike targeted at enterprise securit
   inline CSS.
 validation:
 - html
+- has_required
+- matches_pattern
+metadata:
+  required:
+  - bike
+  pattern: security|compliance|soc ?2|zero trust|encrypt|audit|identity|access control|\brisk\b|governance|pen
+    test|least privilege|threat

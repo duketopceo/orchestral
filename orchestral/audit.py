@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import TaskSpec, load_task
-from .fileset import expected_paths
+from .fileset import expected_paths, required_content
 
 ERROR = "error"
 WARN = "warn"
@@ -65,7 +65,7 @@ VALIDATION_CHECKS: dict[str, frozenset[str]] = {
     "needle": TEXT_CHECKS,
     "image": frozenset({"non_empty", "png_signature"}),
     "video": frozenset({"non_empty", "mp4_signature"}),
-    "multi-file": frozenset({"non_empty", "zip_signature", "has_paths"}),
+    "multi-file": frozenset({"non_empty", "zip_signature", "has_paths", "has_content"}),
 }
 
 # Registry names a validator expands into other checks instead of assigning
@@ -94,11 +94,21 @@ GRADING_CONTRACT: dict[str, tuple[str, ...]] = {
 # from `metadata` instead. Declaring checks on these specs is always a mistake.
 IGNORES_VALIDATION = frozenset({"code", "sql", "extract", "api"})
 
+# Types whose artifact is bytes the text checks cannot read. A `has_required`
+# token on a PNG is not a weaker gate, it is an unimplemented one — the audit
+# would be asking for a check the runner drops as `unknown_validation_check`.
+# Their topicality is the vision judge's job, so it is reported as
+# `judge_gated_media` instead of pretending `validation:` can close it.
+BYTE_ARTIFACT_TYPES = frozenset({"image", "video"})
+
+# `multi-file` checks that read a file body rather than a name and byte count.
+FILESET_BODY_CHECKS = frozenset({"has_content"})
+
 # The fixed checks those types actually produce, for the error message.
 COMPUTED_CHECKS: dict[str, str] = {
     "code": "expected_paths, quality_ok, compiles, tests_pass",
     "sql": "executed, matches_reference",
-    "extract": "json_parses, required_present, types_ok, field score vs metadata.expected",
+    "extract": "json_parses, required_present, types_ok, contract_anchored, field score vs metadata.expected",
     "api": "missing, unexpected vs metadata.calls",
 }
 
@@ -107,11 +117,19 @@ COMPUTED_CHECKS: dict[str, str] = {
 # they prove markup exists, not that the content is on-topic.
 TOPIC_ANCHORS = frozenset({"has_required", "matches_pattern"})
 
+# The `unittest` classes a suite's test methods can be collected from. Matched
+# on the last dotted segment, so `unittest.case.TestCase` and
+# `unittest.async_case.IsolatedAsyncioTestCase` resolve alongside the direct
+# names — all three of those are documented unittest import forms.
+_TEST_CASE_BASES = frozenset({"TestCase", "IsolatedAsyncioTestCase"})
+
 # Types that grade against their own metadata anchor, so "no topic anchor in
-# `validation:`" is not a finding for them.
-SELF_ANCHORED_TYPES = frozenset(
-    {"code", "sql", "extract", "api", "multi-file", "constraint", "needle"}
-)
+# `validation:`" is not a finding for them. `constraint` and `needle` are *not*
+# in this set: the runner uses them only as labelling flags and grades them
+# through the same `_validate`, so a `validation: [html]` `constraint` spec gets
+# `html_parses` and `non_empty` and nothing topical. Keying this on the type name
+# was the same hole the anchor check just closed for `metadata.required`.
+SELF_ANCHORED_TYPES = frozenset({"code", "sql", "extract", "api", "multi-file"})
 
 # Textbook problems with heavy pretraining coverage. Matching one is a
 # contamination risk, not proof of contamination — the signal is that the
@@ -295,15 +313,113 @@ def effective_checks(spec: TaskSpec) -> set[str]:
     return requested
 
 
+# Shapes the grader can iterate. YAML gives a spec author a string, an int, a
+# float, a bool, a date, a list or a mapping, and the grader writes `for t in
+# required` — so a number, a bool or a date is a declaration it cannot read.
+_DECLARATION_SHAPES = (str, list, tuple, dict, set, frozenset)
+
+
+def _required_tokens(value: Any) -> list[str]:
+    """The tokens `runner.py` will compare the artifact against.
+
+    The runner writes `for t in required` and then `str(t).lower()`, so the shape
+    of the declaration decides what is compared, not just its content:
+
+    - a list or tuple contributes its items;
+    - a mapping contributes its **keys** — `required: {"kite": true}` really is
+      enforced, so treating it as an absent declaration was factually wrong;
+    - a bare string contributes its **characters**, so `required: kite` asks only
+      that the artifact contain `k`, `i`, `t` and `e`. A token of one character
+      is satisfied by nearly any artifact and therefore declares nothing, which
+      is also why `[""]`, `[0]` and `["a"]` declare nothing.
+
+    Modelling the iteration rather than the YAML is the point: the audit's list
+    has to be the runner's list, or the two disagree about what is anchored.
+
+    A value the grader cannot iterate at all is a *malformed* declaration, not an
+    absent one, and it is reported as such rather than raised. `required: 5`
+    raised `TypeError` out of here and took the gate's answer for every other
+    spec with it, and this was the only metadata read in the file without a type
+    guard — the shape of the bug was an omission, so the guard is explicit and
+    every other reader is covered by `TestHostileMetadataNeverRaises`.
+    """
+    if not value:
+        return []
+    if not isinstance(value, _DECLARATION_SHAPES):
+        return []
+    return [token for item in value for token in _scalar_token(item)]
+
+
+def _malformed_declaration(spec: TaskSpec) -> str | None:
+    """Name a requested topic check whose declaration the grader cannot read.
+
+    `runner.py` writes `for t in required`, so a `required` that is a number, a
+    bool or a date is not a weak declaration — it is one the grader cannot
+    iterate at all, and it raises at grading time. `metadata.pattern` is compiled
+    with `str()`, so any value is readable there and is never malformed.
+    """
+    if "has_required" not in effective_checks(spec):
+        return None
+    required = spec.metadata.get("required")
+    if required and not isinstance(required, _DECLARATION_SHAPES):
+        return (
+            f"metadata.required is a {type(required).__name__}, and the grader iterates it, so it "
+            "raises on this spec rather than comparing anything"
+        )
+    return None
+
+
+def _scalar_token(value: Any) -> list[str]:
+    """One declared token, or nothing when the value is not a token at all.
+
+    The token is `str(value)` unstripped, because that is what the runner
+    compares: `str(t).lower() in lowered` and nothing else. Stripping first made
+    the audit's list disagree with the runner's in both directions — it treated
+    `" kite "` as `kite` (so an artifact containing the bare word scored 0 while
+    the audit called the spec anchored) and it treated `"  "` as a token (which
+    ordinary indented HTML satisfies). A token that is entirely whitespace is
+    rejected outright instead, which is stricter than the runner in the safe
+    direction and keeps the two lists identical everywhere else.
+    """
+    if isinstance(value, (str, int, float, bool)):
+        text = str(value)
+        return [text] if len(text) > 1 and text.strip() else []
+    # A nested container is stringified by the runner (`str({'kite': True})`), so
+    # it compares the artifact against a repr. That is a check nothing can pass,
+    # which anchors no topic.
+    return []
+
+
+def _pattern_declared(value: Any) -> bool:
+    """Is `metadata.pattern` something the runner will compile?
+
+    `re.search(str(pattern), ...)` takes the whole value, so a pattern is never
+    iterated and a bare string is a perfectly good one. Whether the regex is
+    *strong* enough to anchor a topic is a separate question from whether one was
+    declared, and only the second one is decided here.
+    """
+    return bool(str(value).strip()) if value else False
+
+
 def _has_topic_anchor(spec: TaskSpec) -> bool:
-    if effective_checks(spec) & TOPIC_ANCHORS:
+    """Will the grader actually compare the artifact against the subject?
+
+    The runner reads `metadata.required` in exactly one place, inside
+    `if "has_required" in requested`, and `metadata.pattern` inside
+    `if "matches_pattern" in requested`. So a declaration anchors the subject
+    only when that check is requested *and* the declaration names something.
+
+    Either half alone proves nothing, and both halves alone have been the bug:
+    keying the exemption on the task *type* let one word of YAML silence the
+    finding, and letting `has_required` clear it on its own meant
+    `validation: [html, has_required]` with no `required` silenced it through
+    the other key — a configuration the runner itself reports as an error.
+    """
+    checks = effective_checks(spec)
+    if "has_required" in checks and _required_tokens(spec.metadata.get("required")):
         return True
-    # `metadata.required` is read in exactly one place in the runner: inside
-    # `if "has_required" in requested`. So the declaration is an anchor only when
-    # `has_required` is actually requested — not for a type. Keying it on the
-    # type let one line of YAML silence the finding while the grader read
-    # nothing, on 100 of the 104 shipped findings.
-    return "has_required" in effective_checks(spec) and bool(spec.metadata.get("required"))
+    return "matches_pattern" in checks and _pattern_declared(spec.metadata.get("pattern"))
+
 
 
 def _scalars(value: Any) -> list[str]:
@@ -343,7 +459,13 @@ def _prompt_mentions_call(prompt: str, call: Any) -> bool:
     path = str(call.get("path", "")).strip()
     if not path:
         return False
-    pattern = re.compile(rf"\b{method}(?:s|es)?\b\W{{0,3}}{re.escape(path)}\b", re.I)
+    # `method` is spec-controlled and the same line already escapes `path`.
+    # Interpolating it raw makes the gate itself the denial of service: a method
+    # of `(A+)+B` is a nested quantifier, and the backtracking cost doubles every
+    # two characters, so a 30-character prompt is measured in minutes and a
+    # 50-character one in hours. No audit finding is worth that, and the word
+    # boundary already restricts a real method name to something like `GET`.
+    pattern = re.compile(rf"\b{re.escape(method)}(?:s|es)?\b\W{{0,3}}{re.escape(path)}\b", re.I)
     return pattern.search(prompt) is not None
 
 
@@ -383,6 +505,39 @@ def check_validation_names(spec: TaskSpec, path: Path | None = None) -> list[Fin
             detail=(
                 f"validation {unknown} is not implemented for type '{spec.type}' and is "
                 f"dropped without comment. Implemented: {sorted(known)}."
+            ),
+        )
+    ]
+
+
+def check_inert_metadata_required(spec: TaskSpec, path: Path | None = None) -> list[Finding]:
+    """Flag a `metadata.required` declaration no grader will read.
+
+    `has_required` is the only consumer, and only on the text-producing types,
+    so the key grades nothing unless that check is requested. A declaration
+    that nothing reads is a phantom gate: it must be an error, not a warning,
+    because the artifact is graded on structure alone while the spec claims a
+    subject.
+    """
+    declared = spec.metadata.get("required")
+    if not declared or "has_required" in effective_checks(spec):
+        return []
+    shown = sorted(declared) if isinstance(declared, (list, tuple, set)) else [declared]
+    if spec.type in IGNORES_VALIDATION:
+        fix = f"anchor it with {' or '.join(GRADING_CONTRACT[spec.type])} instead"
+        reads = f"type '{spec.type}' never reads it; it computes {COMPUTED_CHECKS[spec.type]}"
+    else:
+        fix = "add has_required to validation:, or remove the key"
+        reads = f"has_required is not requested, so the {spec.type} grader never reads it"
+    return [
+        Finding(
+            rule="ignored_metadata_required",
+            severity=ERROR,
+            task_id=spec.id,
+            path=str(path) if path else None,
+            detail=(
+                f"metadata.required is declared as {shown} but {reads}. The declaration grades "
+                f"nothing: {fix}."
             ),
         )
     ]
@@ -439,23 +594,86 @@ _FOLDABLE_CALLS: dict[str, Callable[..., Any]] = {
     "chr": chr,
     "ord": ord,
 }
-_FOLD_FAILURE = (ValueError, TypeError, ZeroDivisionError, OverflowError, IndexError, KeyError, AttributeError)
+# A fold has to terminate. `2**2**2**2**2**2` doubles in bit length per level
+# and `'ab' * 10**9 * 10**9` grows a string, so an eager operator turns one
+# hostile suite into a wedged gate — `harness.py audit` answers for the whole
+# tree, so that is a total outage, not one bad spec. `ast.literal_eval` refused
+# both instantly; these caps are what put the capability back on a leash.
+# Refusing to fold is the conservative direction: the assertion is then treated
+# as possibly reading the artifact, which is what a real assertion looks like.
+_MAX_FOLD_BITS = 4096
+_MAX_FOLD_LEN = 4096
+_MAX_FOLD_DEPTH = 200
 
 
-def _const(node: ast.AST) -> tuple[bool, Any]:
+
+def _too_large(value: Any) -> bool:
+    """Is this folded value too big to have come from cheap arithmetic?"""
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, int):
+        return value.bit_length() > _MAX_FOLD_BITS
+    if isinstance(value, (str, bytes, list, tuple, set, frozenset, dict)):
+        return len(value) > _MAX_FOLD_LEN
+    return False
+
+
+def _blows_up(op: type, left: Any, right: Any) -> bool:
+    """Would evaluating this operator do unbounded work on these operands?
+
+    Two shapes grow far faster than their operands suggest: `a ** b`, whose
+    result carries about `b * bit_length(a)` bits, and `seq * n`, whose result
+    is `len(seq) * n` long. Both are predictable from the operands, so both are
+    refused before the work happens rather than after. Every other operator is
+    bounded by the size of its operands, which `_too_large` already checks.
+    """
+    if op is ast.Pow:
+        exponent = abs(right) if isinstance(right, int) and not isinstance(right, bool) else 0
+        base_bits = left.bit_length() if isinstance(left, int) and not isinstance(left, bool) else 1
+        return exponent * base_bits > _MAX_FOLD_BITS
+    if op is ast.Mult:
+        return any(
+            _is_repeat_too_long(sequence, count)
+            for sequence, count in ((left, right), (right, left))
+        )
+    return False
+
+
+def _is_repeat_too_long(sequence: Any, count: Any) -> bool:
+    """Would `sequence * count` build something past the length cap?"""
+    if not isinstance(sequence, (str, bytes, list, tuple)):
+        return False
+    if not isinstance(count, int) or isinstance(count, bool) or count <= 0:
+        return False
+    return len(sequence) * count > _MAX_FOLD_LEN
+
+
+_FOLD_FAILURE = (
+    ValueError, TypeError, ZeroDivisionError, OverflowError, IndexError, KeyError,
+    AttributeError, RecursionError, MemoryError,
+)
+
+
+def _const(node: ast.AST, depth: int = 0) -> tuple[bool, Any]:
     """Fold `node` to a constant, or report that it is not provable.
 
     Returns `(True, value)` only when the node provably reads nothing from the
     artifact. Anything that touches a name, an attribute, a subscript of a
     non-literal, or an unknown call is left unfolded, so a real assertion is
     never mistaken for a constant.
+
+    A `Compare` folds to the boolean it evaluates to, including `False`. That
+    is what lets `assert not (1 == 2)` be caught: the inner comparison is a
+    constant, so the `not` over it is too.
     """
+    if depth > _MAX_FOLD_DEPTH:
+        return False, None
     if isinstance(node, ast.Constant):
         return True, node.value
     if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
         items: list[Any] = []
         for element in node.elts:
-            ok, value = _const(element)
+            ok, value = _const(element, depth + 1)
             if not ok:
                 return False, None
             items.append(value)
@@ -472,8 +690,8 @@ def _const(node: ast.AST) -> tuple[bool, Any]:
         for key_node, value_node in zip(node.keys, node.values, strict=True):
             if key_node is None:  # {**other} reads a value
                 return False, None
-            key_ok, key = _const(key_node)
-            value_ok, value = _const(value_node)
+            key_ok, key = _const(key_node, depth + 1)
+            value_ok, value = _const(value_node, depth + 1)
             if not (key_ok and value_ok):
                 return False, None
             pairs.append((key, value))
@@ -482,56 +700,73 @@ def _const(node: ast.AST) -> tuple[bool, Any]:
         except TypeError:
             return False, None
     if isinstance(node, ast.UnaryOp) and type(node.op) in _UNARY_OPS:
-        ok, operand = _const(node.operand)
-        if not ok:
+        ok, operand = _const(node.operand, depth + 1)
+        if not ok or _too_large(operand):
             return False, None
         try:
-            return True, _UNARY_OPS[type(node.op)](operand)
+            folded = _UNARY_OPS[type(node.op)](operand)
         except _FOLD_FAILURE:
             return False, None
+        return (False, None) if _too_large(folded) else (True, folded)
     if isinstance(node, ast.BinOp) and type(node.op) in _BINARY_OPS:
-        left_ok, left = _const(node.left)
-        right_ok, right = _const(node.right)
+        left_ok, left = _const(node.left, depth + 1)
+        right_ok, right = _const(node.right, depth + 1)
         if not (left_ok and right_ok):
             return False, None
+        if _too_large(left) or _too_large(right) or _blows_up(type(node.op), left, right):
+            return False, None
         try:
-            return True, _BINARY_OPS[type(node.op)](left, right)
+            folded = _BINARY_OPS[type(node.op)](left, right)
         except _FOLD_FAILURE:
             return False, None
+        return (False, None) if _too_large(folded) else (True, folded)
     if isinstance(node, ast.BoolOp):
-        # short-circuit, so `False and f(x)` folds even though f is unknown
-        results = []
+        # `and`/`or` short-circuit, so `False and f(x)` folds even though f is
+        # unknown — a decisive operand settles the result on its own.
+        is_and = isinstance(node.op, ast.And)
+        last: Any = None
+        unknown = False
         for value_node in node.values:
-            ok, value = _const(value_node)
+            ok, value = _const(value_node, depth + 1)
             if not ok:
-                return False, None
-            results.append(value)
-        if isinstance(node.op, ast.And):
-            return True, all(results)
-        return True, any(results)
+                unknown = True
+                continue
+            if is_and and not value:
+                return True, False
+            if not is_and and value:
+                return True, True
+            last = value
+        if unknown:
+            return False, None
+        return True, bool(last)
     if isinstance(node, ast.Compare):
-        left_ok, left = _const(node.left)
+        left_ok, left = _const(node.left, depth + 1)
         if not left_ok:
             return False, None
         for op, comparator in zip(node.ops, node.comparators, strict=True):
-            right_ok, right = _const(comparator)
+            right_ok, right = _const(comparator, depth + 1)
             if not right_ok or type(op) not in _COMPARE_OPS:
                 return False, None
             try:
-                outcome = _COMPARE_OPS[type(op)](left, right)
+                step = _COMPARE_OPS[type(op)](left, right)
             except _FOLD_FAILURE:
                 return False, None
-            if not outcome:
-                return False, None  # provably False: a different defect, not this one
+            if not step:
+                # A provably false comparison is still a constant. It just does
+                # not contribute a truthy value, so the chain ends here.
+                return True, False
             left = right
         return True, True
     if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
         fold = _FOLDABLE_CALLS.get(node.func.id)
+        # `node.args` is empty whenever every argument is a keyword, so the
+        # keyword test has to be here too: `self.assertEqual(first=f(x),
+        # second=y)` has no positional argument and is not an empty call.
         if fold is None or node.keywords:
             return False, None
         args: list[Any] = []
         for arg in node.args:
-            ok, value = _const(arg)
+            ok, value = _const(arg, depth + 1)
             if not ok:
                 return False, None
             args.append(value)
@@ -542,110 +777,251 @@ def _const(node: ast.AST) -> tuple[bool, Any]:
     return False, None
 
 
-def _assertion_reads_nothing(node: ast.AST) -> bool:
-    """Is this assertion provably independent of the artifact?
+def _assertion_constant(node: ast.AST) -> tuple[bool, bool | None]:
+    """`(is a constant, and if so the value it takes for any artifact)`.
+
+    A constant is `True` (passes for any artifact) or `False` (fails for every
+    artifact); the polarity is `None` when the assertion method decides it rather
+    than the arguments.
 
     Method-agnostic on purpose. Enumerating `assert*` names was the first
-    version's mistake: it covered four of the 41, and the ones it missed
-    (`assertNotEqual(1, 2)`, `assertIn(1, [1, 2])`) audited clean while
-    scoring 1.0 against a stub. The question is not *which* assertion it is but
-    whether anything in it can read the artifact — so a call whose every
-    argument folds is a constant assertion whatever its name.
+    version's mistake: it covered four of the methods `unittest` provides, and
+    the ones it missed (`assertNotEqual(1, 2)`, `assertIn(1, [1, 2])`) audited
+    clean while scoring 1.0 against a stub. The question is not *which*
+    assertion it is but whether anything in it can read the artifact — so an
+    assertion every expression of which folds is a constant, whatever it is
+    called. Staying method-agnostic is why an `assert*` call reports no polarity:
+    whether it passes or fails follows from the method, not from the arguments.
     """
     if isinstance(node, ast.Assert):
-        ok, _ = _const(node.test)
-        return ok
+        ok, value = _const(node.test)
+        return (True, bool(value)) if ok else (False, None)
     if isinstance(node, ast.Call):
         func = node.func
         if not (isinstance(func, ast.Attribute) and func.attr.startswith("assert")):
-            return False
-        if not node.args:
-            return True  # self.assertTrue() with no argument cannot read anything
-        return all(_const(arg)[0] for arg in node.args)
-    return False
+            return False, None
+        # Both argument kinds count. `all()` over an empty `node.args` is
+        # vacuously True, so checking only the positional arguments reported
+        # `self.assertEqual(first=f(x), second=y)` as a constant.
+        values = [*node.args, *(keyword.value for keyword in node.keywords)]
+        if not values:
+            return True, True  # a bare self.assertTrue() cannot read anything
+        if all(_const(value)[0] for value in values):
+            return True, None
+    return False, None
 
 
-def _unittest_names(tree: ast.Module) -> dict[str, str]:
-    """Map a local name to its `unittest` member, following imports.
+def _dotted(node: ast.expr) -> str | None:
+    """`unittest.case.TestCase` as a dotted string, or None if not plain names."""
+    parts: list[str] = []
+    while isinstance(node, ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+    if not isinstance(node, ast.Name):
+        return None
+    parts.append(node.id)
+    return ".".join(reversed(parts))
+
+
+def _unittest_names(tree: ast.Module) -> tuple[dict[str, str], set[str]]:
+    """`(local name -> its `unittest` member, every locally bound import name)`.
 
     Matching a base by the bare name `TestCase` rejected
     `from unittest import TestCase as TC`, which is the common idiom and a
     suite that does discriminate. Resolving through the import is the only
     way to tell `unittest.TestCase` from a same-named local class.
+
+    The second set is every name *any* import binds, `unittest` or not. Without
+    it, `from mypkg import unittest` is invisible here, so the name looks unbound
+    and the resolver falls back to treating it as `unittest` itself — outside the
+    package guard rather than through it.
     """
     names: dict[str, str] = {}
+    bound: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
-                if alias.name == "unittest":
-                    names[alias.asname or alias.name] = "unittest"
-        elif isinstance(node, ast.ImportFrom) and node.module == "unittest":
+                root = alias.name.split(".")[0]
+                bound.add(alias.asname or root)
+                if alias.name == "unittest" or alias.name.startswith("unittest."):
+                    # `import unittest.case` binds the *root* name `unittest`, so
+                    # the root has to resolve as well as the full dotted form.
+                    names.setdefault(root, root)
+                    names[alias.asname or alias.name] = alias.name
+        elif isinstance(node, ast.ImportFrom) and node.module:
             for alias in node.names:
-                names[alias.asname or alias.name] = f"unittest.{alias.name}"
-    return names
+                bound.add(alias.asname or alias.name)
+            if node.module == "unittest" or node.module.startswith("unittest."):
+                for alias in node.names:
+                    names[alias.asname or alias.name] = f"{node.module}.{alias.name}"
+    return names, bound
 
 
-def _base_target(base: ast.expr, imports: dict[str, str]) -> str | None:
-    """Resolve a base-class reference to a dotted `unittest` name, or None."""
-    if isinstance(base, ast.Name):
-        return imports.get(base.id)
-    if isinstance(base, ast.Attribute) and isinstance(base.value, ast.Name):
-        head = imports.get(base.value.id, base.value.id)
-        return f"{head}.{base.attr}" if head == "unittest" else None
-    return None
+def _base_target(base: ast.expr, imports: dict[str, str], bound: set[str]) -> str | None:
+    """Resolve a base-class reference to a dotted `unittest` name, or None.
+
+    The test is on the resolved *package*, not the first segment: `from
+    unittest import case` binds `case` to `unittest.case`, and comparing
+    `imports["case"] == "unittest"` reported that documented idiom as a suite
+    that passes for any artifact. It did not.
+
+    A name no import binds falls back to itself, which is what makes a bare
+    `unittest.TestCase` resolve in a suite that never imports it. A name some
+    *other* import binds does not: it is not `unittest`, whatever it is called.
+    """
+    dotted = _dotted(base)
+    if dotted is None:
+        return None
+    head, _, tail = dotted.partition(".")
+    if head in bound and head not in imports:
+        return None
+    resolved = imports.get(head, head)
+    if resolved != "unittest" and not resolved.startswith("unittest."):
+        return None
+    return f"{resolved}.{tail}" if tail else resolved
 
 
-def _is_test_case(node: ast.ClassDef, locals_: dict[str, ast.ClassDef], imports: dict[str, str],
-                  seen: frozenset[str] = frozenset()) -> str:
+def _is_test_case(node: ast.ClassDef, locals_: dict[str, ast.ClassDef],
+                  imports: dict[str, str], bound: set[str]) -> str:
     """Resolve this class to `unittest.TestCase` or `IsolatedAsyncioTestCase`.
 
     Returns "" when it is neither, "sync" for plain `TestCase`, and "async" for
-    `IsolatedAsyncioTestCase`. A cyclic base list cannot be resolved.
+    `IsolatedAsyncioTestCase`. A cyclic base list cannot be resolved. The
+    submodule form is matched on the last segment, so `unittest.case.TestCase`
+    and `unittest.async_case.IsolatedAsyncioTestCase` resolve the same way the
+    direct names do.
+
+    The base chain is walked with an explicit worklist rather than by
+    recursion. Chain *length* is not bounded the way tree depth is: each class in
+    a 1000-long `class C1(C0): pass` chain is a separate top-level statement, so
+    the parser accepts it and the recursion overflowed the stack, taking the
+    gate's answer for every other spec with it. A depth cap would trade that
+    crash for a false positive on a chain that really does end at a `TestCase`,
+    so the chain is walked to its end and the answer is exact.
     """
-    if node.name in seen:
-        return ""
-    for base in node.bases:
-        target = _base_target(base, imports)
-        if target in ("unittest.TestCase", "unittest.IsolatedAsyncioTestCase"):
-            return "async" if target.endswith("IsolatedAsyncioTestCase") else "sync"
-        # a base may be another class defined in the same suite
-        name = base.id if isinstance(base, ast.Name) else getattr(base, "attr", "")
-        local = locals_.get(name)
-        if local is not None:
-            resolved = _is_test_case(local, locals_, imports, seen | {node.name})
-            if resolved:
-                return resolved
+    pending = [node]
+    seen: set[str] = set()
+    while pending:
+        current = pending.pop()
+        if current.name in seen:
+            continue
+        seen.add(current.name)
+        for base in current.bases:
+            target = _base_target(base, imports, bound)
+            if target is not None:
+                leaf = target.rsplit(".", 1)[-1]
+                if leaf in _TEST_CASE_BASES:
+                    return "async" if leaf == "IsolatedAsyncioTestCase" else "sync"
+            # a base may be another class defined in the same suite
+            dotted = _dotted(base)
+            local = locals_.get(dotted) if dotted else None
+            if local is not None:
+                pending.append(local)
     return ""
+
+
+def _is_effect_free(body: list[ast.stmt]) -> bool:
+    """Does this method body provably do nothing when it runs?
+
+    `pass`, a docstring, `...`, a `global`/`nonlocal` declaration and a bare
+    annotation are the statements with no effect. This is what separates a suite
+    of inert tests from one that assembles its assertion at runtime: both have no
+    assertion the audit can *see*, but only the first cannot gate anything.
+    """
+    for statement in body:
+        if isinstance(statement, ast.Pass):
+            continue
+        if isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Constant):
+            continue  # a docstring, or a bare literal
+        if isinstance(statement, (ast.Global, ast.Nonlocal)):
+            continue  # a declaration binds nothing and evaluates nothing
+        if isinstance(statement, ast.AnnAssign) and statement.value is None:
+            continue  # a bare annotation: no value, no call, no effect
+        return False
+    return True
+
+
+# The suite could not be read at all. A `RecursionError` from a deeply nested
+# constant, or a `MemoryError` from a very long one, is a resource limit on the
+# audit, not a defect in the spec — but it still leaves the gate unable to say
+# whether the suite gates anything, so it is reported like any other unanalysable
+# suite rather than raised.
+_UNREADABLE_SUITE = (
+    "metadata.tests is too deeply nested for the audit to read, so it cannot confirm the suite gates "
+    "anything. Keep assertions shallow and reference the solution's output in a local first."
+)
+# No assertion the audit can find that unittest will actually run.
+_NO_COLLECTABLE_ASSERTION = (
+    "metadata.tests has no assertion inside a collectable test* method of a "
+    "unittest.TestCase, so nothing in it can fail. The suite passes for any artifact."
+)
+# Assertions are there, and every one of them is the same for any artifact.
+#
+# A constant folds to True (passes for any artifact) or to False (fails for every
+# artifact). Only `assert <expr>` exposes which, so there are two wordings and the
+# second is used whenever the polarity is not knowable without enumerating the
+# `assert*` methods — enumerating them is what the method-agnostic check exists
+# to avoid. The neutral wording is true for both polarities: a suite whose
+# outcome never varies with the artifact is not testing the artifact, whichever
+# way it varies.
+_CONSTANT_ASSERTIONS_PASSES = (
+    "every assertion in metadata.tests is a constant: it evaluates the same for any artifact, so the "
+    "suite passes for any artifact. Assert against something the solution produces."
+)
+_CONSTANT_ASSERTIONS_FAILS = (
+    "every assertion in metadata.tests is a constant and at least one of them fails for every "
+    "artifact, so the suite scores 0 whatever the solution produces. Assert against something the "
+    "solution produces."
+)
+_CONSTANT_ASSERTIONS_NEUTRAL = (
+    "every assertion in metadata.tests is a constant: the suite's outcome does not depend on what the "
+    "solution produced, so it cannot separate one artifact from another. Assert against something the "
+    "solution produces."
+)
+
 
 
 def _suite_gate_reason(tests_source: str) -> str | None:
     """Why the suite cannot gate anything, or None when it can.
 
-    Three properties are decidable from the source alone, and only these:
+    Four properties are decidable from the source alone, and only these:
 
     - the suite parses — code that cannot be imported cannot gate anything;
     - it carries an assertion `unittest` will actually collect: a `test*` method
       of a `TestCase` subclass, resolved through the module's imports. A
       coroutine test on a plain `TestCase` does not count, because unittest
       never awaits it and reports the suite as passing anyway;
-    - that assertion reads something, so it can fail on a wrong artifact.
+    - that assertion is not a constant, so it can discriminate between artifacts;
+    - a test body that is inert (`pass`, a docstring) is not a gate.
+
 
     **Not provable by a static read.** An assertion arranged by the test itself
     — `self.flag = True` then `self.assertTrue(self.flag)` — provably passes
     for any artifact. Detecting that needs execution: run the suite against a
     stub and require it to fail. This audit executes nothing.
+
+    A test body that does something but shows no assertion to the audit is not
+    reported: an assertion assembled at runtime is a real gate, and calling it
+    a constant would be false in both halves.
+
     """
     try:
         tree = ast.parse(tests_source)
     except SyntaxError:
         return "metadata.tests does not parse, so it cannot be a suite the runner can import."
-    imports = _unittest_names(tree)
+    except (RecursionError, MemoryError):
+        return _UNREADABLE_SUITE
+    imports, bound = _unittest_names(tree)
     locals_ = {n.name: n for n in ast.walk(tree) if isinstance(n, ast.ClassDef)}
     collectable = False
+    saw_assertion = False
+    did_something = False
+    polarities: list[bool | None] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.ClassDef):
             continue
-        kind = _is_test_case(node, locals_, imports)
+        kind = _is_test_case(node, locals_, imports, bound)
+
         if not kind:
             continue
         for member in node.body:
@@ -657,23 +1033,36 @@ def _suite_gate_reason(tests_source: str) -> str | None:
             if isinstance(member, ast.AsyncFunctionDef) and kind != "async":
                 continue
             collectable = True
+            if not _is_effect_free(member.body):
+                did_something = True
+
             for inner in ast.walk(member):
                 is_assertion = isinstance(inner, ast.Assert) or (
                     isinstance(inner, ast.Call)
                     and isinstance(inner.func, ast.Attribute)
                     and inner.func.attr.startswith("assert")
                 )
-                if is_assertion and not _assertion_reads_nothing(inner):
+                if not is_assertion:
+                    continue
+                saw_assertion = True
+                is_constant, polarity = _assertion_constant(inner)
+                if not is_constant:
                     return None
-    if not collectable:
-        return (
-            "metadata.tests has no assertion inside a collectable test* method of a "
-            "unittest.TestCase, so nothing in it can fail. The suite passes for any artifact."
-        )
-    return (
-        "every assertion in metadata.tests reads no value, so none of them can fail on a wrong "
-        "artifact. Assert against something the solution produces."
-    )
+                polarities.append(polarity)
+    if not collectable or (not saw_assertion and not did_something):
+        return _NO_COLLECTABLE_ASSERTION
+    if not saw_assertion:
+        return None
+    # Every assertion is a constant. Which message depends on the one thing the
+    # folder can know: a constant that folds to False fails for *every* artifact,
+    # so saying the suite "passes for any artifact" there would be the same false
+    # claim in the other direction.
+    if False in polarities:
+        return _CONSTANT_ASSERTIONS_FAILS
+    if all(polarity is True for polarity in polarities):
+        return _CONSTANT_ASSERTIONS_PASSES
+    return _CONSTANT_ASSERTIONS_NEUTRAL
+
 
 
 def _has_required_field(metadata: dict[str, Any]) -> bool:
@@ -744,6 +1133,10 @@ def check_absent_grading_contract(spec: TaskSpec, path: Path | None = None) -> l
 
 def _anchor_advice(spec: TaskSpec) -> str:
     """How to anchor this spec — only types whose grader reads text can be."""
+    checks = effective_checks(spec)
+    # What advice is possible keys on what the *type* can grade, not on what
+    # this spec happens to request: `html` implements `has_required` whether or
+    # not this particular spec asked for it.
     if VALIDATION_CHECKS.get(spec.type, frozenset()) & TOPIC_ANCHORS:
         advice = "Add has_required or matches_pattern to anchor the subject."
     else:
@@ -752,14 +1145,32 @@ def _anchor_advice(spec: TaskSpec) -> str:
             "compliant way to anchor the subject from the spec: the topic checks are text-only and "
             "this type never grades text. Add a content check to the runner, or grade the artifact "
             "as a text-producing type."
+
         )
-    # the grader reads metadata.required only inside `if "has_required" in
-    # requested`, so a declaration without that check anchors nothing
-    if spec.metadata.get("required") and "has_required" not in effective_checks(spec):
+    if _required_tokens(spec.metadata.get("required")) and "has_required" not in checks:
         advice += (
             " metadata.required is declared but has_required is not requested, and the grader reads "
             "metadata.required only inside the has_required check, so it anchors nothing here."
         )
+    if checks & TOPIC_ANCHORS and not _has_topic_anchor(spec):
+        required = spec.metadata.get("required")
+        if required and not isinstance(required, _DECLARATION_SHAPES):
+            # A declaration the grader cannot iterate is a different defect from
+            # one that names too little, and the runner raises on it at grading
+            # time. Telling the author to declare a list of words would send them
+            # to fix the wrong thing — the F6 defect, reached through the shape.
+            advice += (
+                f" metadata.required is a {type(required).__name__}, and the grader iterates it, so it "
+                "raises on this spec rather than comparing anything. Declare it as a list of words."
+            )
+        else:
+            advice += (
+                " A check is requested but its declaration names nothing the grader can compare against: "
+                "metadata.required is iterated, so a bare string is compared character by character and a "
+                "one-character token is satisfied by almost any artifact, and metadata.pattern is compiled "
+                "as written. Declare a list of words, or a pattern specific enough to exclude a generic "
+                "artifact."
+            )
     return advice
 
 
@@ -768,14 +1179,42 @@ def check_structural_only(spec: TaskSpec, path: Path | None = None) -> list[Find
 
     Element checks (`has_title`, `has_cta`, `has_form`, `has_viewport`,
     `no_placeholder`) prove markup exists, not that the artifact is about the
-    task's subject, so they do not clear this finding. Only `has_required`,
-    `matches_pattern`, or — for the text-producing types only — declared
-    `metadata.required` do.
+    task's subject, so they do not clear this finding. Only a topic check that
+    is requested *and* backed by a non-empty declaration does — see
+    `_has_topic_anchor` for why either half alone proves nothing.
+
+    `image` / `video` are out of scope here: the artifact is encoded bytes, so
+    a text token is not a looser anchor but an unimplemented one. See
+    `check_judge_gated_media`.
+    A `metadata.required` the grader never reads is `ignored_metadata_required`.
+
     """
     if spec.type in SELF_ANCHORED_TYPES:
         return []
+    if spec.type in BYTE_ARTIFACT_TYPES:
+        return []
     if spec.type not in VALIDATION_CHECKS:
         return []
+    # A declaration the grader cannot iterate is not an unanchored spec, it is a
+    # spec the grader will raise on. That is an error under this file's own
+    # policy — "errors mean a requested gate cannot fire" — and it was a warning
+    # because I argued the runner's abort is louder than any audit line, which is
+    # an argument about noise rather than about the criterion `--strict` is wired
+    # to. The message is precise, so the noise argument does not apply.
+    malformed = _malformed_declaration(spec)
+    if malformed is not None:
+        return [
+            Finding(
+                rule="unreadable_spec_fields",
+                severity=ERROR,
+                task_id=spec.id,
+                path=str(path) if path else None,
+                detail=(
+                    f"{malformed}, so the grader raises on this spec instead of grading it. "
+                    f"{_anchor_advice(spec)}"
+                ),
+            )
+        ]
     if _has_topic_anchor(spec):
         return []
     return [
@@ -792,29 +1231,75 @@ def check_structural_only(spec: TaskSpec, path: Path | None = None) -> list[Find
     ]
 
 
+def check_judge_gated_media(spec: TaskSpec, path: Path | None = None) -> list[Finding]:
+    """Media specs are topical only if a run actually carries a judge.
+
+    `png_signature` / `mp4_signature` prove the bytes are a file of that
+    format. Nothing in `validation:` can read pixels, so the topicality of an
+    image or video artifact rests entirely on the vision judge — and a run
+    invoked without `--judge` grades those specs on file format alone.
+    """
+    if spec.type not in BYTE_ARTIFACT_TYPES:
+        return []
+    return [
+        Finding(
+            rule="judge_gated_media",
+            severity=INFO,
+            task_id=spec.id,
+            path=str(path) if path else None,
+            detail=(
+                f"a {spec.type} artifact is encoded bytes, so no text check can anchor its "
+                f"subject. checks {sorted(effective_checks(spec))} prove format only; topicality "
+                "rests on the vision judge. Score this spec from a run invoked with --judge, or "
+                "exclude it from a headline number."
+            ),
+        )
+    ]
+
+
 def check_unanchored_fileset(spec: TaskSpec, path: Path | None = None) -> list[Finding]:
     """`multi-file` grades names and byte counts; nothing checks the contents.
 
-    Every `multi-file` spec lands here in one of three states: no declared
-    paths, declared paths the grader never looks for, or declared paths checked
-    only for existence. None of them reads a file body.
+    A fileset is anchored only when the grader reads a file *body*: `has_paths`
+    plus `has_content` with tokens in `metadata.required_content`. Every other
+    `multi-file` spec lands in one of four states — no usable declared paths,
+    declared paths the grader never looks for, declared paths checked only for
+    existence, or a body check with nothing to look for.
     """
     if spec.type != "multi-file":
         return []
+    requested = set(spec.validation or [])
+    # A body-reading check only anchors the fileset once it has tokens to look
+    # for. Requested-but-unconfigured, `has_content` fails every artifact, so
+    # the gate fires but the spec is not a graded site and the finding stands.
+    if requested & FILESET_BODY_CHECKS and required_content(spec.metadata):
+        return []
+
     # the same normalisation the runner uses, so the reported set is the set it
     # will actually look for
     declared = expected_paths(spec.metadata)
+    # A body-reading check anchors the fileset only once it has tokens to look
+    # for. Requested-but-unconfigured, `has_content` fails every artifact, so
+    # the gate fires but the spec is not a graded site and the finding stands.
+    if requested & FILESET_BODY_CHECKS and required_content(spec.metadata):
+        return []
     if not declared:
         detail = (
             "the fileset is unanchored: metadata.expected_paths yields no usable path, so any "
             "readable zip passes, including one containing junk.txt. Declare a list of paths and "
             "request has_paths."
         )
-    elif "has_paths" not in set(spec.validation or ()):
+    elif "has_paths" not in requested:
         detail = (
             f"metadata.expected_paths declares {sorted(declared)} but has_paths is not requested, "
             "so the grader never looks for them. Add has_paths to validation."
         )
+    elif requested & FILESET_BODY_CHECKS:
+        detail = (
+            "has_content is requested but metadata.required_content is empty, so every "
+            "artifact fails on an unconfigured gate rather than on its contents."
+        )
+
     else:
         detail = (
             f"has_paths only checks that {sorted(declared)} exist and are non-empty. "
@@ -959,6 +1444,13 @@ def find_duplicate_families(
     difficulty. Union-find over prompt token Jaccard similarity.
     """
     tokens = [_tokens(spec.prompt) for spec in specs]
+    # How many specs in the corpus mention each term at all. A term in most of the
+    # suite carries no information about one family, so a tie on count is broken
+    # by rarity first: `and` and `at` are in more than half of the shipped
+    # prompts and would otherwise crowd out the words that identify the template.
+    # The third key keeps the result deterministic when two terms are equally
+    # common and equally rare.
+    rarity = Counter(t for token_set in tokens for t in token_set)
     parent = list(range(len(specs)))
 
     def find(i: int) -> int:
@@ -986,7 +1478,11 @@ def find_duplicate_families(
         if len(members) < min_family:
             continue
         ids = sorted(specs[i].id for i in members)
-        shared = Counter(t for i in members for t in tokens[i]).most_common(6)
+        # `tokens[i]` is a set, so `most_common` would break ties by hash order and
+        # the finding's *content* changed with PYTHONHASHSEED. Counting is stable;
+        # it is the tie-break that was not, so it is made explicit and alphabetical.
+        counts = Counter(t for i in members for t in tokens[i])
+        shared = sorted(counts.items(), key=lambda item: (-item[1], rarity[item[0]], item[0]))[:6]
         findings.append(
             Finding(
                 rule="near_duplicate_family",
@@ -1003,12 +1499,42 @@ def find_duplicate_families(
     return findings
 
 
-def check_holdout_arm(specs: list[TaskSpec]) -> list[Finding]:
-    """Contamination is unmeasurable until some specs are never published."""
+def check_holdout_arm(specs: list[TaskSpec], *, probe: Any = None) -> list[Finding]:
+    """Contamination is unmeasurable until some specs are never published.
+
+    An arm counts when the suite either holds a committed `metadata.holdout` spec
+    or can generate one on demand. A committed holdout spec is a contradiction —
+    it is in git, so it is a published problem wearing a holdout label — so the
+    generated arm is the normal case and the committed spec is only accepted for
+    a private tree that never gets published.
+
+    The generator is not taken on trust: `probe` is called and must return real
+    specs whose prompts are not already in the suite. A generator that is absent,
+    raises, or emits a prompt the suite already contains leaves contamination
+    unmeasured, and the finding stands. Accepting a declared-but-unverified arm
+    would make this rule report the absence of a measurement while doing nothing
+    to produce one.
+    """
     if not specs:
         return []
     if any(bool(spec.metadata.get("holdout")) for spec in specs):
         return []
+
+    detail_suffix = ""
+    if probe is not None:
+        try:
+            generated = list(probe())
+        except Exception as exc:  # a broken generator is not an arm
+            generated = []
+            detail_suffix = f" The generator failed to run: {type(exc).__name__}: {exc}."
+        else:
+            detail_suffix = ""
+        if generated:
+            published = {spec.prompt.strip() for spec in specs}
+            fresh = [spec for spec in generated if spec.prompt.strip() not in published]
+            if fresh and all(bool(spec.metadata.get("holdout")) for spec in fresh):
+                return []
+
     return [
         Finding(
             rule="no_holdout_arm",
@@ -1016,9 +1542,10 @@ def check_holdout_arm(specs: list[TaskSpec]) -> list[Finding]:
             task_id=None,
             path=None,
             detail=(
-                f"none of the {len(specs)} specs sets metadata.holdout, so every problem is a "
-                "published problem. Mark a small arm holdout and keep it out of runs-pub to make "
-                "contamination checkable instead of assumed."
+                f"none of the {len(specs)} specs sets metadata.holdout and no holdout arm could "
+                "be generated, so every problem is a published problem. Generate an arm with "
+                "`harness.py holdout` and keep it out of runs-pub to make contamination checkable "
+                f"instead of assumed.{detail_suffix}"
             ),
         )
     ]
@@ -1030,8 +1557,10 @@ def check_holdout_arm(specs: list[TaskSpec]) -> list[Finding]:
 
 PER_SPEC_RULES = (
     check_validation_names,
+    check_inert_metadata_required,
     check_absent_grading_contract,
     check_structural_only,
+    check_judge_gated_media,
     check_unanchored_fileset,
     check_prompt_states_answer,
     check_answer_derivable,
@@ -1040,8 +1569,62 @@ PER_SPEC_RULES = (
 )
 
 
+def _unreadable_field(spec: TaskSpec) -> str | None:
+    """Name the first field the grader could not read, or None if it can.
+
+    `TaskSpec` is a dataclass with no runtime type check, so a spec file can put
+    anything in these three fields and the bad value reaches `spec.metadata.get(...)`
+    in about ten places. A non-mapping `metadata` raised `AttributeError` out of a
+    rule and took the gate's answer for every other spec with it.
+
+    `load_task` rejects these on the file path, so this only fires for a caller
+    that built a `TaskSpec` directly — which is why the finding is an error here
+    and the `required: 5` case below it is a warning. There, the grader still
+    runs and speaks louder than any audit line; here the audit learned nothing
+    about the spec at all, and nothing else is going to say so.
+    """
+    if not isinstance(spec.id, str):
+        # `find_duplicate_families` sorts the ids of a family, so one non-string id
+        # raises `TypeError` inside a suite-level rule and takes every other spec's
+        # verdict with it. Three fields were guarded; this is the fourth.
+        return f"id is a {type(spec.id).__name__}, not a string"
+    if not isinstance(spec.type, str):
+        # `load_task` tests membership in a frozenset, which needs a hash, so
+        # `type: [a]` raised before any isinstance check could run.
+        return f"type is a {type(spec.type).__name__}, not a string"
+    if not isinstance(spec.metadata, dict):
+        return f"metadata is a {type(spec.metadata).__name__}, not a mapping"
+    # `validation:` with nothing under it parses to None, and None has always meant
+    # "no explicit checks, use the defaults" — so it is not a malformed spec and
+    # must not become one here.
+    if spec.validation is not None and not isinstance(spec.validation, list):
+        return f"validation is a {type(spec.validation).__name__}, not a list of check names"
+    if any(not isinstance(name, str) for name in spec.validation or ()):
+        return "validation contains a check name that is not a string"
+    if not isinstance(spec.prompt, str):
+        return f"prompt is a {type(spec.prompt).__name__}, not a string"
+    return None
+
+
 def audit_spec(spec: TaskSpec, path: Path | None = None) -> list[Finding]:
     """Run every per-spec rule against one spec."""
+    unreadable = _unreadable_field(spec)
+    if unreadable is not None:
+        return [
+            Finding(
+                rule="unreadable_spec_fields",
+                severity=ERROR,
+                task_id=spec.id,
+                path=str(path) if path else None,
+                detail=(
+                    f"{unreadable}, so the rules that read it could not run and the grader cannot "
+                    "read the spec. Findings that need only the readable fields — an unknown check "
+                    "name, an unimplemented type — are suppressed too, because this rule returns "
+                    "before any rule runs. load_task rejects this on the file path; fix the spec's "
+                    "shape."
+                ),
+            )
+        ]
     findings: list[Finding] = []
     for rule in PER_SPEC_RULES:
         findings.extend(rule(spec, path))
@@ -1054,18 +1637,35 @@ def audit_suite(
     *,
     min_family: int = 5,
     similarity: float = 0.8,
+    holdout_probe: Any = None,
 ) -> AuditReport:
-    """Audit a whole suite. `paths` is parallel to `specs` when given."""
+    """Audit a whole suite. `paths` is parallel to `specs` when given.
+
+    `holdout_probe` is a zero-argument callable returning generated holdout
+    specs. Pass None to audit a tree as if no generator existed.
+    """
     report = AuditReport(specs=len(specs))
     locations = paths or [None] * len(specs)
     for spec, path in zip(specs, locations, strict=True):
         for finding in audit_spec(spec, path):
             report.add(finding)
-    for finding in find_duplicate_families(specs, min_family=min_family, similarity=similarity):
+    # The two suite-level rules read `spec.metadata` and `spec.prompt` directly, so
+    # a spec whose fields are the wrong shape is excluded from them rather than
+    # crashing the whole tree on the way past. It is already reported by
+    # `audit_spec` above.
+    readable = [spec for spec in specs if _unreadable_field(spec) is None]
+    for finding in find_duplicate_families(readable, min_family=min_family, similarity=similarity):
         report.add(finding)
-    for finding in check_holdout_arm(specs):
+    for finding in check_holdout_arm(readable, probe=holdout_probe):
         report.add(finding)
     return report
+
+
+def default_holdout_probe() -> list[TaskSpec]:
+    """Generate a small arm so the audit can check one exists and is usable."""
+    from orchestral.holdout import generate_arm
+
+    return generate_arm(4)
 
 
 def audit_tree(root: Path | str = "tasks", **kwargs: Any) -> AuditReport:

@@ -5,17 +5,23 @@ from __future__ import annotations
 import ast
 import base64
 import contextlib
+import hashlib
 import html
 import json
 import re
 from functools import cache
-
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from orchestral.apistub import parse_plan
 from orchestral.config import ModelConfig, TaskSpec
-from orchestral.costs import compute_cost, compute_image_cost, compute_video_cost, token_usage_from_raw
+from orchestral.costs import (
+    compute_cost,
+    compute_image_cost,
+    compute_video_cost,
+    pricing_source_for,
+    token_usage_from_raw,
+)
 from orchestral.fileset import (
     FilesetError,
     check_response_size,
@@ -40,6 +46,10 @@ _VIDEO_OPTION_KEYS = ("duration", "resolution", "aspect_ratio", "generate_audio"
 
 PROMPTS_DIR = Path(__file__).resolve().parent.parent / "prompts"
 ORCHESTRATOR_DEFAULT_PROMPT = "You are an orchestrator. Produce a plan and subtasks for a worker to execute."
+
+
+class PlanError(ValueError):
+    """Orchestrator returned a non-object plan — malformed model output."""
 
 
 def available_prompt_variants(prompts_dir: Path | str = PROMPTS_DIR) -> list[str]:
@@ -180,7 +190,9 @@ def _llm_call(
     usage = token_usage_from_raw(completion["usage"])
     cost_usd, _ = compute_cost(usage, model_cfg)
     content = completion["content"]
-    api_cost = completion.get("api_cost_usd")
+    api_cost_usd = completion.get("api_cost_usd")
+    api_cost_usd = api_cost_usd if isinstance(api_cost_usd, (int, float)) else None
+    pricing_source = pricing_source_for(api_cost_usd)
 
     logger.log_llm_call(
         phase=phase,
@@ -199,8 +211,8 @@ def _llm_call(
         output_tokens=usage.completion_tokens,
         cost_usd=cost_usd,
         latency_ms=completion["latency_ms"],
-        pricing_source="configured",
-        api_cost_usd=api_cost if isinstance(api_cost, (int, float)) else None,
+        pricing_source=pricing_source,
+        api_cost_usd=api_cost_usd,
         attempt=attempt,
     )
 
@@ -210,14 +222,93 @@ def _llm_call(
         "input_tokens": usage.prompt_tokens,
         "output_tokens": usage.completion_tokens,
         "cost_usd": cost_usd,
-        "pricing_source": "configured",
-        "api_cost_usd": api_cost if isinstance(api_cost, (int, float)) else None,
+        "pricing_source": pricing_source,
+        "api_cost_usd": api_cost_usd,
         "usage": usage.to_dict(),
     }
 
 
+# A parse failure must name the failure without republishing the model's text.
+# Run output belongs inside the run directory, and an exception string travels
+# to CI logs and issue comments, so a fingerprint may carry delimiters and
+# punctuation only — never words.
+_SKELETON_CHARS = frozenset('{}[]()",:\\')
+_SKELETON_EDGE_CHARS = 200
+_DIGEST_CHARS = 12
+
+# The three ways a model response can fail to become JSON. A truncation is a
+# transport fault and re-running may fix it; the other two are the model
+# breaking the output contract, and re-running just costs the same call twice.
+PlanParseFaultKind = Literal["no_json", "unbalanced", "balanced_invalid"]
+
+
+class PlanParseFault(ValueError):
+    """A model response `_extract_json` could not turn into JSON, and which fault.
+
+    `kind` is what a caller branches on. The message names the same fault in
+    prose, and matching on that prose is exactly the coupling that made a
+    transport fault look like a harness regression in DUK-159.
+
+    It subclasses `ValueError` because every existing caller of `_extract_json`
+    already catches `ValueError` or `Exception` (`delegate`, `delegate_multi`,
+    `assemble_media`, `assemble_ce`, `judge_artifact`), so naming the fault
+    changes no existing handler's behavior.
+    """
+
+    kind: PlanParseFaultKind
+
+    def __init__(self, message: str, kind: PlanParseFaultKind) -> None:
+        super().__init__(message)
+        self.kind = kind
+
+
+def _skeleton(text: str) -> str:
+    """A response's delimiters and punctuation, with none of its content."""
+    return "".join(ch for ch in text if ch in _SKELETON_CHARS)
+
+
+def _response_digest(text: str) -> tuple[int, str]:
+    """A response's `(length, short sha256)` — enough to identify it, no text.
+
+    The one place a response is fingerprinted. Both the fault message and the
+    `orchestrator.plan_parse_fault` event read the same digest, so a fault in a
+    log line and a fault in the event stream name the same response.
+    """
+    digest = hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()[:_DIGEST_CHARS]
+    return len(text), digest
+
+
+def _response_fingerprint(text: str) -> str:
+    """Identify a model response without carrying any of its text.
+
+    Length and a short digest say *which* response failed. The head and tail
+    skeletons say whether it stopped mid-object or mid-string, which is what
+    separates a truncated response from a well-formed response that breaks the
+    plan contract.
+
+    A response that fits in both edge windows is reported once as `whole`.
+    Printing the same skeleton twice under two labels is indistinguishable from
+    a reporter that is misbehaving, and an ambiguous log is the thing this
+    message exists to prevent.
+    """
+    chars, digest = _response_digest(text)
+    if chars <= 2 * _SKELETON_EDGE_CHARS:
+        return f"{chars} chars sha256:{digest} whole={_skeleton(text)!r}"
+    return (
+        f"{chars} chars sha256:{digest} "
+        f"head={_skeleton(text[:_SKELETON_EDGE_CHARS])!r} "
+        f"tail={_skeleton(text[-_SKELETON_EDGE_CHARS:])!r}"
+    )
+
+
 def _extract_json(content: str) -> Any:
-    """Parse JSON from a model response, tolerating code fences and extra text."""
+    """Parse JSON from a model response, tolerating code fences and extra text.
+
+    The three failure branches name three different faults, because a
+    transient provider response and a model that broke the output contract
+    need different responses from whoever reads the log: the first is a
+    transport fault to re-run, the second is a contract fault to escalate.
+    """
     text = content.strip()
     if text.startswith("```"):
         text = text.split("```")[1]
@@ -230,7 +321,10 @@ def _extract_json(content: str) -> Any:
             start = i
             break
     if start is None:
-        raise ValueError(f"No JSON found in model response: {content[:200]}")
+        # no delimiter anywhere: the model never produced JSON at all
+        raise PlanParseFault(
+            f"No JSON found in model response: {_response_fingerprint(text)}", "no_json"
+        )
     # naive brace matching
     depth = 0
     in_string = False
@@ -255,8 +349,50 @@ def _extract_json(content: str) -> Any:
         elif ch in "}]":
             depth -= 1
             if depth == 0:
-                return json.loads(text[start : i + 1])
-    raise ValueError(f"Could not extract JSON from model response: {content[:200]}")
+                block = text[start : i + 1]
+                try:
+                    return json.loads(block)
+                except json.JSONDecodeError as exc:
+                    # delimiters balanced, so the response is whole; the model
+                    # emitted something that is not valid JSON
+                    raise PlanParseFault(
+                        f"Balanced JSON in model response did not parse: {exc.msg} at position "
+                        f"{exc.pos} of the block at offset {start}: {_response_fingerprint(block)}",
+                        "balanced_invalid",
+                    ) from exc
+    # a delimiter was found but never closed: the response was cut off, or a
+    # brace inside a string escaped the matcher
+    raise PlanParseFault(
+        f"Unbalanced JSON in model response: candidate at offset {start} never closed, so the "
+        f"response was truncated or a brace inside a string escaped the matcher: "
+        f"{_response_fingerprint(text)}",
+        "unbalanced",
+    )
+
+
+def _parse_plan(*, logger: EventLogger, content: str, step: int) -> Any:
+    """Parse a plan response, recording the fault class if it cannot be parsed.
+
+    The plan phase has no retry, so "does it need one?" can only be answered
+    from a measured rate, and a rate needs a countable event. One
+    `orchestrator.plan_parse_fault` per fault, carrying the fault class and the
+    response digest and nothing else, is that count. The exception still
+    propagates: measuring a fault must not change the response to it.
+    """
+    try:
+        return _extract_json(content)
+    except PlanParseFault as exc:
+        chars, digest = _response_digest(content)
+        logger.lifecycle(
+            "orchestrator.plan_parse_fault",
+            phase="plan",
+            role="orchestrator",
+            step=step,
+            fault=exc.kind,
+            chars=chars,
+            sha256=digest,
+        )
+        raise
 
 
 def _fake_output(input_data: dict[str, Any], phase: str) -> Any:
@@ -312,9 +448,11 @@ def plan_raw(
         expect_json=True,
         system_override=load_prompt_variant(prompt_variant) if prompt_variant else None,
     )
-    plan = _extract_json(content)
+    plan = _parse_plan(logger=logger, content=content, step=step)
     if not isinstance(plan, dict):
-        raise ValueError("orchestrator plan must be a JSON object")
+        # e.g. the model answered the task directly with a JSON list —
+        # malformed orchestrator output, not an infra error
+        raise PlanError(f"orchestrator plan must be a JSON object, got {type(plan).__name__}")
     plan["task_id"] = task.id
     plan["orchestrator"] = orchestrator.slug
     plan["planner"] = "raw"
@@ -426,7 +564,9 @@ def delegate_image(
     image_bytes = completion["image_bytes"]
     usage = token_usage_from_raw(completion["usage"])
     cost_usd = compute_image_cost(worker, usage, 1)
-    api_cost = completion.get("api_cost_usd")
+    api_cost_usd = completion.get("api_cost_usd")
+    api_cost_usd = api_cost_usd if isinstance(api_cost_usd, (int, float)) else None
+    pricing_source = pricing_source_for(api_cost_usd)
 
     logger.log_llm_call(
         phase="delegate",
@@ -444,8 +584,8 @@ def delegate_image(
         output_tokens=usage.completion_tokens,
         cost_usd=cost_usd,
         latency_ms=completion["latency_ms"],
-        pricing_source="configured",
-        api_cost_usd=api_cost if isinstance(api_cost, (int, float)) else None,
+        pricing_source=pricing_source,
+        api_cost_usd=api_cost_usd,
         attempt=attempt,
     )
     return {"subtask_id": subtask.get("id"), "prompt": prompt}, image_bytes, [{
@@ -454,8 +594,8 @@ def delegate_image(
         "input_tokens": usage.prompt_tokens,
         "output_tokens": usage.completion_tokens,
         "cost_usd": cost_usd,
-        "pricing_source": "configured",
-        "api_cost_usd": api_cost if isinstance(api_cost, (int, float)) else None,
+        "pricing_source": pricing_source,
+        "api_cost_usd": api_cost_usd,
         "usage": usage.to_dict(),
     }]
 
@@ -535,7 +675,8 @@ def delegate_video(
     )
     # the async API reports an authoritative usage.cost on the completed job;
     # anything else is a configured rate-card estimate
-    pricing_source = "api_reported" if isinstance(api_cost, (int, float)) else "configured_estimate"
+    api_cost_usd = api_cost if isinstance(api_cost, (int, float)) else None
+    pricing_source = pricing_source_for(api_cost_usd)
 
     logger.log_llm_call(
         phase="delegate",
@@ -554,7 +695,7 @@ def delegate_video(
         cost_usd=cost_usd,
         latency_ms=completion["latency_ms"],
         pricing_source=pricing_source,
-        api_cost_usd=api_cost if isinstance(api_cost, (int, float)) else None,
+        api_cost_usd=api_cost_usd,
         attempt=attempt,
     )
     return {"subtask_id": subtask.get("id"), "prompt": prompt}, video_bytes, [{
@@ -564,7 +705,7 @@ def delegate_video(
         "output_tokens": 0,
         "cost_usd": cost_usd,
         "pricing_source": pricing_source,
-        "api_cost_usd": api_cost if isinstance(api_cost, (int, float)) else None,
+        "api_cost_usd": api_cost_usd,
         "usage": usage,
     }]
 
@@ -649,7 +790,9 @@ def delegate_multi(
 
     usage = token_usage_from_raw(completion["usage"])
     cost_usd, _ = compute_cost(usage, worker)
-    api_cost = completion.get("api_cost_usd")
+    api_cost_usd = completion.get("api_cost_usd")
+    api_cost_usd = api_cost_usd if isinstance(api_cost_usd, (int, float)) else None
+    pricing_source = pricing_source_for(api_cost_usd)
     summary = summarize_fileset(files)
     logger.log_llm_call(
         phase="delegate",
@@ -670,8 +813,8 @@ def delegate_multi(
         output_tokens=usage.completion_tokens,
         cost_usd=cost_usd,
         latency_ms=completion["latency_ms"],
-        pricing_source="configured",
-        api_cost_usd=api_cost if isinstance(api_cost, (int, float)) else None,
+        pricing_source=pricing_source,
+        api_cost_usd=api_cost_usd,
         attempt=attempt,
     )
     notes = data.get("notes") if isinstance(data, dict) else None
@@ -685,8 +828,8 @@ def delegate_multi(
         "input_tokens": usage.prompt_tokens,
         "output_tokens": usage.completion_tokens,
         "cost_usd": cost_usd,
-        "pricing_source": "configured",
-        "api_cost_usd": api_cost if isinstance(api_cost, (int, float)) else None,
+        "pricing_source": pricing_source,
+        "api_cost_usd": api_cost_usd,
         "usage": usage.to_dict(),
     }]
 
@@ -1046,9 +1189,9 @@ def plan_ce(
         expect_json=True,
         system_override=load_prompt_variant(prompt_variant) if prompt_variant else None,
     )
-    plan = _extract_json(content)
+    plan = _parse_plan(logger=logger, content=content, step=step)
     if not isinstance(plan, dict):
-        raise ValueError("orchestrator plan must be a JSON object")
+        raise PlanError(f"orchestrator plan must be a JSON object, got {type(plan).__name__}")
     plan["task_id"] = task.id
     plan["orchestrator"] = orchestrator.slug
     plan["planner"] = "ce-plan"
@@ -1131,13 +1274,22 @@ def assemble_ce(
         expect_json=True,
     )
     verification = None
-    try:
+    # An unparseable verification is recorded below, never silently dropped.
+    with contextlib.suppress(ValueError):
         verification = _extract_json(final_content)
-    except ValueError:
-        pass  # unparseable verification — recorded below, never silently dropped
     if isinstance(verification, dict) and verification.get("passed") is False:
-        reason = str(verification.get("reasoning") or verification.get("reason") or "unspecified")[:200]
-        raise ValueError(f"final verification failed: {reason}")
+        # This message is not private. `runner.py` copies `str(exc)` into the
+        # `run.failed` event twice, the TUI renders that field, and
+        # `harness._fail_line` prints it to stderr — which is the CI log. The
+        # model's own `reasoning`/`reason` is not quoted here for the same
+        # reason the judge parse reason is not: the message identifies the
+        # response, and the full text stays in the event log from the
+        # `_llm_call` above. `tests/test_planner_verification_failure.py`
+        # plants a canary on every field and holds the message, the
+        # `run.failed` event, and the stderr line.
+        reported = verification.get("reasoning") or verification.get("reason")
+        why = "reason logged" if reported else "no reason given"
+        raise ValueError(f"final verification failed ({why}): {_response_fingerprint(final_content)}")
 
     return artifact, [cost, final_cost]
 

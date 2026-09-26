@@ -8,12 +8,14 @@ prompt: >
   month ascending. Only count order_lines whose order status is 'shipped'. If
   two or more products tie for the highest revenue in a month, return the one
   whose product name sorts first alphabetically.
+
   The database has tables: products(id, name), orders(id, placed_on DATE,
   status), order_lines(order_id, product_id, qty, unit_price).
 validation: []
 assets: []
 metadata:
   # v2: reference_sql compared a rounded revenue against an unrounded window
+
   # max, so any non-representable price made it return zero rows and turn the
   # task into a free pass. Same answer on the fixture below; see DUK-90.
   # v3: the prompt promised one row per month, but "WHERE revenue = best"
@@ -60,6 +62,7 @@ metadata:
   # (reference_sql returns executed=False), so this is a contributor-environment
   # risk, not a silent-wrong-answer risk.
   version: "5"
+
   ordered: true
   schema:
     - "CREATE TABLE products (id INTEGER PRIMARY KEY, name TEXT NOT NULL)"

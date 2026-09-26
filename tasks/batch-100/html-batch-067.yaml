@@ -6,3 +6,10 @@ prompt: Create a landing page for a remote team retreat planner targeted at indi
   inline CSS.
 validation:
 - html
+- has_required
+- matches_pattern
+metadata:
+  required:
+  - retreat
+  pattern: indie|hacker|solo founder|bootstrapped|side project|side hustle|one[ -]person|ship
+    fast|build in public|\bdoer\b

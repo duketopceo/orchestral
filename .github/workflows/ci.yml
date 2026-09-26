@@ -8,14 +8,30 @@ on:
 permissions:
   contents: read
 
+# One gate per job, on purpose. GitHub Actions skips every remaining step in a
+# job as soon as one step fails, so a single job meant a red `Tests` step
+# silently skipped `Lint` and `Types` and the run could still look green.
+# Separate jobs report independently: one red never hides the others.
+# The `test` job keeps its original name so a branch-protection required check
+# by that name still reports. tests/test_ci_gate_independence.py enforces this.
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # pyproject declares requires-python = ">=3.11" with no upper bound, so the
+        # whole range is a support claim. Pin exact minors: a floating "3.14" would
+        # silently become 3.15 and reopen the gap this closes. Floor plus every
+        # minor we have actually run the suite on.
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          python-version: "3.11"
+          persist-credentials: false
+      - uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
+        with:
+          python-version: ${{ matrix.python-version }}
 
       - name: Install
         run: pip install -e .[dev,tui]
@@ -28,8 +44,31 @@ jobs:
         # Warnings are reported but do not gate: they mark known gaming surface.
         run: python harness.py audit --strict
 
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install
+        run: pip install -e .[dev,tui]
+
+
       - name: Lint
         run: ruff check .
+
+  types:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install
+        run: pip install -e .[dev,tui]
 
       - name: Types
         run: mypy orchestral harness.py

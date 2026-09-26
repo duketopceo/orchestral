@@ -206,6 +206,7 @@ UNFILTERED_SQL = """
     WHERE revenue = best
     ORDER BY month ASC
 """
+
 # The v2 bug as a standalone query: the rounded revenue is compared against an
 # unrounded window max. This is the DUK-90 regression, kept as text so the
 # shipped fixture can be graded against it directly. Not a fixture of its own —
@@ -261,13 +262,16 @@ ROW_COUNT_RE = re.compile(r"\b(?:one|1)\s+row\s+per\s+month\b", re.I)
 MIN_SQLITE_VERSION = (3, 25)
 
 
+
 class TestShippedMonthlyRevenueSpec(unittest.TestCase):
     """DUK-90 and DUK-117: the shipped reference must answer for any price set.
 
     The reference compares each month's rounded revenue against the same
+
     month's maximum. Rounding only one side of that comparison made it return
     zero rows whenever a price was not exactly representable, which graded any
     zero-row candidate as a pass.
+
 
     Separately, "WHERE revenue = best" returned a row for every product tied
     at the month's maximum, while the prompt promised one row per month — so a
@@ -283,6 +287,7 @@ class TestShippedMonthlyRevenueSpec(unittest.TestCase):
             "seed": [*self.spec.metadata["seed"][:2], FRACTIONAL_CENT_LINES],
         }
 
+
     def test_reference_sql_needs_window_functions(self):
         """The reference is only executable on sqlite >= 3.25; say so out loud."""
         self.assertGreaterEqual(
@@ -291,6 +296,7 @@ class TestShippedMonthlyRevenueSpec(unittest.TestCase):
             f"sqlite {sqlite3.sqlite_version} predates window functions, which the "
             "reference and the pre-v3 MAX(...) OVER both require",
         )
+
 
     def _rows(self, metadata, sql):
         with tempfile.TemporaryDirectory() as tmp:
@@ -303,6 +309,7 @@ class TestShippedMonthlyRevenueSpec(unittest.TestCase):
         self.assertIsNone(err)
         return rows
 
+
     # The order_lines insert is extended by parsing its value tuples, not by
     # string concatenation. Concatenation appended to *every* order_lines
     # statement and choked on a trailing ";" with a raw sqlite3.OperationalError
@@ -311,6 +318,7 @@ class TestShippedMonthlyRevenueSpec(unittest.TestCase):
     ORDER_LINES_RE = re.compile(r"^(?P<head>INSERT INTO order_lines\s+VALUES\s+)(?P<rows>.*)$", re.I)
     ROW_TUPLE_RE = re.compile(r"\(\s*[\d.]+(?:\s*,\s*[\d.]+)+\s*\)")
 
+
     def _tied_metadata(self):
         """The shipped fixture with a second January winner.
 
@@ -318,6 +326,7 @@ class TestShippedMonthlyRevenueSpec(unittest.TestCase):
         Kettle at 90.0, so January has two products tied for the month maximum.
         Derived from the shipped seed so there is no third copy to drift.
         """
+
         seed = list(self.spec.metadata["seed"])
         inserts = [i for i, line in enumerate(seed) if "INSERT INTO order_lines" in line]
         self.assertEqual(
@@ -341,6 +350,7 @@ class TestShippedMonthlyRevenueSpec(unittest.TestCase):
             "tuple regex is not parsing this seed faithfully",
         )
         seed[idx] = rebuilt + ", (3, 2, 1, 50.0)"
+
         return {**self.spec.metadata, "seed": seed}
 
     def _prompt_tie_direction(self) -> str:
@@ -353,6 +363,7 @@ class TestShippedMonthlyRevenueSpec(unittest.TestCase):
             f"prompt must state exactly one tie-break direction, got first={first} last={last}",
         )
         return "first" if first else "last"
+
 
     def _cancelled_only_metadata(self):
         """The shipped fixture plus a March whose only order was cancelled.
@@ -400,6 +411,7 @@ class TestShippedMonthlyRevenueSpec(unittest.TestCase):
         )
         self.assertEqual(len(rows), 2)
 
+
     def test_reference_answers_the_shipped_fixture(self):
         report = run_sql_check(self.spec.metadata, self.reference)
         self.assertTrue(report["executed"])
@@ -408,6 +420,7 @@ class TestShippedMonthlyRevenueSpec(unittest.TestCase):
         self.assertEqual(report["score"], 1.0)
         self.assertEqual(
             self._rows(self.spec.metadata, self.reference),
+
             [("2025-01", "Iron", 90.0), ("2025-02", "Grinder", 80.0)],
         )
 
@@ -472,6 +485,7 @@ class TestShippedMonthlyRevenueSpec(unittest.TestCase):
         self.assertFalse(report["match"])
         self.assertLess(report["score"], 1.0)
         self.assertEqual(report["rows_got"], 3, "the mutation returns a row per tied winner")
+
 
     def test_reference_answers_fractional_cent_prices(self):
         report = run_sql_check(self.repriced, self.reference)

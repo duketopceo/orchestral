@@ -34,11 +34,18 @@ shots = [
     "playwright>=1.40",
 ]
 tui = [
-    "textual>=1.0",
+    # Upper bound: the TUI is written against the textual 8.x widget API;
+    # a floating install must not drift onto an incompatible UI major.
+    "textual>=1.0,<9",
 ]
 dev = [
     "ruff>=0.6",
     "mypy>=1.11",
+    # `dev` is the environment all four CI gates run in, so it carries the
+    # [tui] extra too. Without this, the documented `pip install -e .[dev]`
+    # yields a venv where `unittest discover` reports OK with the whole
+    # Textual suite skipped. Keep the bound in step with `tui` above.
+    "textual>=1.0,<9",
 ]
 
 [project.urls]

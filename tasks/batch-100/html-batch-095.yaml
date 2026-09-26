@@ -6,3 +6,10 @@ prompt: Create a landing page for a smart home dashboard targeted at climate-con
   inline CSS.
 validation:
 - html
+- has_required
+- matches_pattern
+metadata:
+  required:
+  - dashboard
+  pattern: climate|carbon|sustainab|eco[ -]?friendly|emission|planet|renewable|footprint|greenhouse|net[
+    -]zero|lower your impact|environmentally

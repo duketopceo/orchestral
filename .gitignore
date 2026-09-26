@@ -4,6 +4,8 @@ __pycache__/
 .env
 runs/
 runs-pub/
+# default `harness.py holdout --out`; holdout task text must never be committed
+runs-holdout/
 reports/
 *.db
 .DS_Store

@@ -12,7 +12,6 @@ string assertion on the YAML would not have caught the regression.
 
 from __future__ import annotations
 
-import shutil
 import subprocess
 import tempfile
 import unittest

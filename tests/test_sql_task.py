@@ -216,9 +216,11 @@ class TestShippedMonthlyRevenueSpec(unittest.TestCase):
     """DUK-90 and DUK-117: the shipped reference must answer for any price set.
 
     The reference compares each month's rounded revenue against the same
-    month's maximum. Rounding only one side of that comparison made it return
-    zero rows whenever a price was not exactly representable, which graded any
-    zero-row candidate as a pass.
+    month's maximum. Rounding only one side of that comparison dropped every
+    month whose winning total did not equal its own 2-decimal rounding, and
+    kept answering normally for the months without that gap. The result is a
+    partial answer rather than a total failure, and a non-empty reference
+    still grades — which is what the empty-reference check is for.
 
     Separately, "WHERE revenue = best" returned a row for every product tied
     at the month's maximum, while the prompt promised one row per month — so a

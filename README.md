@@ -87,6 +87,7 @@ orchestral dashboard               # reports/dashboard.html
 | `serve` | Local web observatory — same views in a browser, launch/cancel runs (localhost only) |
 | `scrub` | Redact secrets/paths from `runs/` into `runs-pub/` + `manifest.json` |
 | `calibrate` | Judge-vs-human agreement from a labels file (`--labels`, `--json`) |
+| `audit` | Static task-spec audit — fail-open checks, structural-only graders, contamination risk (`--json`, `--strict`) — see [docs/task-audit.md](docs/task-audit.md) |
 
 Shared run flags (on `run`, `grid`, `batch`, `ablate`): `--planner raw|ce-plan`,
 `--judge <slug>`, `--no-judge-cache`, `--retry-limit N`, `--prompt-variant NAME`,
@@ -140,7 +141,10 @@ polling); `/leaderboard`; and `/new`, a form that launches runs
 stop runs this `serve` process started — same mechanism and same limit
 as the TUI.
 
-Global flags (before the subcommand): `--runs-dir`, `--tasks-dir`, `--models-dir`.
+Global flags: `--runs-dir`, `--tasks-dir`, `--models-dir`. They work before
+the subcommand (`orchestral --runs-dir X scrub`) and, for the commands that
+re-declare them, after it (`orchestral scrub --runs-dir X`) — the
+subcommand-local spelling wins when both are given.
 
 ## Task formats
 

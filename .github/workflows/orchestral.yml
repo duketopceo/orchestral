@@ -5,9 +5,17 @@ name: orchestral eval
 # request: a same-repository PR can write to this repository, so "skip forks" is
 # not a boundary here (DUK-184). The regression check in
 # tests/test_workflow_security.py fails if a PR trigger is added back.
+#
+# A dispatcher may name a ref to evaluate, so the environment's required reviewer
+# is the control that stands between PR content and the key. That reviewer must
+# read the diff, not just the ref name. See docs/ci-security.md.
 on:
   workflow_dispatch:
     inputs:
+      ref:
+        description: "Branch or tag to evaluate. Leave empty to evaluate the default branch."
+        required: false
+        default: ""
       task:
         description: "Task id from tasks/*.yaml"
         required: true
@@ -32,8 +40,9 @@ jobs:
   eval:
     runs-on: ubuntu-latest
     # The paid-eval environment is the human gate on provider spend. It is only a
-    # gate if the environment has required reviewers configured; see
-    # docs/ci-security.md.
+    # gate if the environment has required reviewers configured; as of this commit
+    # the repository has no environments at all, so this key gates nothing until
+    # someone creates it. See docs/ci-security.md.
     environment: paid-eval
     permissions:
       contents: read
@@ -46,16 +55,27 @@ jobs:
       MAX_COST_USD: "0.05"
 
     steps:
-      # Evaluate the default branch, never the dispatched ref. The key-bearing job
-      # therefore never executes unreviewed PR code, which is the containment
-      # property the old trigger used to break.
+      # The evaluated ref is the default branch unless a dispatcher names one, so
+      # the safe target is what happens by default. Because the ref can be
+      # attacker-chosen branch content, the containment property now rests on the
+      # paid-eval required reviewer rather than on structure alone: approval of a
+      # ref name is not a code review, so the approver must read the diff first.
+      # docs/ci-security.md states the residual risk. The "Record evaluated
+      # commit" step below is what makes the approved run auditable afterwards.
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          ref: ${{ github.event.repository.default_branch }}
+          ref: ${{ inputs.ref || github.event.repository.default_branch }}
           persist-credentials: false
       - uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
         with:
           python-version: "3.11"
+
+      # A dispatcher input must reach the shell through env, never interpolated
+      # into the run line, or a crafted ref executes before the job is reviewed.
+      - name: Record evaluated commit
+        env:
+          REQUESTED_REF: ${{ inputs.ref || github.event.repository.default_branch }}
+        run: echo "evaluating commit $(git rev-parse HEAD) for ref $REQUESTED_REF"
 
       - name: Install orchestral
         run: pip install -e .
@@ -89,8 +109,8 @@ jobs:
           PY
           )
           if (( $(echo "$cost > $MAX_COST_USD" | bc -l) )); then
-            echo "orchestral eval cost \${cost} exceeded \${MAX_COST_USD} budget"
+            echo "orchestral eval cost ${cost} exceeded ${MAX_COST_USD} budget"
             exit 1
           else
-            echo "orchestral eval passed within \${MAX_COST_USD} budget"
+            echo "orchestral eval cost ${cost} passed within ${MAX_COST_USD} budget"
           fi

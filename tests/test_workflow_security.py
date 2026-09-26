@@ -28,6 +28,14 @@ def _trigger_names(workflow: dict[str, Any]) -> set[str]:
     return set()
 
 
+def _steps(workflow: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
+    return [
+        (job_name, step)
+        for job_name, job in workflow["jobs"].items()
+        for step in job["steps"]
+    ]
+
+
 class WorkflowSecurityTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -57,15 +65,19 @@ class WorkflowSecurityTests(unittest.TestCase):
         )
         self.assertEqual(self.workflow_text.count("secrets.OPENROUTER_API_KEY"), 1)
 
-    def test_manual_eval_uses_default_branch_without_persisting_token(self) -> None:
+    def test_dispatch_defaults_to_the_default_branch(self) -> None:
+        ref_input = self.workflow["on"]["workflow_dispatch"]["inputs"]["ref"]
+        self.assertEqual(ref_input["required"], "false")
+        self.assertEqual(ref_input["default"], "")
         checkout = next(
             step for step in self.eval_job["steps"] if str(step.get("uses", "")).startswith("actions/checkout@")
         )
         self.assertEqual(
             checkout["with"]["ref"],
-            "${{ github.event.repository.default_branch }}",
+            "${{ inputs.ref || github.event.repository.default_branch }}",
         )
         self.assertEqual(checkout["with"]["persist-credentials"], "false")
+        self.assertIn("default_branch", self.workflow_text)
 
     def test_all_workflow_actions_are_pinned_to_full_shas(self) -> None:
         for path in sorted(WORKFLOW_DIR.glob("*.yml")):
@@ -93,6 +105,35 @@ class WorkflowSecurityTests(unittest.TestCase):
                     "same-repo branch can open a pull request"
                 ),
             )
+
+    def test_run_blocks_do_not_interpolate_workflow_inputs(self) -> None:
+        for path in sorted(WORKFLOW_DIR.glob("*.yml")):
+            for job_name, step in _steps(_load_workflow(path)):
+                run = str(step.get("run", ""))
+                for context in ("${{ inputs.", "${{ github.event.inputs."):
+                    self.assertNotIn(
+                        context,
+                        run,
+                        msg=(
+                            f"{path.name}:{job_name} inlines {context} into a run line. "
+                            "Pass the value through env: instead, or it is shell-injected "
+                            "before any reviewer sees it"
+                        ),
+                    )
+
+    def test_run_blocks_do_not_escape_variable_references(self) -> None:
+        for path in sorted(WORKFLOW_DIR.glob("*.yml")):
+            for job_name, step in _steps(_load_workflow(path)):
+                run = str(step.get("run", ""))
+                self.assertNotIn(
+                    "\\${",
+                    run,
+                    msg=(
+                        f"{path.name}:{job_name} escapes a variable reference. The shell "
+                        "prints the literal text instead of the value, so the step "
+                        "reports success without reporting the number it checked"
+                    ),
+                )
 
 
 if __name__ == "__main__":

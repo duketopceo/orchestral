@@ -21,9 +21,8 @@ on:
         required: true
         default: "raw"
       max_cost_usd:
-        description: "Cap in USD, compared against provider-billed cost"
+        description: "Cap in USD, compared against provider-billed cost. Blank uses 0.05."
         required: false
-        default: "0.001"
 
 jobs:
   eval:
@@ -39,6 +38,11 @@ jobs:
       ORCHESTRATOR: ${{ inputs.orchestrator || 'deepseek/deepseek-v4-flash-0731' }}
       WORKER: ${{ inputs.worker || 'z-ai/glm-5.3-flash' }}
       PLANNER: ${{ inputs.planner || 'raw' }}
+      # One source of truth for the cap: the dispatch input overrides it, and
+      # the shell default below covers pull_request events, where `inputs` is
+      # always empty. A literal here as well would silently win on PR runs and
+      # make the dispatch input a no-op.
+      MAX_COST_USD: ${{ inputs.max_cost_usd }}
 
     steps:
       - uses: actions/checkout@v4
@@ -92,9 +96,7 @@ jobs:
       # same money. Fork PRs never reach it — the job-level `if` above skips
       # them before any step runs.
       - name: Enforce cost budget
-        env:
-          MAX_COST_USD: ${{ inputs.max_cost_usd || '0.05' }}
-        run: python3 -m orchestral.budget --runs-dir runs --max-cost-usd "$MAX_COST_USD"
+        run: python3 -m orchestral.budget --runs-dir runs --max-cost-usd "${MAX_COST_USD:-0.001}"
 
       # DECLINED as a blocking gate, on purpose (DUK-214 AC #3).
       #

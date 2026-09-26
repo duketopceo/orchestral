@@ -271,7 +271,17 @@ class WorkflowWiringTests(unittest.TestCase):
     def test_cap_is_a_workflow_dispatch_input(self) -> None:
         inputs = self.workflow["on"]["workflow_dispatch"]["inputs"]
         self.assertIn("max_cost_usd", inputs)
-        self.assertEqual(inputs["max_cost_usd"]["default"], "0.05")
+
+    def test_the_cap_has_exactly_one_literal(self) -> None:
+        """A second copy of the default silently wins on pull_request runs.
+
+        `inputs` is always empty on a pull_request event, so any literal in the
+        step's `${{ }}` expression is the effective cap and the dispatch input
+        becomes a no-op. The shell default is the only one allowed.
+        """
+        self.assertEqual(self.text.count("0.05"), 2)  # description + shell default
+        self.assertIn('"${MAX_COST_USD:-0.05}"', self.guard["run"])
+        self.assertNotIn("inputs.max_cost_usd ||", self.text)
 
     def test_pricing_drift_decision_is_recorded_in_the_file(self) -> None:
         """AC #3: the drift gate is either wired in or declined with a reason."""

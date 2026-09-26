@@ -21,6 +21,7 @@ from __future__ import annotations
 import ast
 import re
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -88,10 +89,6 @@ GRADING_CONTRACT: dict[str, tuple[str, ...]] = {
     "api": ("calls",),
 }
 
-# Types whose grader reads `metadata.required`. `has_required` is a text check,
-# so for every other type the declaration is inert — it must not count as an
-# anchor there.
-METADATA_REQUIRED_TYPES = frozenset({"html", "constraint", "needle"})
 
 # Types whose grader never reads `validation:` — they compute a fixed check set
 # from `metadata` instead. Declaring checks on these specs is always a mistake.
@@ -301,10 +298,12 @@ def effective_checks(spec: TaskSpec) -> set[str]:
 def _has_topic_anchor(spec: TaskSpec) -> bool:
     if effective_checks(spec) & TOPIC_ANCHORS:
         return True
-    # `metadata.required` is read by the text grader only. For every other type
-    # the declaration is inert, so honouring it here would silence the finding
-    # on a spec the grader never anchors.
-    return spec.type in METADATA_REQUIRED_TYPES and bool(spec.metadata.get("required"))
+    # `metadata.required` is read in exactly one place in the runner: inside
+    # `if "has_required" in requested`. So the declaration is an anchor only when
+    # `has_required` is actually requested — not for a type. Keying it on the
+    # type let one line of YAML silence the finding while the grader read
+    # nothing, on 100 of the 104 shipped findings.
+    return "has_required" in effective_checks(spec) and bool(spec.metadata.get("required"))
 
 
 def _scalars(value: Any) -> list[str]:
@@ -389,52 +388,234 @@ def check_validation_names(spec: TaskSpec, path: Path | None = None) -> list[Fin
     ]
 
 
-def _literal(node: ast.AST) -> tuple[bool, Any]:
-    """Constant-fold a node. False when the node is not a literal expression."""
-    try:
-        return True, ast.literal_eval(node)
-    except (ValueError, SyntaxError, TypeError, MemoryError, RecursionError):
-        return False, None
+# Folded operations are pure arithmetic and predicate evaluation over constants.
+# `ast.literal_eval` is not enough: it refuses a `Compare` or a `UnaryOp`, so
+# `assert 1 == 1` and `assert not None` read no value yet do not fold.
+_UNARY_OPS = {ast.Not: lambda v: not v, ast.USub: lambda v: -v, ast.UAdd: lambda v: +v}
+_BINARY_OPS: dict[type, Callable[[Any, Any], Any]] = {
+    ast.Add: lambda a, b: a + b,
+    ast.Sub: lambda a, b: a - b,
+    ast.Mult: lambda a, b: a * b,
+    ast.Div: lambda a, b: a / b,
+    ast.FloorDiv: lambda a, b: a // b,
+    ast.Mod: lambda a, b: a % b,
+    ast.Pow: lambda a, b: a**b,
+    ast.BitAnd: lambda a, b: a & b,
+    ast.BitOr: lambda a, b: a | b,
+    ast.BitXor: lambda a, b: a ^ b,
+}
+_COMPARE_OPS: dict[type, Callable[[Any, Any], bool]] = {
+    ast.Eq: lambda a, b: a == b,
+    ast.NotEq: lambda a, b: a != b,
+    ast.Lt: lambda a, b: a < b,
+    ast.LtE: lambda a, b: a <= b,
+    ast.Gt: lambda a, b: a > b,
+    ast.GtE: lambda a, b: a >= b,
+    ast.In: lambda a, b: a in b,
+    ast.NotIn: lambda a, b: a not in b,
+    ast.Is: lambda a, b: a is b,
+    ast.IsNot: lambda a, b: a is not b,
+}
+# Pure builtins, so folding a call cannot execute model code.
+_FOLDABLE_CALLS: dict[str, Callable[..., Any]] = {
+    "len": len,
+    "bool": bool,
+    "str": str,
+    "int": int,
+    "float": float,
+    "list": list,
+    "tuple": tuple,
+    "dict": dict,
+    "set": set,
+    "frozenset": frozenset,
+    "sorted": sorted,
+    "abs": abs,
+    "min": min,
+    "max": max,
+    "sum": sum,
+    "any": any,
+    "all": all,
+    "repr": repr,
+    "chr": chr,
+    "ord": ord,
+}
+_FOLD_FAILURE = (ValueError, TypeError, ZeroDivisionError, OverflowError, IndexError, KeyError, AttributeError)
 
 
-def _is_test_case(node: ast.ClassDef, bases: dict[str, ast.ClassDef], seen: frozenset[str] = frozenset()) -> bool:
-    """Does this class inherit `unittest.TestCase`, directly or through a local base?"""
-    if node.name in seen:  # a cyclic base list cannot be resolved statically
-        return False
-    for base in node.bases:
-        name = base.id if isinstance(base, ast.Name) else getattr(base, "attr", "")
-        if name == "TestCase":
-            return True
-        parent = bases.get(name)
-        if parent is not None and _is_test_case(parent, bases, seen | {node.name}):
-            return True
-    return False
+def _const(node: ast.AST) -> tuple[bool, Any]:
+    """Fold `node` to a constant, or report that it is not provable.
+
+    Returns `(True, value)` only when the node provably reads nothing from the
+    artifact. Anything that touches a name, an attribute, a subscript of a
+    non-literal, or an unknown call is left unfolded, so a real assertion is
+    never mistaken for a constant.
+    """
+    if isinstance(node, ast.Constant):
+        return True, node.value
+    if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+        items: list[Any] = []
+        for element in node.elts:
+            ok, value = _const(element)
+            if not ok:
+                return False, None
+            items.append(value)
+        if isinstance(node, ast.Tuple):
+            return True, tuple(items)
+        if isinstance(node, ast.Set):
+            try:
+                return True, set(items)
+            except TypeError:  # unhashable constant element
+                return False, None
+        return True, items
+    if isinstance(node, ast.Dict):
+        pairs: list[tuple[Any, Any]] = []
+        for key_node, value_node in zip(node.keys, node.values, strict=True):
+            if key_node is None:  # {**other} reads a value
+                return False, None
+            key_ok, key = _const(key_node)
+            value_ok, value = _const(value_node)
+            if not (key_ok and value_ok):
+                return False, None
+            pairs.append((key, value))
+        try:
+            return True, dict(pairs)
+        except TypeError:
+            return False, None
+    if isinstance(node, ast.UnaryOp) and type(node.op) in _UNARY_OPS:
+        ok, operand = _const(node.operand)
+        if not ok:
+            return False, None
+        try:
+            return True, _UNARY_OPS[type(node.op)](operand)
+        except _FOLD_FAILURE:
+            return False, None
+    if isinstance(node, ast.BinOp) and type(node.op) in _BINARY_OPS:
+        left_ok, left = _const(node.left)
+        right_ok, right = _const(node.right)
+        if not (left_ok and right_ok):
+            return False, None
+        try:
+            return True, _BINARY_OPS[type(node.op)](left, right)
+        except _FOLD_FAILURE:
+            return False, None
+    if isinstance(node, ast.BoolOp):
+        # short-circuit, so `False and f(x)` folds even though f is unknown
+        results = []
+        for value_node in node.values:
+            ok, value = _const(value_node)
+            if not ok:
+                return False, None
+            results.append(value)
+        if isinstance(node.op, ast.And):
+            return True, all(results)
+        return True, any(results)
+    if isinstance(node, ast.Compare):
+        left_ok, left = _const(node.left)
+        if not left_ok:
+            return False, None
+        for op, comparator in zip(node.ops, node.comparators, strict=True):
+            right_ok, right = _const(comparator)
+            if not right_ok or type(op) not in _COMPARE_OPS:
+                return False, None
+            try:
+                outcome = _COMPARE_OPS[type(op)](left, right)
+            except _FOLD_FAILURE:
+                return False, None
+            if not outcome:
+                return False, None  # provably False: a different defect, not this one
+            left = right
+        return True, True
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+        fold = _FOLDABLE_CALLS.get(node.func.id)
+        if fold is None or node.keywords:
+            return False, None
+        args: list[Any] = []
+        for arg in node.args:
+            ok, value = _const(arg)
+            if not ok:
+                return False, None
+            args.append(value)
+        try:
+            return True, fold(*args)
+        except _FOLD_FAILURE:
+            return False, None
+    return False, None
 
 
-def _is_constant_assertion(node: ast.AST) -> bool:
-    """Can this assertion never fail, whatever the artifact is?
+def _assertion_reads_nothing(node: ast.AST) -> bool:
+    """Is this assertion provably independent of the artifact?
 
-    Only provable constants are flagged, so a real smoke check such as
-    `assert result is not None` is never mistaken for one. `literal_eval`
-    fails on anything that reads a value, which is exactly the distinction.
+    Method-agnostic on purpose. Enumerating `assert*` names was the first
+    version's mistake: it covered four of the 41, and the ones it missed
+    (`assertNotEqual(1, 2)`, `assertIn(1, [1, 2])`) audited clean while
+    scoring 1.0 against a stub. The question is not *which* assertion it is but
+    whether anything in it can read the artifact — so a call whose every
+    argument folds is a constant assertion whatever its name.
     """
     if isinstance(node, ast.Assert):
-        ok, value = _literal(node.test)
-        return ok and bool(value)
-    if not isinstance(node, ast.Call):
-        return False
-    func = node.func
-    name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
-    args = node.args
-    if name in {"assertTrue", "assertFalse"} and len(args) == 1:
-        ok, value = _literal(args[0])
-        return ok and bool(value) is (name == "assertTrue")
-    if name in {"assertEqual", "assertNotEqual"} and len(args) == 2:
-        left_ok, left = _literal(args[0])
-        right_ok, right = _literal(args[1])
-        if left_ok and right_ok and left == right:
-            return name == "assertEqual"
+        ok, _ = _const(node.test)
+        return ok
+    if isinstance(node, ast.Call):
+        func = node.func
+        if not (isinstance(func, ast.Attribute) and func.attr.startswith("assert")):
+            return False
+        if not node.args:
+            return True  # self.assertTrue() with no argument cannot read anything
+        return all(_const(arg)[0] for arg in node.args)
     return False
+
+
+def _unittest_names(tree: ast.Module) -> dict[str, str]:
+    """Map a local name to its `unittest` member, following imports.
+
+    Matching a base by the bare name `TestCase` rejected
+    `from unittest import TestCase as TC`, which is the common idiom and a
+    suite that does discriminate. Resolving through the import is the only
+    way to tell `unittest.TestCase` from a same-named local class.
+    """
+    names: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "unittest":
+                    names[alias.asname or alias.name] = "unittest"
+        elif isinstance(node, ast.ImportFrom) and node.module == "unittest":
+            for alias in node.names:
+                names[alias.asname or alias.name] = f"unittest.{alias.name}"
+    return names
+
+
+def _base_target(base: ast.expr, imports: dict[str, str]) -> str | None:
+    """Resolve a base-class reference to a dotted `unittest` name, or None."""
+    if isinstance(base, ast.Name):
+        return imports.get(base.id)
+    if isinstance(base, ast.Attribute) and isinstance(base.value, ast.Name):
+        head = imports.get(base.value.id, base.value.id)
+        return f"{head}.{base.attr}" if head == "unittest" else None
+    return None
+
+
+def _is_test_case(node: ast.ClassDef, locals_: dict[str, ast.ClassDef], imports: dict[str, str],
+                  seen: frozenset[str] = frozenset()) -> str:
+    """Resolve this class to `unittest.TestCase` or `IsolatedAsyncioTestCase`.
+
+    Returns "" when it is neither, "sync" for plain `TestCase`, and "async" for
+    `IsolatedAsyncioTestCase`. A cyclic base list cannot be resolved.
+    """
+    if node.name in seen:
+        return ""
+    for base in node.bases:
+        target = _base_target(base, imports)
+        if target in ("unittest.TestCase", "unittest.IsolatedAsyncioTestCase"):
+            return "async" if target.endswith("IsolatedAsyncioTestCase") else "sync"
+        # a base may be another class defined in the same suite
+        name = base.id if isinstance(base, ast.Name) else getattr(base, "attr", "")
+        local = locals_.get(name)
+        if local is not None:
+            resolved = _is_test_case(local, locals_, imports, seen | {node.name})
+            if resolved:
+                return resolved
+    return ""
 
 
 def _suite_gate_reason(tests_source: str) -> str | None:
@@ -443,43 +624,55 @@ def _suite_gate_reason(tests_source: str) -> str | None:
     Three properties are decidable from the source alone, and only these:
 
     - the suite parses — code that cannot be imported cannot gate anything;
-    - it carries an assertion `unittest` will actually collect, which means
-      inside a `test*` method of a `unittest.TestCase` subclass;
-    - that assertion is not a constant.
+    - it carries an assertion `unittest` will actually collect: a `test*` method
+      of a `TestCase` subclass, resolved through the module's imports. A
+      coroutine test on a plain `TestCase` does not count, because unittest
+      never awaits it and reports the suite as passing anyway;
+    - that assertion reads something, so it can fail on a wrong artifact.
 
-    A self-referential assertion (`self.assertTrue(self.flag)`, set by the test
-    itself) can never fail and needs execution to detect, which a static read
-    of the spec cannot do. The docs say so rather than implying otherwise.
+    **Not provable by a static read.** An assertion arranged by the test itself
+    — `self.flag = True` then `self.assertTrue(self.flag)` — provably passes
+    for any artifact. Detecting that needs execution: run the suite against a
+    stub and require it to fail. This audit executes nothing.
     """
     try:
         tree = ast.parse(tests_source)
     except SyntaxError:
         return "metadata.tests does not parse, so it cannot be a suite the runner can import."
-    bases = {n.name: n for n in ast.walk(tree) if isinstance(n, ast.ClassDef)}
-    found = False
+    imports = _unittest_names(tree)
+    locals_ = {n.name: n for n in ast.walk(tree) if isinstance(n, ast.ClassDef)}
+    collectable = False
     for node in ast.walk(tree):
-        if not isinstance(node, ast.ClassDef) or not _is_test_case(node, bases):
+        if not isinstance(node, ast.ClassDef):
+            continue
+        kind = _is_test_case(node, locals_, imports)
+        if not kind:
             continue
         for member in node.body:
             if not isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
             if not member.name.startswith("test"):
                 continue
+            # a coroutine test only runs on an async test case
+            if isinstance(member, ast.AsyncFunctionDef) and kind != "async":
+                continue
+            collectable = True
             for inner in ast.walk(member):
-                if isinstance(inner, ast.Assert) or (
-                    isinstance(inner, ast.Call) and getattr(inner.func, "attr", "").startswith("assert")
-                ):
-                    found = True
-                    if not _is_constant_assertion(inner):
-                        return None
-    if not found:
+                is_assertion = isinstance(inner, ast.Assert) or (
+                    isinstance(inner, ast.Call)
+                    and isinstance(inner.func, ast.Attribute)
+                    and inner.func.attr.startswith("assert")
+                )
+                if is_assertion and not _assertion_reads_nothing(inner):
+                    return None
+    if not collectable:
         return (
-            "metadata.tests has no assertion inside a test* method of a unittest.TestCase, so "
-            "unittest collects nothing that can fail. The suite passes for any artifact."
+            "metadata.tests has no assertion inside a collectable test* method of a "
+            "unittest.TestCase, so nothing in it can fail. The suite passes for any artifact."
         )
     return (
-        "every assertion in metadata.tests is a constant, so the suite can never fail. A tautology "
-        "is not a gate; assert against a value the artifact produces."
+        "every assertion in metadata.tests reads no value, so none of them can fail on a wrong "
+        "artifact. Assert against something the solution produces."
     )
 
 
@@ -552,17 +745,20 @@ def check_absent_grading_contract(spec: TaskSpec, path: Path | None = None) -> l
 def _anchor_advice(spec: TaskSpec) -> str:
     """How to anchor this spec — only types whose grader reads text can be."""
     if VALIDATION_CHECKS.get(spec.type, frozenset()) & TOPIC_ANCHORS:
-        return "Add has_required or matches_pattern to anchor the subject."
-    advice = (
-        f"no implemented check reads the content of this {spec.type} artifact, so there is no "
-        "compliant way to anchor the subject from the spec: the topic checks are text-only and "
-        "this type never grades text. Add a content check to the runner, or grade the artifact as "
-        "a text-producing type."
-    )
-    if spec.metadata.get("required"):
+        advice = "Add has_required or matches_pattern to anchor the subject."
+    else:
+        advice = (
+            f"no implemented check reads the content of this {spec.type} artifact, so there is no "
+            "compliant way to anchor the subject from the spec: the topic checks are text-only and "
+            "this type never grades text. Add a content check to the runner, or grade the artifact "
+            "as a text-producing type."
+        )
+    # the grader reads metadata.required only inside `if "has_required" in
+    # requested`, so a declaration without that check anchors nothing
+    if spec.metadata.get("required") and "has_required" not in effective_checks(spec):
         advice += (
-            f" metadata.required is declared, but the {spec.type} grader never reads it, so it "
-            "anchors nothing here."
+            " metadata.required is declared but has_required is not requested, and the grader reads "
+            "metadata.required only inside the has_required check, so it anchors nothing here."
         )
     return advice
 

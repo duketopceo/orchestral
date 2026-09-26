@@ -39,6 +39,15 @@ on:
 # Deny everything by default. A job that needs a scope must ask for it.
 permissions: {}
 
+# A new dispatch to the same ref supersedes the run already in flight, and
+# nobody will read the superseded result. Cancelling does not strand a required
+# check: branch protection reads the checks attached to the *current* head SHA.
+# The one case this does not cover is a cancelled run with no successor on the
+# same ref — so do not cancel these runs by hand. (DUK-198)
+concurrency:
+  group: orchestral-eval-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   eval:
     runs-on: ubuntu-latest

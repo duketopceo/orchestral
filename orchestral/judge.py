@@ -12,10 +12,10 @@ import random
 from typing import Any
 
 from orchestral.config import ModelConfig, TaskSpec
-from orchestral.costs import compute_cost, token_usage_from_raw
+from orchestral.costs import compute_cost, pricing_source_for, token_usage_from_raw
 from orchestral.logger import EventLogger
 from orchestral.openrouter import OpenRouterClient
-from orchestral.planners import _extract_json
+from orchestral.planners import _extract_json, _response_fingerprint
 
 JUDGE_PROMPT = """You are an expert judge evaluating the output of an AI system.
 
@@ -129,15 +129,17 @@ def judge_artifact(
     content = completion["content"]
     usage = token_usage_from_raw(completion["usage"])
     cost_usd, _ = compute_cost(usage, judge)
-    api_cost = completion.get("api_cost_usd")
+    api_cost_usd = completion.get("api_cost_usd")
+    api_cost_usd = api_cost_usd if isinstance(api_cost_usd, (int, float)) else None
+    pricing_source = pricing_source_for(api_cost_usd)
 
     try:
         result = _extract_json(content)
         if not isinstance(result, dict):
-            raise ValueError("Judge did not return a JSON object")
+            raise ValueError(f"Judge did not return a JSON object: {_response_fingerprint(content)}")
         if "score" not in result or "passed" not in result:
-            raise ValueError("Judge JSON missing score or passed")
-        result["score"] = float(result.get("score", 0.0))
+            raise ValueError(f"Judge JSON missing score or passed: {_response_fingerprint(content)}")
+        result["score"] = _judge_score(result.get("score", 0.0), content)
         passed = result.get("passed", False)
         # bool("false") is True — a judge returning the string "false" must
         # not be scored as a pass; only bools and true/false strings count
@@ -145,11 +147,24 @@ def judge_artifact(
             result["passed"] = passed
         else:
             result["passed"] = str(passed).strip().lower() == "true"
-    except (TypeError, ValueError):
+    except (TypeError, ValueError) as exc:
+        # `reasoning` is a designed, quoted field, not a log: `reporter.py`
+        # renders it into the HTML report, the TUI shows it, and
+        # `export --format md` writes it into the audit `scrub` publishes. So
+        # this line identifies the response and never republishes it —
+        # `content[:200]` pasted 200 chars of judge output into all three.
+        #
+        # Every message that can reach here is model-free by construction:
+        # `_extract_json` reports one of three named faults and ends in a
+        # fingerprint (DUK-159), the two raises above are static names, and
+        # `_judge_score` re-raises rather than forwarding `float()`'s message,
+        # which quotes the value it could not convert.
+        # `tests/test_judge_parse_failure.py` plants a canary in the response on
+        # every path and holds that line.
         result = {
             "score": 0.0,
             "passed": False,
-            "reasoning": f"Could not parse judge response: {content[:200]}",
+            "reasoning": f"Could not parse judge response: {exc}",
             "parse_failed": True,
         }
     if "reasoning" not in result:
@@ -171,8 +186,8 @@ def judge_artifact(
         output_tokens=usage.completion_tokens,
         cost_usd=cost_usd,
         latency_ms=completion["latency_ms"],
-        pricing_source="configured",
-        api_cost_usd=api_cost if isinstance(api_cost, (int, float)) else None,
+        pricing_source=pricing_source,
+        api_cost_usd=api_cost_usd,
     )
 
     return result, [{
@@ -181,10 +196,28 @@ def judge_artifact(
         "input_tokens": usage.prompt_tokens,
         "output_tokens": usage.completion_tokens,
         "cost_usd": cost_usd,
-        "pricing_source": "configured",
-        "api_cost_usd": api_cost if isinstance(api_cost, (int, float)) else None,
+        "pricing_source": pricing_source,
+        "api_cost_usd": api_cost_usd,
         "usage": usage.to_dict(),
     }]
+
+
+def _judge_score(value: Any, response: str) -> float:
+    """`float(value)` with a model-free failure message.
+
+    `float("high")` raises `could not convert string to float: 'high'`, which
+    quotes the judge's own text — and `judge_artifact` turns that message into
+    the parse-failure reason that reaches the report. The values accepted and
+    the type raised are unchanged; only the message differs. The exception type
+    is kept in the label because it separates a wrong JSON type from a
+    non-numeric string, which are different judge faults.
+    """
+    try:
+        return float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"Judge score was not a number ({type(exc).__name__}): {_response_fingerprint(response)}"
+        ) from None
 
 
 def _fake_judge_result() -> dict[str, Any]:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import tempfile
 import unittest
 from pathlib import Path
@@ -24,6 +25,21 @@ REPO_TASKS = Path(__file__).resolve().parent.parent / "tasks"
 # minimal well-formed media: PNG magic + IEND, and an ISO-BMFF leading ftyp box
 PNG_BYTES = b"\x89PNG\r\n\x1a\n" + b"body" + b"IEND\xaeB`\x82"
 MP4_BYTES = b"\x00\x00\x00\x18ftypisom" + b"\x00" * 8
+
+# A suite that runs one test and asserts nothing: it passes for any artifact.
+NO_OP_SUITE = "import unittest\n\n\nclass T(unittest.TestCase):\n    def test_x(self):\n        pass\n"
+ASSERTING_SUITE = "import unittest\n\n\nclass T(unittest.TestCase):\n    def test_x(self):\n        self.assertEqual(1, 1)\n"
+
+# Which `Runner` method implements each registry entry. The text-producing
+# types share `_validate`; the media and fileset types compute their own sets.
+VALIDATOR_FOR_TYPE = {
+    "html": "_validate",
+    "constraint": "_validate",
+    "needle": "_validate",
+    "image": "_validate_image",
+    "video": "_validate_video",
+    "multi-file": "_validate_multi",
+}
 
 
 def _task(**kwargs) -> TaskSpec:
@@ -58,16 +74,6 @@ class TestCheckNamesFailClosed(unittest.TestCase):
         found = _rules(TaskSpec(id="s-1", type="sql", prompt="Summarize revenue.", validation=["has_title"]))
         self.assertIn("ignored_validation_list", found)
         self.assertIn("executed, matches_reference", found["ignored_validation_list"][0].detail)
-
-    def test_code_spec_without_tests_is_an_error(self):
-        found = _rules(TaskSpec(id="c-1", type="code", prompt="Write it.", metadata={"module": "a.py"}))
-        self.assertIn("code_without_tests", found)
-        self.assertIn("code_without_tests", found)
-        self.assertEqual(found["code_without_tests"][0].severity, ERROR)
-
-    def test_code_spec_with_tests_is_clean_of_that_error(self):
-        spec = TaskSpec(id="c-2", type="code", prompt="Write it.", metadata={"module": "a.py", "tests": "x = 1"})
-        self.assertNotIn("code_without_tests", _rules(spec))
 
     def test_runner_fails_closed_on_an_unknown_check_name(self):
         """Regression: `_validate` used to drop the name and pass the run."""
@@ -105,6 +111,87 @@ class TestCheckNamesFailClosed(unittest.TestCase):
 
         self.assertEqual(set(VALIDATION_CHECKS) | set(IGNORES_VALIDATION), set(TASK_TYPES))
         self.assertEqual(set(VALIDATION_CHECKS) & set(IGNORES_VALIDATION), set())
+
+    def test_every_registered_name_is_assigned_by_its_validator(self):
+        """A registered name no validator assigns is a phantom gate.
+
+        The runner imports this table, so a name added here without a matching
+        `checks["<name>"] = ...` in the validator would be accepted by the audit
+        and silently never run.
+        """
+        from orchestral import runner
+        from orchestral.audit import VALIDATION_CHECKS, VALIDATION_SHORTHANDS
+
+        self.assertEqual(set(VALIDATION_CHECKS), set(VALIDATOR_FOR_TYPE))
+        for task_type, names in VALIDATION_CHECKS.items():
+            source = inspect.getsource(getattr(runner.Runner, VALIDATOR_FOR_TYPE[task_type]))
+            for name in sorted(set(names) - VALIDATION_SHORTHANDS):
+                with self.subTest(type=task_type, check=name):
+                    self.assertIn(f'checks["{name}"]', source)
+
+
+class TestAbsentGradingContract(unittest.TestCase):
+    """A self-anchored type with no anchor grades anything as correct."""
+
+    def test_code_without_tests_is_an_error(self):
+        found = _rules(TaskSpec(id="c-1", type="code", prompt="Write it.", metadata={"module": "a.py"}))
+        self.assertIn("absent_grading_contract", found)
+        self.assertEqual(found["absent_grading_contract"][0].severity, ERROR)
+
+    def test_code_suite_that_asserts_nothing_is_an_error(self):
+        """A suite of `pass` bodies passes for any artifact, including a stub."""
+        spec = TaskSpec(id="c-2", type="code", prompt="Write it.", metadata={"tests": NO_OP_SUITE})
+        found = _rules(spec)
+        self.assertIn("absent_grading_contract", found)
+        self.assertIn("assert", found["absent_grading_contract"][0].detail)
+
+    def test_code_suite_with_an_assertion_is_clean_of_that_error(self):
+        spec = TaskSpec(
+            id="c-3", type="code", prompt="Write it.", metadata={"module": "a.py", "tests": ASSERTING_SUITE}
+        )
+        self.assertNotIn("absent_grading_contract", _rules(spec))
+
+    def test_word_assert_in_a_docstring_is_not_an_assertion(self):
+        spec = TaskSpec(
+            id="c-4",
+            type="code",
+            prompt="Write it.",
+            metadata={"tests": '"""Assert the slug is lowercase."""\n\n\ndef test_x():\n    pass\n'},
+        )
+        self.assertIn("absent_grading_contract", _rules(spec))
+
+    def test_extract_without_fields_or_expected_is_an_error(self):
+        """`check_extraction` scores an empty contract as 1.0, so no rule saw it."""
+        spec = TaskSpec(id="x-1", type="extract", prompt="Pull the totals from this invoice.", metadata={})
+        found = _rules(spec)
+        self.assertIn("absent_grading_contract", found)
+        self.assertIn("fields", found["absent_grading_contract"][0].detail)
+
+    def test_extract_with_fields_only_is_clean_of_that_error(self):
+        spec = TaskSpec(
+            id="x-2",
+            type="extract",
+            prompt="Pull the total.",
+            metadata={"fields": {"total": {"type": "number"}}},
+        )
+        self.assertNotIn("absent_grading_contract", _rules(spec))
+
+    def test_sql_without_reference_sql_is_an_error(self):
+        spec = TaskSpec(id="q-1", type="sql", prompt="Total revenue per month.", metadata={"schema": "create table t(a)"})
+        found = _rules(spec)
+        self.assertIn("absent_grading_contract", found)
+        self.assertIn("reference_sql", found["absent_grading_contract"][0].detail)
+
+    def test_api_without_calls_is_an_error(self):
+        spec = TaskSpec(id="p-1", type="api", prompt="Look up the order.", metadata={"stub": []})
+        found = _rules(spec)
+        self.assertIn("absent_grading_contract", found)
+        self.assertIn("calls", found["absent_grading_contract"][0].detail)
+
+    def test_text_types_have_no_metadata_contract_to_declare(self):
+        for task_type in ("html", "constraint", "needle", "image", "video", "multi-file"):
+            with self.subTest(type=task_type):
+                self.assertNotIn("absent_grading_contract", _rules(_task(id="t-x", type=task_type)))
 
 
 class TestGamingSurface(unittest.TestCase):
@@ -178,7 +265,7 @@ class TestGamingSurface(unittest.TestCase):
         self.assertIn("transcription", found["answer_derivable_from_prompt"][0].detail)
 
     def test_textbook_problem_is_flagged(self):
-        found = _rules(_task(id="code-fizzbuzz", type="code", prompt="Write fizzbuzz for 1..100.", metadata={"tests": "t"}))
+        found = _rules(_task(id="code-fizzbuzz", type="code", prompt="Write fizzbuzz for 1..100.", metadata={"tests": ASSERTING_SUITE}))
         self.assertIn("memorization_risk", found)
         self.assertIn("fizzbuzz", found["memorization_risk"][0].detail)
 
@@ -197,6 +284,48 @@ class TestGamingSurface(unittest.TestCase):
         found = _rules(spec)
         self.assertIn("unanchored_fileset", found)
         self.assertIn("no check reads the file bodies", found["unanchored_fileset"][0].detail)
+
+    def test_multi_file_without_expected_paths_is_flagged(self):
+        """The guard used to require `has_paths`, so the unanchored case never fired."""
+        spec = TaskSpec(id="mf-2", type="multi-file", prompt="Build a site.", validation=["non_empty", "zip_signature"])
+        found = _rules(spec)
+        self.assertIn("unanchored_fileset", found)
+        self.assertIn("the fileset is unanchored", found["unanchored_fileset"][0].detail)
+
+    def test_unusable_expected_paths_counts_as_unanchored(self):
+        """`expected_paths()` drops a non-list, so the grader looks for nothing."""
+        spec = TaskSpec(
+            id="mf-4",
+            type="multi-file",
+            prompt="Build a site.",
+            validation=["has_paths"],
+            metadata={"expected_paths": "index.html"},
+        )
+        found = _rules(spec)
+        self.assertIn("unanchored_fileset", found)
+        self.assertIn("the fileset is unanchored", found["unanchored_fileset"][0].detail)
+
+    def test_declared_paths_without_has_paths_are_flagged(self):
+        spec = TaskSpec(
+            id="mf-3",
+            type="multi-file",
+            prompt="Build a site.",
+            validation=["non_empty", "zip_signature"],
+            metadata={"expected_paths": ["index.html"]},
+        )
+        self.assertIn("unanchored_fileset", _rules(spec))
+
+    def test_structural_only_advice_is_type_aware(self):
+        """`has_required` is a text check; an image author cannot use it."""
+        spec = _task(id="i-1", type="image", prompt="Draw a coffee hero.", validation=["non_empty", "png_signature"])
+        detail = _rules(spec)["structural_only"][0].detail
+        self.assertNotIn("has_required", detail)
+        self.assertIn("image", detail)
+
+    def test_structural_only_advice_still_names_the_text_checks(self):
+        detail = _rules(_task(validation=["html"]))["structural_only"][0].detail
+        self.assertIn("has_required", detail)
+        self.assertIn("matches_pattern", detail)
 
     def test_missing_difficulty_is_info_not_a_warning(self):
         found = _rules(_task())
@@ -295,9 +424,9 @@ class TestShippedSuite(unittest.TestCase):
         ignored = report.by_rule().get("ignored_validation_list", [])
         self.assertEqual(ignored, [], [f.detail for f in ignored])
 
-    def test_shipped_code_specs_all_carry_tests(self):
+    def test_shipped_code_specs_all_carry_a_real_test_suite(self):
         report = audit_tree(REPO_TASKS)
-        self.assertEqual(report.by_rule().get("code_without_tests", []), [])
+        self.assertEqual(report.by_rule().get("absent_grading_contract", []), [])
 
     def test_shipped_suite_loads_and_has_specs(self):
         report = audit_tree(REPO_TASKS)

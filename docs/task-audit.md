@@ -32,9 +32,9 @@ it for you.
 | --- | --- | --- |
 | `unknown_validation_check` | error | `validation:` names a check the runner does not implement for that type. Silently dropped today; the run reports a pass anyway. |
 | `ignored_validation_list` | error | `code` / `sql` / `extract` / `api` never read `validation:`. They compute a fixed check set from `metadata`, so anything declared there is a phantom gate. |
-| `code_without_tests` | error | A `code` spec with no `metadata.tests` has no behavioural gate. Grading falls back to expected filenames plus static regexes, and a one-byte file per name passes. |
-| `structural_only` | warn | Nothing in the grader requires topical content. `has_title` / `has_cta` / `has_form` prove markup exists, not that the artifact is about the task, so only `has_required`, `matches_pattern`, or declared `metadata.required` clear this. |
-| `unanchored_fileset` | warn | `multi-file` grades filenames and byte counts only. No check reads the file bodies. |
+| `absent_grading_contract` | error | A self-anchored type ships no anchor in `metadata`, so its grader has nothing to compare the artifact against: `code` with no `metadata.tests`, `extract` with neither `fields` nor `expected`, `sql` with no `reference_sql`, `api` with no `calls`. `sql` and `api` fail closed at runtime; `extract` does not — an empty contract grades `{}` as `passes=True score=1.0`. A `code` suite is parsed, not grepped, so the word `assert` in a docstring is not a gate: the suite must contain an `assert` statement or a `self.assert*` call. |
+| `structural_only` | warn | Nothing in the grader requires topical content. `has_title` / `has_cta` / `has_form` prove markup exists, not that the artifact is about the task, so only `has_required`, `matches_pattern`, or declared `metadata.required` clear this. The suggested fix is type-aware: a type whose grader never reads text (`image`, `video`) has no compliant way to anchor the subject from the spec. |
+| `unanchored_fileset` | warn | `multi-file` grades filenames and byte counts only. No check reads the file bodies. Fires in all three unanchored states: no `metadata.expected_paths`, declared paths that `has_paths` was never asked to check, or declared paths checked only for existence. |
 | `prompt_states_the_answer` | warn | The prompt spells out graded output — an expected value, the reference query, or the expected call list. Recitation scores the same as reasoning. `extract` is exempt by design: its prompt carries the source document. |
 | `answer_derivable_from_prompt` | warn | Every graded value is readable in the prompt (`extract`, `sql`). The task ceiling is transcription and lookup, not problem solving. |
 | `memorization_risk` | warn | The id or prompt matches a known textbook problem (fizzbuzz, slugify, LRU cache, expression parser, two-sum, …). A memorised answer scores the same as a solved one. |
@@ -47,8 +47,34 @@ it for you.
 `VALIDATION_CHECKS` in `orchestral/audit.py` is the single source of truth for
 which `validation:` names the runner implements per type, and `runner.py`
 imports it. If you add a check to a validator, add it to that table in the same
-change — `tests/test_audit.py` fails if the table and the runner drift apart,
-and it fails if a table entry exists for a type that is not in `TASK_TYPES`.
+change.
+
+Two tests in `tests/test_audit.py` hold the table to the runner:
+
+- `test_registry_covers_every_task_type_exactly_once` — every `TASK_TYPES`
+  entry appears in the registry exactly once, as either a `VALIDATION_CHECKS`
+  key or an `IGNORES_VALIDATION` member.
+- `test_every_registered_name_is_assigned_by_its_validator` — every registered
+  name (minus the `html` shorthand, which the runner expands) appears as
+  `checks["<name>"] =` in the body of the `Runner` method that implements that
+  registry entry, and every registry key has an entry in the test's
+  `VALIDATOR_FOR_TYPE` map.
+
+That second test is the only thing standing between the registry and a phantom
+gate. The audit itself cannot catch a name that is registered but never
+assigned: it reads the same table the runner does, so a name added to
+`VALIDATION_CHECKS["image"]` with no matching assignment in `_validate_image`
+still audits clean and still returns exit 0 under `--strict`.
+
+## Known gap: the `code` execution boundary
+
+`orchestral/codeexec.py` returns `executed: False` on every branch — no
+isolated runtime adapter exists — and `_validate_code` requires
+`executed is True`. A `code` spec therefore cannot pass today, whatever its
+suite contains. `absent_grading_contract` checks that the spec *declares* a
+suite with a real assertion; it does not claim the suite can run. Whether the
+audit should report the disabled boundary, or `code` specs should stop
+claiming a behavioural gate, is tracked in DUK-87.
 
 ## What this does not do
 

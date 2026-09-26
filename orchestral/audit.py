@@ -18,6 +18,7 @@ reports may reference them by name.
 
 from __future__ import annotations
 
+import ast
 import re
 from collections import Counter
 from dataclasses import dataclass, field
@@ -25,6 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import TaskSpec, load_task
+from .fileset import expected_paths
 
 ERROR = "error"
 WARN = "warn"
@@ -63,6 +65,23 @@ VALIDATION_CHECKS: dict[str, frozenset[str]] = {
     "image": frozenset({"non_empty", "png_signature"}),
     "video": frozenset({"non_empty", "mp4_signature"}),
     "multi-file": frozenset({"non_empty", "zip_signature", "has_paths"}),
+}
+
+# Registry names the runner expands into other checks instead of assigning
+# itself, so they never appear as a `checks[...]` key.
+VALIDATION_SHORTHANDS = frozenset({"html"})
+
+# The grading contract each self-anchored type needs before its grader has
+# anything to compare the artifact against. A value lists interchangeable keys:
+# supplying any one of them satisfies the contract. Without an anchor the
+# grader either fails closed (`sql`, `api`) or vacuously passes — `extract`
+# scores an empty `expected` as 1.0, and a `code` suite of `pass` bodies
+# reports `tests_run=1 ok=True`.
+GRADING_CONTRACT: dict[str, tuple[str, ...]] = {
+    "code": ("tests",),
+    "extract": ("fields", "expected"),
+    "sql": ("reference_sql",),
+    "api": ("calls",),
 }
 
 # Types whose grader never reads `validation:` — they compute a fixed check set
@@ -358,22 +377,71 @@ def check_validation_names(spec: TaskSpec, path: Path | None = None) -> list[Fin
     ]
 
 
-def check_code_has_tests(spec: TaskSpec, path: Path | None = None) -> list[Finding]:
-    """A `code` spec with no hidden suite has no behavioural gate at all."""
-    if spec.type != "code":
-        return []
-    if str(spec.metadata.get("tests") or "").strip():
+def _suite_asserts_anything(tests_source: str) -> bool:
+    """Does the suite contain at least one real assertion?
+
+    Parsed, not grepped, so the word "assert" in a docstring or a string
+    literal does not pass for a gate. `ast.parse` does not execute the source.
+    An unparseable suite fails closed: code that cannot be imported cannot gate
+    anything.
+    """
+    try:
+        tree = ast.parse(tests_source)
+    except SyntaxError:
+        return False
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assert):
+            return True
+        if isinstance(node, ast.Call):
+            func = node.func
+            name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+            if name.startswith("assert"):
+                return True
+    return False
+
+
+def _absent_contract_reason(spec: TaskSpec) -> str | None:
+    """Why this spec's grader has no anchor, or None when it has one."""
+    keys = GRADING_CONTRACT.get(spec.type)
+    if keys is None:
+        return None
+    if any(spec.metadata.get(key) for key in keys):
+        return None
+    if spec.type == "code":
+        return (
+            "no metadata.tests, so grading is expected_paths + static quality regexes. "
+            "Any file with a byte in the right name passes."
+        )
+    return (
+        f"no {' or '.join(keys)}, so type '{spec.type}' has no grading contract. "
+        f"It computes {COMPUTED_CHECKS[spec.type]} against nothing."
+    )
+
+
+def check_absent_grading_contract(spec: TaskSpec, path: Path | None = None) -> list[Finding]:
+    """A self-anchored type with no anchor grades anything as correct.
+
+    Generalises the old `code_without_tests`, which only asked whether
+    `metadata.tests` was a non-empty string: a suite whose single test body is
+    `pass` is audit-clean and always reports success.
+    """
+    reason = _absent_contract_reason(spec)
+    if reason is None and spec.type == "code" and not _suite_asserts_anything(
+        str(spec.metadata.get("tests") or "")
+    ):
+        reason = (
+            "metadata.tests contains no assertion, so the suite passes for any artifact "
+            "including an empty one. Add a real assertion or self.assert* call."
+        )
+    if reason is None:
         return []
     return [
         Finding(
-            rule="code_without_tests",
+            rule="absent_grading_contract",
             severity=ERROR,
             task_id=spec.id,
             path=str(path) if path else None,
-            detail=(
-                "no metadata.tests, so grading is expected_paths + static quality regexes. "
-                "Any file with a byte in the right name passes."
-            ),
+            detail=reason,
         )
     ]
 
@@ -381,6 +449,18 @@ def check_code_has_tests(spec: TaskSpec, path: Path | None = None) -> list[Findi
 # ---------------------------------------------------------------------------
 # Warnings — a model can score without doing the work
 # ---------------------------------------------------------------------------
+
+
+def _anchor_advice(task_type: str) -> str:
+    """How to anchor this type — only types whose grader reads text can be."""
+    if VALIDATION_CHECKS.get(task_type, frozenset()) & TOPIC_ANCHORS:
+        return "Add has_required or matches_pattern to anchor the subject."
+    return (
+        f"no implemented check reads the content of this {task_type} artifact, so there is no "
+        "compliant way to anchor the subject from the spec: the topic checks are text-only and "
+        "this type never grades text. Add a content check to the runner, or grade the artifact as "
+        "a text-producing type."
+    )
 
 
 def check_structural_only(spec: TaskSpec, path: Path | None = None) -> list[Finding]:
@@ -405,32 +485,47 @@ def check_structural_only(spec: TaskSpec, path: Path | None = None) -> list[Find
             path=str(path) if path else None,
             detail=(
                 f"checks {sorted(effective_checks(spec))} never require topical content, so any "
-                f"well-formed {spec.type} artifact passes. Add has_required or matches_pattern to "
-                "anchor the subject."
+                f"well-formed {spec.type} artifact passes. {_anchor_advice(spec.type)}"
             ),
         )
     ]
 
 
 def check_unanchored_fileset(spec: TaskSpec, path: Path | None = None) -> list[Finding]:
-    """`multi-file` grades names and byte counts; nothing checks the contents."""
+    """`multi-file` grades names and byte counts; nothing checks the contents.
+
+    Every `multi-file` spec lands here in one of three states: no declared
+    paths, declared paths the grader never looks for, or declared paths checked
+    only for existence. None of them reads a file body.
+    """
     if spec.type != "multi-file":
         return []
-    if "has_paths" not in set(spec.validation):
-        return []
-    declared = spec.metadata.get("expected_paths") or []
+    # the same normalisation the runner uses, so the reported set is the set it
+    # will actually look for
+    declared = expected_paths(spec.metadata)
     if not declared:
-        return []  # has_paths already fails closed on an empty declaration
+        detail = (
+            "the fileset is unanchored: metadata.expected_paths yields no usable path, so any "
+            "readable zip passes, including one containing junk.txt. Declare a list of paths and "
+            "request has_paths."
+        )
+    elif "has_paths" not in set(spec.validation or ()):
+        detail = (
+            f"metadata.expected_paths declares {sorted(declared)} but has_paths is not requested, "
+            "so the grader never looks for them. Add has_paths to validation."
+        )
+    else:
+        detail = (
+            f"has_paths only checks that {sorted(declared)} exist and are non-empty. "
+            "A one-byte file per path passes; no check reads the file bodies."
+        )
     return [
         Finding(
             rule="unanchored_fileset",
             severity=WARN,
             task_id=spec.id,
             path=str(path) if path else None,
-            detail=(
-                f"has_paths only checks that {sorted(declared)} exist and are non-empty. "
-                "A one-byte file per path passes; no check reads the file bodies."
-            ),
+            detail=detail,
         )
     ]
 
@@ -634,7 +729,7 @@ def check_holdout_arm(specs: list[TaskSpec]) -> list[Finding]:
 
 PER_SPEC_RULES = (
     check_validation_names,
-    check_code_has_tests,
+    check_absent_grading_contract,
     check_structural_only,
     check_unanchored_fileset,
     check_prompt_states_answer,

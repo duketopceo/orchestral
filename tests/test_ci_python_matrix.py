@@ -150,16 +150,14 @@ class TestCiPythonMatrix(unittest.TestCase):
         `python-version` matrix nor expands one. It is not a spend cap, and the
         name used to claim it was.
 
-        Dropping the brackets defeats the first assertion only. `_MATRIX` needs
-        a literal `[`, so a block-sequence `python-version` slips past it — and
-        is then caught by the second, because expanding that block into
-        `setup-python` writes `matrix.python-version` into the file. Only a
-        block-sequence matrix that is never expanded gets past both, and that
-        one bills once, because every job still runs the pinned interpreter. It
-        is not a spend path, so it is not listed as one below.
+        `_MATRIX` needs a literal `[`. A block-style `strategy.matrix` written
+        without brackets is not matched, and is then caught by the second
+        assertion anyway, because expanding that block into `setup-python`
+        writes `matrix.python-version` into the file.
 
         Five shapes do get past both while multiplying a real bill. All five are
-        green here today:
+        green here today, each measured by expanding the job as Actions does and
+        counting the paid-eval steps that expansion produces:
 
         - a `matrix:` on a non-python key, fanning jobs out at one interpreter
         - a `matrix.include` fanned out through `${{ matrix['python-version'] }}`,
@@ -170,14 +168,19 @@ class TestCiPythonMatrix(unittest.TestCase):
         - a second workflow file beside `orchestral.yml` carrying its own
           matrix, which the hard-coded path above never reads
 
-        A `reusable-workflow` call gets past both too. On its own it moves the
-        bill rather than multiplying it; it multiplies once the caller fans out.
+        Two more clear both assertions and are deliberately not called spend
+        paths, because neither can be settled from this repository. A
+        `python-version` written as a list but never expanded is not a
+        `setup-python` input, and whether such a step selects one interpreter,
+        coerces the list to a string, or fails outright was not measured, so
+        this docstring does not claim it does. A `reusable-workflow` call bills
+        once per caller instance, and whether the called file fans out is not
+        measurable from here, because that file is not in this repository.
 
-        These were measured against the two assertions above rather than argued,
-        and the review of record is DUK-202. A comment above the pin states the
-        intent, and this makes the common accidental case fail loudly. Closing
-        the rest is a judgement about what this workflow is allowed to become,
-        so it is raised there as a review question rather than decided here.
+        A comment above the pin states the intent, and this makes the common
+        accidental case fail loudly. Closing the rest is a judgement about what
+        this workflow is allowed to become, so it is raised as a review question
+        on DUK-202 rather than decided here.
         """
         text = PAID_EVAL_WORKFLOW.read_text()
         self.assertIsNone(

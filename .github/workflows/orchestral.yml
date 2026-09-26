@@ -1,9 +1,21 @@
 name: orchestral eval
 
+# The paid eval costs real provider spend and reaches the provider API key, so it
+# is manual and environment-gated only. It must never be reachable from a pull
+# request: a same-repository PR can write to this repository, so "skip forks" is
+# not a boundary here (DUK-184). The regression check in
+# tests/test_workflow_security.py fails if a PR trigger is added back.
+#
+# A dispatcher may name a ref to evaluate, so the environment's required reviewer
+# is the control that stands between PR content and the key. That reviewer must
+# read the diff, not just the ref name. See docs/ci-security.md.
 on:
-  pull_request:
   workflow_dispatch:
     inputs:
+      ref:
+        description: "Branch or tag to evaluate. Leave empty to evaluate the default branch."
+        required: false
+        default: ""
       task:
         description: "Task id from tasks/*.yaml"
         required: true
@@ -20,18 +32,18 @@ on:
         description: "Planner strategy: raw or ce-plan"
         required: true
         default: "raw"
+      max_cost_usd:
+        description: "Cap in USD, compared against provider-billed cost. Blank uses 0.05."
+        required: false
 
-# A new push to a PR head supersedes the run already in flight for that head,
-# and nobody will read the superseded result. Without this, every re-push pays
-# the full eval again: 38 of the 75 runs on 2026-09-26 were re-pushes of a
-# branch already evaluated that day. Keying on the pull request number keeps one
-# branch's re-push from cancelling a different PR's run.
-#
-# Cancelling does not strand a required check. Branch protection reads the
-# checks attached to the *current* head SHA, and a cancelled run is attached to
-# the superseded SHA; the head SHA always has its own run. The one case this
-# does not cover is a cancelled run with no successor on the same head — so do
-# not cancel these runs by hand. (DUK-198)
+# Deny everything by default. A job that needs a scope must ask for it.
+permissions: {}
+
+# A new dispatch to the same ref supersedes the run already in flight, and
+# nobody will read the superseded result. Cancelling does not strand a required
+# check: branch protection reads the checks attached to the *current* head SHA.
+# The one case this does not cover is a cancelled run with no successor on the
+# same ref — so do not cancel these runs by hand. (DUK-198)
 concurrency:
   group: orchestral-eval-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
@@ -39,128 +51,105 @@ concurrency:
 jobs:
   eval:
     runs-on: ubuntu-latest
-    # Secrets aren't available to fork PRs — skip the paid eval there instead
-    # of failing every external contribution.
-    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
+    # Closed by default. A referenced environment that does not exist yet is
+    # created by GitHub with no protection rules, so a dispatcher would reach
+    # OPENROUTER_API_KEY on any branch with nobody to approve it. Every agent in
+    # this company dispatches as the same write-access identity, so "only a
+    # trusted person can dispatch" is not true here. Set the repository variable
+    # PAID_EVAL_ENABLED=true, with the paid-eval environment's required reviewers
+    # configured, to open this path. docs/ci-security.md has the steps.
+    if: vars.PAID_EVAL_ENABLED == 'true'
+    # The paid-eval environment is the human gate on provider spend. It is only a
+    # gate if the environment has required reviewers configured; as of this commit
+    # the repository has no environments at all. See docs/ci-security.md.
+    environment: paid-eval
     permissions:
-      pull-requests: write
+      contents: read
+    # No secret lives at job scope. Every value here is a non-sensitive input.
     env:
-      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
       TASK: ${{ inputs.task || 'landing-page-coffee' }}
       ORCHESTRATOR: ${{ inputs.orchestrator || 'deepseek/deepseek-v4-flash-0731' }}
       WORKER: ${{ inputs.worker || 'z-ai/glm-5.3-flash' }}
       PLANNER: ${{ inputs.planner || 'raw' }}
-      MAX_COST_USD: "0.05"
+      MAX_COST_USD: ${{ inputs.max_cost_usd }}
 
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      # The evaluated ref is the default branch unless a dispatcher names one, so
+      # the safe target is what happens by default. Because the ref can be
+      # attacker-chosen branch content, the containment property now rests on the
+      # paid-eval required reviewer rather than on structure alone: approval of a
+      # ref name is not a code review, so the approver must read the diff first.
+      # docs/ci-security.md states the residual risk. The "Record evaluated
+      # commit" step below is what makes the approved run auditable afterwards.
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ inputs.ref || github.event.repository.default_branch }}
+          persist-credentials: false
+      - uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
         with:
           python-version: "3.11"
 
-      # `harness.py run` reads product source, task specs, and package metadata.
-      # A diff that touches none of them cannot change its result, so the paid
-      # step is skipped for it. It gates on product source, not on the diff, so
-      # charging a docs-only or test-only PR the full 16 minutes buys nothing.
-      #
-      # `.github/workflows/**` is in the set because this file is part of what the
-      # step runs: it fixes the harness invocation, and it *is* the skip logic.
-      # Without it, anyone who can push here could widen this list, drop the
-      # guards, or gut the job, and `eval` would still report success having
-      # done nothing. A gate has to be inside its own relevance set. (DUK-256)
-      #
-      # The guard is on the *steps*, never on the job or the workflow. A job
-      # whose steps are all skipped still reports success; a workflow filtered
-      # out by `paths`/`paths-ignore` reports no check at all, which would leave
-      # `eval` pending on main forever. That is the failure mode this shape
-      # exists to avoid. (DUK-198)
-      #
-      # Changed files come from the API, not `git diff`: actions/checkout leaves
-      # a depth-1 clone with no merge base to diff against.
-      - name: Classify diff
-        id: diff
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const RELEVANT = [/^orchestral\//, /^harness\.py$/, /^tasks\//, /^pyproject\.toml$/, /^\.github\/workflows\//];
-            // The list-files API stops at 3000 without saying so. A PR that
-            // large has a diff we cannot see, so assume it is relevant rather
-            // than silently skip a gate.
-            const LIST_FILES_CAP = 3000;
-
-            let relevant = true;
-            if (context.eventName === 'pull_request') {
-              const files = await github.paginate(github.rest.pulls.listFiles, {
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                pull_number: context.issue.number,
-                per_page: 100,
-              });
-              const touched = files
-                .flatMap((f) => [f.filename, f.previous_filename])
-                .filter((f) => f && RELEVANT.some((re) => re.test(f)));
-              relevant = files.length >= LIST_FILES_CAP || touched.length > 0;
-              const shown = touched.slice(0, 5).map((f) => `\`${f}\``);
-              const verdict = relevant
-                ? `Paid eval runs. Relevant paths in this diff: ${shown.join(', ')}${touched.length > shown.length ? `, +${touched.length - shown.length} more` : ''}.`
-                : 'Paid eval skipped. This diff touches no product source, task spec, package metadata, or workflow, so the fixed eval task cannot produce a different result.';
-              core.info(verdict);
-              await core.summary.addRaw(verdict, true).write();
-            }
-            core.setOutput('relevant', String(relevant));
+      # A dispatcher input must reach the shell through env, never interpolated
+      # into the run line, or a crafted ref executes before the job is reviewed.
+      - name: Record evaluated commit
+        env:
+          REQUESTED_REF: ${{ inputs.ref || github.event.repository.default_branch }}
+        run: echo "evaluating commit $(git rev-parse HEAD) for ref $REQUESTED_REF"
 
       - name: Install orchestral
-        if: steps.diff.outputs.relevant == 'true'
         run: pip install -e .
 
+      # The only step that receives the provider key.
       - name: Run eval
-        if: steps.diff.outputs.relevant == 'true'
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
         run: python3 harness.py run --task "$TASK" --orchestrator "$ORCHESTRATOR" --worker "$WORKER" --planner "$PLANNER"
 
       - name: Generate reports
-        if: steps.diff.outputs.relevant == 'true'
         run: |
           python3 harness.py dashboard
           python3 harness.py report --html
           python3 harness.py report > reports/summary.txt
 
       - name: Upload reports
-        if: steps.diff.outputs.relevant == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: orchestral-reports
           path: reports/
 
-      - name: Comment on PR
-        if: github.event_name == 'pull_request' && steps.diff.outputs.relevant == 'true'
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const fs = require('fs');
-            const summary = fs.readFileSync('reports/summary.txt', 'utf8');
-            const body = `## orchestral eval\n\n\`\`\`\n${summary}\n\`\`\`\n\nReports are attached as the \`orchestral-reports\` artifact.`;
-            github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-              body
-            });
-
-      # Guards the budget it cannot measure: with no run there is no cost row,
-      # and a skipped step is the only honest reading of "spent nothing".
+      # A cost cap bounds spend. It is not a containment control, and never was.
+      #
+      # The cap is compared against `calls.api_cost_usd` — the figure the
+      # provider puts in its own response — not against the harness's
+      # configured rate-card estimate. On 2026-09-26 the estimate understated
+      # real spend 5.3x, so the old `runs.total_cost_usd` check passed 83 runs
+      # that were charged $3.12. See orchestral/budget.py and DUK-214.
+      #
+      # always(): a failed eval still spent money. Without this the cap would
+      # be skipped exactly when a run blew past it on the way down, which is
+      # the same hole as reading a failed run's 0.0 total.
       - name: Enforce cost budget
-        if: steps.diff.outputs.relevant == 'true'
-        run: |
-          cost=$(python3 - << 'PY'
-          import sqlite3
-          conn = sqlite3.connect('runs/index.db')
-          row = conn.execute("SELECT total_cost_usd FROM runs ORDER BY started_at DESC LIMIT 1").fetchone()
-          print(row[0] if row else 0.0)
-          PY
-          )
-          if (( $(echo "$cost > $MAX_COST_USD" | bc -l) )); then
-            echo "orchestral eval cost \${cost} exceeded \${MAX_COST_USD} budget"
-            exit 1
-          else
-            echo "orchestral eval passed within \${MAX_COST_USD} budget"
-          fi
+        if: always()
+        run: python3 -m orchestral.budget --runs-dir runs --max-cost-usd "${MAX_COST_USD:-0.05}"
+
+      # DECLINED as a blocking gate, on purpose (DUK-214 AC #3).
+      #
+      # `harness.py prices` compares the configured rate card against the
+      # provider's billed figure, and it is the right detector for a stale
+      # models/*.yaml. It is not wired in as a gate because it cannot fail
+      # today: `pricing_drift()` only considers rows whose `pricing_source` is
+      # "api_reported", and the call paths the eval actually takes hardcode
+      # "configured" (orchestral/planners.py, orchestral/judge.py). Measured
+      # 2026-09-26: 183 real calls, 183 with `api_cost_usd` set, 0 labelled
+      # "api_reported". A gate over a set that is structurally empty is a gate
+      # that always passes, which is the same defect this issue is closing.
+      #
+      # It also is the wrong control. Stale rates are a hygiene defect, not
+      # overspend, and a mid-eval provider reprice would redden every PR for a
+      # reason unrelated to the change under test.
+      #
+      # Revisit once the labelling defect is fixed. Until then this step reports
+      # the drift so the number is visible in the log; it never fails the job.
+      - name: Report pricing drift (informational, non-blocking)
+        if: always()
+        run: python3 harness.py prices || echo "::warning::pricing drift check is inert until pricing_source is labelled api_reported"

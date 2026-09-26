@@ -25,6 +25,13 @@ metadata: {}                  # optional free-form map (video tasks read generat
 | `assets` | list[str] | `[]` | Reserved; not consumed by the runner yet |
 | `metadata` | map | `{}` | Free-form; carried into run records. `video` tasks read `duration`, `resolution`, `aspect_ratio`, `generate_audio`, `seed`; `multi-file` tasks read `expected_paths`; `code` tasks read `module`, `tests`, `timeout_seconds`, `expected_paths`, plus quality bounds `max_code_lines`, `max_functions`, `max_complexity_lite`, `no_unsafe`, `no_external_deps`, `forbidden_patterns` |
 
+Editing a spec changes its `task_hash` (sha256 of the spec content, recorded
+in the manifest). Runs recorded under the old hash stay valid artifacts but no
+longer pair with runs of the edited spec, so set `metadata.version` (recorded
+as `task_version`) to label the revision and note in the spec why it changed.
+That applies to a bug fix in the expected answer too: a corrected spec is a
+new hash.
+
 ## Task types
 
 - **`html`** — workers write markup fragments; the orchestrator assembles a
@@ -118,6 +125,21 @@ metadata: {}                  # optional free-form map (video tasks read generat
   can still burn CPU until the step cap trips). `validation:` entries are
   unused — the check set is fixed (`executed`, `matches_reference`). See
   `tasks/sql-monthly-revenue.yaml`.
+
+  The reference defines truth, so it must return at least one row. An empty
+  reference result is a broken spec (error, null score), not an empty answer
+  to match against — otherwise any candidate returning zero rows, including a
+  nonsense one, scores `1.0`. Two rules keep a reference from answering
+  nothing by accident:
+
+  - **Round both sides of a comparison, or neither.** `ROUND(SUM(x), 2)`
+    compared against a bare `MAX(SUM(x)) OVER (...)` is unequal for any value
+    that is not exactly representable in binary floating point — `3 x 12.34` is
+    `37.019999999999996` — so the reference returns zero rows. Aggregate the
+    rounded value: `MAX(ROUND(SUM(x), 2)) OVER (...)`.
+  - **Seed values that exercise the comparison.** Prices like `30.0` and
+    `12.5` are exact binary fractions, so they hide the case above. Use prices
+    with a fractional cent (`12.34`) and quantities that are not powers of two.
 - **`extract`** — workers extract a JSON object per subtask; the orchestrator
   picks the best candidate (same selection flow as `image`/`video`); the
   chosen extraction is stored as `artifact.json` and graded deterministically.

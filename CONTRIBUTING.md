@@ -42,6 +42,31 @@ external contributions are covered by the mock-provider integration tests.
   dirs for run storage. No live API calls in tests.
 - `tests/test_integration_mock.py` shows a full non-dry-run `Runner` execution
   with injected mock clients — copy that shape for provider-affecting changes.
+- If a commit carries tests alongside non-test work, the subject line says so
+  (`test:`/`fix:`/`refactor:`, not `chore:`) or the body names the test payload.
+  A subject that describes only part of the payload makes the commit
+  unauditable by `git log --stat`.
+
+## Commit traceability note — `cb75325`
+
+`cb75325` is titled `chore: make Lint and Types executable in CI`, but its
+payload also adds 17 lines to `tests/test_extract_task.py` — two tests for the
+list branch of `_strict_eq`, which the `zip(..., strict=True)` change in the
+same commit touches. Its body documents the tests, so the content is not lost;
+only the subject line is incomplete.
+
+Those 17 lines are byte-identical to the two tests in un-merged PR 61
+(`44ec97a2`). The commit is **not** from PR 61: it is from PR 52
+(`fix/duk114-lint-types-green`), folded into PR 55 via `0798438` and merged as
+`a069ab5`. PR 61 is still closed-unmerged, so its copy of these tests must be
+dropped before that PR is reopened, or it will re-add them.
+
+`cb75325` also does not touch `.github/workflows/ci.yml`. The `Tests -> Lint ->
+Types` sequential steps with no `continue-on-error` — the coupling its own body
+names as the root cause — are still in place, so a red `Tests` step still skips
+both gates. The commit made the code clean; it did not make the gates
+reachable. The "All four run in CI on every PR" line above is therefore not
+yet true for `Lint` and `Types`.
 
 ## PR checklist
 

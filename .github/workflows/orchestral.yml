@@ -23,7 +23,7 @@ on:
       max_cost_usd:
         description: "Cap in USD, compared against provider-billed cost"
         required: false
-        default: "0.05"
+        default: "0.001"
 
 jobs:
   eval:

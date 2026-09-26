@@ -1,0 +1,45 @@
+id: sql-cohort-repeat
+title: "Cohort repeat-purchase SQL"
+blurb: "SQL: repeat-purchase rate grouped by each customer's first-purchase month."
+type: sql
+prompt: >
+  Write a single read-only SQL query (SQLite dialect) that reports purchase
+  cohorts. A customer's cohort is the calendar month (YYYY-MM) of their FIRST
+  order with status 'shipped' — cancelled or pending orders do not define a
+  cohort and never count anywhere in the answer. For each cohort month return:
+  cohort (YYYY-MM), customers (count of customers in the cohort),
+  repeat_customers (count of those customers who placed at least one shipped
+  order in a LATER calendar month than their cohort month). One row per cohort,
+  ordered by cohort ascending.
+  The database has tables: customers(id, name),
+  orders(id, customer_id, placed_on DATE, status).
+validation: []
+assets: []
+metadata:
+  ordered: true
+  schema:
+    - "CREATE TABLE customers (id INTEGER PRIMARY KEY, name TEXT NOT NULL)"
+    - "CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER NOT NULL, placed_on DATE NOT NULL, status TEXT NOT NULL)"
+  seed:
+    - "INSERT INTO customers VALUES (1, 'Ana'), (2, 'Bo'), (3, 'Cy'), (4, 'Di'), (5, 'Eli')"
+    - "INSERT INTO orders VALUES (1, 1, '2025-01-05', 'shipped'), (2, 1, '2025-02-10', 'shipped'), (3, 2, '2025-01-08', 'cancelled'), (4, 2, '2025-02-03', 'shipped'), (5, 3, '2025-01-12', 'shipped'), (6, 4, '2025-02-14', 'shipped'), (7, 4, '2025-02-20', 'shipped'), (8, 4, '2025-03-02', 'shipped'), (9, 5, '2025-03-15', 'shipped')"
+  reference_sql: |
+    WITH firsts AS (
+      SELECT customer_id, MIN(strftime('%Y-%m', placed_on)) AS cohort
+      FROM orders
+      WHERE status = 'shipped'
+      GROUP BY customer_id
+    ),
+    repeats AS (
+      SELECT f.customer_id
+      FROM firsts f
+      JOIN orders o ON o.customer_id = f.customer_id AND o.status = 'shipped'
+      WHERE strftime('%Y-%m', o.placed_on) > f.cohort
+      GROUP BY f.customer_id
+    )
+    SELECT f.cohort, COUNT(*) AS customers,
+           COUNT(r.customer_id) AS repeat_customers
+    FROM firsts f
+    LEFT JOIN repeats r ON r.customer_id = f.customer_id
+    GROUP BY f.cohort
+    ORDER BY f.cohort

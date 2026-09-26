@@ -1,4 +1,6 @@
 id: code-slugify
+title: "Slugify"
+blurb: "Turn arbitrary text into a clean URL slug."
 type: code
 prompt: |
   Implement a Python module `slugify.py` with `slugify(text: str) -> str`.

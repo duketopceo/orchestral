@@ -3,9 +3,11 @@ __pycache__/
 .venv/
 .env
 runs/
+runs-v1/
 runs-pub/
 reports/
 *.db
+.codebase-memory/
 .DS_Store
 data/
 *.egg-info/

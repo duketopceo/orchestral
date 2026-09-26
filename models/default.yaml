@@ -49,7 +49,16 @@ models:
     input_price_per_mtok: 0.075
     output_price_per_mtok: 0.25
     context: 1048576
-    max_tokens: 8192
+    max_tokens: 32768
+    retry_limit: 2
+
+  - slug: "google/gemma-4-31b-it"
+    name: "Gemma 4 31B"
+    role: worker
+    input_price_per_mtok: 0.10
+    output_price_per_mtok: 0.34
+    context: 262144
+    max_tokens: 32768
     retry_limit: 2
 
   - slug: "qwen/qwen3-coder-flash"
@@ -244,11 +253,39 @@ models:
     metadata:
       vision: true
 
+  - slug: "x-ai/grok-4.3"
+    name: "Grok 4.3"
+    role: reference
+    input_price_per_mtok: 1.25
+    output_price_per_mtok: 2.50
+    context: 1000000
+    max_tokens: 30720
+    metadata:
+      reasoning: true
+
+  - slug: "moonshotai/kimi-k2"
+    name: "Kimi K2"
+    role: reference
+    input_price_per_mtok: 0.57
+    output_price_per_mtok: 2.30
+    context: 131072
+    max_tokens: 16384
+
   - slug: "x-ai/grok-4.6"
     name: "Grok 4.6"
     role: orchestrator
     input_price_per_mtok: 2.0
     output_price_per_mtok: 6.0
+    context: 500000
+    max_tokens: 131072
+    metadata:
+      vision: true
+
+  - slug: "x-ai/grok-4.7"
+    name: "Grok 4.7"
+    role: orchestrator
+    input_price_per_mtok: 1.6
+    output_price_per_mtok: 4.8
     context: 500000
     max_tokens: 131072
     metadata:
@@ -263,3 +300,161 @@ models:
     max_tokens: 65536
     metadata:
       vision: true
+
+  # Mainstream + beyond sweep workers — slugs/pricing verified against
+  # GET /api/v1/models 2026-09-22. All text-output; none exceed the
+  # grok-4.7 ceiling ($1.60/$4.80 per Mtok).
+  - slug: "openai/gpt-5.6-luna"
+    name: "GPT 5.6 Luna"
+    role: worker
+    input_price_per_mtok: 0.20
+    output_price_per_mtok: 1.20
+    context: 1050000
+    max_tokens: 32768
+    retry_limit: 2
+
+  - slug: "moonshotai/kimi-k2.7-code"
+    name: "Kimi K2.7 Code"
+    role: worker
+    input_price_per_mtok: 0.71
+    output_price_per_mtok: 3.30
+    context: 262144
+    max_tokens: 32768
+    retry_limit: 2
+
+  - slug: "minimax/minimax-m2.7"
+    name: "MiniMax M2.7"
+    role: worker
+    input_price_per_mtok: 0.30
+    output_price_per_mtok: 1.20
+    context: 204800
+    max_tokens: 32768
+    retry_limit: 2
+
+  - slug: "xiaomi/mimo-v2.6-flash"
+    name: "MiMo V2.6 Flash"
+    role: worker
+    input_price_per_mtok: 0.14
+    output_price_per_mtok: 0.28
+    context: 1048576
+    max_tokens: 32768
+    retry_limit: 2
+
+  - slug: "nvidia/nemotron-3-ultra-550b-a55b"
+    name: "Nemotron 3 Ultra 550B"
+    role: worker
+    input_price_per_mtok: 0.60
+    output_price_per_mtok: 2.40
+    context: 262144
+    max_tokens: 32768
+    retry_limit: 2
+
+  - slug: "openai/gpt-5.6-sol"
+    name: "GPT 5.6 Sol"
+    role: reference
+    input_price_per_mtok: 2.00
+    output_price_per_mtok: 10.00
+    context: 1050000
+    max_tokens: 65536
+
+  # Wave-A additions — slugs/pricing verified against GET /api/v1/models
+  # 2026-09-23. Context/output ceilings from live metadata.
+  - slug: "z-ai/glm-5.3"
+    name: "GLM 5.3"
+    role: orchestrator
+    input_price_per_mtok: 0.84
+    output_price_per_mtok: 2.64
+    context: 1310720
+    max_tokens: 32768
+    retry_limit: 2
+
+  - slug: "moonshotai/kimi-k2.6"
+    name: "Kimi K2.6"
+    role: orchestrator
+    input_price_per_mtok: 0.95
+    output_price_per_mtok: 4.00
+    context: 262144
+    max_tokens: 32768
+    retry_limit: 2
+
+  - slug: "minimax/minimax-m3"
+    name: "MiniMax M3"
+    role: worker
+    input_price_per_mtok: 0.30
+    output_price_per_mtok: 1.20
+    context: 1048576
+    max_tokens: 32768
+    retry_limit: 2
+
+  - slug: "tencent/hy3"
+    name: "Tencent HY3"
+    role: worker
+    input_price_per_mtok: 0.083
+    output_price_per_mtok: 0.33
+    context: 262144
+    max_tokens: 32768
+    retry_limit: 2
+
+  - slug: "tencent/hy3-preview"
+    name: "Tencent HY3 Preview"
+    role: worker
+    input_price_per_mtok: 0.18
+    output_price_per_mtok: 0.60
+    context: 262144
+    max_tokens: 32768
+    retry_limit: 2
+
+  # Free tier — zero-cost workers for the free lane + smoke tests.
+  - slug: "openrouter/free"
+    name: "Free Models Router"
+    role: worker
+    input_price_per_mtok: 0.0
+    output_price_per_mtok: 0.0
+    context: 200000
+    max_tokens: 8192
+    retry_limit: 2
+
+  - slug: "z-ai/glm-5.2:free"
+    name: "GLM 5.2 (free)"
+    role: worker
+    input_price_per_mtok: 0.0
+    output_price_per_mtok: 0.0
+    context: 32768
+    max_tokens: 8192
+    retry_limit: 2
+
+  - slug: "qwen/qwen3.8-27b:free"
+    name: "Qwen 3.8 27B (free)"
+    role: worker
+    input_price_per_mtok: 0.0
+    output_price_per_mtok: 0.0
+    context: 262144
+    max_tokens: 32768
+    retry_limit: 2
+
+  - slug: "nvidia/nemotron-3-super-120b-a12b:free"
+    name: "Nemotron 3 Super (free)"
+    role: worker
+    input_price_per_mtok: 0.0
+    output_price_per_mtok: 0.0
+    context: 262144
+    max_tokens: 32768
+    retry_limit: 2
+
+  - slug: "nvidia/nemotron-3-ultra-550b-a55b:free"
+    name: "Nemotron 3 Ultra (free)"
+    role: worker
+    input_price_per_mtok: 0.0
+    output_price_per_mtok: 0.0
+    context: 1000000
+    max_tokens: 32768
+    retry_limit: 2
+
+  - slug: "google/gemma-4-31b-it:free"
+    name: "Gemma 4 31B (free)"
+    role: worker
+    input_price_per_mtok: 0.0
+    output_price_per_mtok: 0.0
+    context: 262144
+    max_tokens: 32768
+    retry_limit: 2

@@ -16,16 +16,19 @@ from pathlib import Path
 import yaml
 
 PRODUCTS = [
-    "coffee roaster",
-    "electric bike",
-    "personal CRM",
-    "no-code automation tool",
-    "dev-ops observability platform",
-    "AI coding assistant",
-    "remote team retreat planner",
-    "carbon offset marketplace",
-    "open-source fonts library",
-    "smart home dashboard",
+    # (product, anchor) — the anchor is the token a truthful artifact must
+    # contain; `has_required` checks it case-insensitively. Keep anchors loose:
+    # one word a real page about the product cannot plausibly omit.
+    ("coffee roaster", "coffee"),
+    ("electric bike", "bike"),
+    ("personal CRM", "crm"),
+    ("no-code automation tool", "automation"),
+    ("dev-ops observability platform", "observability"),
+    ("AI coding assistant", "coding"),
+    ("remote team retreat planner", "retreat"),
+    ("carbon offset marketplace", "carbon"),
+    ("open-source fonts library", "font"),
+    ("smart home dashboard", "smart home"),
 ]
 
 AUDIENCES = [
@@ -42,7 +45,7 @@ AUDIENCES = [
 ]
 
 
-def _task_for(i: int, product: str, audience: str, index_offset: int) -> dict[str, object]:
+def _task_for(i: int, product: str, anchor: str, audience: str, index_offset: int) -> dict[str, object]:
     return {
         "id": f"html-batch-{i + index_offset:03d}",
         "type": "html",
@@ -51,7 +54,8 @@ def _task_for(i: int, product: str, audience: str, index_offset: int) -> dict[st
             "Write a strong headline, a 2-3 sentence value proposition, three feature bullets, "
             "and a call-to-action button. Output a single self-contained HTML file with inline CSS."
         ),
-        "validation": ["html"],
+        "validation": ["html", "has_required"],
+        "metadata": {"required": [anchor]},
     }
 
 
@@ -70,8 +74,8 @@ def main() -> None:
         combos.extend(combos)
     combos = combos[: args.count]
 
-    for i, (prod, audience) in enumerate(combos):
-        task = _task_for(i, prod, audience, args.offset)
+    for i, ((prod, anchor), audience) in enumerate(combos):
+        task = _task_for(i, prod, anchor, audience, args.offset)
         (out_dir / f"{task['id']}.yaml").write_text(
             yaml.safe_dump(task, sort_keys=False, allow_unicode=True),
             encoding="utf-8",

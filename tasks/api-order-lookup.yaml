@@ -1,4 +1,6 @@
 id: api-order-lookup
+title: "Order-lookup API plan"
+blurb: "Plan JSON requests against a small orders API — the harness executes them against a live stub."
 type: api
 prompt: |
   You are integrating with a small orders API (base URL is provided by the

@@ -182,7 +182,7 @@ class TestLeaderboard(unittest.TestCase):
                   score=0.5, total_cost_usd=0.005, passes=True)
             for i in range(3)
         ]
-        board = pairing_leaderboard(runs)
+        board = pairing_leaderboard(runs, min_samples=10)
         self.assertEqual(len(board), 2)
         # w/mid is cheaper per pass: $0.015/3 < $0.08/2 → sorted first
         self.assertEqual(board[0].worker, "w/mid")
@@ -193,11 +193,40 @@ class TestLeaderboard(unittest.TestCase):
         self.assertEqual(a.tasks_covered, 1)
         self.assertTrue(a.low_sample)  # 4 < 10
 
+    def test_judge_axis_separate_from_mechanical_score(self):
+        """`score_median` is the mechanical axis; `judge_score_median` reads
+        meta.judge_score only — a run can carry both and they must not mix."""
+        runs = [
+            _meta(run_id=f"r{i}", score=0.5, judge_score=0.9, judge_passed=True)
+            for i in range(3)
+        ]
+        row = pairing_leaderboard(runs)[0]
+        self.assertAlmostEqual(row.score_median or 0, 0.5)
+        self.assertAlmostEqual(row.judge_score_median or 0, 0.9)
+        # an unjudged run contributes no judge axis
+        row2 = pairing_leaderboard([_meta(run_id="u", score=0.5, judge_score=None)])[0]
+        self.assertIsNone(row2.judge_score_median)
+
     def test_low_sample_threshold_configurable(self):
         runs = [_meta(run_id=f"r{i}") for i in range(3)]
-        self.assertTrue(pairing_leaderboard(runs)[0].low_sample)
-        self.assertFalse(pairing_leaderboard(runs, min_samples=3)[0].low_sample)
-        self.assertEqual(MIN_LEADERBOARD_SAMPLES, 10)
+        self.assertFalse(pairing_leaderboard(runs)[0].low_sample)
+        self.assertTrue(pairing_leaderboard(runs, min_samples=4)[0].low_sample)
+        self.assertEqual(MIN_LEADERBOARD_SAMPLES, 3)
+
+    def test_low_sample_never_outranks_evidence(self):
+        """A 1/1 100% pairing is an anecdote — it tails the board even
+        when an evidence-backed row has a lower pass rate."""
+        runs = [_meta(run_id="lucky", orchestrator="o/lucky", worker="w/lucky")] + [
+            _meta(run_id=f"m{i}", orchestrator="o/real", worker="w/real",
+                  passes=i < 3)
+            for i in range(6)
+        ]
+        board = pairing_leaderboard(runs)
+        self.assertEqual(board[0].orchestrator, "o/real")
+        self.assertFalse(board[0].low_sample)
+        self.assertEqual(board[-1].orchestrator, "o/lucky")
+        self.assertTrue(board[-1].low_sample)
+        self.assertEqual(board[-1].pass_rate, 1.0)
 
     def test_unfinished_runs_count_in_n_but_not_medians(self):
         runs = [
@@ -213,6 +242,65 @@ class TestLeaderboard(unittest.TestCase):
         self.assertAlmostEqual(row.duration_median_ms, 100)
         self.assertAlmostEqual(row.failure_rate or 0, 0.5)
         self.assertEqual(row.failures.get("exception:timeout"), 1)
+
+    def test_crashed_runs_are_not_evidence(self):
+        """Three infra-failed runs and zero finished is not a 3-sample
+        pairing — pass_rate is a capability axis over finished runs."""
+        runs = [
+            _meta(run_id=f"c{i}", status="failed", passes=False,
+                  failure_reason="exception:timeout")
+            for i in range(3)
+        ]
+        row = pairing_leaderboard(runs)[0]
+        self.assertEqual(row.runs, 3)
+        self.assertEqual(row.finished, 0)
+        self.assertIsNone(row.pass_rate)
+        self.assertTrue(row.low_sample)      # 0 finished < 3: cannot rank
+
+    def test_pass_rate_counts_finished_only(self):
+        runs = [
+            _meta(run_id="p", passes=True),
+            _meta(run_id="f", passes=False),
+            _meta(run_id="c1", status="failed", passes=False,
+                  failure_reason="exception:x"),
+            _meta(run_id="c2", status="failed", passes=False,
+                  failure_reason="exception:x"),
+        ]
+        row = pairing_leaderboard(runs)[0]
+        self.assertAlmostEqual(row.pass_rate or 0, 0.5)   # 1/2 finished, not 1/4
+        self.assertAlmostEqual(row.failure_rate or 0, 0.75)  # infra noise still visible
+
+    def test_zero_cost_is_unmetered_not_free(self):
+        """A $0 total means the meter read nothing — it must not outrank a
+        pairing with a real (nonzero) cost_per_pass."""
+        runs = [
+            _meta(run_id=f"z{i}", orchestrator="o/free", worker="w/free",
+                  passes=True, total_cost_usd=0.0)
+            for i in range(3)
+        ] + [
+            _meta(run_id=f"p{i}", orchestrator="o/paid", worker="w/paid",
+                  passes=True, total_cost_usd=0.01)
+            for i in range(3)
+        ]
+        board = pairing_leaderboard(runs)
+        free = next(p for p in board if p.orchestrator == "o/free")
+        self.assertIsNone(free.cost_per_pass)
+        self.assertEqual(board[0].orchestrator, "o/paid")
+
+    def test_default_order_is_pass_rate_desc(self):
+        """The headline question is 'which pairing performs best' — pass rate
+        ranks first, cost per pass breaks ties."""
+        runs = [
+            _meta(run_id=f"hi{i}", orchestrator="o/hi", worker="w/hi",
+                  passes=True, total_cost_usd=0.10)
+            for i in range(3)
+        ] + [
+            _meta(run_id=f"lo{i}", orchestrator="o/lo", worker="w/lo",
+                  passes=i < 2, total_cost_usd=0.001)
+            for i in range(3)
+        ]
+        board = pairing_leaderboard(runs)
+        self.assertEqual(board[0].orchestrator, "o/hi")   # 100% > 67% despite 100x cost
 
 
 class TestExport(unittest.TestCase):

@@ -3,12 +3,13 @@
 A code task's workers return a file set (same contract as multi-file). The
 harness materializes it into a temp dir, writes the task's test source, and
 runs `python -Es -m unittest` in a subprocess. Workers never see the tests —
-they are evaluation evidence, not part of the spec.
+they are evaluation evidence, not part of the spec. Live CLI runs default to
+the disposable Docker backend; the local backend remains available for
+trusted tests and backwards-compatible library callers.
 
-Honesty note: `-Es` + a fresh temp dir + a timeout + a stripped environment
-is *containment*, not a security sandbox — the code still runs with the
-user's OS privileges. Only use this task type with models you would let
-write code you execute locally.
+The Docker backend is a disposable container boundary for verifier code, not
+a VM boundary. The explicit ``local`` backend remains host execution and is
+only for trusted development/tests.
 """
 
 from __future__ import annotations
@@ -20,6 +21,8 @@ import sys
 import tempfile
 from pathlib import Path
 from typing import Any
+
+from orchestral.sandbox import SandboxError, run_docker_unittest
 
 DEFAULT_TIMEOUT_SECONDS = 30
 
@@ -61,6 +64,8 @@ def run_unittest_suite(
     tests_source: str,
     *,
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
+    sandbox: str = "local",
+    sandbox_image: str | None = None,
 ) -> dict[str, Any]:
     """Run the task's unittest source against `files`; return a report.
 
@@ -78,9 +83,35 @@ def run_unittest_suite(
         "timed_out": False,
         "returncode": None,
         "output_tail": "",
+        "sandbox": sandbox,
     }
     if not tests_source.strip():
         report["error"] = "code task has no metadata.tests"
+        return report
+
+    if sandbox == "docker":
+        try:
+            result = run_docker_unittest(
+                files,
+                tests_source,
+                timeout_seconds=timeout_seconds,
+                image=sandbox_image,
+            )
+        except SandboxError as exc:
+            report["error"] = str(exc)
+            report["sandbox_error"] = True
+            return report
+        report["sandbox_image"] = result.image
+        return _finish_unittest_report(
+            report,
+            returncode=result.returncode,
+            output=result.output,
+            timed_out=result.timed_out,
+        )
+
+    if sandbox != "local":
+        report["error"] = f"unknown code sandbox: {sandbox}"
+        report["sandbox_error"] = True
         return report
 
     with tempfile.TemporaryDirectory(prefix="orchestral-code-") as tmp:
@@ -105,9 +136,26 @@ def run_unittest_suite(
             report["output_tail"] = f"tests exceeded {timeout_seconds}s"
             return report
 
-    report["executed"] = True
-    report["returncode"] = proc.returncode
     out = (proc.stdout + proc.stderr).decode("utf-8", errors="replace")
+    return _finish_unittest_report(
+        report,
+        returncode=proc.returncode,
+        output=out,
+    )
+
+
+def _finish_unittest_report(
+    report: dict[str, Any],
+    *,
+    returncode: int,
+    output: str | bytes,
+    timed_out: bool = False,
+) -> dict[str, Any]:
+    """Populate the common result fields for local and Docker execution."""
+    report["executed"] = True
+    report["returncode"] = returncode
+    report["timed_out"] = timed_out
+    out = output.decode("utf-8", errors="replace") if isinstance(output, bytes) else output
     report["output_tail"] = out[-_TAIL_BYTES:]
 
     ran = _RAN_RE.search(out)
@@ -120,7 +168,7 @@ def run_unittest_suite(
                 report[name if name in report else "errors"] = int(count)
     # a suite that ran zero tests is not a pass — import/collection failures
     # exit nonzero with no "Ran N tests" line at all
-    report["ok"] = proc.returncode == 0 and ran is not None and report["tests_run"] > 0 and "OK" in out
+    report["ok"] = returncode == 0 and ran is not None and report["tests_run"] > 0 and "OK" in out
     return report
 
 
@@ -231,6 +279,13 @@ def check_code_quality(
             for name, rx in patterns.items():
                 if rx.search(line):
                     totals["unsafe_hits"].append({"file": rel, "line": lineno, "pattern": name})
+
+    # imports that resolve to a sibling module in the file set are local,
+    # not external — a multi-module submission isn't pulling a dependency
+    local_modules = {
+        Path(rel).stem for rel in files if rel.endswith(".py")
+    } | {rel.split("/")[0] for rel in files if "/" in rel}
+    all_external -= local_modules
 
     totals["imports"] = sorted(all_imports)
     totals["external_imports"] = sorted(all_external)

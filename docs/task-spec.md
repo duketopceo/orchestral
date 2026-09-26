@@ -19,11 +19,13 @@ metadata: {}                  # optional free-form map (video tasks read generat
 | Field | Type | Default | Notes |
 |---|---|---|---|
 | `id` | str | required | Unique across `tasks/`; becomes a path component (`runs/{orch}/{task}/{worker}/{run_id}/`) |
-| `type` | str | required | `html`, `image`, `video`, `multi-file`, `code`, `constraint`, `needle`, `sql`, `extract`, `api` — all implemented; see per-type sections below |
+| `type` | str | required | `html`, `image`, `video`, `multi-file`, `code`, `bugfix`, `terminal`, `swe-patch`, `pipeline`, `constraint`, `needle`, `sql`, `extract`, `api` — all implemented; see per-type sections below |
 | `prompt` | str | required | Full task brief; the orchestrator decomposes it into subtasks |
+| `title` | str | `""` | Human label shown in the observatory (e.g. `Expression parser`); `validate` warns when absent |
+| `blurb` | str | `""` | One-line "what this task asks" for cards and tables; `validate` warns when absent |
 | `validation` | list[str] | `[]` | Check names; empty means the type's default set |
 | `assets` | list[str] | `[]` | Reserved; not consumed by the runner yet |
-| `metadata` | map | `{}` | Free-form; carried into run records. `video` tasks read `duration`, `resolution`, `aspect_ratio`, `generate_audio`, `seed`; `multi-file` tasks read `expected_paths`; `code` tasks read `module`, `tests`, `timeout_seconds`, `expected_paths`, plus quality bounds `max_code_lines`, `max_functions`, `max_complexity_lite`, `no_unsafe`, `no_external_deps`, `forbidden_patterns` |
+| `metadata` | map | `{}` | Free-form; carried into run records. `video` tasks read `duration`, `resolution`, `aspect_ratio`, `generate_audio`, `seed`; `multi-file` tasks read `expected_paths` and `member_required`; `code` tasks read `module`, `tests`, `timeout_seconds`, `expected_paths`, plus quality bounds `max_code_lines`, `max_functions`, `max_complexity_lite`, `no_unsafe`, `no_external_deps`, `forbidden_patterns` |
 
 ## Task types
 
@@ -64,17 +66,22 @@ metadata: {}                  # optional free-form map (video tasks read generat
 - **`code`** — same file-set contract as `multi-file` (workers return
   `{"files": [...]}`, merged into `artifact.zip`), but validation executes
   hidden tests: the file set plus the task's `metadata.tests` (a unittest
-  source string, never sent to workers) are materialized into a temp dir and
-  run via `python -Es -m unittest` in a subprocess. `metadata.module` names
+  source string, never sent to workers) are passed to the selected execution
+  backend. The local backend materializes a temp dir and runs
+  `python -Es -m unittest`; the Docker backend sends an in-memory archive to a
+  disposable container. `metadata.module` names
   the required file (default `solution.py`; also the `expected_paths`
   default). `metadata.timeout_seconds` caps execution (default 30). `passes`
   requires every expected file present *and* the suite green; `score` is the
   fraction of tests passed (0.0 when the suite crashes, errors on import, or
   times out — `None` only when the suite never ran). Replicates give pass@k.
-  The subprocess runs `-Es` with a stripped environment in a fresh temp dir —
-  containment, not a security sandbox: generated code still runs with your OS
-  privileges, so only pair trusted models with this task type. Dry runs skip
-  execution and compile-check `.py` files instead (`executed: false`).
+  Live CLI/TUI/web runs default to the Docker verifier backend: each suite gets
+  a fresh network-disabled, resource-limited container with no host mounts or
+  Docker socket. `--sandbox local` is an explicit trusted-host mode and is not
+  a security boundary. The executor/agent-CLI path remains a separate
+  host-containment path and is not made safe by the code verifier sandbox. Dry
+  runs skip execution and compile-check `.py` files instead
+  (`executed: false`).
 - **`constraint`** — workers produce candidate text per subtask; the
   orchestrator picks the best (same selection flow as `image`/`video`); the
   chosen text is stored as `artifact.txt` and checked against hard
@@ -87,12 +94,65 @@ metadata: {}                  # optional free-form map (video tasks read generat
 - **`needle`** — long-context retrieval: `metadata.document` (the haystack)
   rides inside each subtask payload, workers return candidate answers, the
   orchestrator picks one, and `artifact.txt` is checked with the constraint
-  checks — `has_required` for `metadata.required` (the true needle) and
-  `no_forbidden` for `metadata.forbidden` (decoys). An answer that names the
-  right token but also mentions a decoy fails — the checks measure whether
-  the model actually found it, not whether it can recite the options.
-  `metadata.expected_answer` feeds the dry-run path. See
-  `tasks/needle-deploy-token.yaml`.
+  checks — `has_required` for `metadata.required` (the true needle),
+  `no_forbidden` for `metadata.forbidden` (decoys), and `exact_answer` for
+  `metadata.expected_answer` when the prompt demands the answer and nothing
+  else (a `{"result": "FALCON-4417"}` wrapper is not "only the token"). An
+  answer that names the right token but also mentions a decoy fails — the
+  checks measure whether the model actually found it, not whether it can
+  recite the options. `metadata.expected_answer` also feeds the dry-run
+  path. See `tasks/needle-deploy-token.yaml`.
+- **`bugfix`** — `code`'s repair sibling: same file-set contract, same hidden
+  `metadata.tests` execution, but `metadata.files` ships the *broken* repo —
+  injected into every worker subtask as `broken_files` so the worker repairs
+  instead of generating from scratch. The task prompt describes the defect;
+  workers return the complete corrected file set. `metadata.module`,
+  `expected_paths`, quality bounds, and the verifier execution notes all carry
+  over from `code`. See `tasks/bugfix-lru-evict.yaml`.
+- **`terminal`** — Terminal-Bench-flavored shell plans: workers produce a
+  JSON command plan (`[{"run": "sed -i 's/a/b/' f"}, ...]`); the orchestrator
+  picks the best (same candidate flow as `api`); the harness seeds a tmpdir
+  from `metadata.fs`, replays the plan in a **virtual shell** (no real
+  subprocess — `cat ls pwd cd grep mkdir touch cp mv rm echo> echo>>
+  sed -i s/x/y/`), and grades the resulting filesystem against
+  `metadata.expect.files`:
+
+  ```yaml
+  metadata:
+    fs:                       # seed files: {path: content}
+      app.ini: "debug = true\n"
+    commands:                 # reference plan — feeds the dry-run path
+      - run: "sed -i 's/true/false/' app.ini"
+    expect:
+      files:
+        app.ini: {contains: "debug = false"}   # contains | equals | matches | absent
+      max_commands: 8                          # optional efficiency gate
+  ```
+
+  Paths are confined to the tmpdir — absolute paths are remapped inside the
+  sandbox and `..` escapes are command errors. Score is the fraction of
+  `expect.files` rules satisfied; `passes` requires all of them, zero command
+  errors, and `commands <= max_commands` when declared. See
+  `tasks/terminal-config-fix.yaml`.
+- **`swe-patch`** — SWE-bench-style diff repair: `metadata.files` ships the
+  repo fixture (`repo_files` in worker subtasks); workers return
+  `{"patch": "<unified diff>"}`; the harness extracts the diff, applies it
+  with a pure-Python applier (no `patch` binary), runs code-quality checks,
+  then the hidden `metadata.tests` suite against the patched tree. Each gate
+  is reported separately (`extracted`, `applies`, `quality_ok`,
+  `tests_pass`) so patch-format failures are scored before correctness —
+  a model that can't emit a clean diff fails at `applies`, not at tests.
+  `metadata.patch` is the reference diff for dry runs. Artifact:
+  `artifact.diff`. See `tasks/swe-patch-rename-key.yaml`.
+- **`pipeline`** — sequential subtask chains: each worker subtask receives
+  `prior_outputs` — the `{"subtask_id", "content"}` outputs of every earlier
+  subtask — so information must propagate through the chain rather than
+  fanning out in parallel. The *last* subtask's output is the artifact (no
+  orchestrator synthesis call; orchestration value is in the plan).
+  Validation is the generic check list — `has_required`/`max_words`/
+  `forbidden`/`matches` metadata composes as usual. `metadata.reference_text`
+  is the compliant example for dry runs. See
+  `tasks/pipeline-sales-summary.yaml`.
 - **`sql`** — workers produce candidate SQL queries; the orchestrator picks
   one (same candidate-selection flow as `image`/`video`); the harness executes
   the chosen query **read-only** against a fixture SQLite database built from
@@ -243,6 +303,9 @@ metadata: {}                  # optional free-form map (video tasks read generat
 | `non_empty` | the artifact has bytes |
 | `zip_signature` | the archive opens as a zip |
 | `has_paths` | every path in `metadata.expected_paths` is present as a non-empty regular file |
+| `member_required` | every member named in `metadata.member_required` exists, decodes as UTF-8 text (members are already size-capped by the file-set limits), and contains each listed token (case-insensitive) |
+
+`member_required` metadata shape: `member_required: {"index.html": ["coffee"], "style.css": ["pricing"]}` — a member listed but absent, a token missing inside it, or an undecodable (binary) member each fails the check with a distinct error.
 
 `code` tasks ignore `validation:` — the check is execution:
 
@@ -260,6 +323,7 @@ Each fails closed when requested but its metadata key is missing:
 | `within_budget` | every declared bound holds | `min_chars`, `max_chars`, `min_words`, `max_words` |
 | `has_required` | every token appears (case-insensitive) | `required: [...]` |
 | `no_forbidden` | no token appears (case-insensitive) | `forbidden: [...]` |
+| `exact_answer` | the artifact is exactly the expected answer (whitespace-trimmed) | `expected_answer` |
 | `matches_pattern` | the regex matches | `pattern` |
 | `no_pattern` | the regex does not match | `forbidden_pattern` |
 

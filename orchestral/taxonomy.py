@@ -10,6 +10,7 @@ not import runner).
 from __future__ import annotations
 
 import json
+import subprocess
 
 import httpx
 
@@ -24,8 +25,41 @@ CATEGORIES = (
     "validation",
     "empty_output",
     "config",
+    # agent-executor failures (orchestral/agentexec.py)
+    "executor_preflight",
+    "executor_exit",
+    "executor_timeout",
+    "executor_no_output",
+    "spawn_failed",
+    "workspace",
     "unknown",
 )
+
+# categories that must never retry — the failure is environmental or
+# already-billed, so another attempt reproduces it or double-charges
+NO_RETRY = frozenset({
+    "submitted_job",
+    "executor_preflight",
+    "spawn_failed",
+    "config",
+})
+
+
+def retryable(category: str) -> bool:
+    """Whether a failure category is worth another attempt."""
+    return category not in NO_RETRY
+
+
+# dedicated exception types raised by orchestral/agentexec.py — matched by
+# class name so this module stays import-cycle-free
+_EXECUTOR_CATEGORIES = {
+    "ExecutorPreflightError": "executor_preflight",
+    "ExecutorExitError": "executor_exit",
+    "ExecutorTimeoutError": "executor_timeout",
+    "ExecutorNoOutputError": "executor_no_output",
+    "SpawnFailedError": "spawn_failed",
+    "WorkspaceError": "workspace",
+}
 
 
 def classify_exception(exc: BaseException) -> str:
@@ -50,6 +84,17 @@ def classify_exception(exc: BaseException) -> str:
         return "submitted_job"
     if name == "ProviderConfigError":
         return "config"
+
+    # Agent-executor failures — dedicated types first, then raw subprocess
+    # errors. codeexec catches its own suite timeouts and _git_sha swallows
+    # everything, so a bare subprocess error reaching here is an executor
+    # process failure.
+    if name in _EXECUTOR_CATEGORIES:
+        return _EXECUTOR_CATEGORIES[name]
+    if isinstance(exc, subprocess.TimeoutExpired):
+        return "executor_timeout"
+    if isinstance(exc, subprocess.CalledProcessError):
+        return "executor_exit"
 
     http_err = _unwrap_httpx(exc)
     if http_err is not None:
@@ -77,7 +122,7 @@ def classify_exception(exc: BaseException) -> str:
         if "no output" in msg or "no files" in msg:
             return "empty_output"
         return "validation"
-    if name == "FilesetError" or isinstance(exc, json.JSONDecodeError):
+    if name in ("FilesetError", "PlanError") or isinstance(exc, json.JSONDecodeError):
         return "malformed_output"
     if isinstance(exc, (KeyError, FileNotFoundError)):
         return "config"

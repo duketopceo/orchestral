@@ -1,0 +1,24 @@
+id: pipeline-sales-summary
+title: "Sales-summary chain"
+blurb: "Decompose a sales report into an ordered pipeline where each step consumes the last."
+type: pipeline
+prompt: |
+  Decompose into an ordered chain (each step needs the previous step's output):
+
+  1. Extract every line item from the sales document below.
+  2. Compute the exact total of the line items.
+  3. Write a one-paragraph executive summary that states the exact total
+     as "$X,XXX" and names the largest line item.
+
+  Sales document:
+    - Enterprise seats: $2,400
+    - Support contract: $1,100
+    - Onboarding fee: $850
+    - Storage overage: $350
+
+  The final subtask's output is the artifact. Each subtask receives
+  `prior_outputs` — the outputs of every earlier subtask.
+validation: [has_required]
+metadata:
+  reference_text: "Total revenue is $4,700, driven by Enterprise seats at $2,400."
+  required: ["$4,700", "Enterprise seats"]

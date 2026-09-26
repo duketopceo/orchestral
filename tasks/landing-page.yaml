@@ -1,4 +1,6 @@
 id: landing-page-coffee
+title: "Landing page"
+blurb: "Build a responsive landing page for a premium coffee subscription."
 type: html
 prompt: |
   Build a responsive landing page for a premium coffee subscription service.
@@ -13,7 +15,9 @@ validation:
   - has_title
   - has_cta
   - has_form
+  - has_required
 assets: []
 metadata:
   difficulty: easy
   estimated_subtasks: 3
+  required: ["coffee"]

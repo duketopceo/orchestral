@@ -6,3 +6,7 @@ prompt: Create a landing page for a AI coding assistant targeted at remote-first
   CSS.
 validation:
 - html
+- has_required
+metadata:
+  required:
+  - coding

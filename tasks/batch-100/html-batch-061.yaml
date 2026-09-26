@@ -6,3 +6,7 @@ prompt: Create a landing page for a remote team retreat planner targeted at smal
   file with inline CSS.
 validation:
 - html
+- has_required
+metadata:
+  required:
+  - retreat

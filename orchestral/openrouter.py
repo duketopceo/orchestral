@@ -204,6 +204,46 @@ class OpenRouterClient:
             "raw_response": data,
         }
 
+    def decide(
+        self,
+        *,
+        model: str,
+        state: Any,
+        questions: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Typed decision call — POST /api/alpha/decisions.
+
+        For decisions-engine models (e.g. ``~typesafe/jev-latest``): ``state``
+        is the artefact under judgment (string/object/array) and ``questions``
+        maps answer keys to ``{type: noul|choice|score, ...}``. Returns the
+        raw response — answers carry calibrated probabilities, not text.
+        """
+        if self.provider != "openrouter":
+            raise NotImplementedError(
+                f"the decisions endpoint is only supported for provider 'openrouter'; "
+                f"{self.provider!r} has no /api/alpha/decisions"
+            )
+        base = urlparse(str(self.client.base_url))
+        url = f"{base.scheme}://{base.netloc}/api/alpha/decisions"
+        start = time.time()
+        response = self._post_with_retry(url, {
+            "model": model,
+            "state": state,
+            "questions": questions,
+        })
+        data = response.json()
+        latency_ms = (time.time() - start) * 1000
+        usage = data.get("usage", {})
+        self._dbg(
+            "decide",
+            model=model,
+            latency_ms=round(latency_ms, 1),
+            input_tokens=usage.get("input_tokens"),
+            output_tokens=usage.get("output_tokens"),
+        )
+        data["latency_ms"] = latency_ms
+        return data
+
     def images(
         self,
         *,

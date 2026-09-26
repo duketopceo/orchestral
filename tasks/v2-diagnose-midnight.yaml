@@ -1,0 +1,70 @@
+id: v2-diagnose-midnight
+title: "Diagnose: midnight totals bug"
+blurb: "Users report wrong daily totals after midnight UTC — find the defect yourself and patch it."
+type: swe-patch
+prompt: |
+  Users report: "daily totals are wrong for events logged just after
+  midnight UTC — they land on the wrong day, only for timestamps in the
+  first hour." The repo fixture ships in `repo_files`; `totals.py` is the
+  suspect. The defect is NOT described beyond the symptom — locate it,
+  then return a unified-diff patch that fixes it.
+
+  Return {"patch": "<unified diff>"} — diff paths relative to the repo
+  root (e.g. `totals.py`). Fix the root cause, not the test.
+metadata:
+  module: totals.py
+  timeout_seconds: 30
+  max_code_lines: 80
+  no_unsafe: true
+  no_external_deps: true
+  files:
+    totals.py: |
+      """Daily totals for the event ledger."""
+      from datetime import datetime, timezone, timedelta
+
+      def day_key(ts: str) -> str:
+          """Bucket an ISO-8601 UTC timestamp ('2025-07-14T00:23:11Z')
+          into its calendar day 'YYYY-MM-DD'."""
+          dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+          # normalize to UTC then take the date
+          local = dt.astimezone(timezone.utc) + timedelta(hours=1)
+          return local.date().isoformat()
+
+      def daily_totals(rows: list[dict]) -> dict[str, float]:
+          """Sum each row's 'amount' into its day bucket."""
+          out: dict[str, float] = {}
+          for r in rows:
+              k = day_key(r["ts"])
+              out[k] = out.get(k, 0.0) + float(r["amount"])
+          return out
+  patch: |
+    --- a/totals.py
+    +++ b/totals.py
+    @@ -7,4 +7,3 @@
+         dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+         # normalize to UTC then take the date
+    -    local = dt.astimezone(timezone.utc) + timedelta(hours=1)
+    -    return local.date().isoformat()
+    +    return dt.astimezone(timezone.utc).date().isoformat()
+  tests: |
+    import unittest
+    from totals import day_key, daily_totals
+
+    class TestMidnight(unittest.TestCase):
+        def test_after_midnight_stays_same_day(self):
+            self.assertEqual(day_key("2025-07-14T00:23:11Z"), "2025-07-14")
+            self.assertEqual(day_key("2025-07-14T00:59:59Z"), "2025-07-14")
+
+        def test_pre_midnight(self):
+            self.assertEqual(day_key("2025-07-14T23:59:59Z"), "2025-07-14")
+
+        def test_rolls_at_midnight_not_one(self):
+            self.assertEqual(day_key("2025-07-15T00:00:01Z"), "2025-07-15")
+
+        def test_totals_buckets(self):
+            rows = [{"ts": "2025-07-14T00:10:00Z", "amount": 5},
+                    {"ts": "2025-07-14T00:30:00Z", "amount": 5},
+                    {"ts": "2025-07-15T12:00:00Z", "amount": 1}]
+            out = daily_totals(rows)
+            self.assertEqual(out["2025-07-14"], 10.0)
+            self.assertEqual(out["2025-07-15"], 1.0)

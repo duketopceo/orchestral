@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 
 @dataclass
@@ -57,6 +57,8 @@ class TaskSpec:
     id: str
     type: str  # one of TASK_TYPES — enforced by load_task
     prompt: str
+    title: str = ""  # human label, e.g. "Expression parser"
+    blurb: str = ""  # one-line "what this task asks" for the observatory
     validation: list[str] = field(default_factory=list)
     assets: list[str] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -67,6 +69,7 @@ class TaskSpec:
 TASK_TYPES = frozenset({
     "html", "image", "video", "multi-file", "code",
     "constraint", "needle", "sql", "extract", "api",
+    "bugfix", "terminal", "swe-patch", "pipeline",
 })
 
 
@@ -104,6 +107,48 @@ def load_models(path: Path | str = "models") -> list[ModelConfig]:
     return configs
 
 
+def model_map(path: Path | str = "models") -> dict[str, ModelConfig]:
+    return {m.slug: m for m in load_models(path)}
+
+
+def resolve_model(
+    slug: str,
+    path: Path | str = "models",
+    known: dict[str, ModelConfig] | None = None,
+    role: str = "unknown",
+) -> ModelConfig:
+    """Resolve a slug to a ModelConfig — configured entry, else ad-hoc.
+
+    The ad-hoc fallback is what makes ``~typesafe/jev-latest`` resolvable on
+    every launch surface: ``~``-slugs never appear in ``load_models()``
+    output (the prefix marks disabled entries there and decisions-engine
+    judges here), so a bare ``dict.get`` silently produces an unjudged run.
+    CLI, web, and TUI all go through this resolver so an unconfigured slug
+    resolves identically everywhere. ``role`` applies to the ad-hoc config
+    only — a configured entry keeps its declared role.
+    """
+    cfg = (known if known is not None else model_map(path)).get(slug)
+    if cfg is not None:
+        return cfg
+    return ModelConfig(
+        slug=slug,
+        name=slug,
+        role=role,
+        input_price_per_mtok=0.03,
+        output_price_per_mtok=0.10,
+    )
+
+
+def resolve_judge(
+    slug: str | None,
+    path: Path | str = "models",
+    known: dict[str, ModelConfig] | None = None,
+) -> ModelConfig:
+    """``resolve_model`` with the judge role — the variant every launch
+    surface uses so a ``~typesafe/...`` slug resolves identically."""
+    return resolve_model(cast(str, slug), path, known, role="judge")
+
+
 def load_task(path: Path | str) -> TaskSpec:
     try:
         data = load_yaml(path)
@@ -121,6 +166,30 @@ def load_task(path: Path | str) -> TaskSpec:
             f"— expected one of {', '.join(sorted(TASK_TYPES))}"
         )
     return task
+
+
+def load_groups(path: Path | str = "groups.yaml") -> dict[str, dict[str, str]]:
+    """Run-group display metadata — ``{group_name: {label, description}}``.
+
+    Groups are named at launch time (``--group``) and their raw names age
+    badly (``rep-20260918-151333-f6db99``); this file lets a reader see
+    "what experiment was this" without decoding the slug. Missing file
+    yields an empty map so the file is optional for cloned repos.
+    """
+    p = Path(path)
+    if not p.exists():
+        return {}
+    data = load_yaml(p)
+    if not isinstance(data, dict):
+        raise ConfigError(f"{p} must be a YAML mapping")
+    out: dict[str, dict[str, str]] = {}
+    for name, meta in (data.get("groups") or {}).items():
+        if not isinstance(meta, dict):
+            raise ConfigError(f"{p}: group '{name}' must be a mapping")
+        out[str(name)] = {
+            k: str(v) for k, v in meta.items() if k in ("label", "description")
+        }
+    return out
 
 
 def find_task(task_id: str, root: Path | str = "tasks") -> Path | None:

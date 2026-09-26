@@ -73,12 +73,13 @@ orchestral dashboard               # reports/dashboard.html
 | Command | What it does |
 |---|---|
 | `init` | Create the runs directory and SQLite index |
+| `validate` | Parse all task/model specs and check per-type metadata contracts (exit 1 on problems) |
 | `run` | One orchestrator × worker pairing on one task |
 | `grid` | Every orchestrator × worker pairing on one task (`--orchestrators`, `--workers`, `--jobs`) |
 | `batch` | One pairing across many tasks (`--batch-dir` or `--batch-tasks`, `--jobs`) |
 | `ablate` | Sweep one knob for a pairing (`--sweep retry_limit=0,1,2` or `prompt_variant=terse,detailed`) |
 | `history` | Per-model aggregates across all stored runs |
-| `report` | List/compare runs (`--pairings`, `--leaderboard`, `--groups`, `--html`, `--sort`, `--json`) |
+| `report` | List/compare runs (`--pairings`, `--leaderboard`, `--groups`, `--compare A,B`, `--html`, `--sort`, `--json`) |
 | `export` | CSV run/leaderboard export, Markdown run audit, JSONL trace (`--format`, `--run`, `--out`) |
 | `prices` | Pricing drift check — provider-reported `api_cost_usd` vs configured rates (`--threshold`, `--json`) |
 | `dashboard` | Static HTML dashboard with cost-vs-quality scatter |
@@ -86,23 +87,60 @@ orchestral dashboard               # reports/dashboard.html
 | `tui` | Interactive terminal UI — browse/inspect/launch runs (needs `[tui]` extra) |
 | `serve` | Local web observatory — same views in a browser, launch/cancel runs (localhost only) |
 | `scrub` | Redact secrets/paths from `runs/` into `runs-pub/` + `manifest.json` |
-| `calibrate` | Judge-vs-human agreement from a labels file (`--labels`, `--json`) |
+| `calibrate` | Judge-vs-human agreement; `--emit <group>` writes a label skeleton, `--labels` computes + persists (`--json`) |
+| `revalidate` | Replay mechanical validators on stored artifacts (no model calls) — repairs `score`/`passes`/`checks` on report + index, stamps `report.revalidated` with old values |
+| `review` | Frontier-model audit of run evidence — per-run `review.json` + `reports/review-*.md` (`--model`, `--group`, `--dry-run`) |
 
 Shared run flags (on `run`, `grid`, `batch`, `ablate`): `--planner raw|ce-plan`,
 `--judge <slug>`, `--no-judge-cache`, `--retry-limit N`, `--prompt-variant NAME`,
-`--replicates N`, `--group NAME`, `--replicate I`, `--seed S`, `--verbose`,
-`--dry-run`, `--json`.
+`--replicates N`, `--group NAME`, `--replicate I`, `--seed S`, `--sandbox docker|local`,
+`--sandbox-image IMAGE`, `--verbose`, `--dry-run`, `--json`.
+
+Live code-task verification defaults to the `docker` sandbox. It runs each
+verifier in a fresh, network-disabled, resource-limited container with no host
+mounts or Docker socket. Pull the image explicitly before a run (Docker is
+never allowed to pull implicitly):
+
+```bash
+docker pull python:3.11-slim
+python3 harness.py run --task code-expr-parser \
+  --orchestrator deepseek/deepseek-v4-flash-0731 \
+  --worker z-ai/glm-5.3-flash --sandbox docker
+```
+
+`--sandbox local` is an explicit trusted-host escape hatch for development
+and tests; it is not an isolation boundary. Set `ORCHESTRAL_DOCKER_IMAGE` to
+an immutable image digest for reproducible runs. The TUI and local web
+observatory use Docker for launched code tasks by default.
 
 `--replicates N` runs each cell N times under one `run_group` (auto-named when
 `--group` is absent); replicate `i` records seed `S+i-1`. `report --groups`
 aggregates cells with pass rate, score/cost mean±sd, p50/p95 latency, and
 successes-per-dollar.
 
-`calibrate --labels labels.yaml` measures how much to trust `--judge`: the
-labels file is `labels: [{run_id, score, passed}]` over runs the judge
-scored, and the report is score agreement (MAE, Pearson, Spearman) plus
-verdict agreement (accuracy, Cohen's kappa, confusion counts). See
-`labels.example.yaml`.
+`review --model x-ai/grok-4.3` audits archived runs with a strong reviewer
+model: each run gets a bounded evidence digest (meta, plan, report, cost
+ledger, event/error summary, task spec) and a structured verdict —
+`run_quality` (clean/suspect/invalid), findings that must cite digest
+evidence, and a suggested mechanical check. Results land as `review.json`
+in the run dir; a corpus pass writes `reports/review-<ts>.md` ranking
+systemic issues. Reviewer output is hypotheses, not verdicts — every
+finding carries the evidence it claims. Runs already holding `review.json`
+are skipped unless `--force`; `--dry-run` writes stubs for plumbing tests.
+
+`calibrate` measures how much to trust `--judge`. Two flows:
+
+- `calibrate --emit <group>` writes `reports/labels-<group>-<ts>.yaml` —
+  a skeleton over the group's *judged* finished runs (run_id, task_id,
+  artifact pointer, blank `score`/`passed`). Label ≥30 and re-run:
+- `calibrate --labels labels.yaml` joins human labels to judge verdicts
+  (only `report.judge` — mechanical verdicts never stand in), reports
+  score agreement (MAE, Pearson, Spearman) and verdict agreement
+  (accuracy, Cohen's kappa, confusion counts) overall and per judge/task,
+  and persists `reports/calibration-<ts>.json`. Cards and leaderboards
+  read the latest persisted report: κ ≥ 0.7 over ≥30 pairs marks a judge
+  "calibrated"; anything less renders "uncalibrated". See
+  `labels.example.yaml`.
 
 ### TUI
 
@@ -154,7 +192,7 @@ unittest` in a subprocess — score = fraction of tests passed, replicates
 give pass@k), and **constraint tasks** (workers produce text under hard
 constraints — word/char budgets, required and forbidden tokens, regex
 patterns — the orchestrator picks the best candidate, deterministic
-validators check every constraint), and **long-context needle** tasks (`metadata.document` haystack injected into each subtask; the answer must name the true token and no decoys), and **SQL analytics** (workers produce candidate queries, the orchestrator picks one, and the harness executes it read-only against a fixture SQLite database and compares to `metadata.reference_sql` — fully deterministic scoring), and **structured extraction** (workers return JSON per a declared `metadata.fields` schema, graded per-field against `metadata.expected` — deterministic, partial credit), and **API integration** (workers produce a JSON request plan, replayed over real loopback HTTP against a stub server built from `metadata.stub`; scored by which expected calls actually arrived).
+validators check every constraint), and **long-context needle** tasks (`metadata.document` haystack injected into each subtask; the answer must name the true token and no decoys), and **SQL analytics** (workers produce candidate queries, the orchestrator picks one, and the harness executes it read-only against a fixture SQLite database and compares to `metadata.reference_sql` — fully deterministic scoring), and **structured extraction** (workers return JSON per a declared `metadata.fields` schema, graded per-field against `metadata.expected` — deterministic, partial credit), **API integration** (workers produce a JSON request plan, replayed over real loopback HTTP against a stub server built from `metadata.stub`; scored by which expected calls actually arrived), **bugfix** (`code` with a provided broken repo in `metadata.files` — repair, not generation), and **terminal** (Terminal-Bench-flavored: workers emit a shell-command plan replayed in a virtual shell over a seeded tmpdir, graded on final filesystem state).
 Validation checks and the full schema are documented in
 [docs/task-spec.md](docs/task-spec.md); model config fields in
 [docs/model-config.md](docs/model-config.md).

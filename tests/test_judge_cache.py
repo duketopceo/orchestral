@@ -33,6 +33,32 @@ class TestJudgeCacheTable(unittest.TestCase):
             store = RunStore(tmp)
             self.assertIsNone(store.get_judge_result("t1", "j/model", "nope"))
 
+    def test_pre_schema_record_goes_cold(self):
+        """v1 rows (bare result dicts, pre-inconclusive rule) must not be
+        served — a rubric change replays the call, not the stale payload."""
+        with tempfile.TemporaryDirectory() as tmp:
+            store = RunStore(tmp)
+            legacy = {"score": 0.9, "passed": True, "reasoning": "v1"}
+            with store._connect() as conn:
+                conn.execute(
+                    "INSERT INTO judge_cache VALUES (?, ?, ?, ?, ?)",
+                    ("t1", "j/model", "sha", json.dumps(legacy), "2025-01-01"),
+                )
+            self.assertIsNone(store.get_judge_result("t1", "j/model", "sha"))
+            # a fresh put overwrites the stale row and reads back fine
+            store.put_judge_result("t1", "j/model", "sha", legacy)
+            self.assertEqual(store.get_judge_result("t1", "j/model", "sha"), legacy)
+
+    def test_corrupt_record_returns_none(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = RunStore(tmp)
+            with store._connect() as conn:
+                conn.execute(
+                    "INSERT INTO judge_cache VALUES (?, ?, ?, ?, ?)",
+                    ("t1", "j/model", "sha", "not json", "2025-01-01"),
+                )
+            self.assertIsNone(store.get_judge_result("t1", "j/model", "sha"))
+
 
 class TestJudgeCacheInRun(unittest.TestCase):
     def _runner(self, store: RunStore, use_cache: bool, reply: dict) -> Runner:

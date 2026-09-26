@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>orchestral · observatory</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<div id="shell">
+  <aside id="rail">
+    <a class="brand" href="#/">
+      <span class="brand-mark">◆</span>
+      <span class="brand-word">orchestral</span>
+      <span class="brand-sub">observatory</span>
+    </a>
+    <nav id="nav">
+      <a href="#/" data-route="/">Overview</a>
+      <a href="#/runs" data-route="/runs">Runs</a>
+      <a href="#/compare" data-route="/compare">Compare</a>
+      <a href="#/leaderboard" data-route="/leaderboard">Leaderboard</a>
+      <a href="#/cards" data-route="/cards">Cards</a>
+      <a href="#/new" data-route="/new">New run</a>
+      <a href="#/about" data-route="/about">About</a>
+    </nav>
+    <div id="rail-live">
+      <div class="rail-live-head">activity</div>
+      <div id="rail-jobs"></div>
+    </div>
+  </aside>
+  <main id="main">
+    <div id="view"><div class="loading">loading…</div></div>
+  </main>
+</div>
+<script src="/static/app.js"></script>
+</body>
+</html>

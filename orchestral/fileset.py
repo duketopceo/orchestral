@@ -145,6 +145,53 @@ def sanitize_path(path: str) -> str:
     return "/".join(segments).lower()
 
 
+def sanitize_path_exec(path: str, *, allow_hidden: bool = False) -> str:
+    """Case-preserving canonical form for executor-produced file sets.
+
+    `sanitize_path` case-folds because chat-worker filesets are authored
+    paths where `Main.java`/`main.java` colliding is a defect. An executor's
+    fileset is a harvested filesystem state — `Main.java` must keep its
+    name for toolchains, and dotfiles like `.env` are legitimate only when
+    the task declares `metadata.allow_hidden`. The traversal rules are
+    identical; the folding and hidden-segment policy differ.
+    """
+    raw = str(path).strip()
+    normalized = raw
+    for _ in range(3):
+        decoded = unquote(normalized)
+        if decoded == normalized:
+            break
+        normalized = decoded
+    normalized = normalized.replace("\\", "/")
+    while normalized.startswith("./"):
+        normalized = normalized[2:]
+    if len(normalized) > MAX_PATH_LENGTH:
+        raise FilesetError(f"Path {raw!r} is longer than {MAX_PATH_LENGTH} characters")
+    if normalized.startswith("/"):
+        raise FilesetError(f"Path {raw!r} is absolute")
+    if re.match(r"^[A-Za-z]:", normalized):
+        raise FilesetError(f"Path {raw!r} has a drive letter")
+    segments = [s for s in normalized.split("/") if s != ""]
+    if not segments:
+        raise FilesetError(f"Path {raw!r} is empty")
+    for segment in segments:
+        if segment in (".", ".."):
+            raise FilesetError(f"Path {raw!r} contains a {segment!r} segment")
+        if _ILLEGAL_CHARS.search(segment):
+            raise FilesetError(f"Path {raw!r} contains an illegal character")
+        if not segment.isascii():
+            raise FilesetError(f"Path {raw!r} contains a non-ASCII character")
+        if not segment.strip("."):
+            raise FilesetError(f"Path {raw!r} is a dot-only segment")
+        if segment.endswith((" ", ".")):
+            raise FilesetError(f"Path {raw!r} has a segment ending with a dot or space")
+        if segment.startswith(".") and not allow_hidden:
+            raise FilesetError(f"Path {raw!r} is hidden (declare metadata.allow_hidden)")
+        if segment.split(".")[0].lower() in _WINDOWS_RESERVED:
+            raise FilesetError(f"Path {raw!r} uses the reserved name {segment!r}")
+    return "/".join(segments)
+
+
 def validate_fileset(files: dict[str, str]) -> None:
     """Set-level rules: no duplicates, no path a prefix of another, no dirs."""
     paths = list(files)
@@ -188,12 +235,21 @@ def merge_filesets(
     return merged, conflicts
 
 
-def build_zip(files: dict[str, str]) -> bytes:
+def build_zip(
+    files: dict[str, str],
+    *,
+    preserve_case: bool = False,
+    allow_hidden: bool = False,
+) -> bytes:
     """Build a byte-reproducible zip of the file set.
 
     Sorted entries, pinned timestamps and header fields, fixed compression, and
     S_IFREG attributes so identical input always yields identical bytes and no
     entry can be read as a symlink.
+
+    `preserve_case`/`allow_hidden` select the executor canonical variant —
+    harvested workspace filesets keep `Main.java` case and may carry
+    declared dotfiles; chat-worker filesets keep the folding contract.
     """
     validate_fileset(files)
     if not all(isinstance(p, str) and isinstance(c, str) for p, c in files.items()):
@@ -201,7 +257,11 @@ def build_zip(files: dict[str, str]) -> bytes:
     # defense in depth: this is the last boundary before bytes exist, so no
     # caller can zip a path that sanitization would have rewritten or rejected
     for path in files:
-        if sanitize_path(path) != path:
+        canonical = (
+            sanitize_path_exec(path, allow_hidden=allow_hidden)
+            if preserve_case else sanitize_path(path)
+        )
+        if canonical != path:
             raise FilesetError(f"Path {path!r} is not canonical — run it through parse_fileset")
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED,
@@ -221,6 +281,26 @@ def build_zip(files: dict[str, str]) -> bytes:
     return data
 
 
+def read_zip(data: bytes) -> dict[str, str]:
+    """Zip bytes -> {member_name: utf-8 text}.
+
+    The inverse of build_zip for re-validation and inspection: directory
+    entries are skipped and members that are not decodable text are dropped
+    rather than failing the whole read (a zip can legitimately carry a
+    binary asset alongside the code under test).
+    """
+    out: dict[str, str] = {}
+    with zipfile.ZipFile(io.BytesIO(data)) as archive:
+        for info in archive.infolist():
+            if info.is_dir():
+                continue
+            try:
+                out[info.filename] = archive.read(info).decode("utf-8")
+            except (UnicodeDecodeError, RuntimeError, zipfile.BadZipFile, OSError):
+                continue
+    return out
+
+
 def summarize_fileset(files: dict[str, str]) -> dict[str, Any]:
     """The only file-set shape allowed into traces: paths, sizes, hashes."""
     return {
@@ -235,12 +315,78 @@ def manifest_listing(files: dict[str, str]) -> str:
     return "\n".join(f"{p} ({len(files[p])} bytes)" for p in sorted(files))
 
 
-def expected_paths(task_metadata: dict[str, Any]) -> list[str]:
-    """Sanitized `metadata.expected_paths`, for validation and dry runs."""
+# The judge reads member bodies within a bounded budget: a name-only
+# listing let verdicts be computed without ever seeing the artifact.
+# Every member gets an equal share so many-file sets don't starve
+# later paths — callers pass the cap their judge path actually applies.
+def files_listing_with_content(files: dict[str, str], *, total_chars: int) -> str:
+    """Manifest listing with member bodies inlined, bounded by `total_chars`.
+
+    Each member gets a `=== path (N bytes) ===` header plus up to an equal
+    share of the budget; longer bodies are cut with a truncation marker.
+    Members with no body (binary/undecodable at the zip layer) keep the
+    header line only. When the budget runs out, remaining paths still get
+    header lines — presence evidence outranks depth.
+    """
+    paths = sorted(files)
+    if not paths:
+        return ""
+    body_share = max(120, (total_chars // len(paths)) - 60)
+    out: list[str] = []
+    used = 0
+    for i, p in enumerate(paths):
+        body = files[p]
+        head = f"=== {p} ({len(body)} bytes) ==="
+        snippet = body[:body_share]
+        if len(body) > body_share:
+            snippet += "\n…[truncated]"
+        block = f"{head}\n{snippet}" if snippet else head
+        if used + len(block) + 1 > total_chars:
+            out.extend(f"=== {q} ({len(files[q])} bytes) ===" for q in paths[i:])
+            break
+        out.append(block)
+        used += len(block) + 1
+    return "\n".join(out)[:total_chars]
+
+
+def expected_paths(task_metadata: dict[str, Any], *, preserve_case: bool = False) -> list[str]:
+    """Sanitized `metadata.expected_paths`, for validation and dry runs.
+
+    `preserve_case` selects the executor canonical variant so a spec
+    declaring `Main.java` matches a case-preserved harvested fileset."""
     declared = task_metadata.get("expected_paths") or []
     if not isinstance(declared, list):
         return []
-    return [sanitize_path(p) for p in declared if isinstance(p, str) and p.strip()]
+    canon = sanitize_path_exec if preserve_case else sanitize_path
+    return [canon(p) for p in declared if isinstance(p, str) and p.strip()]
+
+
+def member_requirements(
+    task_metadata: dict[str, Any], *, preserve_case: bool = False
+) -> dict[str, list[str]]:
+    """Sanitized `metadata.member_required` for validation and dry runs.
+
+    Member names go through the same canonicalizer `has_paths` uses —
+    `sanitize_path` for chat filesets, the case-preserving executor variant
+    when `preserve_case` is set; token values normalize to list[str] so a
+    bare string is one token, not an iterable of characters."""
+    declared = task_metadata.get("member_required")
+    if not isinstance(declared, dict):
+        return {}
+    canon = sanitize_path_exec if preserve_case else sanitize_path
+    out: dict[str, list[str]] = {}
+    for member, tokens in declared.items():
+        if not isinstance(member, str) or not member.strip():
+            continue
+        if isinstance(tokens, str):
+            tokens = [tokens]
+        if not isinstance(tokens, list):
+            continue
+        clean = [str(t) for t in tokens if str(t).strip()]
+        if clean:
+            canonical = canon(member)
+            out[canonical] = sorted(set(out.get(canonical, ())) | set(clean))
+    return out
 
 
 def _entry_pairs(data: Any) -> list[tuple[Any, Any]]:

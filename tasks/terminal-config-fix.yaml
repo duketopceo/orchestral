@@ -1,0 +1,46 @@
+id: terminal-config-fix
+title: "Fix a broken deploy"
+blurb: "Diagnose and repair a broken app deploy on a real filesystem via terminal commands."
+type: terminal
+prompt: |
+  A small app deploy is broken. The filesystem contains:
+
+    app.ini          — config with `debug = true` (must be false in prod)
+    deploy.log       — deploy log; the rollback flag line is stale
+    scripts/start.sh — references `old_module` (renamed to `app_main`)
+
+  Produce a JSON list of shell commands, [{"run": "..."}], that repairs the
+  deploy. The harness replays them in a virtual shell supporting:
+  cat, ls, pwd, cd, grep, mkdir, touch, cp, mv, rm [-r], echo > file,
+  echo >> file, and sed -i 's/x/y/' file.
+
+  Required end state:
+  - app.ini has `debug = false`
+  - scripts/start.sh references `app_main`, not `old_module`
+  - a new file READY exists containing the text `deploy-ok`
+metadata:
+  fs:
+    app.ini: |
+      [app]
+      name = billing
+      debug = true
+      workers = 4
+    deploy.log: |
+      2026-09-16 rollback_flag=armed
+      2026-09-16 deploy failed: config error
+    scripts/start.sh: |
+      #!/bin/sh
+      exec python3 -m old_module --config app.ini
+  commands:
+    - run: sed -i 's/debug = true/debug = false/' app.ini
+    - run: sed -i 's/old_module/app_main/' scripts/start.sh
+    - run: echo deploy-ok > READY
+  expect:
+    files:
+      app.ini:
+        contains: "debug = false"
+      scripts/start.sh:
+        contains: "app_main"
+      READY:
+        contains: "deploy-ok"
+    max_commands: 8

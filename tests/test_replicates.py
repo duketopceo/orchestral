@@ -53,7 +53,9 @@ class TestAggregate(unittest.TestCase):
         self.assertEqual(c.runs, 3)
         self.assertEqual(c.finished, 2)
         self.assertEqual(c.passed, 1)
-        self.assertAlmostEqual(c.pass_rate, 1 / 3)  # failures count against
+        # pass rate is over finished runs: b's mechanical fail counts
+        # against, c's infra crash is noise (visible via runs/failures)
+        self.assertAlmostEqual(c.pass_rate, 0.5)
         self.assertAlmostEqual(c.score_mean, 0.6)   # over scored runs only
         self.assertAlmostEqual(c.cost_total, 0.045)
         self.assertAlmostEqual(c.cost_mean, 0.015)

@@ -22,6 +22,7 @@ from orchestral.openrouter import (
     OpenRouterVideoSubmittedError,
     ProviderConfigError,
 )
+from orchestral.planners import PlanError, _extract_json
 from orchestral.runner import Runner, ValidationError
 from orchestral.storage import RunStore
 from orchestral.taxonomy import CATEGORIES, classify_exception
@@ -55,13 +56,52 @@ class TestTaxonomy(unittest.TestCase):
 
     def test_malformed_and_config(self):
         self.assertEqual(classify_exception(FilesetError("bad")), "malformed_output")
+        self.assertEqual(classify_exception(PlanError("not an object")), "malformed_output")
         self.assertEqual(classify_exception(json.JSONDecodeError("m", "d", 0)), "malformed_output")
+
         self.assertEqual(classify_exception(ProviderConfigError("no env")), "config")
         self.assertEqual(classify_exception(KeyError("k")), "config")
         self.assertEqual(classify_exception(RuntimeError("?")), "unknown")
 
+    def test_extract_json_failure_is_malformed(self):
+        # An unparseable model response must land in malformed_output, not
+        # exception:unknown — the stale-label class this regression produced.
+        with self.assertRaises(PlanError):
+            _extract_json("no json at all")
+
     def test_every_category_reachable(self):
         self.assertGreaterEqual(len(set(CATEGORIES)), 10)
+
+    def test_list_plan_fails_as_malformed_output(self):
+        """Orchestrator returning a bare JSON list must not crash the runner —
+        a non-dict plan is malformed model output, not an 'unknown' TypeError."""
+
+        class _ListPlanClient:
+            def chat(self, model, messages, max_tokens=4096, temperature=0.4):
+                return {
+                    "content": '[{"method": "GET", "path": "/x"}]',
+                    "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+                    "latency_ms": 1, "id": "fake",
+                }
+
+            def close(self):
+                pass
+
+        with tempfile.TemporaryDirectory() as tmp:
+            client = _ListPlanClient()
+            store = RunStore(tmp)
+            # run() marks the meta failed, logs run.failed, then re-raises —
+            # callers read the failure from the index
+            with self.assertRaises(PlanError):
+                Runner(
+                    runs_dir=tmp, planner="raw", store=store,
+                    clients={"orchestrator": client, "worker": client},
+                ).run(
+                    TaskSpec(id="t", type="html", prompt="p"),
+                    _model("o/listy", "orchestrator"), _model("w/x", "worker"),
+                )
+            meta = next(r for r in store.list_runs() if r.status == "failed")
+            self.assertEqual(meta.failure_reason, "exception:malformed_output")
 
     def test_wrapped_httpx_via_cause_chain(self):
         """OpenRouterError re-raises httpx failures with `from` — the real

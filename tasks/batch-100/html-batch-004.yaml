@@ -6,3 +6,7 @@ prompt: Create a landing page for a coffee roaster targeted at remote-first star
   CSS.
 validation:
 - html
+- has_required
+metadata:
+  required:
+  - coffee

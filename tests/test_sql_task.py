@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -204,15 +205,25 @@ UNFILTERED_SQL = """
     WHERE revenue = best
     ORDER BY month ASC
 """
+# The tie-break the prompt promises, in each direction. The prompt is the only
+# thing a candidate reads, so the reference has to answer what the prompt says
+# rather than what the query happens to do. DUK-117.
+TIE_FIRST_RE = re.compile(r"sorts first|alphabetically first|smallest name", re.I)
+TIE_LAST_RE = re.compile(r"sorts last|alphabetically last|largest name", re.I)
 
 
 class TestShippedMonthlyRevenueSpec(unittest.TestCase):
-    """DUK-90: the shipped reference must answer for any price set.
+    """DUK-90 and DUK-117: the shipped reference must answer for any price set.
 
     The reference compares each month's rounded revenue against the same
     month's maximum. Rounding only one side of that comparison made it return
     zero rows whenever a price was not exactly representable, which graded any
     zero-row candidate as a pass.
+
+    Separately, "WHERE revenue = best" returned a row for every product tied
+    at the month's maximum, while the prompt promised one row per month — so a
+    candidate that broke the tie was graded wrong. The prompt now states the
+    tie-break and ROW_NUMBER() picks exactly that winner.
     """
 
     def setUp(self):
@@ -233,6 +244,33 @@ class TestShippedMonthlyRevenueSpec(unittest.TestCase):
             rows, err = run_readonly_query(db, sql)
         self.assertIsNone(err)
         return rows
+
+    def _tied_metadata(self):
+        """The shipped fixture with a second January winner.
+
+        1 x 50.0 for Grinder on the 2025-01-20 order puts Grinder level with
+        Kettle at 90.0, so January has two products tied for the month maximum.
+        Derived from the shipped seed so there is no third copy to drift.
+        """
+        seed = [
+            line + ", (3, 2, 1, 50.0)" if "INSERT INTO order_lines" in line else line
+            for line in self.spec.metadata["seed"]
+        ]
+        self.assertNotEqual(
+            seed, self.spec.metadata["seed"], "shipped seed has no order_lines insert"
+        )
+        return {**self.spec.metadata, "seed": seed}
+
+    def _prompt_tie_direction(self) -> str:
+        """Read the tie-break the prompt promises: 'first' or 'last'."""
+        prompt = self.spec.prompt
+        first, last = bool(TIE_FIRST_RE.search(prompt)), bool(TIE_LAST_RE.search(prompt))
+        self.assertNotEqual(
+            first,
+            last,
+            f"prompt must state exactly one tie-break direction, got first={first} last={last}",
+        )
+        return "first" if first else "last"
 
     def test_reference_answers_the_shipped_fixture(self):
         report = run_sql_check(self.spec.metadata, self.reference)
@@ -260,6 +298,44 @@ class TestShippedMonthlyRevenueSpec(unittest.TestCase):
         report = run_sql_check(self.repriced, UNFILTERED_SQL)
         self.assertTrue(report["executed"])
         self.assertFalse(report["match"])
+        self.assertEqual(report["score"], 0.0)
+
+    def test_prompt_states_a_tie_break(self):
+        self.assertEqual(self._prompt_tie_direction(), "first")
+
+    def test_reference_tie_break_matches_the_prompt(self):
+        """The prompt and the reference must agree on a tied month.
+
+        The expected winner is derived from the direction the prompt states, so
+        editing either side alone fails here: a prompt promising "sorts last"
+        expects Kettle, and a reference still sorting names first answers
+        Grinder. Reverting the reference to "WHERE revenue = best" fails too —
+        it returns a row per tied product.
+        """
+        tied = self._tied_metadata()
+        winner = {"first": "Grinder", "last": "Kettle"}[self._prompt_tie_direction()]
+        self.assertEqual(
+            self._rows(tied, self.reference),
+            [("2025-01", winner, 90.0), ("2025-02", "Grinder", 80.0)],
+        )
+
+    def test_tied_month_yields_one_row_per_month(self):
+        """One row per month even when two products tie for the maximum."""
+        rows = self._rows(self._tied_metadata(), self.reference)
+        months = {month for month, _, _ in rows}
+        self.assertEqual(months, {"2025-01", "2025-02"})
+        self.assertEqual(len(rows), len(months))
+
+    def test_the_other_tie_break_scores_zero(self):
+        """A candidate that breaks the tie the other way is graded wrong."""
+        wrong = self.reference.replace("p.name ASC", "p.name DESC")
+        self.assertNotEqual(
+            wrong, self.reference, "reference no longer breaks ties by product name"
+        )
+        report = run_sql_check(self._tied_metadata(), wrong)
+        self.assertTrue(report["executed"])
+        self.assertFalse(report["match"])
+        self.assertEqual(report["rows_got"], 2)
         self.assertEqual(report["score"], 0.0)
 
 

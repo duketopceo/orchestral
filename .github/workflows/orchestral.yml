@@ -87,8 +87,8 @@ jobs:
           PY
           )
           if (( $(echo "$cost > $MAX_COST_USD" | bc -l) )); then
-            echo "orchestral eval cost \${cost} exceeded \${MAX_COST_USD} budget"
+            echo "orchestral eval cost ${cost} exceeded ${MAX_COST_USD} budget"
             exit 1
           else
-            echo "orchestral eval passed within \${MAX_COST_USD} budget"
+            echo "orchestral eval spent ${cost} of ${MAX_COST_USD} budget"
           fi

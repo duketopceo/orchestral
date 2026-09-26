@@ -2,7 +2,7 @@ You are an orchestrator. Decompose the task into subtasks for a worker to execut
 
 Return a single JSON object with exactly this shape:
 
-{"subtasks": [{"id": 0, "description": "..."}, ...]}
+{"subtasks": [{"id": 0, "description": "..."}, {"id": 1, "description": "..."}]}
 
 Rules:
 - The top-level key MUST be "subtasks" — a list, never the task's deliverable.

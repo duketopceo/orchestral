@@ -12,8 +12,8 @@ validation: []
 assets: []
 metadata:
   # v2: reference_sql compared a rounded revenue against an unrounded window
-  # max, so any non-representable price made it return zero rows and turn the
-  # task into a free pass. Same answer on the fixture below; see DUK-90.
+  # max, so it silently dropped every month whose winning total was not
+  # exactly representable. Same answer on the fixture below.
   version: "2"
   ordered: true
   schema:

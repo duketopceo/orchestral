@@ -23,7 +23,7 @@ metadata: {}                  # optional free-form map (video tasks read generat
 | `prompt` | str | required | Full task brief; the orchestrator decomposes it into subtasks |
 | `validation` | list[str] | `[]` | Check names; empty means the type's default set |
 | `assets` | list[str] | `[]` | Reserved; not consumed by the runner yet |
-| `metadata` | map | `{}` | Free-form; carried into run records. `video` tasks read `duration`, `resolution`, `aspect_ratio`, `generate_audio`, `seed`; `multi-file` tasks read `expected_paths`; `code` tasks read `module`, `tests`, `timeout_seconds`, `expected_paths`, plus quality bounds `max_code_lines`, `max_functions`, `max_complexity_lite`, `no_unsafe`, `no_external_deps`, `forbidden_patterns` |
+| `metadata` | map | `{}` | Free-form; carried into run records. `video` tasks read `duration`, `resolution`, `aspect_ratio`, `generate_audio`, `seed`; `multi-file` tasks read `expected_paths`; `code` tasks read `module`, `tests`, `timeout_seconds`, `expected_paths`, plus quality bounds `max_code_lines`, `max_functions`, `max_complexity_lite`, `no_unsafe`, `no_external_deps`, `forbidden_patterns`; every type reads `version` to label a spec revision (recorded as `task_version`) |
 
 Editing a spec changes its `task_hash` (sha256 of the spec content, recorded
 in the manifest). Runs recorded under the old hash stay valid artifacts but no
@@ -129,14 +129,18 @@ new hash.
   The reference defines truth, so it must return at least one row. An empty
   reference result is a broken spec (error, null score), not an empty answer
   to match against — otherwise any candidate returning zero rows, including a
-  nonsense one, scores `1.0`. Two rules keep a reference from answering
-  nothing by accident:
+  nonsense one, scores `1.0`. That is a liveness check only: a reference that
+  is wrong but non-empty still grades, so pin a spec's expected answer in a
+  test. Two rules keep a reference from answering nothing by accident:
 
   - **Round both sides of a comparison, or neither.** `ROUND(SUM(x), 2)`
     compared against a bare `MAX(SUM(x)) OVER (...)` is unequal for any value
     that is not exactly representable in binary floating point — `3 x 12.34` is
-    `37.019999999999996` — so the reference returns zero rows. Aggregate the
-    rounded value: `MAX(ROUND(SUM(x), 2)) OVER (...)`.
+    `37.019999999999996` — so the reference silently drops every month whose
+    winning total is not exactly representable, and keeps answering normally
+    for the months that are. That partial answer is harder to notice than a
+    total failure, and a non-empty reference passes the check above. Aggregate
+    the rounded value: `MAX(ROUND(SUM(x), 2)) OVER (...)`.
   - **Seed values that exercise the comparison.** Prices like `30.0` and
     `12.5` are exact binary fractions, so they hide the case above. Use prices
     with a fractional cent (`12.34`) and quantities that are not powers of two.

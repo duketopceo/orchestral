@@ -137,7 +137,7 @@ def run_sql_check(
         if not expected:
             # An empty reference is a broken spec, never a free pass: the
             # candidate would be graded against nothing, so any query returning
-            # zero rows (including a nonsense one) would score 1.0. See DUK-90.
+            # zero rows (including a nonsense one) would score 1.0.
             report["error"] = "reference_sql returned no rows (task spec is broken)"
             return report
         got, cand_err = run_readonly_query(db, candidate_sql, max_steps=max_steps)

@@ -35,6 +35,7 @@ from orchestral.fileset import (
     manifest_listing,
     merge_filesets,
 )
+from orchestral.holdout import is_holdout, spec_seed
 from orchestral.judge import judge_artifact
 from orchestral.logger import EventLogger
 from orchestral.manifest import build_manifest, finalize_manifest, write_manifest
@@ -168,6 +169,10 @@ class Runner:
             if model is not None
         }
         env = _environment()
+        # A generated spec already knows the seed its task data came from. Prefer
+        # that over None so the run record names the seed that chose the problem,
+        # and an explicit --seed still wins when the caller passes one.
+        run_seed = self.seed if self.seed is not None else spec_seed(task)
         run_config = {
             "dry_run": self.dry_run,
             "planner": self.planner,
@@ -176,7 +181,9 @@ class Runner:
             "judge": judge.slug if judge else None,
             "run_group": self.run_group,
             "replicate": self.replicate,
-            "seed": self.seed,
+            "seed": run_seed,
+            "holdout": is_holdout(task),
+            "task_type": task.type,
             "orchestrator": orchestrator.to_dict(),
             "worker": worker.to_dict(),
         }
@@ -210,7 +217,7 @@ class Runner:
             worker=worker, judge=judge, providers=providers, env=env,
             config=run_config, planner=self.planner,
             prompt_variant=self.prompt_variant, dry_run=self.dry_run,
-            seed=self.seed, run_group=self.run_group, replicate=self.replicate,
+            seed=run_seed, run_group=self.run_group, replicate=self.replicate,
         )
         write_manifest(run_dir, manifest)
         if self.on_run_created is not None:

@@ -24,6 +24,40 @@ metadata: {}                  # optional free-form map (video tasks read generat
 | `validation` | list[str] | `[]` | Check names; empty means the type's default set |
 | `assets` | list[str] | `[]` | Reserved; not consumed by the runner yet |
 | `metadata` | map | `{}` | Free-form; carried into run records. `video` tasks read `duration`, `resolution`, `aspect_ratio`, `generate_audio`, `seed`; `multi-file` tasks read `expected_paths`; `code` tasks read `module`, `tests`, `timeout_seconds`, `expected_paths`, plus quality bounds `max_code_lines`, `max_functions`, `max_complexity_lite`, `no_unsafe`, `no_external_deps`, `forbidden_patterns` |
+| `metadata.holdout` | bool | `false` | Marks the spec as part of the unpublished holdout arm. See below. |
+
+## The holdout arm
+
+`metadata.holdout: true` marks a spec as belonging to the **unpublished** arm —
+the problems used to estimate whether a score is inflated by having seen the
+published ones. It is honoured in three places:
+
+- **Leaderboard** (`report --leaderboard`) — holdout runs are left out of every
+  rate, median, and cost figure, and the count of excluded runs is printed. A
+  pairing with only holdout runs is listed separately as unranked rather than
+  dropped, so a measured pairing is never mistaken for an unmeasured one.
+- **Publication** (`scrub`) — a holdout run is withheld whole and recorded in
+  the published manifest under `withheld`. Nothing is copied, because there is no
+  safe subset: the plan carries the prompt and a `needle` artifact *is* the
+  answer. `scrub_run` raises `HoldoutRunError` rather than write a partial dir.
+- **Audit** (`audit`) — the presence of a holdout arm clears `no_holdout_arm`.
+
+Do not commit holdout specs. A spec in git is a published problem wearing a
+holdout label, which is the exact thing the arm exists to avoid. Generate the arm
+into a run-scoped directory instead:
+
+```bash
+python harness.py holdout --out runs-holdout --count 8 --seed 4242
+```
+
+Generated specs span several question shapes rather than one template — an arm
+built from a single shape is one problem counted many times, which is what
+`near_duplicate_family` reports for the shipped `html-batch-*` specs. The task id
+is a slot name and is the same across seeds; the prompt is not, so two seeds give
+two different problems under one id.
+
+Read the result with `python harness.py report --contamination`, which prints
+mean score per arm per task type plus the gap, and the `n` behind each mean.
 
 ## Task types
 

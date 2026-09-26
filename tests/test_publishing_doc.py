@@ -24,13 +24,13 @@ import unittest
 from pathlib import Path
 
 from orchestral.privacy import (
+    _ARCHIVE_SIGNATURES,
+    _BZIP2_SIGNATURE,
     ALLOWED_NAMES,
     ALLOWED_PREFIXES,
     ARCHIVE_EXTS,
     BINARY_EXTS,
     DATABASE_EXTS,
-    _ARCHIVE_SIGNATURES,
-    _BZIP2_SIGNATURE,
     _publication_block_reason,
     _read_prefix,
 )

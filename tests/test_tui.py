@@ -231,28 +231,45 @@ except ImportError:
 
 @unittest.skipUnless(HAS_TEXTUAL, "textual not installed (pip install 'orchestral[tui]')")
 class TestStatusBar(unittest.TestCase):
-    """_render_text must not read an attribute the class never assigns.
+    """`_render_text` must never read an attribute the class does not assign.
 
     17f6c543 removed the `set_message` writer and its `self._message = ""`
     initialiser but left the reader behind, so every status-strip refresh
-    raised AttributeError. Asserting on rendered text keeps a reader-without-
-    a-writer from reaching main again.
+    raised `AttributeError` and reddened main for six days. These assert on
+    rendered text so a reader-without-a-writer cannot reach main again. The
+    `note` and `jobs` cases pin the segment order of `_render_text` as well.
     """
 
-    def _bar(self, runs=0, cost=0.0, jobs=None):
+    def _bar(self, runs=0, cost=0.0, jobs=None, note=""):
         from orchestral.tui.widgets import StatusBar
 
         bar = StatusBar()
         bar.set_counts(runs, cost)
         bar.set_jobs(jobs or [])
+        if note:
+            bar.set_note(note)
         return bar
 
     def _text(self, bar):
         return str(bar.visual)
 
-    def test_counts_render_without_a_message_attribute(self):
-        bar = self._bar(runs=3, cost=0.1234)
-        self.assertEqual(self._text(bar), "3 runs  ·  $0.1234")
+    def test_counts_render_without_a_note(self):
+        self.assertEqual(self._text(self._bar(runs=3, cost=0.1234)), "3 runs  ·  $0.1234")
+
+    def test_note_renders_after_counts(self):
+        bar = self._bar(runs=1, cost=0.5, note="2 queued")
+        self.assertEqual(self._text(bar), "1 runs  ·  $0.5000  ·  2 queued")
+
+    def test_note_renders_after_jobs(self):
+        # test_note_renders_after_counts builds a bar with no jobs, so it pins the
+        # note against the counts and nothing else. Hoisting the note append above
+        # the jobs block leaves that test green, so pin the two-segment order
+        # explicitly: note last, jobs present and before it.
+        running = Job(label="o/m·t")
+        running.transition(JobStatus.RUNNING)
+        text = self._text(self._bar(runs=1, cost=0.5, jobs=[running], note="2 queued"))
+        self.assertTrue(text.endswith("2 queued"), text)
+        self.assertLess(text.index("jobs:"), text.index("2 queued"))
 
     def test_active_jobs_are_listed_and_terminal_ones_are_not(self):
         running = Job(label="o/m·t")
@@ -263,14 +280,15 @@ class TestStatusBar(unittest.TestCase):
         bar = self._bar(jobs=[running, done])
         self.assertEqual(self._text(bar), "0 runs  ·  $0.0000  ·  jobs: o/m·t (running)")
 
-    def test_active_job_list_caps_at_three(self):
+    def test_active_jobs_are_capped_at_three_with_a_count(self):
         jobs = []
         for i in range(5):
-            j = Job(label=f"j{i}")
-            j.transition(JobStatus.RUNNING)
-            jobs.append(j)
+            job = Job(label=f"j{i}")
+            job.transition(JobStatus.RUNNING)
+            jobs.append(job)
         text = self._text(self._bar(jobs=jobs))
         self.assertIn("jobs: j0 (running), j1 (running), j2 (running) +2 more", text)
+        self.assertNotIn("j3", text)
 
 
 @unittest.skipUnless(HAS_TEXTUAL, "textual not installed (pip install 'orchestral[tui]')")

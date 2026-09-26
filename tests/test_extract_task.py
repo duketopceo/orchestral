@@ -7,6 +7,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import yaml
+
 from orchestral.config import ModelConfig, TaskSpec
 from orchestral.extract import check_extraction, extract_json
 from orchestral.runner import Runner
@@ -23,6 +25,14 @@ METADATA = {
 
 # DUK-94: `total` is declared but neither required nor expected, so nothing grades it.
 UNANCHORED = {"fields": {"total": {"type": "number"}}}
+
+# DUK-238: two artifacts for the one contract above. The right one scores 1.0; the
+# wrong one has every required field present and every declared value wrong, so it
+# scores 0.0 and clears any floor at or below 0.
+_RIGHT_ARTIFACT = dict(METADATA["expected"])
+_WRONG_ARTIFACT = {"name": "Grace", "age": 45, "vip": False, "tier": "bronze"}
+_RIGHT = json.dumps(_RIGHT_ARTIFACT)
+_WRONG = json.dumps(_WRONG_ARTIFACT)
 
 
 def _model(slug: str, role: str) -> ModelConfig:
@@ -117,8 +127,27 @@ class TestCheckExtraction(unittest.TestCase):
         self.assertTrue(report["passes"])
         self.assertEqual(report["score"], 0.5)
 
-    def test_missing_required_fails_despite_threshold(self):
+    def test_present_but_wrong_artifact_fails_a_zero_threshold(self):
+        """DUK-238: `pass_threshold: 0` must not let a wrong artifact through.
+
+        This test used to be `test_missing_required_fails_despite_threshold`. It
+        set `pass_threshold=0.0` against an artifact *missing* a required field,
+        so it went green on the presence gate (`score = 0.25 >= 0.0` was already
+        satisfied) and never exercised the threshold it named. A green test that
+        certifies the fail-open is how this survived DUK-94 review. Here every
+        required field is present and every declared value is wrong, so the score
+        is 0.0 and the floor is the only gate left to fail.
+        """
         md = dict(METADATA, pass_threshold=0.0)
+        report = check_extraction(md, _WRONG)
+        self.assertTrue(report["checks"]["required_present"])
+        self.assertTrue(report["checks"]["types_ok"])
+        self.assertEqual(report["score"], 0.0)
+        self.assertFalse(report["passes"])
+
+    def test_missing_required_fails_under_the_lowest_legal_floor(self):
+        """The presence gate survives the most permissive floor the contract allows."""
+        md = dict(METADATA, pass_threshold=0.01)
         report = check_extraction(md, json.dumps({"name": "Ada"}))
         self.assertFalse(report["checks"]["required_present"])
         self.assertIn("age", report["missing_required"])
@@ -168,6 +197,140 @@ class TestCheckExtraction(unittest.TestCase):
         report = check_extraction(md, json.dumps({"counts": [True, 2]}))
         self.assertEqual(report["score"], 0.0)
         self.assertFalse(report["field_results"]["counts"])
+
+
+class TestPassThreshold(unittest.TestCase):
+    """DUK-238: `pass_threshold` is a declared score floor, and a bad one is an error.
+
+    Two defects, one line. `passes` is gated on `score >= threshold`, so a floor of
+    `0` declared no floor at all: a wrong artifact scores 0.0 and passed. And the
+    value was read with a bare `float(...)`, so `pass_threshold: high` raised out
+    of `check_extraction`, through `Runner._validate_extract`, into the run's
+    `try:` — where the handler set `meta.status = "failed"` and re-raised, killing
+    the run after the model had been paid.
+
+    Both artifacts are graded against each value. The right one proves a bad floor
+    is refused even when the worker was perfect — the only thing that can fail it
+    is the floor itself. The wrong one is the original fail-open repro.
+    """
+
+    ARTIFACTS = (
+        ("right", _RIGHT),
+        ("wrong", _WRONG),
+    )
+
+    # Every value the issue calls out, plus the shapes a YAML author reaches for.
+    REFUSED = (0, 0.0, -1, -0.5, False, True, "off", "high", "50%", "0.5.0")
+
+    def test_a_refused_floor_fails_the_run_and_is_reported(self):
+        for value in self.REFUSED:
+            for name, artifact in self.ARTIFACTS:
+                with self.subTest(pass_threshold=value, artifact=name):
+                    report = check_extraction(
+                        dict(METADATA, pass_threshold=value), artifact
+                    )
+                    self.assertFalse(report["passes"])
+                    self.assertTrue(
+                        any("pass_threshold" in e for e in report["errors"]),
+                        report["errors"],
+                    )
+
+    def test_a_bool_is_refused_rather_than_coerced(self):
+        """`float(True) == 1.0`, so `pass_threshold: yes` worked by accident.
+
+        `no` became 0.0 and passed everything. Asserting `passes is False` alone
+        would not catch this: a perfect artifact clears a floor of 1.0 anyway, so
+        the refusal has to be visible in the errors.
+        """
+        report = check_extraction(dict(METADATA, pass_threshold=True), _RIGHT)
+        self.assertFalse(report["passes"])
+        self.assertTrue(any("bool" in e for e in report["errors"]), report["errors"])
+
+    def test_a_malformed_floor_never_raises(self):
+        """The read is reached on every parseable artifact, so it must be total.
+
+        `1j`, a list, a dict, and an arbitrary object all defeat `float()` with
+        TypeError; the strings defeat it with ValueError. Each used to propagate
+        out of the grader and cost the run its record.
+        """
+        for value in ("off", "high", "50%", [], {}, (), object(), 1j):
+            with self.subTest(pass_threshold=value):
+                report = check_extraction(
+                    dict(METADATA, pass_threshold=value), _RIGHT
+                )
+                self.assertFalse(report["passes"])
+
+    def test_a_nan_floor_is_reported_rather_than_passed_through(self):
+        """`score >= nan` is False, so a NaN fails closed — but silently."""
+        report = check_extraction(
+            dict(METADATA, pass_threshold=float("nan")), _RIGHT
+        )
+        self.assertFalse(report["passes"])
+        self.assertTrue(any("pass_threshold" in e for e in report["errors"]), report["errors"])
+
+    def test_an_empty_yaml_value_is_not_declared(self):
+        """`pass_threshold:` with nothing after it loads as None, not as 0.
+
+        The blank-value slip is ordinary authoring, so it takes the default rather
+        than failing the run. Loaded through `yaml.safe_load` on purpose: a
+        hand-built `{"pass_threshold": None}` would not prove the YAML path.
+        """
+        spec = yaml.safe_load(
+            "type: extract\n"
+            "metadata:\n"
+            "  expected:\n"
+            "    name: Ada\n"
+            "    age: 36\n"
+            "    vip: true\n"
+            "    tier: gold\n"
+            "  pass_threshold:\n"
+        )
+        self.assertIsNone(spec["metadata"]["pass_threshold"])
+        report = check_extraction(spec["metadata"], _RIGHT)
+        self.assertTrue(report["passes"])
+        self.assertFalse(
+            any("pass_threshold" in e for e in report["errors"]), report["errors"]
+        )
+
+    def test_an_absent_floor_is_the_default_too(self):
+        report = check_extraction(METADATA, _RIGHT)
+        self.assertTrue(report["passes"])
+        self.assertFalse(
+            any("pass_threshold" in e for e in report["errors"]), report["errors"]
+        )
+
+    def test_a_floor_below_one_is_accepted_and_not_reported(self):
+        """The fix refuses a bad floor; it must not start refusing good ones."""
+        md = dict(METADATA, pass_threshold=0.5)
+        obj = dict(METADATA["expected"], tier="silver")
+        report = check_extraction(md, json.dumps(obj))
+        self.assertTrue(report["passes"])
+        self.assertEqual(report["score"], 0.75)
+        self.assertFalse(
+            any("pass_threshold" in e for e in report["errors"]), report["errors"]
+        )
+
+    def test_a_quoted_number_is_still_read_as_a_floor(self):
+        """`pass_threshold: "0.5"` worked before this change and is not a typo.
+
+        It is a `str`, not a score, but `float()` reads it and the value is inside
+        (0, 1]. Refusing every string would fail a spec that is doing what it says.
+        """
+        md = dict(METADATA, pass_threshold="0.5")
+        obj = dict(METADATA["expected"], tier="silver")
+        report = check_extraction(md, json.dumps(obj))
+        self.assertTrue(report["passes"])
+        self.assertFalse(
+            any("pass_threshold" in e for e in report["errors"]), report["errors"]
+        )
+
+    def test_a_floor_above_one_needs_no_refusal_and_still_fails_closed(self):
+        """A score is a fraction, so it cannot clear 2.0 — the run fails anyway."""
+        report = check_extraction(
+            dict(METADATA, pass_threshold=2.0), _RIGHT
+        )
+        self.assertFalse(report["passes"])
+        self.assertEqual(report["score"], 1.0)
 
 
 class TestUnanchoredContract(unittest.TestCase):
@@ -399,6 +562,31 @@ class TestExtractRunner(unittest.TestCase):
             self.assertEqual(meta.score, 0.0)
             report = json.loads((Path(meta.run_dir) / "report.json").read_text())
             self.assertFalse(report["checks"]["contract_anchored"])
+
+
+    def test_a_malformed_floor_fails_the_run_without_destroying_it(self):
+        """DUK-238: a typo in one spec used to cost the whole run.
+
+        The bare `float(...)` raised out of `check_extraction`, through
+        `Runner._validate_extract`, into the run's `try:` — where the handler set
+        `meta.status = "failed"`, logged `run.failed`, and re-raised, after the
+        model had been paid. The run must instead finish with a report that names
+        the bad key, and it must finish rather than blow up.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            task = _task(metadata=dict(METADATA, pass_threshold="high"))
+            client = _FakeClient(payloads=[_RIGHT])
+            meta = Runner(
+                runs_dir=tmp, planner="raw",
+                clients={"orchestrator": client, "worker": client},
+            ).run(task, _model("org/x", "orchestrator"), _model("wrk/ex", "worker"))
+            self.assertEqual(meta.status, "finished")
+            self.assertFalse(meta.passes)
+            report = json.loads((Path(meta.run_dir) / "report.json").read_text())
+            self.assertEqual(report["score"], 1.0)
+            self.assertTrue(
+                any("pass_threshold" in e for e in report["errors"]), report["errors"]
+            )
 
 
 if __name__ == "__main__":

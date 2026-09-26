@@ -229,6 +229,27 @@ except ImportError:
     HAS_TEXTUAL = False
 
 
+class TestGateEnvironment(unittest.TestCase):
+    """A missing [tui] extra is a broken gate environment, not a skipped test.
+
+    `textual` is part of the environment every gate runs in (CI installs
+    `.[dev,tui]`), so a run that cannot import it is not a green run with fewer
+    tests — it is a run that measured less than it reported. Skipping quietly
+    made `unittest discover` print OK while the pilot suite never executed, and
+    the same blind spot hid the `StatusBar._message` defect from mypy (without
+    `textual` the base class resolves to `Any`).
+    """
+
+    def test_textual_extra_is_importable(self):
+        if not HAS_TEXTUAL:
+            self.fail(
+                "the [tui] extra is missing, so every Textual test in this file was "
+                "skipped and the run under-reports. CI installs '.[dev,tui]'; match it "
+                "with scripts/bootstrap-venv.sh <dir> (or pip install -e '.[dev,tui]'). "
+                "Do not re-add a skipUnless guard: silence here is a false green."
+            )
+
+
 @unittest.skipUnless(HAS_TEXTUAL, "textual not installed (pip install 'orchestral[tui]')")
 class TestAppPilot(unittest.IsolatedAsyncioTestCase):
     async def _pump(self, app, pilot, until, timeout=5.0):

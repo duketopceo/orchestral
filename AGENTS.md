@@ -47,11 +47,23 @@ for per-action logging.
 
 ## Verification
 
-Before committing, run:
+Before committing, run all four CI gates in a throwaway venv built by
+`scripts/bootstrap-venv.sh <dir>` — the same `.[dev,tui]` environment CI
+installs. A shared `.venv` is mutated by every concurrent run, and a local run
+that reports green is only meaningful if the `[tui]` extra was present.
 
 ```bash
-python3 -m compileall orchestral harness.py
-python3 harness.py init
-python3 harness.py run --task landing-page-coffee --orchestrator deepseek/deepseek-v4-flash-0731 --worker z-ai/glm-5.3-flash --dry-run
-python3 harness.py report --html
+scripts/bootstrap-venv.sh /tmp/gate-venv
+/tmp/gate-venv/bin/python -m unittest discover -s tests
+/tmp/gate-venv/bin/python -m ruff check .
+/tmp/gate-venv/bin/python -m mypy orchestral harness.py
+```
+
+`python -m compileall` is not verification, and a skipped test is not a
+passing test. To exercise a run end to end:
+
+```bash
+/tmp/gate-venv/bin/python harness.py init
+/tmp/gate-venv/bin/python harness.py run --task landing-page-coffee --orchestrator deepseek/deepseek-v4-flash-0731 --worker z-ai/glm-5.3-flash --dry-run
+/tmp/gate-venv/bin/python harness.py report --html
 ```

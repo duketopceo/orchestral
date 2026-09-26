@@ -40,7 +40,14 @@ Does the quality of the final output depend more on:
 pip install -e .            # from a clone
 pip install "orchestral @ git+https://github.com/duketopceo/orchestral"  # or straight from git
 pip install -e .[shots]     # optional: screenshot capture (playwright)
-pip install -e .[dev]       # optional: ruff + mypy for development
+pip install -e .[dev]       # optional: ruff + mypy + the [tui] extra
+```
+
+`.venv` in a clone is shared by every concurrent run, and `pip install -e .`
+in it is a cross-run mutation. For gate work, build a throwaway venv per run:
+
+```bash
+scripts/bootstrap-venv.sh /tmp/my-venv   # installs .[dev,tui], same as CI
 ```
 
 Set your provider key (OpenRouter is the default):

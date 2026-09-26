@@ -6,3 +6,11 @@ prompt: Create a landing page for a no-code automation tool targeted at product 
   CSS.
 validation:
 - html
+- has_required
+- matches_pattern
+metadata:
+  required:
+  - automat
+  pattern: product manager|product management|\bpm\b|roadmap review|sprint planning|backlog
+    grooming|stakeholder|user research|prioriti[sz]|feature request|voice of the customer|product
+    team|ship the right thing

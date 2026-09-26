@@ -6,3 +6,11 @@ prompt: Create a landing page for a carbon offset marketplace targeted at open-s
   inline CSS.
 validation:
 - html
+- has_required
+- matches_pattern
+metadata:
+  required:
+  - carbon
+  pattern: open[ -]source|developer|dev team|contributor|codebase|self[ -]host|\bcli\b|api[-
+    ]first|github|git repository|repository|readme|ship your own|for developers|by
+    developers

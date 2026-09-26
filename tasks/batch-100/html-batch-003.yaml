@@ -6,3 +6,10 @@ prompt: Create a landing page for a coffee roaster targeted at enterprise securi
   inline CSS.
 validation:
 - html
+- has_required
+- matches_pattern
+metadata:
+  required:
+  - roast
+  pattern: security|compliance|soc ?2|zero trust|encrypt|audit|identity|access control|\brisk\b|governance|pen
+    test|least privilege|threat

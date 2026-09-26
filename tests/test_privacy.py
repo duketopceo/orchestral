@@ -682,15 +682,17 @@ class TestScrubCommandExitStatus(unittest.TestCase):
 
             self.assertEqual(rc, 0)
 
-    def test_scrub_command_exits_zero_when_there_are_no_runs(self):
+    def test_scrub_command_exits_nonzero_when_there_are_no_runs(self):
+        """An empty source published as success is a hole in the record."""
         with tempfile.TemporaryDirectory() as td:
             runs_dir = Path(td) / "runs"
             runs_dir.mkdir()
             out_dir = Path(td) / "pub"
 
-            rc, _ = self._run_cmd(runs_dir, out_dir)
+            rc, stderr = self._run_cmd(runs_dir, out_dir)
 
-            self.assertEqual(rc, 0)
+            self.assertNotEqual(rc, 0)
+            self.assertIn("no runs found", stderr)
 
 
 if __name__ == "__main__":

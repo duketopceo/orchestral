@@ -1626,8 +1626,8 @@ def assemble_ce(
         expect_json=True,
     )
     verification = None
+    # An unparseable verification is recorded below, never silently dropped.
     with contextlib.suppress(ValueError):
-        # unparseable verification — recorded below, never silently dropped
         verification = _extract_json(final_content)
     if isinstance(verification, dict) and verification.get("passed") is False:
         reason = str(verification.get("reasoning") or verification.get("reason") or "unspecified")[:200]

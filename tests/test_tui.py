@@ -230,6 +230,57 @@ except ImportError:
 
 
 @unittest.skipUnless(HAS_TEXTUAL, "textual not installed (pip install 'orchestral[tui]')")
+class TestStatusBar(unittest.TestCase):
+    """`_render_text` must never read an attribute the class does not assign.
+
+    17f6c543 removed the `set_message` writer and its `self._message = ""`
+    initialiser but left the reader behind, so every status-strip refresh
+    raised `AttributeError` and reddened main for six days. These assert on
+    rendered text so a reader-without-a-writer cannot reach main again.
+    """
+
+    def _bar(self, runs=0, cost=0.0, jobs=None, note=""):
+        from orchestral.tui.widgets import StatusBar
+
+        bar = StatusBar()
+        bar.set_counts(runs, cost)
+        bar.set_jobs(jobs or [])
+        if note:
+            bar.set_note(note)
+        return bar
+
+    def _text(self, bar):
+        return str(bar.visual)
+
+    def test_counts_render_without_a_note(self):
+        self.assertEqual(self._text(self._bar(runs=3, cost=0.1234)), "3 runs  ·  $0.1234")
+
+    def test_note_renders_after_counts(self):
+        bar = self._bar(runs=1, cost=0.5, note="2 queued")
+        self.assertEqual(self._text(bar), "1 runs  ·  $0.5000  ·  2 queued")
+
+    def test_active_jobs_are_listed_and_terminal_ones_are_not(self):
+        running = Job(label="o/m·t")
+        running.transition(JobStatus.RUNNING)
+        done = Job(label="old")
+        done.transition(JobStatus.RUNNING)
+        done.transition(JobStatus.SUCCEEDED)
+        bar = self._bar(jobs=[running, done])
+        self.assertEqual(self._text(bar), "0 runs  ·  $0.0000  ·  jobs: o/m·t (running)")
+
+    def test_active_jobs_are_capped_at_three_with_a_count(self):
+        jobs = []
+        for i in range(5):
+            job = Job(label=f"j{i}")
+            job.transition(JobStatus.RUNNING)
+            jobs.append(job)
+        text = self._text(self._bar(jobs=jobs))
+        self.assertIn("j0 (running)", text)
+        self.assertNotIn("j3", text)
+        self.assertIn("+2 more", text)
+
+
+@unittest.skipUnless(HAS_TEXTUAL, "textual not installed (pip install 'orchestral[tui]')")
 class TestAppPilot(unittest.IsolatedAsyncioTestCase):
     async def _pump(self, app, pilot, until, timeout=5.0):
         """Wait for a condition with real time for thread workers."""

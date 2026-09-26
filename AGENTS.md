@@ -69,11 +69,12 @@ $ gh pr review <pr> --approve
 failed to create review: GraphQL: Review Can not approve your own pull request
 ```
 
-`main` keeps branch protection and required status checks. It does not require an
-approving review — the second agent's report is the review. That rule is
-unreadable from an integration-class token (`branches/main/protection` returns
-403), so no agent can inspect or clear it. While a PR sits behind it, a green,
-conflict-free PR still reports:
+`main` keeps branch protection and required status checks, and the review is the
+second agent's report rather than a GitHub approval. The branch-protection rule
+is unreadable from an integration-class token (`branches/main/protection` returns
+403), so no agent can inspect or clear it — removing the approving-review
+condition needs a board action holding repo admin. Until that condition is
+actually gone, a green, conflict-free PR still reports:
 
 ```console
 $ gh pr view <pr> --json reviewDecision,mergeStateStatus,mergeable

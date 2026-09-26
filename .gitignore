@@ -12,3 +12,12 @@ data/
 build/
 dist/
 reports/shots/
+
+# The judge calibration baseline is a committed, durable artifact, not run output.
+# reports/ is otherwise ignored as ephemeral pipeline output (orchestral.yml writes
+# reports/summary.txt into it and uploads the whole directory). Track these two
+# deliberately; see reports/judge-calibration.md for the reproducibility ceiling.
+!reports/
+reports/*
+!reports/judge-calibration.json
+!reports/judge-calibration.md

@@ -21,6 +21,9 @@ METADATA = {
     "expected": {"name": "Ada", "age": 36, "vip": True, "tier": "gold"},
 }
 
+# DUK-94: `total` is declared but neither required nor expected, so nothing grades it.
+UNANCHORED = {"fields": {"total": {"type": "number"}}}
+
 
 def _model(slug: str, role: str) -> ModelConfig:
     return ModelConfig(
@@ -150,6 +153,64 @@ class TestCheckExtraction(unittest.TestCase):
         self.assertEqual(check_extraction(md, '{"name": 1}')["score"], 0.0)
 
 
+class TestUnanchoredContract(unittest.TestCase):
+    """A declared field that nothing grades must not score like a graded one."""
+
+    def test_absent_field_no_longer_scores_one(self):
+        """The DUK-94 repro: an empty artifact passed a contract that graded nothing."""
+        report = check_extraction(UNANCHORED, "{}")
+        self.assertFalse(report["checks"]["contract_anchored"])
+        self.assertFalse(report["passes"])
+        self.assertEqual(report["score"], 0.0)
+
+    def test_fabricated_value_no_longer_scores_like_an_absent_one(self):
+        """A right-typed fabrication used to be indistinguishable from absence."""
+        absent = check_extraction(UNANCHORED, "{}")
+        fabricated = check_extraction(UNANCHORED, '{"total": 99999}')
+        self.assertEqual(absent["passes"], fabricated["passes"])
+        self.assertFalse(fabricated["passes"])
+        self.assertFalse(fabricated["checks"]["contract_anchored"])
+
+    def test_empty_contract_fails_closed(self):
+        report = check_extraction({}, "{}")
+        self.assertFalse(report["checks"]["contract_anchored"])
+        self.assertFalse(report["passes"])
+        self.assertEqual(report["score"], 0.0)
+
+    def test_error_names_the_offending_field_and_the_fix(self):
+        report = check_extraction(UNANCHORED, "{}")
+        detail = " ".join(report["errors"])
+        self.assertIn("total", detail)
+        self.assertIn("required: true", detail)
+
+    def test_decorative_field_beside_a_graded_one_still_fails(self):
+        """`a` anchors the contract, so the audit is clean — `b` is still ungraded."""
+        md = {"fields": {"a": {"type": "str", "required": True}, "b": {"type": "int"}},
+              "expected": {"a": "x"}}
+        for artifact in ('{"a": "x"}', '{"a": "x", "b": 7}'):
+            report = check_extraction(md, artifact)
+            self.assertFalse(report["checks"]["contract_anchored"], artifact)
+            self.assertFalse(report["passes"], artifact)
+
+    def test_zero_threshold_cannot_rescue_an_unanchored_contract(self):
+        md = dict(UNANCHORED, pass_threshold=0.0)
+        self.assertFalse(check_extraction(md, '{"total": 1}')["passes"])
+
+    def test_a_graded_field_is_enough(self):
+        md = {"fields": {"total": {"type": "number", "required": True}}}
+        report = check_extraction(md, '{"total": 1}')
+        self.assertTrue(report["checks"]["contract_anchored"])
+        self.assertTrue(report["passes"])
+
+    def test_contract_anchoring_is_independent_of_the_artifact(self):
+        """A parse failure must not be reported as a contract that grades nothing."""
+        report = check_extraction(METADATA, "I cannot help with that.")
+        self.assertFalse(report["parsed"])
+        self.assertTrue(report["checks"]["contract_anchored"])
+        self.assertNotIn("contract_anchored", " ".join(report["errors"]))
+        self.assertFalse(report["passes"])
+
+
 class TestExtractRunner(unittest.TestCase):
     def test_dry_run_passes_and_writes_artifact(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -210,6 +271,20 @@ class TestExtractRunner(unittest.TestCase):
             ).run(_task(), _model("org/x", "orchestrator"), _model("wrk/ex", "worker"))
             self.assertFalse(meta.passes)
             self.assertIsNone(meta.score)
+
+    def test_unanchored_contract_fails_through_the_runner(self):
+        """A perfect extraction still fails when the contract grades nothing."""
+        with tempfile.TemporaryDirectory() as tmp:
+            task = _task(metadata={"fields": {"total": {"type": "number"}}})
+            client = _FakeClient(payloads=['{"total": 99999}'])
+            meta = Runner(
+                runs_dir=tmp, planner="raw",
+                clients={"orchestrator": client, "worker": client},
+            ).run(task, _model("org/x", "orchestrator"), _model("wrk/ex", "worker"))
+            self.assertFalse(meta.passes)
+            self.assertEqual(meta.score, 0.0)
+            report = json.loads((Path(meta.run_dir) / "report.json").read_text())
+            self.assertFalse(report["checks"]["contract_anchored"])
 
 
 if __name__ == "__main__":

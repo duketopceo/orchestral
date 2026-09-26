@@ -11,6 +11,10 @@ Score is the fraction of `expected` keys whose extracted value deep-equals
 the expected one; with no `expected`, score is 1.0 when all field checks
 pass. `passes` additionally requires every `required` field present and
 type/enum-valid — partial credit never counts as a pass by accident.
+
+A contract that grades nothing fails closed (`contract_anchored`): the audit
+rule `absent_grading_contract` already rejects these specs, and a spec that
+bypasses the audit must not score 1.0 here either.
 """
 
 from __future__ import annotations
@@ -78,11 +82,36 @@ def _type_ok(declared: str, value: Any) -> bool:
     return isinstance(value, types)
 
 
+def _unanchored_fields(
+    fields: dict[str, Any], expected: dict[str, Any]
+) -> tuple[list[str], bool]:
+    """Which declared fields the contract never grades, and whether any anchor exists.
+
+    A field is graded when it is `required` (checked for presence) or named in
+    `expected` (deep-compared). A field that is neither is decorative: absent, it
+    is skipped; present, only its type is read. An absent field and any
+    fabricated value score the same, so declaring it anchors nothing.
+
+    The second element is whether the contract grades anything at all, which
+    covers the empty contract where `fields` is empty and there is no `expected`.
+    """
+    required = [
+        name for name, spec in fields.items() if isinstance(spec, dict) and spec.get("required")
+    ]
+    unanchored = [name for name in fields if name not in expected and name not in required]
+    return unanchored, bool(expected) or bool(required)
+
+
 def check_extraction(metadata: dict[str, Any], artifact_text: str) -> dict[str, Any]:
     """Grade `artifact_text` against the metadata contract; returns a report."""
     report: dict[str, Any] = {
         "parsed": False,
-        "checks": {"json_parses": False, "required_present": False, "types_ok": False},
+        "checks": {
+            "json_parses": False,
+            "required_present": False,
+            "types_ok": False,
+            "contract_anchored": False,
+        },
         "field_results": {},
         "missing_required": [],
         "errors": [],
@@ -90,6 +119,28 @@ def check_extraction(metadata: dict[str, Any], artifact_text: str) -> dict[str, 
         "passes": False,
     }
     obj = extract_json(artifact_text)
+
+    # Contract anchoring depends on metadata alone, so it is settled before the
+    # artifact is looked at: a spec with no anchor fails closed whatever the
+    # worker returned, and a parse failure must not be reported as a bad contract.
+    fields = metadata.get("fields") or {}
+    expected = metadata.get("expected") or {}
+    unanchored, has_anchor = _unanchored_fields(fields, expected)
+    report["checks"]["contract_anchored"] = has_anchor and not unanchored
+    if unanchored:
+        report["errors"].append(
+            f"metadata.fields declares {', '.join(sorted(unanchored))} with neither "
+            "`required: true` nor a metadata.expected value, so the contract grades nothing "
+            "for it: an absent field and any fabricated value score the same. Set "
+            "`required: true` or add a metadata.expected value."
+        )
+    elif not has_anchor:
+        report["errors"].append(
+            "metadata has no `fields` entry marked `required: true` and no metadata.expected, "
+            "so the contract grades nothing: an empty artifact scores 1.0. Add a required "
+            "field, or declare expected values."
+        )
+
     if obj is None:
         report["errors"].append("artifact does not contain parseable JSON")
         return report
@@ -99,9 +150,6 @@ def check_extraction(metadata: dict[str, Any], artifact_text: str) -> dict[str, 
         report["errors"].append("extracted JSON is not an object")
         report["score"] = 0.0
         return report
-
-    fields = metadata.get("fields") or {}
-    expected = metadata.get("expected") or {}
 
     missing: list[str] = []
     type_errors: list[str] = []
@@ -136,7 +184,8 @@ def check_extraction(metadata: dict[str, Any], artifact_text: str) -> dict[str, 
 
     threshold = float(metadata.get("pass_threshold", 1.0))
     report["passes"] = (
-        report["checks"]["required_present"]
+        report["checks"]["contract_anchored"]
+        and report["checks"]["required_present"]
         and report["checks"]["types_ok"]
         and report["score"] >= threshold
     )

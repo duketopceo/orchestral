@@ -99,13 +99,13 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
-    def do_GET(self) -> None:  # noqa: N802
+    def do_GET(self) -> None:
         if self.path.rstrip("/") in ("/v1/models", ""):
             self._send(200, {"object": "list", "data": [{"id": "laya/local-decision", "object": "model"}]})
         else:
             self._send(404, {"error": "not found"})
 
-    def do_POST(self) -> None:  # noqa: N802
+    def do_POST(self) -> None:
         if not self.path.rstrip("/").endswith("chat/completions"):
             self._send(404, {"error": "not found"})
             return
@@ -149,10 +149,10 @@ class Handler(BaseHTTPRequestHandler):
                     },
                 },
             )
-        except Exception as exc:  # noqa: BLE001 — one endpoint, surface anything
+        except Exception as exc:
             self._send(500, {"error": {"message": str(exc), "type": "laya_adapter_error"}})
 
-    def log_message(self, format: str, *args) -> None:  # noqa: A002,N803 — stdlib signature
+    def log_message(self, format: str, *args) -> None:
         pass
 
 

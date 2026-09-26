@@ -54,6 +54,30 @@ recoverable off-machine. That is its only job.
 - **To preserve a head before merging into it**, create a *new* `preserve/*` ref
   pointing at the current head. Do not reuse or move an existing one.
 
+### A dangling object is weaker than a `preserve/*` ref, and an empty stash list is not evidence
+
+Work that only exists as a dangling or stash-shaped object is the weakest form
+of local-only work there is. It has no name, no branch, and `git gc --prune`
+reaps it on a normal schedule. A `preserve/*` ref at least has a name you can
+look up.
+
+- **Never leave a run's uncommitted work only in a stash.** If a run stashes
+  rather than commits, that stash must be pushed to a named `preserve/*` ref
+  before the run ends.
+- **`git stash list` returning nothing is not evidence that nothing was stashed.**
+  It is evidence that the stash was dropped. A dropped stash leaves its objects
+  dangling and unreachable, and its absence from the stash list is the *normal*
+  appearance of lost work.
+- **Recover by pinning, not by looking.** `git fsck --unreachable` finds
+  stash-shaped commits; give each one a ref and push it. Do not infer recovery
+  from the absence of a search hit, and do not tell anyone their work is gone
+  until the objects have actually been looked for.
+
+This is not hypothetical: on this repository 32 stash-shaped dangling commits
+were found and pinned in a single sitting, and 17 uncommitted paths had already
+vanished from a working tree with no commit and no stash entry to account for
+them.
+
 The reason this is written down: at the time of writing, 27 of 28 `preserve/*`
 refs on `origin` carry a version of `orchestral/tui/widgets.py` that `main` has
 already superseded, and not one of the 28 is an ancestor of `main`. Any of them

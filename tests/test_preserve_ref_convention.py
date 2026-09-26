@@ -89,6 +89,23 @@ class TestPreserveRefConventionIsDocumented(unittest.TestCase):
                     "update-branch cannot rescue a preserve-based PR is undocumented",
                 )
 
+    def test_documentation_covers_the_dangling_object_rules(self) -> None:
+        # The preserve-ref rules are not sufficient on their own. A stash-shaped
+        # object has no name at all, so it survives none of them, and an empty
+        # `git stash list` is the *normal* appearance of work that was dropped.
+        # That misreading is what nearly cost 17 uncommitted paths.
+        for rule, expected in (
+            ("stashed work must reach a named ref", "Never leave a run's uncommitted work only in a stash"),
+            ("an empty stash list proves nothing", "not evidence that nothing was stashed"),
+            ("recover by pinning", "Recover by pinning, not by looking"),
+        ):
+            with self.subTest(rule=rule):
+                self.assertIn(
+                    expected,
+                    self.text,
+                    f"the documented rule '{rule}' is missing from CONTRIBUTING.md",
+                )
+
     def test_this_file_is_a_documentation_guard_not_enforcement(self) -> None:
         # If someone later wires real enforcement into this suite, this test
         # becomes wrong and should be deleted rather than left to mislead.

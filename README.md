@@ -94,6 +94,7 @@ orchestral dashboard               # reports/dashboard.html
 | `serve` | Local web observatory — same views in a browser, launch/cancel runs (localhost only) |
 | `scrub` | Redact secrets/paths from `runs/` into `runs-pub/` + `manifest.json` |
 | `calibrate` | Judge-vs-human agreement from a labels file (`--labels`, `--json`) |
+| `audit` | Static task-spec audit — fail-open checks, structural-only graders, contamination risk (`--json`, `--strict`) — see [docs/task-audit.md](docs/task-audit.md) |
 
 Shared run flags (on `run`, `grid`, `batch`, `ablate`): `--planner raw|ce-plan`,
 `--judge <slug>`, `--no-judge-cache`, `--retry-limit N`, `--prompt-variant NAME`,

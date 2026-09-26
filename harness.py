@@ -875,7 +875,16 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
         print("  labels:\n    - run_id: <prefix>\n      score: 0.8\n      passed: true")
 
 
-def cmd_scrub(args: argparse.Namespace) -> None:
+def cmd_scrub(args: argparse.Namespace) -> int:
+    """Scrub every run for publication and fail if anything was withheld.
+
+    `scrub_all` withholds files it cannot redact and records each one in the
+    manifest. A withheld file is a hole in the published record, so a caller
+    that only reads the exit status — a CI publish step, a shell pipeline —
+    must be able to tell a complete publication from an incomplete one. It
+    cannot from the exit status alone, so it exits non-zero when the manifest
+    records any blocked file.
+    """
     source = Path(args.runs_dir)
     # Validate before scrubbing: scrub_all clears the output directory first, so
     # a wrong --runs-dir used to destroy the previous runs-pub/ and repopulate it
@@ -886,18 +895,66 @@ def cmd_scrub(args: argparse.Namespace) -> None:
             "Set --runs-dir (before or after `scrub`) to the tree holding run.json files.",
             file=sys.stderr,
         )
-        sys.exit(1)
+        return 1
     if not any(source.rglob("run.json")):
         print(
             f"error: no runs found under {source} (no run.json). Nothing was written. "
             "Check --runs-dir — an empty source must not be published as a success.",
             file=sys.stderr,
         )
-        sys.exit(1)
+        return 1
     copied = scrub_all(source, Path(args.scrub_dir))
     print(f"Scrubbed {len(copied)} runs to {args.scrub_dir}")
     for c in copied:
         print(f"  {c}")
+
+    blocked: list[str] = []
+    manifest_path = Path(args.scrub_dir) / "manifest.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        manifest = []
+    for entry in manifest:
+        for item in entry.get("scrub_blocked") or []:
+            blocked.append(f"{entry.get('run', '?')}/{item.get('file', '?')}")
+
+    if blocked:
+        print(
+            f"error: {len(blocked)} file(s) were withheld from publication and are "
+            "listed under `scrub_blocked` in the manifest. This run's output is "
+            "incomplete until each is reviewed:",
+            file=sys.stderr,
+        )
+        for name in blocked:
+            print(f"  {name}", file=sys.stderr)
+        return 1
+    return 0
+
+    print(f"Scrubbed {len(copied)} runs to {args.scrub_dir}")
+    for c in copied:
+        print(f"  {c}")
+
+    blocked: list[str] = []
+    manifest_path = Path(args.scrub_dir) / "manifest.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        manifest = []
+    for entry in manifest:
+        for item in entry.get("scrub_blocked") or []:
+            blocked.append(f"{entry.get('run', '?')}/{item.get('file', '?')}")
+
+    if blocked:
+        print(
+            f"error: {len(blocked)} file(s) were withheld from publication and are "
+            "listed under `scrub_blocked` in the manifest. This run's output is "
+            "incomplete until each is reviewed:",
+            file=sys.stderr,
+        )
+        for name in blocked:
+            print(f"  {name}", file=sys.stderr)
+        return 1
+    return 0
 
 
 def cmd_audit(args: argparse.Namespace) -> None:
@@ -1168,11 +1225,15 @@ def main() -> None:
         p.print_help()
         return
     try:
-        args.func(args)
+        rc = args.func(args)
     except ConfigError as exc:
         sys.exit(f"error: {exc}")
     except FileNotFoundError as exc:
         sys.exit(f"error: {exc}")
+    # A command that reports its own failure status returns it. Every other
+    # command returns None, which leaves the exit status at 0 as before.
+    if isinstance(rc, int) and rc:
+        sys.exit(rc)
 
 
 if __name__ == "__main__":

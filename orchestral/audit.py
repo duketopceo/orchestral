@@ -67,9 +67,13 @@ VALIDATION_CHECKS: dict[str, frozenset[str]] = {
     "multi-file": frozenset({"non_empty", "zip_signature", "has_paths"}),
 }
 
-# Registry names the runner expands into other checks instead of assigning
-# itself, so they never appear as a `checks[...]` key.
-VALIDATION_SHORTHANDS = frozenset({"html"})
+# Registry names a validator expands into other checks instead of assigning
+# itself. Keyed by type, so a name cannot hide behind another type's shorthand.
+VALIDATION_SHORTHANDS: dict[str, frozenset[str]] = {
+    "html": frozenset({"html"}),
+    "constraint": frozenset({"html"}),
+    "needle": frozenset({"html"}),
+}
 
 # The grading contract each self-anchored type needs before its grader has
 # anything to compare the artifact against. A value lists interchangeable keys:
@@ -83,6 +87,11 @@ GRADING_CONTRACT: dict[str, tuple[str, ...]] = {
     "sql": ("reference_sql",),
     "api": ("calls",),
 }
+
+# Types whose grader reads `metadata.required`. `has_required` is a text check,
+# so for every other type the declaration is inert — it must not count as an
+# anchor there.
+METADATA_REQUIRED_TYPES = frozenset({"html", "constraint", "needle"})
 
 # Types whose grader never reads `validation:` — they compute a fixed check set
 # from `metadata` instead. Declaring checks on these specs is always a mistake.
@@ -292,7 +301,10 @@ def effective_checks(spec: TaskSpec) -> set[str]:
 def _has_topic_anchor(spec: TaskSpec) -> bool:
     if effective_checks(spec) & TOPIC_ANCHORS:
         return True
-    return bool(spec.metadata.get("required"))
+    # `metadata.required` is read by the text grader only. For every other type
+    # the declaration is inert, so honouring it here would silence the finding
+    # on a spec the grader never anchors.
+    return spec.type in METADATA_REQUIRED_TYPES and bool(spec.metadata.get("required"))
 
 
 def _scalars(value: Any) -> list[str]:
@@ -377,27 +389,110 @@ def check_validation_names(spec: TaskSpec, path: Path | None = None) -> list[Fin
     ]
 
 
-def _suite_asserts_anything(tests_source: str) -> bool:
-    """Does the suite contain at least one real assertion?
+def _literal(node: ast.AST) -> tuple[bool, Any]:
+    """Constant-fold a node. False when the node is not a literal expression."""
+    try:
+        return True, ast.literal_eval(node)
+    except (ValueError, SyntaxError, TypeError, MemoryError, RecursionError):
+        return False, None
 
-    Parsed, not grepped, so the word "assert" in a docstring or a string
-    literal does not pass for a gate. `ast.parse` does not execute the source.
-    An unparseable suite fails closed: code that cannot be imported cannot gate
-    anything.
+
+def _is_test_case(node: ast.ClassDef, bases: dict[str, ast.ClassDef], seen: frozenset[str] = frozenset()) -> bool:
+    """Does this class inherit `unittest.TestCase`, directly or through a local base?"""
+    if node.name in seen:  # a cyclic base list cannot be resolved statically
+        return False
+    for base in node.bases:
+        name = base.id if isinstance(base, ast.Name) else getattr(base, "attr", "")
+        if name == "TestCase":
+            return True
+        parent = bases.get(name)
+        if parent is not None and _is_test_case(parent, bases, seen | {node.name}):
+            return True
+    return False
+
+
+def _is_constant_assertion(node: ast.AST) -> bool:
+    """Can this assertion never fail, whatever the artifact is?
+
+    Only provable constants are flagged, so a real smoke check such as
+    `assert result is not None` is never mistaken for one. `literal_eval`
+    fails on anything that reads a value, which is exactly the distinction.
+    """
+    if isinstance(node, ast.Assert):
+        ok, value = _literal(node.test)
+        return ok and bool(value)
+    if not isinstance(node, ast.Call):
+        return False
+    func = node.func
+    name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+    args = node.args
+    if name in {"assertTrue", "assertFalse"} and len(args) == 1:
+        ok, value = _literal(args[0])
+        return ok and bool(value) is (name == "assertTrue")
+    if name in {"assertEqual", "assertNotEqual"} and len(args) == 2:
+        left_ok, left = _literal(args[0])
+        right_ok, right = _literal(args[1])
+        if left_ok and right_ok and left == right:
+            return name == "assertEqual"
+    return False
+
+
+def _suite_gate_reason(tests_source: str) -> str | None:
+    """Why the suite cannot gate anything, or None when it can.
+
+    Three properties are decidable from the source alone, and only these:
+
+    - the suite parses — code that cannot be imported cannot gate anything;
+    - it carries an assertion `unittest` will actually collect, which means
+      inside a `test*` method of a `unittest.TestCase` subclass;
+    - that assertion is not a constant.
+
+    A self-referential assertion (`self.assertTrue(self.flag)`, set by the test
+    itself) can never fail and needs execution to detect, which a static read
+    of the spec cannot do. The docs say so rather than implying otherwise.
     """
     try:
         tree = ast.parse(tests_source)
     except SyntaxError:
-        return False
+        return "metadata.tests does not parse, so it cannot be a suite the runner can import."
+    bases = {n.name: n for n in ast.walk(tree) if isinstance(n, ast.ClassDef)}
+    found = False
     for node in ast.walk(tree):
-        if isinstance(node, ast.Assert):
-            return True
-        if isinstance(node, ast.Call):
-            func = node.func
-            name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
-            if name.startswith("assert"):
-                return True
-    return False
+        if not isinstance(node, ast.ClassDef) or not _is_test_case(node, bases):
+            continue
+        for member in node.body:
+            if not isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            if not member.name.startswith("test"):
+                continue
+            for inner in ast.walk(member):
+                if isinstance(inner, ast.Assert) or (
+                    isinstance(inner, ast.Call) and getattr(inner.func, "attr", "").startswith("assert")
+                ):
+                    found = True
+                    if not _is_constant_assertion(inner):
+                        return None
+    if not found:
+        return (
+            "metadata.tests has no assertion inside a test* method of a unittest.TestCase, so "
+            "unittest collects nothing that can fail. The suite passes for any artifact."
+        )
+    return (
+        "every assertion in metadata.tests is a constant, so the suite can never fail. A tautology "
+        "is not a gate; assert against a value the artifact produces."
+    )
+
+
+def _has_required_field(metadata: dict[str, Any]) -> bool:
+    """Does `metadata.fields` require at least one field?
+
+    An optional field with no `expected` counterpart grades nothing: an absent
+    field and any fabricated value both score the same.
+    """
+    fields = metadata.get("fields")
+    if not isinstance(fields, dict):
+        return False
+    return any(isinstance(spec, dict) and spec.get("required") for spec in fields.values())
 
 
 def _absent_contract_reason(spec: TaskSpec) -> str | None:
@@ -405,6 +500,14 @@ def _absent_contract_reason(spec: TaskSpec) -> str | None:
     keys = GRADING_CONTRACT.get(spec.type)
     if keys is None:
         return None
+    if spec.type == "extract":
+        if spec.metadata.get("expected") or _has_required_field(spec.metadata):
+            return None
+        return (
+            "metadata.fields requires no field and there is no metadata.expected, so the contract "
+            "grades nothing: an absent optional field and any fabricated value score the same. Add "
+            "a required field, or declare expected values."
+        )
     if any(spec.metadata.get(key) for key in keys):
         return None
     if spec.type == "code":
@@ -426,13 +529,8 @@ def check_absent_grading_contract(spec: TaskSpec, path: Path | None = None) -> l
     `pass` is audit-clean and always reports success.
     """
     reason = _absent_contract_reason(spec)
-    if reason is None and spec.type == "code" and not _suite_asserts_anything(
-        str(spec.metadata.get("tests") or "")
-    ):
-        reason = (
-            "metadata.tests contains no assertion, so the suite passes for any artifact "
-            "including an empty one. Add a real assertion or self.assert* call."
-        )
+    if reason is None and spec.type == "code":
+        reason = _suite_gate_reason(str(spec.metadata.get("tests") or ""))
     if reason is None:
         return []
     return [
@@ -451,16 +549,22 @@ def check_absent_grading_contract(spec: TaskSpec, path: Path | None = None) -> l
 # ---------------------------------------------------------------------------
 
 
-def _anchor_advice(task_type: str) -> str:
-    """How to anchor this type — only types whose grader reads text can be."""
-    if VALIDATION_CHECKS.get(task_type, frozenset()) & TOPIC_ANCHORS:
+def _anchor_advice(spec: TaskSpec) -> str:
+    """How to anchor this spec — only types whose grader reads text can be."""
+    if VALIDATION_CHECKS.get(spec.type, frozenset()) & TOPIC_ANCHORS:
         return "Add has_required or matches_pattern to anchor the subject."
-    return (
-        f"no implemented check reads the content of this {task_type} artifact, so there is no "
+    advice = (
+        f"no implemented check reads the content of this {spec.type} artifact, so there is no "
         "compliant way to anchor the subject from the spec: the topic checks are text-only and "
         "this type never grades text. Add a content check to the runner, or grade the artifact as "
         "a text-producing type."
     )
+    if spec.metadata.get("required"):
+        advice += (
+            f" metadata.required is declared, but the {spec.type} grader never reads it, so it "
+            "anchors nothing here."
+        )
+    return advice
 
 
 def check_structural_only(spec: TaskSpec, path: Path | None = None) -> list[Finding]:
@@ -469,7 +573,8 @@ def check_structural_only(spec: TaskSpec, path: Path | None = None) -> list[Find
     Element checks (`has_title`, `has_cta`, `has_form`, `has_viewport`,
     `no_placeholder`) prove markup exists, not that the artifact is about the
     task's subject, so they do not clear this finding. Only `has_required`,
-    `matches_pattern`, or declared `metadata.required` do.
+    `matches_pattern`, or — for the text-producing types only — declared
+    `metadata.required` do.
     """
     if spec.type in SELF_ANCHORED_TYPES:
         return []
@@ -485,7 +590,7 @@ def check_structural_only(spec: TaskSpec, path: Path | None = None) -> list[Find
             path=str(path) if path else None,
             detail=(
                 f"checks {sorted(effective_checks(spec))} never require topical content, so any "
-                f"well-formed {spec.type} artifact passes. {_anchor_advice(spec.type)}"
+                f"well-formed {spec.type} artifact passes. {_anchor_advice(spec)}"
             ),
         )
     ]

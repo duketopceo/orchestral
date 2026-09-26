@@ -33,9 +33,9 @@ it for you.
 | --- | --- | --- |
 | `unknown_validation_check` | error | `validation:` names a check the runner does not implement for that type. Silently dropped today; the run reports a pass anyway. |
 | `ignored_validation_list` | error | `code` / `sql` / `extract` / `api` never read `validation:`. They compute a fixed check set from `metadata`, so anything declared there is a phantom gate. |
-| `absent_grading_contract` | error | A self-anchored type ships no anchor in `metadata`, so its grader has nothing to compare the artifact against: `code` with no `metadata.tests`, `extract` with neither `fields` nor `expected`, `sql` with no `reference_sql`, `api` with no `calls`. `sql` and `api` fail closed at runtime; `extract` does not — an empty contract grades `{}` as `passes=True score=1.0`. A `code` suite is parsed, not grepped, so the word `assert` in a docstring is not a gate: the suite must contain an `assert` statement or a `self.assert*` call. |
-| `structural_only` | warn | Nothing in the grader requires topical content. `has_title` / `has_cta` / `has_form` prove markup exists, not that the artifact is about the task, so only `has_required`, `matches_pattern`, or declared `metadata.required` clear this. The suggested fix is type-aware: a type whose grader never reads text (`image`, `video`) has no compliant way to anchor the subject from the spec. |
-| `unanchored_fileset` | warn | `multi-file` grades filenames and byte counts only. No check reads the file bodies. Fires in all three unanchored states: no `metadata.expected_paths`, declared paths that `has_paths` was never asked to check, or declared paths checked only for existence. |
+| `absent_grading_contract` | error | A self-anchored type ships no anchor in `metadata`, so its grader has nothing to compare the artifact against: `code` with no `metadata.tests`, `extract` with neither a required `fields` entry nor `expected`, `sql` with no `reference_sql`, `api` with no `calls`. `sql` and `api` fail closed at runtime; `extract` does not — an empty contract grades `{}` as `passes=True score=1.0`. |
+| `structural_only` | warn | Nothing in the grader requires topical content. `has_title` / `has_cta` / `has_form` prove markup exists, not that the artifact is about the task, so only `has_required`, `matches_pattern`, or — for text-producing types only — declared `metadata.required` clear this. The suggested fix is type-aware: a type whose grader never reads text (`image`, `video`) has no compliant way to anchor the subject from the spec. |
+| `unanchored_fileset` | warn | `multi-file` grades filenames and byte counts only. No check reads the file bodies. Fires in all three unanchored states: no usable `metadata.expected_paths`, declared paths that `has_paths` was never asked to check, or declared paths checked only for existence. |
 | `prompt_states_the_answer` | warn | The prompt spells out graded output — an expected value, the reference query, or the expected call list. Recitation scores the same as reasoning. `extract` is exempt by design: its prompt carries the source document. |
 | `answer_derivable_from_prompt` | warn | Every graded value is readable in the prompt (`extract`, `sql`). The task ceiling is transcription and lookup, not problem solving. |
 | `memorization_risk` | warn | The id or prompt matches a known textbook problem (fizzbuzz, slugify, LRU cache, expression parser, two-sum, …). A memorised answer scores the same as a solved one. |
@@ -90,15 +90,35 @@ assigned: it reads the same table the runner does, so a name added to
 `VALIDATION_CHECKS["image"]` with no matching assignment in `_validate_image`
 still audits clean and still returns exit 0 under `--strict`.
 
-## Known gap: the `code` execution boundary
+## What `absent_grading_contract` does and does not prove about a suite
 
-`orchestral/codeexec.py` returns `executed: False` on every branch — no
-isolated runtime adapter exists — and `_validate_code` requires
-`executed is True`. A `code` spec therefore cannot pass today, whatever its
-suite contains. `absent_grading_contract` checks that the spec *declares* a
-suite with a real assertion; it does not claim the suite can run. Whether the
-audit should report the disabled boundary, or `code` specs should stop
-claiming a behavioural gate, is tracked in DUK-87.
+The rule parses `metadata.tests` and requires three things, all decidable from
+the source without executing it:
+
+- the suite parses;
+- it carries an assertion `unittest` will actually collect — inside a `test*`
+  method of a `unittest.TestCase` subclass, since that is all the default loader
+  collects;
+- that assertion is not a constant. `assert True`, `self.assertTrue(True)` and
+  `self.assertEqual(1, 1)` are flagged. Only provable constants are, so
+  `assert result is not None` is never mistaken for one.
+
+**Not provable by a static read:** an assertion that can never fail because the
+test itself arranges it — `self.assertTrue(self.flag)` after setting
+`self.flag = True`, or `self.assertEqual(f(x), f(x))`. Detecting those needs
+execution: run the suite against a stub and require it to fail. This audit
+executes nothing, so it does not claim to catch them.
+
+**Why that matters here.** At this commit code execution is live:
+`run_unittest_suite` writes the suite to `task_tests.py` in a temp directory and
+runs `python -Es -m unittest -v task_tests` in a subprocess with
+`env={"PATH": "/usr/bin:/bin"}` and a wall-clock timeout. A suite that passes for
+any artifact therefore scores `score=1.0` against a stub, and this rule cannot
+see it. There is no OS-level isolation around that subprocess — no container, no
+seccomp, no separate user, no resource limits beyond the timeout. Whether that
+is an acceptable boundary for model-authored code is a security review, tracked
+in DUK-87 and routed to the Identity Auditor. This file records the exposure; it
+does not bless it.
 
 ## What this does not do
 

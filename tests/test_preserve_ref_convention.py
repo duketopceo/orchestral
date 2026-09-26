@@ -25,16 +25,33 @@ was the wrong kind of ref.
 
 from __future__ import annotations
 
+import re
 import unittest
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CONTRIBUTING = REPO_ROOT / "CONTRIBUTING.md"
 
+# Emphasis markers are presentation, not content. A guard that asserts on them
+# breaks when someone reformats the prose, which trains people to ignore it.
+# Code spans are protected first, because they carry meaning here: the `*` in
+# `preserve/*` is part of a ref pattern, not a formatting marker.
+_CODE_SPAN = re.compile(r"(`[^`]*`)")
+_EMPHASIS = str.maketrans("", "", "*_")
+
+
+def plain(markdown: str) -> str:
+    """Drop Markdown emphasis outside code spans, so assertions test wording."""
+    parts = _CODE_SPAN.split(markdown)
+    return "".join(
+        part if index % 2 else part.translate(_EMPHASIS)
+        for index, part in enumerate(parts)
+    )
+
 
 class TestPreserveRefConventionIsDocumented(unittest.TestCase):
     def setUp(self) -> None:
-        self.text = CONTRIBUTING.read_text()
+        self.text = plain(CONTRIBUTING.read_text())
 
     def test_contributing_documents_the_preserve_ref_convention(self) -> None:
         self.assertIn(
@@ -50,7 +67,7 @@ class TestPreserveRefConventionIsDocumented(unittest.TestCase):
             ("never merge into a preserve ref", "Never merge into one"),
             ("never base a PR on a preserve ref", "Never open a PR with one as the base"),
             ("retarget onto the real branch", "Retarget onto the branch the work actually lives on"),
-            ("preserve a head with a new ref", "create a *new* `preserve/*` ref"),
+            ("preserve a head with a new ref", "create a new `preserve/*` ref"),
         ):
             with self.subTest(rule=rule):
                 self.assertIn(

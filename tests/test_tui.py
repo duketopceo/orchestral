@@ -236,7 +236,8 @@ class TestStatusBar(unittest.TestCase):
     17f6c543 removed the `set_message` writer and its `self._message = ""`
     initialiser but left the reader behind, so every status-strip refresh
     raised `AttributeError` and reddened main for six days. These assert on
-    rendered text so a reader-without-a-writer cannot reach main again.
+    rendered text so a reader-without-a-writer cannot reach main again. The
+    `note` and `jobs` cases pin the segment order of `_render_text` as well.
     """
 
     def _bar(self, runs=0, cost=0.0, jobs=None, note=""):
@@ -258,6 +259,17 @@ class TestStatusBar(unittest.TestCase):
     def test_note_renders_after_counts(self):
         bar = self._bar(runs=1, cost=0.5, note="2 queued")
         self.assertEqual(self._text(bar), "1 runs  ·  $0.5000  ·  2 queued")
+
+    def test_note_renders_after_jobs(self):
+        # test_note_renders_after_counts builds a bar with no jobs, so it pins the
+        # note against the counts and nothing else. Hoisting the note append above
+        # the jobs block leaves that test green, so pin the two-segment order
+        # explicitly: note last, jobs present and before it.
+        running = Job(label="o/m·t")
+        running.transition(JobStatus.RUNNING)
+        text = self._text(self._bar(runs=1, cost=0.5, jobs=[running], note="2 queued"))
+        self.assertTrue(text.endswith("2 queued"), text)
+        self.assertLess(text.index("jobs:"), text.index("2 queued"))
 
     def test_active_jobs_are_listed_and_terminal_ones_are_not(self):
         running = Job(label="o/m·t")

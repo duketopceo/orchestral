@@ -17,6 +17,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CI_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "ci.yml"
+PAID_EVAL_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "orchestral.yml"
 PYPROJECT = REPO_ROOT / "pyproject.toml"
 
 _MATRIX = re.compile(r"python-version:\s*\[(?P<versions>[^\]]*)\]")
@@ -87,6 +88,28 @@ class TestCiPythonMatrix(unittest.TestCase):
             text,
             "ci.yml declares a matrix but setup-python still pins a literal "
             "version, so every job would run the same interpreter",
+        )
+
+    def test_paid_eval_workflow_runs_on_exactly_one_interpreter(self) -> None:
+        """The other workflow pins a single version on purpose, for money.
+
+        `orchestral.yml` runs a real paid OpenRouter eval, so a matrix there is
+        one job — one bill — per interpreter. CI would report that as broader
+        coverage, which is the opposite of what it is. The same defect class as
+        above, with a cost instead of a false pass.
+        """
+        text = PAID_EVAL_WORKFLOW.read_text()
+        self.assertIsNone(
+            _MATRIX.search(text),
+            "orchestral.yml declares a version matrix, so the paid eval runs "
+            "once per interpreter and multiplies real spend. ci.yml already "
+            "covers the declared range; if a matrix here is genuinely wanted, "
+            "raise MAX_COST_USD in the same change so the spend stays visible.",
+        )
+        self.assertNotIn(
+            "matrix.python-version",
+            text,
+            "orchestral.yml expands a matrix into the paid eval's interpreter",
         )
 
 

@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import ast
 import inspect
 import tempfile
+import textwrap
 import unittest
 from pathlib import Path
 
@@ -39,12 +41,24 @@ ASSERTING_SUITE = (
 UNCOLLECTED_SUITE = "def test_x():\n    assert True\n"
 NOT_A_TEST_CASE = "class T:\n    def test_x(self):\n        assert True\n"
 WRONG_NAME_SUITE = "import unittest\n\n\nclass T(unittest.TestCase):\n    def check_x(self):\n        assert True\n"
-CONSTANT_SUITE = "import unittest\n\n\nclass T(unittest.TestCase):\n    def test_x(self):\n        assert True\n"
-CONSTANT_ASSERT_TRUE = (
-    "import unittest\n\n\nclass T(unittest.TestCase):\n    def test_x(self):\n        self.assertTrue(True)\n"
-)
-CONSTANT_ASSERT_EQUAL = (
-    "import unittest\n\n\nclass T(unittest.TestCase):\n    def test_x(self):\n        self.assertEqual(1, 1)\n"
+# Every assertion reads no value, so every one is provable and none discriminates.
+# The rule is method-agnostic, so it must hold for all of them, not a list.
+CONSTANT_SUITES = (
+    "assert True",
+    "self.assertTrue(True)",
+    "self.assertEqual(1, 1)",
+    "self.assertNotEqual(1, 2)",
+    "self.assertIsNone(None)",
+    "self.assertIn(1, [1, 2])",
+    "self.assertGreater(1, 0)",
+    "assert 1 == 1",
+    "assert [] == []",
+    "assert not None",
+    "assert not []",
+    "assert len([]) == 0",
+    "assert bool([]) is False",
+    "assert True and True",
+    "assert 1 + 1 == 2",
 )
 
 # Which `Runner` method implements each registry entry. The text-producing
@@ -59,6 +73,32 @@ VALIDATOR_FOR_TYPE = {
 }
 
 
+def assigned_check_names(source: str) -> set[str]:
+    """`checks["<name>"] = ...` keys a function body really assigns.
+
+    Parsed rather than substring-matched, so a phantom cannot hide behind a
+    comment or a string in the body — which is how the first version of this
+    guard was bypassed.
+    """
+    try:
+        tree = ast.parse(textwrap.dedent(source))
+    except SyntaxError:
+        return set()
+    keys: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign):
+            continue
+        for target in node.targets:
+            if not isinstance(target, ast.Subscript):
+                continue
+            if not isinstance(target.value, ast.Name) or target.value.id != "checks":
+                continue
+            key = target.slice
+            if isinstance(key, ast.Constant) and isinstance(key.value, str):
+                keys.add(key.value)
+    return keys
+
+
 def unimplemented_names(registry: dict[str, frozenset[str]], shorthands: dict[str, frozenset[str]],
                         body_of) -> list[tuple[str, str]]:
     """Registered names the implementing validator body never assigns.
@@ -70,11 +110,12 @@ def unimplemented_names(registry: dict[str, frozenset[str]], shorthands: dict[st
     missing: list[tuple[str, str]] = []
     for task_type, names in registry.items():
         source = body_of(task_type)
+        assigned = assigned_check_names(source)
         for name in sorted(names):
             if name in shorthands.get(task_type, frozenset()):
                 if name not in source:
                     missing.append((task_type, name))
-            elif f'checks["{name}"]' not in source:
+            elif name not in assigned:
                 missing.append((task_type, name))
     return missing
 
@@ -183,6 +224,12 @@ class TestCheckNamesFailClosed(unittest.TestCase):
         smuggled = {"image": frozenset({"non_empty", "html"})}
         self.assertEqual(unimplemented_names(smuggled, VALIDATION_SHORTHANDS, bodies.get), [("image", "html")])
 
+    def test_the_drift_guard_does_not_accept_a_commented_out_assignment(self):
+        """A substring search over the body was satisfied by a comment."""
+        bodies = {"image": '    # checks["has_alpha"] = False\n    checks["non_empty"] = True\n'}
+        phantom = {"image": frozenset({"non_empty", "has_alpha"})}
+        self.assertEqual(unimplemented_names(phantom, {}, bodies.get), [("image", "has_alpha")])
+
 
 class TestAbsentGradingContract(unittest.TestCase):
     """A self-anchored type with no anchor grades anything as correct."""
@@ -215,19 +262,24 @@ class TestAbsentGradingContract(unittest.TestCase):
         self.assertIn("absent_grading_contract", _rules(spec))
 
     def test_constant_assertion_is_an_error(self):
-        """`assert True` can never fail, so it gates nothing."""
-        spec = TaskSpec(id="c-5", type="code", prompt="Write it.", metadata={"tests": CONSTANT_SUITE})
-        found = _rules(spec)
-        self.assertIn("absent_grading_contract", found)
-        self.assertIn("constant", found["absent_grading_contract"][0].detail)
+        """An assertion that reads no value is provable, so it gates nothing.
 
-    def test_constant_assert_true_call_is_an_error(self):
-        spec = TaskSpec(id="c-6", type="code", prompt="Write it.", metadata={"tests": CONSTANT_ASSERT_TRUE})
-        self.assertIn("absent_grading_contract", _rules(spec))
-
-    def test_constant_assert_equal_is_an_error(self):
-        spec = TaskSpec(id="c-7", type="code", prompt="Write it.", metadata={"tests": CONSTANT_ASSERT_EQUAL})
-        self.assertIn("absent_grading_contract", _rules(spec))
+        The rule is method-agnostic on purpose. An earlier version folded with
+        `ast.literal_eval`, which cannot fold a `Compare` or a `UnaryOp`, and
+        handled four of the 41 `assert*` methods — so `assert 1 == 1` and
+        `assertNotEqual(1, 2)` audited clean while scoring 1.0 against a stub.
+        """
+        for expression in CONSTANT_SUITES:
+            with self.subTest(assertion=expression):
+                suite = (
+                    "import unittest\n\n\n"
+                    "class T(unittest.TestCase):\n"
+                    f"    def test_x(self):\n        {expression}\n"
+                )
+                spec = TaskSpec(id="c-5", type="code", prompt="Write it.", metadata={"tests": suite})
+                found = _rules(spec)
+                self.assertIn("absent_grading_contract", found)
+                self.assertIn("reads no value", found["absent_grading_contract"][0].detail)
 
     def test_assertion_outside_a_collected_test_is_an_error(self):
         """unittest collects only TestCase methods, so this assertion never runs."""
@@ -237,6 +289,52 @@ class TestAbsentGradingContract(unittest.TestCase):
                 found = _rules(spec)
                 self.assertIn("absent_grading_contract", found)
                 self.assertIn("collect", found["absent_grading_contract"][0].detail)
+
+    def test_async_test_on_a_plain_test_case_is_an_error(self):
+        """unittest never awaits a coroutine test on a plain TestCase.
+
+        It reports the suite as OK with a RuntimeWarning, so a `test*` that
+        must fail still scores 1.0.
+        """
+        suite = (
+            "import unittest\n\nfrom solution import solve\n\n\n"
+            "class T(unittest.TestCase):\n"
+            "    async def test_x(self):\n"
+            "        assert solve('a') == 'WRONG'\n"
+        )
+        spec = TaskSpec(id="c-12", type="code", prompt="Write it.", metadata={"tests": suite})
+        self.assertIn("absent_grading_contract", _rules(spec))
+
+    def test_async_test_on_an_async_test_case_is_accepted(self):
+        suite = (
+            "import unittest\n\nfrom solution import solve\n\n\n"
+            "class T(unittest.IsolatedAsyncioTestCase):\n"
+            "    async def test_x(self):\n"
+            "        self.assertEqual(await solve('a b'), 'a-b')\n"
+        )
+        spec = TaskSpec(id="c-13", type="code", prompt="Write it.", metadata={"tests": suite})
+        self.assertNotIn("absent_grading_contract", _rules(spec))
+
+    def test_aliased_test_case_base_is_accepted(self):
+        """`from unittest import TestCase as TC` is the common idiom."""
+        suite = (
+            "from unittest import TestCase as TC\n\nfrom solution import solve\n\n\n"
+            "class T(TC):\n"
+            "    def test_x(self):\n"
+            "        self.assertEqual(solve('a b'), 'a-b')\n"
+        )
+        spec = TaskSpec(id="c-14", type="code", prompt="Write it.", metadata={"tests": suite})
+        self.assertNotIn("absent_grading_contract", _rules(spec))
+
+    def test_aliased_unittest_module_is_accepted(self):
+        suite = (
+            "import unittest as ut\n\nfrom solution import solve\n\n\n"
+            "class T(ut.TestCase):\n"
+            "    def test_x(self):\n"
+            "        self.assertEqual(solve('a b'), 'a-b')\n"
+        )
+        spec = TaskSpec(id="c-15", type="code", prompt="Write it.", metadata={"tests": suite})
+        self.assertNotIn("absent_grading_contract", _rules(spec))
 
     def test_smoke_assertion_against_a_real_value_is_not_flagged(self):
         """`assert result is not None` is a legitimate smoke check, not a constant."""
@@ -456,9 +554,25 @@ class TestGamingSurface(unittest.TestCase):
     def test_declared_difficulty_clears_the_info(self):
         self.assertNotIn("unlabeled_difficulty", _rules(_task(metadata={"difficulty": "hard"})))
 
-    def test_metadata_required_clears_the_finding_for_a_text_type(self):
-        spec = _task(validation=["html"], metadata={"required": ["kite"]})
+    def test_metadata_required_clears_the_finding_when_the_grader_will_read_it(self):
+        """`has_required` is the only thing that makes the declaration mean anything."""
+        spec = _task(validation=["html", "has_required"], metadata={"required": ["kite"]})
         self.assertNotIn("structural_only", _rules(spec))
+
+    def test_metadata_required_does_not_clear_the_finding_when_has_required_is_not_requested(self):
+        """The only read of metadata.required is inside `if "has_required" in requested`.
+
+        Keying the exemption on the task *type* let a two-word YAML edit silence
+        100 of the 104 shipped findings while the grader read nothing. This
+        test exists to stop that coming back.
+        """
+        for validation in (["html"], ["html_parses", "non_empty"], None):
+            with self.subTest(validation=validation):
+                spec = _task(validation=validation, metadata={"required": ["kite"]})
+                found = _rules(spec)
+                self.assertIn("structural_only", found)
+                self.assertIn("metadata.required is declared", found["structural_only"][0].detail)
+                self.assertIn("anchors nothing here", found["structural_only"][0].detail)
 
     def test_metadata_required_does_not_clear_the_finding_for_an_image(self):
         """`_validate_image` never reads metadata.required, so declaring it proves nothing."""
@@ -471,8 +585,8 @@ class TestGamingSurface(unittest.TestCase):
         )
         found = _rules(spec)
         self.assertIn("structural_only", found)
-        self.assertIn("metadata.required", found["structural_only"][0].detail)
-        self.assertIn("never reads", found["structural_only"][0].detail)
+        self.assertIn("metadata.required is declared", found["structural_only"][0].detail)
+        self.assertIn("anchors nothing here", found["structural_only"][0].detail)
 
 
 class TestSuiteLevel(unittest.TestCase):

@@ -92,6 +92,10 @@ _OMISSION_REASONS = {
 }
 
 
+class HoldoutRunError(RuntimeError):
+    """Raised when a single-run scrub is asked to publish a holdout run."""
+
+
 def _is_binary(path: Path) -> bool:
     """Binary if a known binary extension or a NUL byte in the first chunk."""
     if path.suffix.lower() in BINARY_EXTS:
@@ -105,6 +109,37 @@ def _is_binary(path: Path) -> bool:
 
 def _is_allowed(name: str) -> bool:
     return name in ALLOWED_NAMES or name.startswith(ALLOWED_PREFIXES)
+
+
+def run_is_holdout(src: Path) -> bool:
+    """Does this run belong to the unpublished holdout arm?
+
+    Answered from the run's own manifest, which records the flag the runner set
+    from the task's `metadata.holdout`. A run whose manifest is missing or
+    unreadable is *not* treated as holdout: withholding is the fail-closed
+    direction, and a malformed manifest is already a reason not to publish the
+    run's contents on trust.
+    """
+    manifest = src / "manifest.json"
+    try:
+        data = json.loads(manifest.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+        return False
+    return bool(isinstance(data, dict) and data.get("holdout"))
+
+
+def _withhold_reason() -> str:
+    # The withheld entry still names the run (id, task id, models, cost) so the
+    # published record shows how much evidence was held back and a reader can
+    # reconcile it against a local run. Those fields describe the measurement,
+    # not the problem: a task id is a slot name and carries no task content, and
+    # the prompt and key are what stay unpublished.
+    return (
+        "holdout arm — this run's task text and answer key must not be published, "
+        "because a published key turns every future instance of the problem into a "
+        "published problem. This entry names the run for reconciliation; it carries "
+        "no task text."
+    )
 
 
 def scrub_text(text: str) -> str:
@@ -186,7 +221,14 @@ def scrub_run(src: Path, out_dir: Path) -> Path:
 
     Archives are omitted (see `ARCHIVE_EXTS`); single-run scrubbing has no
     manifest to record that in, so use `scrub_all` when the omission matters.
+
+    Raises `HoldoutRunError` for a holdout run rather than writing a partial
+    directory. There is no subset of a holdout run that is safe to publish — the
+    plan carries the prompt and the artifact can be the answer — so "scrub it
+    but leave out the key" is not an option this scrubber can honour.
     """
+    if run_is_holdout(src):
+        raise HoldoutRunError(str(src))
     dst, _ = _scrub_dir(src, out_dir / src.name)
     return dst
 
@@ -208,18 +250,35 @@ def _manifest_entry(run_json: Path, runs_dir: Path, out_dir: Path) -> dict[str, 
 
 
 def scrub_all(runs_dir: Path = Path("runs"), out_dir: Path = Path("runs-pub")) -> list[Path]:
-    """Scrub every run in runs_dir into out_dir and write a manifest.json."""
+    """Scrub every run in runs_dir into out_dir and write a manifest.json.
+
+    Holdout runs are withheld whole and recorded in the manifest as withheld, so
+    the count of runs that were not published is visible in the published output
+    rather than being a silent hole in it.
+    """
     out_dir.mkdir(parents=True, exist_ok=True)
     copied: list[Path] = []
     manifest: list[dict[str, Any]] = []
     warned: set[str] = set()
+    withheld = 0
     for run_json in runs_dir.rglob("run.json"):
         src = run_json.parent
         rel = src.relative_to(runs_dir)
         dst = out_dir / rel
+        entry = _manifest_entry(run_json, runs_dir, out_dir)
+        if run_is_holdout(src):
+            withheld += 1
+            # `run` would dangle: nothing was written, so name the source instead.
+            entry["run"] = None
+            entry["withheld"] = {
+                "reason": _withhold_reason(),
+                "status": "holdout_not_published",
+                "source_run": str(rel),
+            }
+            manifest.append(entry)
+            continue
         dst.parent.mkdir(parents=True, exist_ok=True)
         _, omitted = _scrub_dir(src, dst)
-        entry = _manifest_entry(run_json, runs_dir, out_dir)
         if omitted:
             entry["scrub_omissions"] = [
                 {"file": name, "reason": _OMISSION_REASONS.get(
@@ -235,6 +294,12 @@ def scrub_all(runs_dir: Path = Path("runs"), out_dir: Path = Path("runs-pub")) -
             f"{len(warned)} run(s) ({', '.join(sorted(warned))}): archives cannot "
             "be redacted and debug output is internal-only. Multi-file run data "
             "needs inner-file redaction before it can ship.",
+            file=sys.stderr,
+        )
+    if withheld:
+        print(
+            f"withheld: {withheld} holdout run(s) not published — their task text and "
+            "answer key stay local. They are listed in manifest.json under `withheld`.",
             file=sys.stderr,
         )
     (out_dir / "manifest.json").write_text(

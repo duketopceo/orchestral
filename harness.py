@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from orchestral.audit import audit_tree
+from orchestral.audit import audit_tree, default_holdout_probe
 from orchestral.calibrate import agreement_metrics, collect_pairs, load_labels
 from orchestral.config import (
     ConfigError,
@@ -25,13 +25,14 @@ from orchestral.config import (
     load_yaml,
 )
 from orchestral.export import leaderboard_csv, run_audit_markdown, runs_csv
+from orchestral.holdout import DEFAULT_ARM_SIZE, DEFAULT_SEED, generate_arm, materialize
 from orchestral.planners import available_prompt_variants, load_prompt_variant
 from orchestral.pricing import DEFAULT_DRIFT_THRESHOLD, pricing_drift
 from orchestral.privacy import scrub_all
 from orchestral.providers import provider_key
 from orchestral.reporter import generate_dashboard, generate_html_report, model_history
 from orchestral.runner import Runner
-from orchestral.stats import aggregate, pairing_leaderboard
+from orchestral.stats import aggregate, contamination_gap, pairing_leaderboard
 from orchestral.storage import RunStore
 from orchestral.tui import run_tui
 
@@ -522,6 +523,32 @@ def cmd_history(args: argparse.Namespace) -> None:
             print(f"{name:<45} {s['runs']:>5} {pass_pct:>7} {score:>9} ${s['avg_cost']:>10.6f} ${s['total_cost']:>10.4f}")
 
 
+def cmd_holdout(args: argparse.Namespace) -> None:
+    """Generate a holdout arm into a run-scoped directory.
+
+    The arm is written wherever `--out` points and is meant to point somewhere
+    git ignores. Nothing in the generator writes into the repository, so the
+    caller owns that choice; the warning below is there because publishing the
+    arm's task text is the one mistake that makes the whole arm worthless.
+    """
+    specs = generate_arm(args.count, seed=args.seed)
+    out_dir = Path(args.out)
+    written = materialize(specs, out_dir)
+    print(f"generated {len(written)} holdout spec(s), seed {args.seed} -> {out_dir}")
+    by_type: dict[str, int] = {}
+    for spec in specs:
+        by_type[spec.type] = by_type.get(spec.type, 0) + 1
+    print("  " + ", ".join(f"{k}={v}" for k, v in sorted(by_type.items())))
+    print("\nRun the arm with:")
+    print(f"  python harness.py batch --batch-dir {out_dir} --orchestrator <slug> --worker <slug> --dry-run")
+    print("\n`--dry-run` is enough to prove the arm is runnable: sql and needle specs are graded")
+    print("against real reference answers, so a dry run executes the checks without a provider.")
+    print("\nThese task texts are the holdout arm. Keep the directory out of git and out of")
+    print("runs-pub/; `harness.py scrub` withholds holdout runs from published output.")
+    if args.json:
+        print(json.dumps([{"id": s.id, "type": s.type, "path": str(p)} for s, p in zip(specs, written, strict=True)], indent=2))
+
+
 def cmd_report(args: argparse.Namespace) -> None:
     if args.html:
         path = generate_html_report(args.runs_dir, args.reports_dir)
@@ -539,6 +566,14 @@ def cmd_report(args: argparse.Namespace) -> None:
         descending=args.desc,
         limit=args.limit,
     )
+
+    if getattr(args, "contamination", False):
+        arms = contamination_gap(runs)
+        if args.json:
+            print(json.dumps([r.to_dict() for r in arms], indent=2, default=str))
+            return
+        _print_contamination(arms)
+        return
 
     if getattr(args, "leaderboard", False):
         min_samples = getattr(args, "min_samples", 10)
@@ -630,19 +665,78 @@ def _print_leaderboard(rows: list[Any], min_samples: int) -> None:
     if not rows:
         print("No runs match.")
         return
-    print(f"{'orchestrator':<30} {'worker':<30} {'n':>3} {'tasks':>5} {'pass%':>6} {'med score':>9} {'med cost':>9} {'med ms':>8} {'fail%':>6} {'$/pass':>9}")
-    print("-" * 120)
-    for p in rows:
-        flag = "" if not p.low_sample else " *"
-        score = f"{p.score_median:.2f}" if p.score_median is not None else "-"
-        cpp = f"${p.cost_per_pass:.4f}" if p.cost_per_pass is not None else "-"
+    ranked = [p for p in rows if not p.holdout_only]
+    held = [p for p in rows if p.holdout_only]
+    if ranked:
+        print(f"{'orchestrator':<30} {'worker':<30} {'n':>3} {'tasks':>5} {'pass%':>6} {'med score':>9} {'med cost':>9} {'med ms':>8} {'fail%':>6} {'$/pass':>9} {'holdout':>7}")
+        print("-" * 130)
+        for p in ranked:
+            flag = "" if not p.low_sample else " *"
+            score = f"{p.score_median:.2f}" if p.score_median is not None else "-"
+            cpp = f"${p.cost_per_pass:.4f}" if p.cost_per_pass is not None else "-"
+            print(
+                f"{p.orchestrator:<30} {p.worker:<30} {p.runs:>3}{flag} {p.tasks_covered:>5} "
+                f"{(p.pass_rate or 0) * 100:>5.0f}% {score:>9} ${p.cost_median:>8.4f} "
+                f"{p.duration_median_ms:>8.0f} {(p.failure_rate or 0) * 100:>5.0f}% {cpp:>9} "
+                f"{p.holdout_runs:>7}"
+            )
+        if any(p.low_sample for p in ranked):
+            print(f"\n* fewer than {min_samples} runs — treat the ranking as anecdotal, not evidence.")
+    if held:
         print(
-            f"{p.orchestrator:<30} {p.worker:<30} {p.runs:>3}{flag} {p.tasks_covered:>5} "
-            f"{(p.pass_rate or 0) * 100:>5.0f}% {score:>9} ${p.cost_median:>8.4f} "
-            f"{p.duration_median_ms:>8.0f} {(p.failure_rate or 0) * 100:>5.0f}% {cpp:>9}"
+            f"\n{len(held)} pairing(s) have holdout runs only and are unranked — they have no "
+            "published evidence to rank on. They are listed here so a measured pairing is not "
+            "mistaken for an unmeasured one:"
         )
-    if any(p.low_sample for p in rows):
-        print(f"\n* fewer than {min_samples} runs — treat the ranking as anecdotal, not evidence.")
+        for p in held:
+            print(f"  {p.orchestrator:<30} {p.worker:<30} {p.holdout_runs:>7} holdout run(s)")
+    withheld_total = sum(p.holdout_runs for p in rows)
+    if withheld_total:
+        print(
+            f"\nholdout arm: {withheld_total} run(s) excluded from every figure above and "
+            f"withheld from publication. Compare arms with: python harness.py report --contamination"
+        )
+
+
+def _print_contamination(rows: list[Any]) -> None:
+    """Published vs holdout means per task type, with the gap between them."""
+    if not rows:
+        print("No scored runs match — nothing to compare between arms.")
+        return
+    print("contamination estimate — mean score by arm, per task type")
+    print()
+    print(f"{'task type':<14} {'pub n':>5} {'pub mean':>9} {'hold n':>6} {'hold mean':>10} {'gap':>8}")
+    print("-" * 60)
+    for r in rows:
+        pub = f"{r.published_mean:.2f}" if r.published_mean is not None else "-"
+        hold = f"{r.holdout_mean:.2f}" if r.holdout_mean is not None else "-"
+        gap = f"{r.gap:+.2f}" if r.gap is not None else "n/a"
+        print(f"{r.task_type:<14} {r.published_n:>5} {pub:>9} {r.holdout_n:>6} {hold:>10} {gap:>8}")
+    print()
+    comparable = [r for r in rows if r.comparable]
+    if not comparable:
+        print("No task type appears in both arms, so no gap is defined.")
+        print(
+            "A gap is only meaningful within one task type: across types it measures a "
+            "difference of subject, not of contamination."
+        )
+        return
+    widest = max(comparable, key=lambda r: abs(r.gap or 0.0))
+    print(
+        f"{len(comparable)} type(s) comparable. A positive gap means the published arm scored "
+        "higher than the holdout arm of the same type."
+    )
+    print(
+        f"Widest: {widest.task_type} {widest.gap:+.2f} "
+        f"(published n={widest.published_n}, holdout n={widest.holdout_n})."
+    )
+    thin = [r for r in comparable if min(r.published_n, r.holdout_n) < 5]
+    if thin:
+        print(
+            "Under-powered (fewer than 5 runs on a side): "
+            + ", ".join(f"{r.task_type} ({r.published_n}/{r.holdout_n})" for r in thin)
+            + " — read these as anecdote."
+        )
 
 
 def _print_groups_table(cells: list[Any]) -> None:
@@ -766,6 +860,9 @@ def cmd_audit(args: argparse.Namespace) -> None:
         args.tasks_dir,
         min_family=args.min_family,
         similarity=args.similarity,
+        # A generated arm is the normal shape: holdout task text must not be
+        # committed, so its absence from tasks/ is the point, not the problem.
+        holdout_probe=None if args.no_holdout_arm else default_holdout_probe,
     )
     if args.json:
         print(json.dumps(report.to_dict(), indent=2))
@@ -853,7 +950,17 @@ def main() -> None:
         sp.add_argument("--group", default=None, help="Label this run with a group name for replicate/variance analysis")
         sp.add_argument("--replicate", type=int, default=None, help="Replicate index within --group")
         sp.add_argument("--replicates", type=int, default=1, help="Run each cell N times under one --group for variance analysis")
-        sp.add_argument("--seed", type=int, default=None, help="Record a seed label on the run config")
+        sp.add_argument(
+            "--seed",
+            type=int,
+            default=None,
+            help=(
+                "Seed for this run. Recorded on the run config and manifest, and "
+                "forwarded to the provider for video generation. A holdout spec "
+                "carries the seed its task data was generated from, so a run over "
+                "the arm records that seed when this is not given."
+            ),
+        )
 
     run = sub.add_parser("run", help="Run one orchestrator × worker pairing")
     run.add_argument("--task", required=True, help="Task id or path")
@@ -903,6 +1010,7 @@ def main() -> None:
     report.add_argument("--desc", action=argparse.BooleanOptionalAction, default=True, help="Sort descending (use --no-desc for ascending)")
     report.add_argument("--pairings", action="store_true", help="Aggregate by orchestrator × worker, sorted by quality per dollar")
     report.add_argument("--leaderboard", action="store_true", help="Pairing leaderboard: pass rate, medians, cost per pass, failure rate")
+    report.add_argument("--contamination", action="store_true", help="Mean score on published vs holdout specs per task type, and the gap")
     report.add_argument("--min-samples", type=int, default=10, help="Leaderboard sample-size floor for the low-evidence flag")
     report.add_argument("--groups", action="store_true", help="Aggregate by run_group × task × pairing with variance stats")
     report.add_argument("--group", default=None, help="Only include runs from this run_group")
@@ -928,6 +1036,16 @@ def main() -> None:
     scrub.add_argument("--runs-dir", default="runs", help="Source runs directory")
     scrub.add_argument("--scrub-dir", default="runs-pub", help="Where to write scrubbed runs")
     scrub.set_defaults(func=cmd_scrub)
+
+    holdout = sub.add_parser(
+        "holdout",
+        help="Generate a seeded holdout arm into a run-scoped directory (never into git)",
+    )
+    holdout.add_argument("--out", default="runs-holdout", help="Directory to write the generated specs into")
+    holdout.add_argument("--count", type=int, default=DEFAULT_ARM_SIZE, help="How many specs to generate")
+    holdout.add_argument("--seed", type=int, default=DEFAULT_SEED, help="Seed the generated task data")
+    holdout.add_argument("--json", action="store_true", help="Also emit the generated spec index as JSON")
+    holdout.set_defaults(func=cmd_holdout)
 
     dashboard = sub.add_parser("dashboard", help="Generate a unified stats dashboard")
     dashboard.add_argument("--runs-dir", default="runs", help="Root directory for run data")
@@ -961,6 +1079,11 @@ def main() -> None:
     audit.add_argument("--similarity", type=float, default=0.8, help="Prompt token Jaccard threshold for a family")
     audit.add_argument("--json", action="store_true", help="Machine-readable output")
     audit.add_argument("--strict", action="store_true", help="Exit non-zero when any error-severity finding exists")
+    audit.add_argument(
+        "--no-holdout-arm",
+        action="store_true",
+        help="Do not count a generatable holdout arm — reports no_holdout_arm whenever no spec sets metadata.holdout",
+    )
     audit.set_defaults(func=cmd_audit)
 
     serve = sub.add_parser("serve", help="Local web observatory — browse, launch, and cancel runs in a browser (localhost only)")

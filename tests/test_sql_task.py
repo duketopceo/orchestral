@@ -7,9 +7,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from orchestral.config import ModelConfig, TaskSpec
+from orchestral.config import ModelConfig, TaskSpec, load_task
 from orchestral.runner import Runner
 from orchestral.sqlexec import build_fixture, extract_sql, run_readonly_query, run_sql_check
+
+REPO_TASKS = Path(__file__).resolve().parent.parent / "tasks"
 
 SCHEMA = [
     "CREATE TABLE t (id INTEGER PRIMARY KEY, grp TEXT, val REAL)",
@@ -142,6 +144,15 @@ class TestRunSqlCheck(unittest.TestCase):
         self.assertIn("task spec is broken", report["error"])
         self.assertIsNone(report["score"])
 
+    def test_empty_reference_is_spec_error_not_a_free_pass(self):
+        """A reference with no rows would grade any zero-row query as 1.0."""
+        empty_ref = "SELECT grp, val FROM t WHERE grp = 'zzz'"
+        report = run_sql_check(_metadata(reference_sql=empty_ref), empty_ref)
+        self.assertFalse(report["executed"])
+        self.assertIsNone(report["score"])
+        self.assertIn("no rows", report["error"])
+        self.assertIn("task spec is broken", report["error"])
+
     def test_empty_candidate(self):
         report = run_sql_check(_metadata(), "   ")
         self.assertFalse(report["executed"])
@@ -165,6 +176,91 @@ class TestRunSqlCheck(unittest.TestCase):
 def _fixture_db():
     tmp = tempfile.mkdtemp()
     return build_fixture(Path(tmp), ";\n".join(SCHEMA), ";\n".join(SEED))
+
+
+# The shipped fixture, re-priced: Kettle at 12.34 and three Kettles on the
+# first shipped order. 3 x 12.34 is 37.019999999999996 in binary floating
+# point, so the month's winning total is not representable to the cent.
+FRACTIONAL_CENT_LINES = (
+    "INSERT INTO order_lines VALUES (1, 1, 3, 12.34), (1, 3, 1, 12.5), "
+    "(2, 2, 5, 40.0), (3, 3, 1, 12.5), (4, 3, 4, 12.5), (5, 2, 2, 40.0), "
+    "(5, 1, 1, 12.34), (6, 1, 9, 12.34)"
+)
+# The same query with the shipped-status filter dropped: Jan's cancelled order
+# adds 5 x 40.0, so the winner changes and the answer no longer matches.
+UNFILTERED_SQL = """
+    SELECT month, product, revenue FROM (
+      SELECT strftime('%Y-%m', o.placed_on) AS month,
+             p.name AS product,
+             ROUND(SUM(ol.qty * ol.unit_price), 2) AS revenue,
+             MAX(ROUND(SUM(ol.qty * ol.unit_price), 2)) OVER (
+               PARTITION BY strftime('%Y-%m', o.placed_on)
+             ) AS best
+      FROM order_lines ol
+      JOIN orders o ON o.id = ol.order_id
+      JOIN products p ON p.id = ol.product_id
+      GROUP BY month, p.name
+    ) t
+    WHERE revenue = best
+    ORDER BY month ASC
+"""
+
+
+class TestShippedMonthlyRevenueSpec(unittest.TestCase):
+    """DUK-90: the shipped reference must answer for any price set.
+
+    The reference compares each month's rounded revenue against the same
+    month's maximum. Rounding only one side of that comparison made it return
+    zero rows whenever a price was not exactly representable, which graded any
+    zero-row candidate as a pass.
+    """
+
+    def setUp(self):
+        self.spec = load_task(REPO_TASKS / "sql-monthly-revenue.yaml")
+        self.reference = self.spec.metadata["reference_sql"]
+        self.repriced = {
+            **self.spec.metadata,
+            "seed": [*self.spec.metadata["seed"][:2], FRACTIONAL_CENT_LINES],
+        }
+
+    def _rows(self, metadata, sql):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = build_fixture(
+                Path(tmp),
+                ";\n".join(metadata["schema"]),
+                ";\n".join(metadata["seed"]),
+            )
+            rows, err = run_readonly_query(db, sql)
+        self.assertIsNone(err)
+        return rows
+
+    def test_reference_answers_the_shipped_fixture(self):
+        report = run_sql_check(self.spec.metadata, self.reference)
+        self.assertTrue(report["executed"])
+        self.assertTrue(report["match"])
+        self.assertEqual(report["rows_expected"], 2)
+        self.assertEqual(report["score"], 1.0)
+        self.assertEqual(
+            self._rows(self.spec.metadata, self.reference),
+            [("2025-01", "Kettle", 90.0), ("2025-02", "Grinder", 80.0)],
+        )
+
+    def test_reference_answers_fractional_cent_prices(self):
+        report = run_sql_check(self.repriced, self.reference)
+        self.assertTrue(report["executed"])
+        self.assertTrue(report["match"])
+        self.assertEqual(report["rows_expected"], 2)
+        self.assertEqual(report["score"], 1.0)
+        self.assertEqual(
+            self._rows(self.repriced, self.reference),
+            [("2025-01", "Kettle", 37.02), ("2025-02", "Grinder", 80.0)],
+        )
+
+    def test_wrong_query_still_fails_on_fractional_cent_prices(self):
+        report = run_sql_check(self.repriced, UNFILTERED_SQL)
+        self.assertTrue(report["executed"])
+        self.assertFalse(report["match"])
+        self.assertEqual(report["score"], 0.0)
 
 
 class TestSqlRunner(unittest.TestCase):

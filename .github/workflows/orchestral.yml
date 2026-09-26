@@ -86,8 +86,12 @@ jobs:
       # configured rate-card estimate. On 2026-09-26 the estimate understated
       # real spend 5.3x, so the old `runs.total_cost_usd` check passed 83 runs
       # that were charged $3.12. See orchestral/budget.py and DUK-214.
+      #
+      # The step runs on every paid eval, dispatch included, not only on
+      # pull_request: the cap is a spend control, and a manual run spends the
+      # same money. Fork PRs never reach it — the job-level `if` above skips
+      # them before any step runs.
       - name: Enforce cost budget
-        if: github.event_name == 'pull_request'
         env:
           MAX_COST_USD: ${{ inputs.max_cost_usd || '0.05' }}
         run: python3 -m orchestral.budget --runs-dir runs --max-cost-usd "$MAX_COST_USD"

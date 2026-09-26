@@ -616,5 +616,82 @@ class TestScrubOutputContainment(unittest.TestCase):
             self.assertEqual((src / "screenshot.png").read_bytes(), PNG_BYTES)
 
 
+class TestScrubCommandExitStatus(unittest.TestCase):
+    """`harness.py scrub` must fail when the published record has a hole.
+
+    The manifest records every withheld file, but a CI publish step reads the
+    exit status, not the manifest. If a withheld file still exits 0, the only
+    way to notice is a human reading stderr, and that is the invisible hole
+    this publication policy exists to avoid.
+    """
+
+    def _run_cmd(self, runs_dir: Path, out_dir: Path) -> tuple[int, str]:
+        import argparse
+        from contextlib import redirect_stderr, redirect_stdout
+
+        from harness import cmd_scrub
+
+        args = argparse.Namespace(runs_dir=str(runs_dir), scrub_dir=str(out_dir))
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            rc = cmd_scrub(args)
+        return int(rc or 0), stderr.getvalue()
+
+    def test_scrub_command_exits_nonzero_when_a_file_is_withheld(self):
+        with tempfile.TemporaryDirectory() as td:
+            runs_dir = Path(td) / "runs"
+            _make_run(runs_dir, files={
+                "artifact.screenshot.png": b"PK\x03\x04" + b"not really a png",
+            })
+            out_dir = Path(td) / "pub"
+
+            rc, stderr = self._run_cmd(runs_dir, out_dir)
+
+            self.assertNotEqual(rc, 0, "a withheld file must not report success")
+            self.assertIn("artifact.screenshot.png", stderr)
+
+    def test_scrub_command_names_the_withheld_run_and_file(self):
+        with tempfile.TemporaryDirectory() as td:
+            runs_dir = Path(td) / "runs"
+            _make_run(runs_dir, "o/t/w/run1", files={"artifact.db": b"SQLite format 3\x00"})
+            out_dir = Path(td) / "pub"
+
+            _, stderr = self._run_cmd(runs_dir, out_dir)
+
+            self.assertIn("o/t/w/run1", stderr)
+            self.assertIn("artifact.db", stderr)
+
+    def test_scrub_command_exits_zero_when_nothing_is_withheld(self):
+        with tempfile.TemporaryDirectory() as td:
+            runs_dir = Path(td) / "runs"
+            _make_run(runs_dir, files={"screenshot.png": PNG_BYTES})
+            out_dir = Path(td) / "pub"
+
+            rc, _ = self._run_cmd(runs_dir, out_dir)
+
+            self.assertEqual(rc, 0, "the clean path must stay green")
+
+    def test_scrub_command_exits_zero_for_an_omitted_but_not_blocked_run(self):
+        """`debug.jsonl` is omitted by policy and is not a withheld artifact."""
+        with tempfile.TemporaryDirectory() as td:
+            runs_dir = Path(td) / "runs"
+            _make_run(runs_dir, files={"screenshot.png": PNG_BYTES, "debug.jsonl": b"{}"})
+            out_dir = Path(td) / "pub"
+
+            rc, _ = self._run_cmd(runs_dir, out_dir)
+
+            self.assertEqual(rc, 0)
+
+    def test_scrub_command_exits_zero_when_there_are_no_runs(self):
+        with tempfile.TemporaryDirectory() as td:
+            runs_dir = Path(td) / "runs"
+            runs_dir.mkdir()
+            out_dir = Path(td) / "pub"
+
+            rc, _ = self._run_cmd(runs_dir, out_dir)
+
+            self.assertEqual(rc, 0)
+
+
 if __name__ == "__main__":
     unittest.main()

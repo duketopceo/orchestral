@@ -108,7 +108,7 @@ FILESET_BODY_CHECKS = frozenset({"has_content"})
 COMPUTED_CHECKS: dict[str, str] = {
     "code": "expected_paths, quality_ok, compiles, tests_pass",
     "sql": "executed, matches_reference",
-    "extract": "json_parses, required_present, types_ok, field score vs metadata.expected",
+    "extract": "json_parses, required_present, types_ok, contract_anchored, field score vs metadata.expected",
     "api": "missing, unexpected vs metadata.calls",
 }
 

@@ -14,35 +14,42 @@ from orchestral.planners import (
     load_prompt_variant,
 )
 
-# Only a ```json fence counts as a literal; an unlabeled fence is some other
-# language and is not ours to parse.
-_JSON_FENCE = re.compile(r"^```json\s*$", re.IGNORECASE)
+# A ```json fence opens a candidate whose body must parse. A closing fence is
+# a bare ```, so it needs its own pattern. An unlabeled fence is another
+# language, so its body is not emitted as a fence candidate — but a body line
+# that is itself whole-line JSON is still caught by the bare-line path below.
+_FENCE_OPEN = re.compile(r"^```json\s*$", re.IGNORECASE)
+_FENCE_CLOSE = re.compile(r"^```\s*$")
 _COUNT_GUIDANCE = re.compile(r"count small \((\d+)-(\d+)\)", re.IGNORECASE)
 
 
 def _json_literals(text: str) -> list[tuple[int, str]]:
     """Every whole-document JSON literal in a prompt, with its 1-based line.
 
-    A literal is either a ```json fence body or a bare line that opens with
-    ``{`` or ``[`` and closes with ``}`` or ``]``. Prose that merely mentions
-    JSON is skipped, so nothing here is a false positive.
+    A literal is either the body of a ```json fence, which may span lines, or
+    a bare line that opens with ``{`` or ``[`` and closes with ``}`` or ``]``.
+    Prose that merely mentions JSON is skipped, so nothing here is a false
+    positive.
+
+    Known limit: multi-line JSON that is neither fenced nor a single line is
+    not detected. No prompt in ``prompts/`` uses that shape.
     """
     literals: list[tuple[int, str]] = []
     fence: list[str] = []
     opened_at = 0
     inside = False
     for lineno, line in enumerate(text.splitlines(), start=1):
-        if _JSON_FENCE.match(line.strip()):
-            if inside:
+        stripped = line.strip()
+        if inside:
+            if _FENCE_CLOSE.match(stripped):
                 literals.append((opened_at, "\n".join(fence)))
                 fence, inside = [], False
             else:
-                inside, opened_at = True, lineno
+                fence.append(line)
             continue
-        if inside:
-            fence.append(line)
+        if _FENCE_OPEN.match(stripped):
+            inside, opened_at = True, lineno
             continue
-        stripped = line.strip()
         # `"" in "{["` is True, so the emptiness check has to come first.
         if stripped and stripped[:1] in "{[" and stripped[-1:] in "}]":
             literals.append((lineno, stripped))
@@ -94,6 +101,41 @@ class TestPromptExamplesAreValidJSON(unittest.TestCase):
 
     def test_explicit_variant_is_discoverable(self):
         self.assertIn("explicit", available_prompt_variants())
+
+
+class TestJsonLiteralDetection(unittest.TestCase):
+    """_json_literals must actually see every shape it claims to see.
+
+    The ```json fence path shipped dead: a well-formed fence closes with a
+    bare ``` that the open-tag pattern did not match, so `inside` never reset
+    and the literal was never emitted. Nothing tested the helper directly, so
+    no test noticed. These cases pin the detection itself.
+    """
+
+    def test_bare_line_is_detected(self):
+        self.assertEqual(_json_literals('{"a": [1, 2]}\n'), [(1, '{"a": [1, 2]}')])
+
+    def test_prose_and_blank_lines_are_ignored(self):
+        self.assertEqual(_json_literals("Return JSON.\n\nRules:\n- no fences\n"), [])
+
+    def test_json_fence_body_is_detected_even_when_multiline(self):
+        text = '```json\n{\n  "a": [1, 2]\n}\n```\n'
+        self.assertEqual(_json_literals(text), [(1, '{\n  "a": [1, 2]\n}')])
+
+    def test_sibling_fences_do_not_contaminate_each_other(self):
+        text = '```json\n{"x": [1, 2]}\n```\nprose\n```json\n{"y": [3, 4]}\n```\n'
+        # A fenced literal is reported at its opening ```json line.
+        self.assertEqual(
+            _json_literals(text),
+            [(1, '{"x": [1, 2]}'), (5, '{"y": [3, 4]}')],
+        )
+
+    def test_unlabeled_fence_body_is_not_a_candidate(self):
+        """A ```python block is not JSON, so it must not reach json.loads."""
+        text = '```python\nd = {"a": 1}\nprint(d)\n```\n'
+        # The middle line is whole-line JSON, so the bare-line path still sees
+        # it. What must not happen is a multi-line body being emitted whole.
+        self.assertNotIn((1, 'd = {"a": 1}\nprint(d)'), _json_literals(text))
 
 
 class TestPromptVariants(unittest.TestCase):

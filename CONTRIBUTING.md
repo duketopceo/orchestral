@@ -32,11 +32,12 @@ ruff check .
 mypy orchestral harness.py
 ```
 
-These are the whole definition of "verified" — `python -m compileall` is not a
-substitute, and a skipped test is not a passing test. The fourth CI step,
-`harness.py audit --strict`, arrives with the audit subcommand. All of them
-run in CI on every PR with no secrets needed. The paid OpenRouter eval workflow
-(`.github/workflows/orchestral.yml`) runs only on same-repo PRs; external
+All four run in CI on every PR with no secrets needed — tests, lint, and types
+each as their own job, so a failure in one never stops the others from
+reporting; the task-spec audit runs as a step in the `test` job. A skipped test
+is not a passing test, and `python -m compileall` is not a substitute. The paid
+OpenRouter eval workflow (`.github/workflows/orchestral.yml`) is dispatch-only
+and environment-gated — it is never reachable from pull-request code; external
 contributions are covered by the mock-provider integration tests.
 
 

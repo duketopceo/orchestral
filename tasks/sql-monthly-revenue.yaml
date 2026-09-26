@@ -2,10 +2,11 @@ id: sql-monthly-revenue
 type: sql
 prompt: >
   Write a single read-only SQL query (SQLite dialect) that answers: which
-  product generated the most revenue each month? Return one row per month with
-  columns: month (YYYY-MM), product (name), revenue (total, rounded to 2
-  decimals), ordered by month ascending. Only count order_lines whose order
-  status is 'shipped'.
+  product generated the most revenue each month? Return exactly one row per
+  month with columns: month (YYYY-MM), product (name), revenue (total, rounded
+  to 2 decimals), ordered by month ascending. Only count order_lines whose order
+  status is 'shipped'. If two or more products tie for the highest revenue in
+  a month, return the one whose product name sorts first alphabetically.
   The database has tables: products(id, name), orders(id, placed_on DATE,
   status), order_lines(order_id, product_id, qty, unit_price).
 validation: []
@@ -14,7 +15,12 @@ metadata:
   # v2: reference_sql compared a rounded revenue against an unrounded window
   # max, so any non-representable price made it return zero rows and turn the
   # task into a free pass. Same answer on the fixture below; see DUK-90.
-  version: "2"
+  # v3: the prompt promised one row per month, but "WHERE revenue = best"
+  # returned a row for every product tied at the month's maximum, so a correct
+  # candidate that broke the tie was graded wrong. The prompt now states the
+  # tie-break and ROW_NUMBER() picks exactly that winner; see DUK-117. Same
+  # answer on the fixture below, which has no tie.
+  version: "3"
   ordered: true
   schema:
     - "CREATE TABLE products (id INTEGER PRIMARY KEY, name TEXT NOT NULL)"
@@ -29,14 +35,15 @@ metadata:
       SELECT strftime('%Y-%m', o.placed_on) AS month,
              p.name AS product,
              ROUND(SUM(ol.qty * ol.unit_price), 2) AS revenue,
-             MAX(ROUND(SUM(ol.qty * ol.unit_price), 2)) OVER (
+             ROW_NUMBER() OVER (
                PARTITION BY strftime('%Y-%m', o.placed_on)
-             ) AS best
+               ORDER BY ROUND(SUM(ol.qty * ol.unit_price), 2) DESC, p.name ASC
+             ) AS rn
       FROM order_lines ol
       JOIN orders o ON o.id = ol.order_id
       JOIN products p ON p.id = ol.product_id
       WHERE o.status = 'shipped'
       GROUP BY month, p.name
     ) t
-    WHERE revenue = best
+    WHERE rn = 1
     ORDER BY month ASC

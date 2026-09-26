@@ -1,7 +1,14 @@
-"""Tests for scrub/publish: binary passthrough, widened redaction, allowlist, manifest."""
+"""Tests for scrub/publish: binary passthrough, widened redaction, allowlist, manifest.
+
+The publication policy is a fail-closed allow, so it is tested in both
+directions: content that cannot be redacted is withheld even when its name says
+otherwise, and approved media is never withheld because a signature check
+reached too far.
+"""
 
 from __future__ import annotations
 
+import bz2
 import contextlib
 import io
 import json
@@ -39,6 +46,12 @@ def _fake_key(prefix: str, body: str) -> str:
     so tests build them from prefix + body fragments.
     """
     return prefix + body
+
+
+def manifest_blocked(out_dir: Path) -> dict[str, dict[str, str]]:
+    """Blocked-file records from the first run's manifest entry, keyed by filename."""
+    manifest = json.loads((out_dir / "manifest.json").read_text())
+    return {item["file"]: item for item in manifest[0]["scrub_blocked"]}
 
 
 class TestScrubText(unittest.TestCase):
@@ -177,8 +190,73 @@ class TestScrubArchivePolicy(unittest.TestCase):
             omissions = manifest[0]["scrub_omissions"]
             self.assertEqual([o["file"] for o in omissions], ["artifact.zip"])
             self.assertIn("cannot be redacted", omissions[0]["reason"])
-            # the warning names the run; the file name lives in the manifest
             self.assertIn("o/t/w/run1", stderr.getvalue())
+
+    def test_unapproved_archive_extensions_are_omitted(self):
+        for suffix in (".7z", ".bz2", ".xz", ".rar"):
+            with self.subTest(suffix=suffix), tempfile.TemporaryDirectory() as td:
+                runs_dir = Path(td) / "runs"
+                run_dir = _make_run(runs_dir, "o/t/w/run1")
+                (run_dir / f"artifact{suffix}").write_bytes(b"harmless archive fixture")
+                out_dir = Path(td) / "pub"
+
+                with contextlib.redirect_stderr(io.StringIO()):
+                    scrub_all(runs_dir, out_dir)
+
+                self.assertFalse((out_dir / "o/t/w/run1" / f"artifact{suffix}").exists())
+                manifest = json.loads((out_dir / "manifest.json").read_text())
+                self.assertEqual(
+                    [item["file"] for item in manifest[0]["scrub_omissions"]],
+                    [f"artifact{suffix}"],
+                )
+                self.assertEqual(manifest[0]["scrub_blocked"][0]["status"], "blocked")
+
+    def test_database_extensions_are_omitted(self):
+        for suffix in (".db", ".sqlite", ".sqlite3"):
+            with self.subTest(suffix=suffix), tempfile.TemporaryDirectory() as td:
+                runs_dir = Path(td) / "runs"
+                run_dir = _make_run(runs_dir, "o/t/w/run1")
+                (run_dir / f"artifact{suffix}").write_bytes(b"harmless database fixture")
+                out_dir = Path(td) / "pub"
+
+                with contextlib.redirect_stderr(io.StringIO()):
+                    scrub_all(runs_dir, out_dir)
+
+                self.assertFalse((out_dir / "o/t/w/run1" / f"artifact{suffix}").exists())
+                manifest = json.loads((out_dir / "manifest.json").read_text())
+                self.assertEqual(
+                    [item["file"] for item in manifest[0]["scrub_omissions"]],
+                    [f"artifact{suffix}"],
+                )
+
+    def test_unknown_binary_is_omitted(self):
+        with tempfile.TemporaryDirectory() as td:
+            runs_dir = Path(td) / "runs"
+            run_dir = _make_run(runs_dir, "o/t/w/run1")
+            (run_dir / "artifact.bin").write_bytes(b"harmless\x00binary fixture")
+            out_dir = Path(td) / "pub"
+
+            with contextlib.redirect_stderr(io.StringIO()):
+                scrub_all(runs_dir, out_dir)
+
+            self.assertFalse((out_dir / "o/t/w/run1" / "artifact.bin").exists())
+            manifest = json.loads((out_dir / "manifest.json").read_text())
+            self.assertEqual(manifest[0]["scrub_omissions"][0]["file"], "artifact.bin")
+            self.assertIn("binary", manifest[0]["scrub_omissions"][0]["reason"])
+
+    def test_archive_signature_blocks_approved_binary_name(self):
+        with tempfile.TemporaryDirectory() as td:
+            runs_dir = Path(td) / "runs"
+            run_dir = _make_run(runs_dir, "o/t/w/run1")
+            (run_dir / "artifact.png").write_bytes(b"PK\x03\x04harmless archive fixture")
+            out_dir = Path(td) / "pub"
+
+            with contextlib.redirect_stderr(io.StringIO()):
+                scrub_all(runs_dir, out_dir)
+
+            self.assertFalse((out_dir / "o/t/w/run1" / "artifact.png").exists())
+            manifest = json.loads((out_dir / "manifest.json").read_text())
+            self.assertIn("archive", manifest[0]["scrub_omissions"][0]["reason"])
 
     def test_other_binaries_still_copied(self):
         with tempfile.TemporaryDirectory() as td:
@@ -194,6 +272,30 @@ class TestScrubArchivePolicy(unittest.TestCase):
             manifest = json.loads((out_dir / "manifest.json").read_text())
             self.assertNotIn("scrub_omissions", manifest[0])
             self.assertEqual(stderr.getvalue(), "")
+
+    def test_manifest_requires_manual_inspection_and_second_scanner(self):
+        with tempfile.TemporaryDirectory() as td:
+            runs_dir = Path(td) / "runs"
+            _make_run(runs_dir, "o/t/w/run1")
+            out_dir = Path(td) / "pub"
+
+            scrub_all(runs_dir, out_dir)
+
+            manifest = json.loads((out_dir / "manifest.json").read_text())
+            self.assertEqual(manifest[0]["scrub_policy"], "fail_closed")
+            self.assertTrue(manifest[0]["publication_review"]["manual_inspection_required"])
+            self.assertTrue(manifest[0]["publication_review"]["second_scanner_required"])
+
+    def test_scrub_all_removes_stale_blocked_output(self):
+        with tempfile.TemporaryDirectory() as td:
+            runs_dir = Path(td) / "runs"
+            _make_run(runs_dir, "o/t/w/run1")
+            out_dir = Path(td) / "pub"
+            stale = out_dir / "o/t/w/run1/artifact.db"
+            stale.parent.mkdir(parents=True)
+            stale.write_bytes(b"stale database fixture")
+            scrub_all(runs_dir, out_dir)
+            self.assertFalse(stale.exists())
 
     def test_text_redaction_still_applies_alongside_archive_skip(self):
         with tempfile.TemporaryDirectory() as td:
@@ -212,6 +314,306 @@ class TestScrubArchivePolicy(unittest.TestCase):
             scrubbed = (out_dir / "o/t/w/run1" / "worker-0.json").read_text()
             self.assertNotIn(secret, scrubbed)
             self.assertIn("REDACTED", scrubbed)
+
+
+class TestScrubRunPolicy(unittest.TestCase):
+    def test_direct_scrub_run_blocks_all_unapproved_file_types(self):
+        files = {
+            "artifact.7z": b"harmless archive fixture",
+            "artifact.bz2": b"harmless archive fixture",
+            "artifact.xz": b"harmless archive fixture",
+            "artifact.rar": b"harmless archive fixture",
+            "artifact.db": b"harmless database fixture",
+            "artifact.bin": b"harmless\x00binary fixture",
+        }
+        with tempfile.TemporaryDirectory() as td:
+            src = _make_run(Path(td) / "runs", files=files)
+            out = scrub_run(src, Path(td) / "pub")
+
+            for name in files:
+                self.assertFalse((out / name).exists(), name)
+            self.assertTrue((out / "run.json").exists())
+
+    def test_direct_scrub_run_removes_stale_blocked_output(self):
+        with tempfile.TemporaryDirectory() as td:
+            src = _make_run(Path(td) / "runs")
+            out_dir = Path(td) / "pub"
+            stale = out_dir / src.name / "artifact.db"
+            stale.parent.mkdir(parents=True)
+            stale.write_bytes(b"stale database fixture")
+
+            out = scrub_run(src, out_dir)
+
+            self.assertFalse(stale.exists())
+            self.assertTrue((out / "run.json").exists())
+
+    def test_direct_scrub_run_blocks_allowlisted_symlink(self):
+        with tempfile.TemporaryDirectory() as td:
+            src = _make_run(Path(td) / "runs")
+            target = src / "outside.txt"
+            target.write_text("harmless fixture", encoding="utf-8")
+            (src / "artifact.link").symlink_to(target)
+            out = scrub_run(src, Path(td) / "pub")
+
+            self.assertFalse((out / "artifact.link").exists())
+
+
+class TestPublicationPolicyBothDirections(unittest.TestCase):
+    """A block that is never lifted is a regression; so is a block that never fires.
+
+    Every case here pairs a file the policy must withhold with a file it must
+    let through. The let-through cases are the ones that catch an over-broad
+    signature check, which is the failure mode that silently drops a user's
+    artifacts.
+    """
+
+    # -- must block: content that cannot be redacted, whatever it is called --
+
+    def test_renamed_archive_is_blocked_by_content_not_extension(self):
+        renamed = {
+            "artifact.png": b"PK\x03\x04" + b"\x00" * 64,
+            "worker-0.mp4": b"\x1f\x8b\x08\x00" + b"\x00" * 64,
+            "worker-0.webm": b"Rar!\x1a\x07\x00" + b"\x00" * 64,
+            "screenshot.png": b"7z\xbc\xaf\x27\x1c" + b"\x00" * 64,
+            "artifact.png.gz": b"harmless bytes, archive extension",
+        }
+        for name, data in renamed.items():
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as td:
+                runs_dir = Path(td) / "runs"
+                run_dir = _make_run(runs_dir, "o/t/w/run1")
+                (run_dir / name).write_bytes(data)
+                out_dir = Path(td) / "pub"
+
+                with contextlib.redirect_stderr(io.StringIO()):
+                    scrub_all(runs_dir, out_dir)
+
+                self.assertFalse((out_dir / "o/t/w/run1" / name).exists(), name)
+                self.assertEqual(manifest_blocked(out_dir)[name]["status"], "blocked")
+
+    def test_real_bzip2_stream_is_blocked_under_a_text_name(self):
+        payload = bz2.compress(b"SECRET_IN_ARCHIVE" * 64)
+        with tempfile.TemporaryDirectory() as td:
+            runs_dir = Path(td) / "runs"
+            run_dir = _make_run(runs_dir, "o/t/w/run1")
+            (run_dir / "worker-0.log").write_bytes(payload)
+            out_dir = Path(td) / "pub"
+
+            with contextlib.redirect_stderr(io.StringIO()):
+                scrub_all(runs_dir, out_dir)
+
+            self.assertFalse((out_dir / "o/t/w/run1" / "worker-0.log").exists())
+            self.assertEqual(
+                manifest_blocked(out_dir)["worker-0.log"]["status"], "blocked"
+            )
+
+    def test_renamed_sqlite_database_is_blocked(self):
+        payload = b"SQLite format 3\x00" + b"\x00" * 64
+        with tempfile.TemporaryDirectory() as td:
+            runs_dir = Path(td) / "runs"
+            run_dir = _make_run(runs_dir, "o/t/w/run1")
+            (run_dir / "artifact.png").write_bytes(payload)
+            out_dir = Path(td) / "pub"
+
+            with contextlib.redirect_stderr(io.StringIO()):
+                scrub_all(runs_dir, out_dir)
+
+            self.assertFalse((out_dir / "o/t/w/run1" / "artifact.png").exists())
+            self.assertIn("database", manifest_blocked(out_dir)["artifact.png"]["reason"])
+
+    def test_non_utf8_text_is_blocked_rather_than_published_mangled(self):
+        with tempfile.TemporaryDirectory() as td:
+            runs_dir = Path(td) / "runs"
+            run_dir = _make_run(runs_dir, "o/t/w/run1")
+            (run_dir / "worker-0.log").write_bytes(b"caf\xe9 notes\n")
+            out_dir = Path(td) / "pub"
+
+            with contextlib.redirect_stderr(io.StringIO()):
+                scrub_all(runs_dir, out_dir)
+
+            self.assertFalse((out_dir / "o/t/w/run1" / "worker-0.log").exists())
+            self.assertIn("non-text", manifest_blocked(out_dir)["worker-0.log"]["reason"])
+
+    def test_blocked_symlink_is_recorded_in_the_manifest(self):
+        with tempfile.TemporaryDirectory() as td:
+            runs_dir = Path(td) / "runs"
+            run_dir = _make_run(runs_dir, "o/t/w/run1")
+            outside = run_dir / "outside.txt"
+            outside.write_text("harmless fixture", encoding="utf-8")
+            (run_dir / "artifact.link").symlink_to(outside)
+            out_dir = Path(td) / "pub"
+
+            with contextlib.redirect_stderr(io.StringIO()):
+                scrub_all(runs_dir, out_dir)
+
+            self.assertFalse((out_dir / "o/t/w/run1" / "artifact.link").exists())
+            self.assertIn("symbolic link", manifest_blocked(out_dir)["artifact.link"]["reason"])
+
+    # -- must publish: approved media is a narrow allow, not a general one --
+
+    def test_approved_png_with_archive_bytes_at_offset_publishes_byte_identical(self):
+        """A real PNG that happens to embed a ZIP local header deeper in the file.
+
+        The signature check is anchored at offset 0. If it ever becomes a
+        substring scan, this stops publishing and a real screenshot is dropped.
+        """
+        self.assertGreater(len(PNG_BYTES), 32, "fixture too small to splice into")
+        payload = PNG_BYTES[:20] + b"PK\x03\x04" + PNG_BYTES[20:]
+        with tempfile.TemporaryDirectory() as td:
+            runs_dir = Path(td) / "runs"
+            run_dir = _make_run(runs_dir, "o/t/w/run1")
+            (run_dir / "screenshot.png").write_bytes(payload)
+            out_dir = Path(td) / "pub"
+
+            with contextlib.redirect_stderr(io.StringIO()) as stderr:
+                scrub_all(runs_dir, out_dir)
+
+            self.assertEqual(
+                (out_dir / "o/t/w/run1" / "screenshot.png").read_bytes(), payload
+            )
+            self.assertEqual(stderr.getvalue(), "")
+
+    def test_approved_media_headers_all_publish(self):
+        approved = {
+            "screenshot.png": PNG_BYTES,
+            "screenshot.jpg": b"\xff\xd8\xff\xe0" + b"\x00" * 32,
+            "screenshot.gif": b"GIF89a" + b"\x00" * 32,
+            "screenshot.webp": b"RIFF\x24\x00\x00\x00WEBP" + b"\x00" * 32,
+            "screenshot.bmp": b"BM" + b"\x00" * 32,
+            "screenshot.ico": b"\x00\x00\x01\x00" + b"\x00" * 32,
+            "worker-0.mp4": b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 32,
+            "worker-0.mov": b"\x00\x00\x00\x14ftypqt  " + b"\x00" * 32,
+            "artifact.woff": b"wOFF" + b"\x00" * 32,
+            "artifact.woff2": b"wOF2" + b"\x00" * 32,
+            "artifact.ttf": b"\x00\x01\x00\x00" + b"\x00" * 32,
+            "artifact.otf": b"OTTO" + b"\x00" * 32,
+        }
+        for name, data in approved.items():
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as td:
+                runs_dir = Path(td) / "runs"
+                run_dir = _make_run(runs_dir, "o/t/w/run1")
+                (run_dir / name).write_bytes(data)
+                out_dir = Path(td) / "pub"
+
+                with contextlib.redirect_stderr(io.StringIO()) as stderr:
+                    scrub_all(runs_dir, out_dir)
+
+                self.assertEqual(
+                    (out_dir / "o/t/w/run1" / name).read_bytes(), data, name
+                )
+                self.assertEqual(stderr.getvalue(), "", name)
+
+    def test_text_file_starting_with_bzip2_magic_bytes_still_publishes(self):
+        """`BZh` is three ASCII characters, and a text log may open with them.
+
+        The bzip2 signature has to match the real stream header, not just its
+        first three bytes, or a prose log gets withheld as an archive.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            runs_dir = Path(td) / "runs"
+            run_dir = _make_run(runs_dir, "o/t/w/run1")
+            payload = b"BZh was the first word of this line, not a stream header\n"
+            (run_dir / "worker-0.log").write_bytes(payload)
+            out_dir = Path(td) / "pub"
+
+            with contextlib.redirect_stderr(io.StringIO()) as stderr:
+                scrub_all(runs_dir, out_dir)
+
+            published = out_dir / "o/t/w/run1" / "worker-0.log"
+            self.assertTrue(published.exists())
+            self.assertEqual(published.read_bytes(), payload)
+            self.assertEqual(stderr.getvalue(), "")
+
+    def test_text_file_mentioning_archive_magic_publishes(self):
+        payload = b"we saw PK\\x03\\x04 and 1f8b and BZh in the log stream\n"
+        with tempfile.TemporaryDirectory() as td:
+            runs_dir = Path(td) / "runs"
+            run_dir = _make_run(runs_dir, "o/t/w/run1")
+            (run_dir / "worker-0.log").write_bytes(payload)
+            out_dir = Path(td) / "pub"
+
+            with contextlib.redirect_stderr(io.StringIO()):
+                scrub_all(runs_dir, out_dir)
+
+            self.assertEqual(
+                (out_dir / "o/t/w/run1" / "worker-0.log").read_bytes(), payload
+            )
+
+
+class TestScrubRunBlockedEvidence(unittest.TestCase):
+    """`scrub_run` has no manifest, so a silent withhold is an invisible hole."""
+
+    def test_scrub_run_names_every_blocked_file_on_stderr(self):
+        with tempfile.TemporaryDirectory() as td:
+            src = _make_run(Path(td) / "runs", files={
+                "artifact.zip": b"harmless archive fixture",
+                "artifact.db": b"harmless database fixture",
+                "screenshot.png": PNG_BYTES,
+            })
+
+            with contextlib.redirect_stderr(io.StringIO()) as stderr:
+                out = scrub_run(src, Path(td) / "pub")
+
+            self.assertFalse((out / "artifact.zip").exists())
+            self.assertFalse((out / "artifact.db").exists())
+            self.assertTrue((out / "screenshot.png").exists())
+            warning = stderr.getvalue()
+            self.assertIn("artifact.zip", warning)
+            self.assertIn("artifact.db", warning)
+            self.assertIn("scrub", warning)
+
+    def test_scrub_run_stays_quiet_when_nothing_is_blocked(self):
+        with tempfile.TemporaryDirectory() as td:
+            src = _make_run(Path(td) / "runs", files={"screenshot.png": PNG_BYTES})
+
+            with contextlib.redirect_stderr(io.StringIO()) as stderr:
+                scrub_run(src, Path(td) / "pub")
+
+            self.assertEqual(stderr.getvalue(), "")
+
+
+class TestScrubOutputContainment(unittest.TestCase):
+    """A scrub destination that overlaps the source would delete the source.
+
+    `_scrub_dir` clears its destination before writing, so a destination equal
+    to the source run directory is data loss, not a cosmetic bug.
+    """
+
+    def test_scrub_all_refuses_to_write_over_its_own_source(self):
+        with tempfile.TemporaryDirectory() as td:
+            runs_dir = Path(td) / "runs"
+            _make_run(runs_dir, "o/t/w/run1")
+
+            with self.assertRaises(ValueError):
+                scrub_all(runs_dir, runs_dir)
+
+    def test_scrub_all_refuses_a_destination_containing_the_source(self):
+        with tempfile.TemporaryDirectory() as td:
+            runs_dir = Path(td) / "runs"
+            _make_run(runs_dir, "o/t/w/run1")
+
+            with self.assertRaises(ValueError):
+                scrub_all(runs_dir, Path(td) / "pub" / "..")
+
+    def test_scrub_run_refuses_to_write_over_its_own_source(self):
+        with tempfile.TemporaryDirectory() as td:
+            src = _make_run(Path(td) / "runs", files={"screenshot.png": PNG_BYTES})
+
+            with self.assertRaises(ValueError):
+                scrub_run(src, src.parent)
+
+    def test_scrub_run_leaves_the_source_intact_after_a_blocked_file(self):
+        with tempfile.TemporaryDirectory() as td:
+            src = _make_run(Path(td) / "runs", files={
+                "screenshot.png": PNG_BYTES,
+                "artifact.db": b"harmless database fixture",
+            })
+
+            with contextlib.redirect_stderr(io.StringIO()):
+                out = scrub_run(src, Path(td) / "pub")
+
+            self.assertFalse((out / "artifact.db").exists())
+            self.assertTrue((src / "artifact.db").exists())
+            self.assertEqual((src / "screenshot.png").read_bytes(), PNG_BYTES)
 
 
 if __name__ == "__main__":

@@ -41,6 +41,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
+          # Floor interpreter on purpose. This job runs a paid model eval, so running it once per
+          # matrix version multiplies spend and wall-clock for no portability signal. Portability is
+          # covered by the version matrix in ci.yml.
           python-version: "3.11"
 
       - name: Install orchestral

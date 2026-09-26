@@ -98,6 +98,7 @@ jobs:
               const verdict = relevant
                 ? `Paid eval runs. Relevant paths in this diff: ${shown.join(', ')}${touched.length > shown.length ? `, +${touched.length - shown.length} more` : ''}.`
                 : 'Paid eval skipped. This diff touches no product source, task spec, or package metadata, so the fixed eval task cannot produce a different result.';
+              core.info(verdict);
               await core.summary.addRaw(verdict, true).write();
             }
             core.setOutput('relevant', String(relevant));

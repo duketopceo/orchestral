@@ -14,6 +14,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from orchestral.audit import audit_tree
 from orchestral.calibrate import agreement_metrics, collect_pairs, load_labels
 from orchestral.config import (
     ConfigError,
@@ -157,6 +158,27 @@ def _apply_retry_limit(worker: ModelConfig, args: argparse.Namespace) -> ModelCo
     return worker
 
 
+def _attempt_budget(worker: ModelConfig) -> str:
+    """State the retry budget that actually applied, per phase.
+
+    Only the delegate loop retries; every orchestrator call, the plan included,
+    is single-shot. A failure line that omits this reads as "attempt 1 of some
+    policy", which is how a truncated provider response came to be read as a
+    harness regression.
+    """
+    return f"orchestrator 1 per call, worker {worker.retry_limit + 1} (retry_limit={worker.retry_limit})"
+
+
+def _fail_line(label: str, rep: int, n_reps: int, budget: str, exc: Exception) -> str:
+    """One failure line, shared by every harness command.
+
+    `rep` names a replicate, not an attempt — saying so explicitly is the point.
+    With one replicate the bare `rep 1` of the previous format was
+    indistinguishable from a retry counter.
+    """
+    return f"[fail] {label} replicate {rep}/{n_reps} (attempts: {budget}): {type(exc).__name__}: {exc}"
+
+
 def _resolve_replicates(args: argparse.Namespace) -> tuple[str | None, int]:
     """Return (run_group, count). Auto-names a group when N > 1 and none
     was given so every replicate of the invocation shares a label."""
@@ -195,6 +217,7 @@ def cmd_run(args: argparse.Namespace) -> None:
     group, n_reps = _resolve_replicates(args)
     metas = []
     failures = 0
+    budget = _attempt_budget(worker)
     for i in range(1, n_reps + 1):
         rep = i if n_reps > 1 else getattr(args, "replicate", None)
         try:
@@ -203,7 +226,7 @@ def cmd_run(args: argparse.Namespace) -> None:
             # Runner.record_failure persists the failed run before re-raising;
             # keep going so one flake doesn't lose the remaining replicates
             failures += 1
-            print(f"[fail] rep {i}: {exc}", file=sys.stderr)
+            print(_fail_line("run", i, n_reps, budget, exc), file=sys.stderr)
     if args.json:
         out: Any = [m.to_dict() for m in metas] if n_reps > 1 else (metas[0].to_dict() if metas else None)
         print(json.dumps(out, indent=2, default=str))
@@ -273,14 +296,14 @@ def cmd_grid(args: argparse.Namespace) -> None:
     failures = 0
     if args.jobs > 1:
         with ThreadPoolExecutor(max_workers=args.jobs) as pool:
-            futures = {pool.submit(_one, o, w, i): (o.slug, w.slug, i) for o, w, i in cells}
+            futures = {pool.submit(_one, o, w, i): (o.slug, w.slug, i, _attempt_budget(w)) for o, w, i in cells}
             for fut in as_completed(futures):
-                o_slug, w_slug, i = futures[fut]
+                o_slug, w_slug, i, budget = futures[fut]
                 try:
                     results.append(fut.result())
                 except Exception as exc:
                     failures += 1
-                    print(f"[fail] {o_slug} × {w_slug} rep {i}: {exc}", file=sys.stderr)
+                    print(_fail_line(f"{o_slug} × {w_slug}", i, n_reps, budget, exc), file=sys.stderr)
         results.sort(key=lambda r: (r["orchestrator"], r["worker"], r["replicate"] or 0))
     else:
         for o, w, i in cells:
@@ -288,7 +311,7 @@ def cmd_grid(args: argparse.Namespace) -> None:
                 results.append(_one(o, w, i))
             except Exception as exc:
                 failures += 1
-                print(f"[fail] {o.slug} × {w.slug} rep {i}: {exc}", file=sys.stderr)
+                print(_fail_line(f"{o.slug} × {w.slug}", i, n_reps, _attempt_budget(w), exc), file=sys.stderr)
 
     print("\nGrid summary")
     rep_col = f"{'rep':>4} " if n_reps > 1 else ""
@@ -350,6 +373,7 @@ def cmd_batch(args: argparse.Namespace) -> None:
 
     group, n_reps = _resolve_replicates(args)
     cells = [(p, i) for p in paths for i in range(1, n_reps + 1)]
+    budget = _attempt_budget(worker)
 
     def _one(path: Path, rep: int) -> dict[str, Any]:
         task = load_task(path)
@@ -376,7 +400,7 @@ def cmd_batch(args: argparse.Namespace) -> None:
                     results.append(fut.result())
                 except Exception as exc:
                     failures += 1
-                    print(f"[fail] {p} rep {i}: {exc}", file=sys.stderr)
+                    print(_fail_line(f"{p}", i, n_reps, budget, exc), file=sys.stderr)
         results.sort(key=lambda r: (r["task_id"], r["replicate"] or 0))
     else:
         for path, i in cells:
@@ -384,7 +408,7 @@ def cmd_batch(args: argparse.Namespace) -> None:
                 results.append(_one(path, i))
             except Exception as exc:
                 failures += 1
-                print(f"[fail] {path} rep {i}: {exc}", file=sys.stderr)
+                print(_fail_line(f"{path}", i, n_reps, budget, exc), file=sys.stderr)
 
     print(f"\nBatch summary ({len(results)} runs across {len(paths)} tasks)")
     rep_col = f"{'rep':>4} " if n_reps > 1 else ""
@@ -447,8 +471,13 @@ def cmd_ablate(args: argparse.Namespace) -> None:
 
     group, n_reps = _resolve_replicates(args)
 
+    def _worker(value: Any) -> ModelConfig:
+        if knob == "retry_limit":
+            return replace(base_worker, role="worker", retry_limit=value)
+        return _apply_retry_limit(replace(base_worker, role="worker"), args)
+
     def _one(value: Any, rep: int) -> dict[str, Any]:
-        worker = replace(base_worker, role="worker", retry_limit=value) if knob == "retry_limit" else _apply_retry_limit(replace(base_worker, role="worker"), args)
+        worker = _worker(value)
         kwargs = _rep_kwargs(args, store, group, rep if n_reps > 1 else getattr(args, "replicate", None))
         kwargs["sweep"] = {"knob": knob, "value": value}
         if knob == "prompt_variant":
@@ -476,14 +505,14 @@ def cmd_ablate(args: argparse.Namespace) -> None:
                     results.append(fut.result())
                 except Exception as exc:
                     failures += 1
-                    print(f"[fail] {knob}={v} rep {i}: {exc}", file=sys.stderr)
+                    print(_fail_line(f"{knob}={v}", i, n_reps, _attempt_budget(_worker(v)), exc), file=sys.stderr)
     else:
         for v, i in cells:
             try:
                 results.append(_one(v, i))
             except Exception as exc:
                 failures += 1
-                print(f"[fail] {knob}={v} rep {i}: {exc}", file=sys.stderr)
+                print(_fail_line(f"{knob}={v}", i, n_reps, _attempt_budget(_worker(v)), exc), file=sys.stderr)
     order = {v: i for i, v in enumerate(values)}
     results.sort(key=lambda r: (order[r["value"]], r["replicate"] or 0))
 
@@ -753,10 +782,43 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
 
 
 def cmd_scrub(args: argparse.Namespace) -> None:
-    copied = scrub_all(Path(args.runs_dir), Path(args.scrub_dir))
+    source = Path(args.runs_dir)
+    # Validate before scrubbing: scrub_all clears the output directory first, so
+    # a wrong --runs-dir used to destroy the previous runs-pub/ and repopulate it
+    # from a directory the caller never named. Fail before any write.
+    if not source.is_dir():
+        print(
+            f"error: runs directory not found: {source}. Nothing was written. "
+            "Set --runs-dir (before or after `scrub`) to the tree holding run.json files.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    if not any(source.rglob("run.json")):
+        print(
+            f"error: no runs found under {source} (no run.json). Nothing was written. "
+            "Check --runs-dir — an empty source must not be published as a success.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    copied = scrub_all(source, Path(args.scrub_dir))
     print(f"Scrubbed {len(copied)} runs to {args.scrub_dir}")
     for c in copied:
         print(f"  {c}")
+
+
+def cmd_audit(args: argparse.Namespace) -> None:
+    """Static task-spec audit: can every declared check fire, and can a model pass without working?"""
+    report = audit_tree(
+        args.tasks_dir,
+        min_family=args.min_family,
+        similarity=args.similarity,
+    )
+    if args.json:
+        print(json.dumps(report.to_dict(), indent=2))
+    else:
+        print(report.to_text())
+    if args.strict and not report.ok:
+        sys.exit(1)
 
 
 def cmd_dashboard(args: argparse.Namespace) -> None:
@@ -815,7 +877,28 @@ def cmd_shots(args: argparse.Namespace) -> None:
     print(f"screenshots: {captured} captured, {current} already current, {no_artifact} no HTML artifact, {failed} unavailable")
 
 
-def main() -> None:
+# Global directory flags are declared on the top-level parser. A subparser that
+# also declares one must use SUPPRESS: argparse copies subparser defaults onto
+# the shared namespace *after* the top-level value is parsed, so a plain
+# default silently overwrote `harness.py --runs-dir X scrub` with "runs".
+GLOBAL_DIR_FLAGS = {"--runs-dir": "runs", "--tasks-dir": "tasks", "--models-dir": "models"}
+
+
+def _add_global_dir_flag(sp: argparse.ArgumentParser, flag: str, help_text: str) -> None:
+    """Re-declare a top-level directory flag on a subparser without shadowing it.
+
+    SUPPRESS leaves the top-level value in place when the flag is absent, and
+    overrides it when given — so both spellings work and the subcommand-local
+    one wins.
+    """
+    if flag not in GLOBAL_DIR_FLAGS:
+        raise ValueError(f"{flag} is not a global directory flag: {sorted(GLOBAL_DIR_FLAGS)}")
+    sp.add_argument(flag, default=argparse.SUPPRESS, help=help_text)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    """Build the full CLI parser. Split out of main() so tests can inspect the
+    flag wiring without executing a subcommand."""
     p = argparse.ArgumentParser(description="orchestral eval harness")
     p.add_argument("--runs-dir", default="runs", help="Root directory for run data")
     p.add_argument("--tasks-dir", default="tasks", help="Task spec directory")
@@ -900,7 +983,7 @@ def main() -> None:
     prices.set_defaults(func=cmd_prices)
 
     export = sub.add_parser("export", help="Export runs as CSV, or a single run as Markdown/JSONL")
-    export.add_argument("--runs-dir", default="runs", help="Root directory for run data")
+    _add_global_dir_flag(export, "--runs-dir", "Root directory for run data")
     export.add_argument("--format", choices=["csv", "md", "jsonl"], default="csv", help="Export format")
     export.add_argument("--run", default=None, help="Export a single run id (md audit or jsonl events)")
     export.add_argument("--leaderboard", action="store_true", help="Export pairing leaderboard as CSV")
@@ -909,38 +992,54 @@ def main() -> None:
     export.set_defaults(func=cmd_export)
 
     scrub = sub.add_parser("scrub", help="Redact sensitive data from all runs for sharing")
-    scrub.add_argument("--runs-dir", default="runs", help="Source runs directory")
+    _add_global_dir_flag(scrub, "--runs-dir", "Source runs directory")
     scrub.add_argument("--scrub-dir", default="runs-pub", help="Where to write scrubbed runs")
     scrub.set_defaults(func=cmd_scrub)
 
     dashboard = sub.add_parser("dashboard", help="Generate a unified stats dashboard")
-    dashboard.add_argument("--runs-dir", default="runs", help="Root directory for run data")
+    _add_global_dir_flag(dashboard, "--runs-dir", "Root directory for run data")
     dashboard.add_argument("--reports-dir", default="reports", help="Output directory for HTML reports")
     dashboard.set_defaults(func=cmd_dashboard)
 
     tui = sub.add_parser("tui", help="Interactive experiment observatory (needs the [tui] extra)")
-    tui.add_argument("--runs-dir", default="runs", help="Root directory for run data")
+    _add_global_dir_flag(tui, "--runs-dir", "Root directory for run data")
     tui.add_argument("--reports-dir", default="reports", help="Output directory for exports")
     tui.add_argument("--refresh", action="store_true", help="Auto-refresh every 5s")
     tui.set_defaults(func=cmd_tui)
 
     shots = sub.add_parser("shots", help="Screenshot HTML artifacts in stored runs (requires playwright extra)")
-    shots.add_argument("--runs-dir", default="runs", help="Root directory for run data")
+    _add_global_dir_flag(shots, "--runs-dir", "Root directory for run data")
     shots.add_argument("--task", default=None, help="Only capture runs for this task id")
     shots.add_argument("--all", action="store_true", help="Re-capture even when screenshots are current")
     shots.set_defaults(func=cmd_shots)
 
     calibrate = sub.add_parser("calibrate", help="Judge-vs-human agreement metrics from a labels file")
     calibrate.add_argument("--labels", required=True, help="YAML labels file (labels: [{run_id, score, passed}])")
-    calibrate.add_argument("--runs-dir", default="runs", help="Root directory for run data")
+    _add_global_dir_flag(calibrate, "--runs-dir", "Root directory for run data")
     calibrate.add_argument("--json", action="store_true", help="Machine-readable output")
     calibrate.set_defaults(func=cmd_calibrate)
+
+    audit = sub.add_parser(
+        "audit",
+        help="Static task-spec audit — fail-open checks, structural-only graders, contamination risk",
+    )
+    audit.add_argument("--tasks-dir", default="tasks", help="Task spec directory")
+    audit.add_argument("--min-family", type=int, default=5, help="Specs sharing one prompt before it is a family")
+    audit.add_argument("--similarity", type=float, default=0.8, help="Prompt token Jaccard threshold for a family")
+    audit.add_argument("--json", action="store_true", help="Machine-readable output")
+    audit.add_argument("--strict", action="store_true", help="Exit non-zero when any error-severity finding exists")
+    audit.set_defaults(func=cmd_audit)
 
     serve = sub.add_parser("serve", help="Local web observatory — browse, launch, and cancel runs in a browser (localhost only)")
     serve.add_argument("--port", type=int, default=8787, help="Port to bind on 127.0.0.1 (default 8787)")
     serve.add_argument("--open", action="store_true", help="Open the observatory in a browser")
     serve.set_defaults(func=cmd_serve)
 
+    return p
+
+
+def main() -> None:
+    p = build_parser()
     args = p.parse_args()
     if not hasattr(args, "func"):
         p.print_help()

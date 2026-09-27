@@ -93,6 +93,55 @@ def shadowing_members(paths: Any) -> list[str]:
     )
 
 
+# Verifier-side runner: unittest's stdout tail is forgeable by graded code
+# (an imported module can register atexit handlers or print its own "Ran N
+# tests" line), so the verdict is derived from the unittest result object and
+# written to a file read back out-of-band. `os._exit` skips atexit/shutdown
+# handlers — nothing imported under test gets a chance to rewrite the file.
+# The result path carries a per-run nonce so forging it requires recovering
+# the path from the runner source and racing the verifier, not one print.
+_SUITE_RUNNER = """\
+import json
+import os
+import sys
+import unittest
+
+suite = unittest.TestLoader().discover({start_dir!r}, pattern={pattern!r})
+result = unittest.TextTestRunner(verbosity=2).run(suite)
+with open({result_path!r}, "w", encoding="utf-8") as fh:
+    json.dump({{
+        "collected": suite.countTestCases(),
+        "tests_run": result.testsRun,
+        "failures": len(result.failures),
+        "errors": len(result.errors),
+        "skipped": len(result.skipped),
+        "ok": result.wasSuccessful(),
+    }}, fh)
+sys.stdout.flush()
+sys.stderr.flush()
+os._exit(0 if result.wasSuccessful() else 1)
+"""
+
+
+def suite_runner_source(start_dir: str, pattern: str, result_path: str) -> str:
+    """Verifier-authored runner program for a hidden unittest suite."""
+    return _SUITE_RUNNER.format(
+        start_dir=start_dir, pattern=pattern, result_path=result_path
+    )
+
+
+def suite_result_report(
+    payload: dict[str, Any], returncode: int | None
+) -> tuple[int, str | None]:
+    """Derive (tests_run, error) from the runner's JSON result payload."""
+    ran = int(payload.get("tests_run") or 0)
+    if ran == 0:
+        return 0, "suite ran zero tests"
+    if not payload.get("ok"):
+        return ran, f"unittest exited {returncode}"
+    return ran, None
+
+
 def summarize_unittest_output(tail: str, returncode: int) -> tuple[int, str | None]:
     """Extract (tests_run, error) from unittest's summary tail.
 

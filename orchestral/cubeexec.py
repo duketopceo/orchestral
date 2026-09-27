@@ -7,7 +7,8 @@ E2B-compatible API, addressed through the SDK's own env contract:
   remote box such as a headless server) sets this to its gateway; unset, the
   SDK targets hosted E2B.
 - ``E2B_API_KEY`` — control-plane credential. It is read by the SDK for the
-  API handshake only; it is never written into the sandbox environment.
+  API handshake only; it is never written into the sandbox environment and is
+  scrubbed from any persisted error string.
 - ``ORCHESTRAL_CUBE_TEMPLATE`` — sandbox template/image ID (default
   ``code-interpreter``; self-hosted nodes create it with
   ``cubemastercli tpl create-from-image``).
@@ -17,25 +18,41 @@ to the endpoint. Self-hosted CubeSandbox keeps both on owned infrastructure;
 hosted E2B discloses evaluation oracles to a third party — do not point
 ``E2B_DOMAIN`` at a host you do not control when grading holdout or
 oracle-bearing tasks.
+
+Verdict channel: graded code runs inside the verifier process, so unittest's
+stdout is forgeable in principle. The verdict instead comes from a JSON
+payload the verifier-authored runner derives from the unittest result object
+and writes to a nonce-named file, read back through the SDK file API. The
+runner exits via ``os._exit`` to deny atexit handlers a rewrite window; a
+determined artifact could still parse the runner source and race a background
+writer — the remaining bar is deliberate sabotage, not incidental output.
 """
 
 from __future__ import annotations
 
-import contextlib
+import json
 import os
+import re
+import secrets
+import time
 from typing import Any
 
-from orchestral.codeexec import shadowing_members, summarize_unittest_output
+from orchestral.codeexec import (
+    shadowing_members,
+    suite_result_report,
+    suite_runner_source,
+)
 from orchestral.fileset import FilesetError, sanitize_path
 
 E2B_TEMPLATE_ENV = "ORCHESTRAL_CUBE_TEMPLATE"
 DEFAULT_TEMPLATE = "code-interpreter"
 _RUNTIME_NAME = "e2b"
-# Guest-side working directory and interpreter hardening: -Es ignores
-# PYTHONPATH/PYTHONSTARTUP so a template default or leaked env cannot inject
-# modules into the verifier process.
+# Guest-side working directory. The suite runs under the verifier runner
+# (not `python -m unittest`), which derives its verdict from the result
+# object rather than forgeable stdout.
 _WORKDIR = "/home/user"
 _TEST_FILE = "task_tests.py"
+_RUNNER_FILE = "_orch_runner.py"
 # The guest env is template default plus this allowlist — os.environ is never
 # forwarded, and E2B_API_KEY stays strictly control-plane.
 _SANDBOX_ENV = {
@@ -43,6 +60,14 @@ _SANDBOX_ENV = {
     "PYTHONHASHSEED": "0",
     "LANG": "C.UTF-8",
 }
+# Host-side wall-clock margin over the suite timeout for create/write/read/
+# teardown, and the ceiling applied to each retained output stream. Graded
+# code may write to stdout until timeout; the tail keeps only the trailing
+# bytes the report actually needs.
+_DEADLINE_MARGIN_SECONDS = 30.0
+_REQUEST_TIMEOUT_CAP = 60.0
+_STREAM_TAIL_BYTES = 64_000
+_SECRET_ENV_KEYS = ("E2B_API_KEY", "E2B_ACCESS_TOKEN", "OPENROUTER_API_KEY")
 
 
 def _base_report(timeout_seconds: float, template: str) -> dict[str, Any]:
@@ -59,18 +84,63 @@ def _base_report(timeout_seconds: float, template: str) -> dict[str, Any]:
         "runtime": _RUNTIME_NAME,
         "sandbox_image": template,
         "requested_timeout_seconds": timeout_seconds,
+        "sandbox_cleanup": "none",
         "error": None,
     }
 
 
-def _load_sandbox_class() -> tuple[Any, type[BaseException]] | None:
-    """Return (e2b Sandbox class, e2b TimeoutException), or None if absent."""
+class _Tail:
+    """Bounded rolling capture for streamed stdout/stderr chunks."""
+
+    def __init__(self, limit: int = _STREAM_TAIL_BYTES) -> None:
+        self._buf = ""
+        self._limit = limit
+
+    def feed(self, chunk: str) -> None:
+        self._buf = (self._buf + chunk)[-self._limit:]
+
+    @property
+    def text(self) -> str:
+        return self._buf
+
+
+def _load_sdk() -> tuple[Any, type[BaseException], type[BaseException]] | None:
+    """Return (Sandbox, TimeoutException, CommandExitException) or None."""
     try:
         from e2b import Sandbox  # type: ignore[import-not-found]
-        from e2b.exceptions import TimeoutException  # type: ignore[import-not-found]
+        from e2b.exceptions import (  # type: ignore[import-not-found]
+            CommandExitException,
+            TimeoutException,
+        )
     except ImportError:
         return None
-    return Sandbox, TimeoutException
+    return Sandbox, TimeoutException, CommandExitException
+
+
+def _safe_error_message(exc: BaseException) -> str:
+    """Bounded, credential-scrubbed error string for the persisted report."""
+    msg = re.sub(r"\s+", " ", str(exc)).strip()
+    for key in _SECRET_ENV_KEYS:
+        value = os.environ.get(key)
+        if value:
+            msg = msg.replace(value, "[redacted]")
+    return f"{type(exc).__name__}: {msg[:200]}"
+
+
+def _kill_sandbox(sandbox: Any, report: dict[str, Any]) -> None:
+    """Destroy the sandbox and record the outcome honestly in the report."""
+    for _ in range(2):
+        try:
+            if sandbox.kill(request_timeout=_REQUEST_TIMEOUT_CAP):
+                report["sandbox_cleanup"] = "destroyed"
+                return
+            report["sandbox_cleanup"] = "not_found"
+            return
+        except Exception as exc:
+            last = exc
+    report["sandbox_cleanup"] = "kill_failed"
+    if report["error"] is None:
+        report["error"] = f"sandbox teardown failed: {_safe_error_message(last)}"
 
 
 def run_unittest_suite(
@@ -81,13 +151,15 @@ def run_unittest_suite(
 ) -> dict[str, Any]:
     """Run the hidden suite inside a disposable E2B-compatible sandbox.
 
-    Same report contract as the disabled posture plus ``sandbox_image`` for
-    backend provenance. The sandbox is destroyed on every exit path.
+    Same report contract as the disabled posture plus ``sandbox_image`` and
+    ``sandbox_cleanup`` provenance. The host enforces a wall-clock deadline
+    across create/write/run/read/teardown — the suite timeout alone does not
+    bound a stalled endpoint.
     """
     template = os.environ.get(E2B_TEMPLATE_ENV, DEFAULT_TEMPLATE).strip() or DEFAULT_TEMPLATE
     report = _base_report(timeout_seconds, template)
 
-    sdk = _load_sandbox_class()
+    sdk = _load_sdk()
     if sdk is None:
         report["error"] = (
             "e2b SDK not installed — `pip install orchestral[e2b]` "
@@ -107,24 +179,63 @@ def run_unittest_suite(
         )
         return report
 
-    sandbox_cls, timeout_exc = sdk
+    sandbox_cls, timeout_exc, exit_exc = sdk
+    deadline = time.monotonic() + timeout_seconds + _DEADLINE_MARGIN_SECONDS
+
+    def remaining() -> float:
+        return deadline - time.monotonic()
+
+    def request_timeout() -> float:
+        return max(1.0, min(_REQUEST_TIMEOUT_CAP, remaining()))
+
     sandbox = None
     try:
         sandbox = sandbox_cls.create(
             template=template,
-            timeout=int(timeout_seconds) + 30,
+            timeout=int(timeout_seconds) + int(_DEADLINE_MARGIN_SECONDS),
             allow_internet_access=False,
+            request_timeout=request_timeout(),
         )
         for rel, body in members:
-            sandbox.files.write(f"{_WORKDIR}/{rel}", body)
-        sandbox.files.write(f"{_WORKDIR}/{_TEST_FILE}", tests_source)
+            sandbox.files.write(
+                f"{_WORKDIR}/{rel}", body, request_timeout=request_timeout()
+            )
+        sandbox.files.write(
+            f"{_WORKDIR}/{_TEST_FILE}", tests_source,
+            request_timeout=request_timeout(),
+        )
+        result_path = f"{_WORKDIR}/.orch-result-{secrets.token_hex(8)}.json"
+        sandbox.files.write(
+            f"{_WORKDIR}/{_RUNNER_FILE}",
+            suite_runner_source(_WORKDIR, _TEST_FILE, result_path),
+            request_timeout=request_timeout(),
+        )
+        if remaining() <= 0:
+            report["error"] = "host deadline exceeded before suite start"
+            return report
+        stdout_tail = _Tail()
+        stderr_tail = _Tail()
         try:
-            result = sandbox.commands.run(
-                f"python3 -Es -m unittest -v {_TEST_FILE[:-3]}",
+            sandbox.commands.run(
+                f"python3 -Es {_RUNNER_FILE}",
                 cwd=_WORKDIR,
                 envs=dict(_SANDBOX_ENV),
-                timeout=timeout_seconds,
+                timeout=min(timeout_seconds, remaining()),
+                request_timeout=request_timeout(),
+                on_stdout=stdout_tail.feed,
+                on_stderr=stderr_tail.feed,
             )
+            returncode = 0
+        except exit_exc as exc:
+            # A nonzero exit is the normal failing-suite shape, not an
+            # adapter error — recover the code and any captured output.
+            returncode = int(getattr(exc, "exit_code", None) or 1)
+            for chunk, sink in (
+                (getattr(exc, "stdout", None), stdout_tail),
+                (getattr(exc, "stderr", None), stderr_tail),
+            ):
+                if chunk and not sink.text:
+                    sink.feed(str(chunk))
         except (TimeoutError, timeout_exc):
             report.update(
                 executed=True,
@@ -133,19 +244,30 @@ def run_unittest_suite(
             )
             return report
         report["executed"] = True
-        report["returncode"] = result.exit_code
-        tail = (result.stderr or result.stdout or "").strip().splitlines()
-        report["output_tail"] = "\n".join(tail[-15:])
-        ran, error = summarize_unittest_output("\n".join(tail), result.exit_code)
+        report["returncode"] = returncode
+        tail = (stderr_tail.text or stdout_tail.text).strip().splitlines()
+        report["output_tail"] = "\n".join(tail[-15:])[-4000:]
+        try:
+            raw = sandbox.files.read(result_path, request_timeout=request_timeout())
+            payload = json.loads(raw)
+            if not isinstance(payload, dict):
+                raise ValueError("non-dict result payload")
+        except Exception:
+            report["error"] = (
+                "no result payload from verifier runner — suite output is "
+                "diagnostic-only and is never trusted for the verdict"
+            )
+            return report
+        for key in ("tests_run", "failures", "errors", "skipped"):
+            report[key] = int(payload.get(key) or 0)
+        ran, error = suite_result_report(payload, returncode)
         report["tests_run"] = ran
-        report["ok"] = result.exit_code == 0 and ran > 0
+        report["ok"] = bool(payload.get("ok")) and ran > 0
         if error:
             report["error"] = error
     except Exception as exc:  # endpoint unreachable, auth, template missing…
-        report["error"] = f"{type(exc).__name__}: {exc}"
+        report["error"] = f"sandbox runtime error: {_safe_error_message(exc)}"
     finally:
         if sandbox is not None:
-            # Teardown failure must not mask the run result.
-            with contextlib.suppress(Exception):
-                sandbox.kill()
+            _kill_sandbox(sandbox, report)
     return report

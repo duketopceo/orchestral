@@ -75,7 +75,7 @@ class TestRunUnittestSuite(unittest.TestCase):
         # `isolated` selects it, it does not bypass it. The SDK is stubbed out
         # so the assertion holds even in a venv where `e2b` is installed.
         with patch.dict(os.environ, {"ORCHESTRAL_CODE_RUNTIME": "isolated"}, clear=True), \
-                patch("orchestral.cubeexec._load_sandbox_class", return_value=None), \
+                patch("orchestral.cubeexec._load_sdk", return_value=None), \
                 patch("subprocess.run") as host_run:
             report = run_unittest_suite({"fizzbuzz.py": GOOD_IMPL}, TESTS)
         host_run.assert_not_called()

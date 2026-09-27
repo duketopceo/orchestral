@@ -23,6 +23,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import secrets
 import signal
 import subprocess
 import sys
@@ -35,7 +36,8 @@ from .codeexec import (
     DEFAULT_TIMEOUT_SECONDS,
     materialize,
     shadowing_members,
-    summarize_unittest_output,
+    suite_result_report,
+    suite_runner_source,
 )
 from .config import TaskSpec
 from .fileset import FilesetError, sanitize_path
@@ -240,8 +242,16 @@ def _run_suite_locally(
             "LANG": os.environ.get("LANG", "C.UTF-8"),
             "PYTHONHASHSEED": "0",
         }
+        # The verdict comes from the runner's result payload, not stdout —
+        # spec-authored content could otherwise forge a "Ran N tests" tail.
+        result_path = root / f".orch-result-{secrets.token_hex(8)}.json"
+        runner = root / "_orch_selfcheck_runner.py"
+        runner.write_text(
+            suite_runner_source(str(root), "test_submitted.py", str(result_path)),
+            encoding="utf-8",
+        )
         proc = subprocess.Popen(
-            [sys.executable, "-m", "unittest", "test_submitted"],
+            [sys.executable, "-Es", str(runner)],
             cwd=tmp,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -261,10 +271,19 @@ def _run_suite_locally(
             return report
         report["executed"] = True
         tail = (err or out or "").strip().splitlines()
-        report["output_tail"] = "\n".join(tail[-15:])
-        ran, error = summarize_unittest_output("\n".join(tail), proc.returncode)
+        report["output_tail"] = "\n".join(tail[-15:])[-4000:]
+        try:
+            payload = json.loads(result_path.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict):
+                raise ValueError("non-dict result payload")
+        except Exception:
+            report["error"] = "no result payload from verifier runner"
+            return report
+        for key in ("tests_run", "failures", "errors", "skipped"):
+            report[key] = int(payload.get(key) or 0)
+        ran, error = suite_result_report(payload, proc.returncode)
         report["tests_run"] = ran
-        report["ok"] = proc.returncode == 0 and ran > 0
+        report["ok"] = bool(payload.get("ok")) and ran > 0
         if error:
             report["error"] = error
     return report

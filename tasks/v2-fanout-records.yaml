@@ -60,7 +60,8 @@ metadata:
         def test_malformed_and_blank_skipped(self):
             docs = ["\n\nbad line\ncredit|r1|abc|x\ncredit|r2|5.00|ok"]
             out = aggregate(docs)
-            self.assertEqual(out["skipped"], 3)
+            # 2 blank + 1 malformed + 1 non-numeric amount = 4 skipped lines
+            self.assertEqual(out["skipped"], 4)
             self.assertEqual(out["credits"]["total"], 5.0)
 
         def test_empty_documents(self):

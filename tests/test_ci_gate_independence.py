@@ -141,6 +141,25 @@ class TestCIGatesAreSeparateJobs(unittest.TestCase):
 
 
 class TestContributingMatchesWorkflow(unittest.TestCase):
+    def test_stated_job_for_the_audit_actually_runs_it(self):
+        """Job names in prose drift when jobs are renamed, and nothing else catches it.
+
+        CONTRIBUTING.md states which job runs the task-spec audit. Asserting the
+        gate *count* (below) did not catch this: it stayed at three while the
+        job it named was renamed out from under the sentence. DUK-227.
+        """
+        match = re.search(r"audit runs as a step in the `([a-z0-9-]+)` job", CONTRIBUTING.read_text())
+        self.assertIsNotNone(
+            match, "CONTRIBUTING.md must say which job runs the task-spec audit"
+        )
+        named = match.group(1)
+        jobs = _jobs()
+        self.assertIn(named, jobs, f"CONTRIBUTING.md names job `{named}`, which ci.yml does not define")
+        self.assertIn(
+            "harness.py audit", _run_text(jobs[named]),
+            f"CONTRIBUTING.md says the audit runs in `{named}`, but it does not",
+        )
+
     def test_stated_ci_gate_count_matches_the_workflow(self):
         match = re.search(r"All (\w+) run in CI", CONTRIBUTING.read_text())
         self.assertIsNotNone(match, "CONTRIBUTING.md must state which gates run in CI")

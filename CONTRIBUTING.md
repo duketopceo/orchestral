@@ -34,8 +34,17 @@ mypy orchestral harness.py
 
 All three run in CI on every PR with no secrets needed — tests, lint, and types
 each as their own job, so a failure in one never stops the others from
-reporting; the task-spec audit runs as a step in the `test` job. A skipped test
-is not a passing test, and `python -m compileall` is not a substitute. The paid
+reporting; the task-spec audit runs as a step in the `test-matrix` job. A skipped
+test is not a passing test, and `python -m compileall` is not a substitute.
+
+A fourth job, `test`, reports all three rather than running any of them. Branch
+protection requires the context `test`, and a matrix job can never report that
+name — GitHub appends the matrix value, so the suite reports as `test (3.11)`
+through `test (3.14)`. `test` is not a matrix, so it reports exactly `test`. It
+runs with `if: always()`: a required check that is *skipped* counts as not
+passing, so a conditional reporter would block every red build. That coupling
+is pinned by `tests/test_required_check_contract.py` and
+`tests/test_ci_gate_independence.py` — see DUK-227. The paid
 OpenRouter eval workflow (`.github/workflows/orchestral.yml`) is dispatch-only
 and environment-gated — it is never reachable from pull-request code; external
 contributions are covered by the mock-provider integration tests.

@@ -27,6 +27,33 @@ Warnings do not gate: they mark a gaming surface a human may have accepted on
 purpose, and the job of the audit is to make that choice visible, not to make
 it for you.
 
+**What the warn-does-not-gate policy does not cover.** One class of warning is
+not a judgement call, and it is error: a gate input the author declared that no
+check reads. The spec says "grade these two files" or "these tokens must be in
+this body", the grader looks at neither, and the audit names the exact fix and
+then exits 0. Deleting a token from `validation:` is then enough to reach green
+with no edit to the audit — which is the same evasion as a misspelled check name
+that the runner drops, and that one has always been an error. Two rules sit on
+this boundary:
+
+| Declared but never read | Severity | Rule |
+| --- | --- | --- |
+| a `validation:` name the runner cannot run | error | `unknown_validation_check` |
+| a `validation:` name on a type that ignores `validation:` | error | `ignored_validation_list` |
+| an `expected_paths` entry no `has_paths` covers | error | `unanchored_fileset` |
+| a `required_content` declaration with no `has_content` | error | `unanchored_fileset` |
+
+`unanchored_fileset` was a warning until the promotion, on the reasoning that
+"a weak fileset is a surface a human may accept". That reasoning does not hold
+for the declared-but-unread states, because nothing in the spec can close them
+except editing the spec — which is the thing a gate exists to prevent. The
+other two states it also reports (a fileset that declares nothing, and one
+graded on names and byte counts only) are errors for the same reason: the
+grader measures nothing about the artifact, so the score cannot be a
+measurement. `has_content` requested with an empty `metadata.required_content`
+stays inside the rule at the same severity because every artifact fails on it,
+so it is a broken spec rather than a scoring surface.
+
 ## Rules
 
 | Rule | Severity | Meaning |
@@ -34,10 +61,12 @@ it for you.
 | `unknown_validation_check` | error | `validation:` names a check the runner does not implement for that type. Silently dropped today; the run reports a pass anyway. |
 | `ignored_validation_list` | error | `code` / `sql` / `extract` / `api` never read `validation:`. They compute a fixed check set from `metadata`, so anything declared there is a phantom gate. |
 | `ignored_metadata_required` | error | `metadata.required` is declared where no grader reads it. `has_required` is the only consumer and only on `html` / `constraint` / `needle`, so on any other type — or on a text type that never requests `has_required` — the key grades nothing while the spec claims a subject. |
-| `absent_grading_contract` | error | A self-anchored type ships no anchor in `metadata`, so its grader has nothing to compare the artifact against: `code` with no `metadata.tests`, `extract` with neither a required `fields` entry nor `expected`, `sql` with no `reference_sql`, `api` with no `calls`. `sql`, `api` and `extract` all fail closed at runtime — an empty `extract` contract reports `contract_anchored=false` and `passes=false`. |
+| `absent_grading_contract` | error | A self-anchored type ships no anchor in `metadata`, so its grader has nothing to compare the artifact against: `code` with no `metadata.tests` (or a suite that is a tautology, or one that never names the module under test), `extract` with neither a required `fields` entry nor `expected`, `sql` with no `reference_sql`, `api` with no `calls`. `sql`, `api` and `extract` all fail closed at runtime — an empty `extract` contract reports `contract_anchored=false` and `passes=false`. |
 
 | `structural_only` | warn | Nothing in the grader requires topical content. `has_title` / `has_cta` / `has_form` prove markup exists, not that the artifact is about the task, so only `has_required` with a non-empty `metadata.required`, or `matches_pattern` with a non-empty `metadata.pattern`, clear this. Both halves are required: the runner reads each declaration in exactly one place, inside that check, so a declaration without the check anchors nothing and the check without a declaration has nothing to compare against. The declaration's *shape* is modelled the way the runner reads it, because the runner iterates `required`: a mapping contributes its keys, and a bare string its characters, so `required: kite` anchors nothing. This is not keyed on the task type — `constraint` and `needle` are labels the runner uses, not graders, so a `validation: [html]` spec of either type is checked like any other. The suggested fix is type-aware: a type whose grader never reads text (`image`, `video`) has no compliant way to anchor the subject from the spec. |
-| `unanchored_fileset` | warn | `multi-file` grades filenames and byte counts only. No check reads the file bodies. Fires in all three unanchored states: no usable `metadata.expected_paths`, declared paths that `has_paths` was never asked to check, or declared paths checked only for existence. Requesting `has_content` without populating `metadata.required_content` keeps the finding. |
+| `unanchored_fileset` | error | `multi-file` grades filenames and byte counts only, or nothing at all. A fileset is anchored only when the grader reads a body: `has_paths` plus `has_content` with tokens in `metadata.required_content`. Fires in every other state — no usable `metadata.expected_paths`, a declared input no requested check reads, declared paths checked only for existence, or `has_content` requested with nothing to look for. |
+| `presence_only_extract_contract` | warn | An `extract` spec grades `required` fields with no `metadata.expected`. `required` is checked for presence and type and never compared to a value, so a fabricated value scores 1.0 exactly as a correct one and `field_results` stays empty. `orchestral/extract.py` treats `required` as a legitimate anchor on purpose, so this is a coverage gap and not a contradiction of the runner. |
+
 
 | `judge_gated_media` | info | An `image` / `video` artifact is encoded bytes, so no text check can anchor its subject. `png_signature` / `mp4_signature` prove format only; topicality rests on the vision judge, so a run without `--judge` grades these specs on file format alone. |
 
@@ -48,6 +77,7 @@ it for you.
 | `unreadable_spec_fields` | error | A field of the spec is a type the grader cannot read: `metadata` is not a mapping, `validation` is not a list of strings, `prompt` is not a string, `id` is not a string, `type` is not a string, or a requested `metadata.required` cannot be iterated. Under this file's `ok` policy — "errors mean a requested gate cannot fire" — each is a gate that cannot fire. On the file path `load_task` rejects the field-level ones with `ConfigError` before the audit sees them, so those fire for a caller that built a `TaskSpec` directly; a malformed `required` is visible either way. The rule returns before any rule runs, so findings needing only the readable fields — an unknown check name, an unimplemented type — are suppressed for that spec. |
 | `no_holdout_arm` | info | No holdout arm exists, so every problem is also a published problem and contamination cannot be measured. Satisfied by a committed `metadata.holdout` spec **or** by a holdout arm that actually generates. |
 | `unlabeled_difficulty` | info | No `metadata.difficulty`, so the spec cannot be excluded from a headline result. |
+
 
 ## The holdout arm
 
@@ -79,7 +109,7 @@ which `validation:` names the runner implements per type, and `runner.py`
 imports it. If you add a check to a validator, add it to that table in the same
 change.
 
-Two tests in `tests/test_audit.py` hold the table to the runner:
+Three tests in `tests/test_audit.py` hold the table to its two other copies:
 
 - `test_registry_covers_every_task_type_exactly_once` — every `TASK_TYPES`
   entry appears in the registry exactly once, as either a `VALIDATION_CHECKS`
@@ -92,12 +122,27 @@ Two tests in `tests/test_audit.py` hold the table to the runner:
   a commented-out assignment does not satisfy it. Two more tests feed the check
   a deliberately broken registry, because a guard that only ever sees a clean
   registry cannot detect its own blind spot.
+- `test_every_registered_check_name_is_documented_in_the_task_spec` — every
+  registered name appears in the hand-maintained check table in
+  `docs/task-spec.md`, so a name cannot ship implemented, tested, and
+  undocumented.
 
-That second test is the only thing standing between the registry and a phantom
+
+The second test is the only thing standing between the registry and a phantom
 gate. The audit itself cannot catch a name that is registered but never
 assigned: it reads the same table the runner does, so a name added to
 `VALIDATION_CHECKS["image"]` with no matching assignment in `_validate_image`
 still audits clean and still returns exit 0 under `--strict`.
+
+**A third copy exists and is not a gate.** `orchestral/planners.py` carries
+`"success_criteria": ["parses", "non_empty", "has_title", "has_cta",
+"has_form"]` in two places. `parses` is not a registered name — the registry
+name is `html_parses` — so the list is one token out of date. Nothing reads
+`success_criteria`; it is an LLM prompt hint, so it cannot gate anything and no
+test guards it. It is recorded here rather than fixed, because the module is
+outside the scope of the gate work and correcting it would put an unrelated
+change in this diff. If a check is ever made load-bearing there, this list
+becomes a fourth copy to guard.
 
 ## What `absent_grading_contract` does and does not prove about a suite
 
@@ -118,8 +163,16 @@ the source without executing it:
   `assert len([]) == 0` and `assert not (1 == 2)` are all caught. The check is
   method-agnostic: it does not enumerate the `assert*` methods unittest
   provides, because the version of that list differs between 3.11 and 3.14 and
-  a rule pinned to a count is a rule that silently rots;
-- a test body that is inert (`pass`, a docstring) is not a gate.
+  a rule pinned to a count is a rule that silently rots. A comparison
+  assertion handed the same expression twice — `self.assertIs(s, s)`,
+  `assertIn(x, [x])` — is also a constant: it holds for any value the name is
+  bound to, so no artifact can turn it red;
+- a test body that is inert (`pass`, a docstring) is not a gate;
+- the suite names `metadata.module` somewhere — as `import solution`, `from
+  solution import solve`, a bare `solution`, or
+  `importlib.import_module("solution")`. A suite that never names it cannot read
+  the artifact, so nothing it asserts is a function of the submitted code, and
+  that is decidable without running anything.
 
 **The folder is a model, not a proof.** It folds constants, lists, tuples,
 sets, dicts, unary and binary operators, `and`/`or` with their
@@ -204,6 +257,7 @@ One limit on this: a `pattern` that matches every artifact — `.`, `^`, `.*`,
 separate analysis from whether one was declared, and only the second is done here.
 A declaration is compared against `metadata.pattern` as written, exactly as
 `re.search(str(pattern), artifact)` will read it.
+
 
 
 **Why that matters here.** At this commit code execution is live:

@@ -12,7 +12,6 @@ string assertion on the YAML would not have caught the regression.
 
 from __future__ import annotations
 
-import shutil
 import subprocess
 import tempfile
 import unittest
@@ -59,12 +58,22 @@ def _index_run(root: Path, cost_usd: float, run_id: str = "r1") -> None:
             total_cost_usd=cost_usd,
         )
     )
+    # The guard reads calls.api_cost_usd, not the run total — a run with no
+    # priced call is billed $0 however large its rate-card estimate was.
+    store.record_call(
+        run_id=run_id,
+        phase="work",
+        step=1,
+        role="worker",
+        model="test/model",
+        cost_usd=cost_usd,
+        api_cost_usd=cost_usd,
+        pricing_source="api_reported",
+    )
 
 
 class CostBudgetLogTests(unittest.TestCase):
     def setUp(self) -> None:
-        if shutil.which("bc") is None:
-            self.skipTest("the cost-budget step shells out to bc")
         self.script = _load_step_script()
 
     def _run_step(self, cost_usd: float) -> subprocess.CompletedProcess[str]:
@@ -74,7 +83,14 @@ class CostBudgetLogTests(unittest.TestCase):
             return subprocess.run(
                 ["bash", "-e", "-c", self.script],
                 cwd=root,
-                env={"MAX_COST_USD": MAX_COST_USD, "PATH": "/usr/bin:/bin"},
+                env={
+                    "MAX_COST_USD": MAX_COST_USD,
+                    "PATH": "/usr/bin:/bin",
+                    # The real step runs from the checkout, where `python3 -m
+                    # orchestral.budget` imports by cwd. Here the cwd is a
+                    # tmpdir, so point the interpreter at the repo instead.
+                    "PYTHONPATH": str(ROOT),
+                },
                 capture_output=True,
                 text=True,
             )

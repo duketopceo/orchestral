@@ -542,6 +542,56 @@ def check_inert_metadata_required(spec: TaskSpec, path: Path | None = None) -> l
         )
     ]
 
+# unittest assertions that pass exactly when the condition they assert holds,
+# and that take the compared pair as their first two positional arguments. The
+# same expression on both sides therefore makes them pass for any artifact.
+#
+# The negating forms are absent on purpose: `assertNotEqual(x, x)` can never
+# pass, which is a broken suite rather than a gate that cannot fail, and
+# reporting it here would misname the defect.
+_SAME_OPERAND_PASSES = frozenset(
+    {
+        "assertEqual",
+        "assertIs",
+        "assertIn",
+        "assertSequenceEqual",
+        "assertMultiLineEqual",
+        "assertListEqual",
+        "assertTupleEqual",
+        "assertSetEqual",
+        "assertDictEqual",
+        "assertCountEqual",
+    }
+)
+
+
+def _repeats_itself(args: list[ast.expr]) -> bool:
+    """Is the assertion comparing one expression against itself?
+
+    A repeated expression is the same value twice, so the comparison holds for
+    whatever it is bound to — `self.assertIs(s, s)` and `assertIn(x, [x])` are
+    both true for any value of `s` or `x`. Neither folds, because a name is not a
+    constant, which is why folding alone misses them.
+
+    A call disqualifies it. `self.assertEqual(f(x), f(x))` also repeats, but `f`
+    may read the artifact, so the doc keeps that class as execution-only rather
+    than claiming it here. Everything else in an expression — a name, an
+    attribute, a subscript, arithmetic — is a pure read of state that already
+    exists, so repeating it cannot change the outcome.
+    """
+    if len(args) < 2:
+        return False
+    left, right = args[0], args[1]
+    same = ast.dump(left) == ast.dump(right)
+    if not same and isinstance(right, (ast.List, ast.Tuple, ast.Set)) and len(right.elts) == 1:
+        # `assertIn(x, [x])`: the container holds nothing but the needle.
+        same = ast.dump(left) == ast.dump(right.elts[0])
+    if not same:
+        return False
+    return not any(isinstance(node, ast.Call) for node in ast.walk(left))
+
+
+
 
 # Folded operations are pure arithmetic and predicate evaluation over constants.
 # `ast.literal_eval` is not enough: it refuses a `Compare` or a `UnaryOp`, so
@@ -806,6 +856,11 @@ def _assertion_constant(node: ast.AST) -> tuple[bool, bool | None]:
         values = [*node.args, *(keyword.value for keyword in node.keywords)]
         if not values:
             return True, True  # a bare self.assertTrue() cannot read anything
+        # A comparison handed the same expression twice — `assertIs(s, s)`,
+        # `assertIn(x, [x])` — holds for any value, yet folds to nothing
+        # because a name is not a constant.
+        if func.attr in _SAME_OPERAND_PASSES and _repeats_itself(node.args):
+            return True, True
         if all(_const(value)[0] for value in values):
             return True, None
     return False, None
@@ -978,10 +1033,70 @@ _CONSTANT_ASSERTIONS_NEUTRAL = (
     "solution produced, so it cannot separate one artifact from another. Assert against something the "
     "solution produces."
 )
+# The suite never names the module under test, so nothing in it can read the
+# artifact — whatever it asserts is a function of nothing the solution produced.
+_UNREFERENCED_MODULE = (
+    "metadata.tests never names {module!r}, so it cannot read the artifact and nothing it "
+    "asserts is a function of the submitted code. Import the module under test and assert "
+    "against a value it returns."
+)
 
 
 
-def _suite_gate_reason(tests_source: str) -> str | None:
+
+def _declared_module(spec: TaskSpec) -> str:
+    """The module a `code` suite is expected to import, matching the runner."""
+    return str(spec.metadata.get("module") or "solution.py")
+
+
+def _references_module(tree: ast.Module, module: str) -> bool:
+    """Does the suite name `metadata.module` anywhere?
+
+    A suite that never names the module under test cannot read it, so nothing it
+    asserts is a function of the artifact — the suite passes for every input,
+    including a stub. That is decidable without executing anything, and it is
+    the property that separates the shapes this file can catch from the ones
+    that need a run: `self.assertTrue(self.flag)` names nothing either, but it
+    at least touches a value the artifact could have set, so only execution
+    settles it.
+
+    All four spelling forms count, because a real suite uses whichever reads
+    best: `import solution`, `from solution import solve`, a bare `solution`
+    name, or `importlib.import_module("solution")`.
+    """
+    stem = module.rsplit("/", 1)[-1]
+    if stem.endswith(".py"):
+        stem = stem[:-3]
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and node.id == stem:
+            return True
+        if isinstance(node, ast.ImportFrom) and node.module and node.module.rsplit(".", 1)[-1] == stem:
+            return True
+        if isinstance(node, ast.Import) and any(
+            alias.name.rsplit(".", 1)[-1] == stem for alias in node.names
+        ):
+            return True
+        # A bare string literal proves nothing — a docstring or message that
+        # mentions the module is not a reference to it. The literal counts only
+        # as the argument of a dynamic import.
+        if (
+            isinstance(node, ast.Call)
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+            and node.args[0].value in (stem, module)
+            and (
+                (
+                    isinstance(node.func, ast.Attribute)
+                    and node.func.attr == "import_module"
+                )
+                or (isinstance(node.func, ast.Name) and node.func.id == "__import__")
+            )
+        ):
+            return True
+    return False
+
+
+def _suite_gate_reason(tests_source: str, module: str = "solution.py") -> str | None:
     """Why the suite cannot gate anything, or None when it can.
 
     Four properties are decidable from the source alone, and only these:
@@ -994,6 +1109,8 @@ def _suite_gate_reason(tests_source: str) -> str | None:
     - that assertion is not a constant, so it can discriminate between artifacts;
     - a test body that is inert (`pass`, a docstring) is not a gate.
 
+    - the suite names `metadata.module` somewhere, so it can read the artifact
+      at all.
 
     **Not provable by a static read.** An assertion arranged by the test itself
     — `self.flag = True` then `self.assertTrue(self.flag)` — provably passes
@@ -1003,6 +1120,7 @@ def _suite_gate_reason(tests_source: str) -> str | None:
     A test body that does something but shows no assertion to the audit is not
     reported: an assertion assembled at runtime is a real gate, and calling it
     a constant would be false in both halves.
+
 
     """
     try:
@@ -1017,6 +1135,7 @@ def _suite_gate_reason(tests_source: str) -> str | None:
     saw_assertion = False
     did_something = False
     polarities: list[bool | None] = []
+
     for node in ast.walk(tree):
         if not isinstance(node, ast.ClassDef):
             continue
@@ -1047,16 +1166,26 @@ def _suite_gate_reason(tests_source: str) -> str | None:
                 saw_assertion = True
                 is_constant, polarity = _assertion_constant(inner)
                 if not is_constant:
+                    # A real assertion gates only if the suite can read the
+                    # artifact: one that never names the module under test
+                    # asserts on nothing the solution produced.
+                    if not _references_module(tree, module):
+                        return _UNREFERENCED_MODULE.format(module=module)
                     return None
                 polarities.append(polarity)
     if not collectable or (not saw_assertion and not did_something):
         return _NO_COLLECTABLE_ASSERTION
     if not saw_assertion:
+        # Inert-free work with no assertion can still gate — but only if the
+        # suite names the module it reads.
+        if not _references_module(tree, module):
+            return _UNREFERENCED_MODULE.format(module=module)
         return None
     # Every assertion is a constant. Which message depends on the one thing the
     # folder can know: a constant that folds to False fails for *every* artifact,
     # so saying the suite "passes for any artifact" there would be the same false
-    # claim in the other direction.
+    # claim in the other direction. The tautology is the more specific finding,
+    # so it is reported before the module check.
     if False in polarities:
         return _CONSTANT_ASSERTIONS_FAILS
     if all(polarity is True for polarity in polarities):
@@ -1112,7 +1241,7 @@ def check_absent_grading_contract(spec: TaskSpec, path: Path | None = None) -> l
     """
     reason = _absent_contract_reason(spec)
     if reason is None and spec.type == "code":
-        reason = _suite_gate_reason(str(spec.metadata.get("tests") or ""))
+        reason = _suite_gate_reason(str(spec.metadata.get("tests") or ""), _declared_module(spec))
     if reason is None:
         return []
     return [
@@ -1122,6 +1251,40 @@ def check_absent_grading_contract(spec: TaskSpec, path: Path | None = None) -> l
             task_id=spec.id,
             path=str(path) if path else None,
             detail=reason,
+        )
+    ]
+
+
+def check_presence_only_extract_contract(spec: TaskSpec, path: Path | None = None) -> list[Finding]:
+    """An `extract` contract of `required` fields and no `expected` grades presence.
+
+    `orchestral/extract.py` treats `required` as a legitimate anchor and grades
+    it on presence and type, never on a value — a deliberate choice, not a bug,
+    so this is a warning and not a contradiction of the runner. But it means a
+    fabricated value scores exactly as a correct one, `field_results` stays
+    empty, and `score` falls out of the all-checks-pass branch at 1.0. The
+    author is graded on having written the right keys with plausible types.
+    """
+    if spec.type != "extract":
+        return []
+    if not _has_required_field(spec.metadata) or spec.metadata.get("expected"):
+        return []
+    fields = sorted(
+        name
+        for name, field_spec in (spec.metadata.get("fields") or {}).items()
+        if isinstance(field_spec, dict) and field_spec.get("required")
+    )
+    return [
+        Finding(
+            rule="presence_only_extract_contract",
+            severity=WARN,
+            task_id=spec.id,
+            path=str(path) if path else None,
+            detail=(
+                f"metadata.expected is absent, so the contract grades presence and type on "
+                f"{fields} and never compares a value: a fabricated value scores 1.0 exactly as a "
+                "correct one. Declare metadata.expected."
+            ),
         )
     ]
 
@@ -1262,44 +1425,65 @@ def check_unanchored_fileset(spec: TaskSpec, path: Path | None = None) -> list[F
 
     A fileset is anchored only when the grader reads a file *body*: `has_paths`
     plus `has_content` with tokens in `metadata.required_content`. Every other
-    `multi-file` spec lands in one of four states — no usable declared paths,
-    declared paths the grader never looks for, declared paths checked only for
-    existence, or a body check with nothing to look for.
+    `multi-file` spec lands in one of these states — a declared input no
+    requested check reads, nothing usable declared at all, declared paths
+    checked only for existence, or a body check with nothing to look for.
+
+    Error, not warn, because two of those states are the same defect as
+    `unknown_validation_check`: the author declared a gate input and no check
+    reads it, so deleting one token from `validation:` is enough to turn the
+    declared gate off and reach green with no edit here. The gate naming the fix
+    while exiting 0 was the hole. See `docs/task-audit.md`.
     """
     if spec.type != "multi-file":
         return []
     requested = set(spec.validation or [])
-    # A body-reading check only anchors the fileset once it has tokens to look
-    # for. Requested-but-unconfigured, `has_content` fails every artifact, so
-    # the gate fires but the spec is not a graded site and the finding stands.
-    if requested & FILESET_BODY_CHECKS and required_content(spec.metadata):
-        return []
-
     # the same normalisation the runner uses, so the reported set is the set it
     # will actually look for
     declared = expected_paths(spec.metadata)
-    # A body-reading check anchors the fileset only once it has tokens to look
-    # for. Requested-but-unconfigured, `has_content` fails every artifact, so
-    # the gate fires but the spec is not a graded site and the finding stands.
-    if requested & FILESET_BODY_CHECKS and required_content(spec.metadata):
+    content = required_content(spec.metadata)
+    # `has_content` needs a body to exist for every path it names, so a declared
+    # path it covers is read even with `has_paths` absent — and one it does not
+    # cover is declared and unread, which is the hole this rule exists to close.
+    covered = set(content) if requested & FILESET_BODY_CHECKS else set()
+
+    # A body-reading check only anchors the fileset once it has tokens to look
+    # for *and* every declared path is among the ones it reads. A path the body
+    # check does not cover is declared and read by nobody, so the early return
+    # cannot be "any body check is enough".
+    if covered and set(declared) <= covered:
         return []
-    if not declared:
+
+    # Declared-but-unread is the family the severity rests on, so each input the
+    # author declared is reported against the check that would have read it.
+    unread: list[str] = []
+    if declared and "has_paths" not in requested and not set(declared) <= covered:
+        unread.append(f"metadata.expected_paths declares {sorted(declared)} but has_paths is not requested")
+    if content and "has_content" not in requested:
+        unread.append(
+            f"metadata.required_content declares tokens for {sorted(content)} but has_content is "
+            "not requested"
+        )
+
+    if unread:
+        detail = (
+            f"{'; '.join(unread)}. The grader never reads what the spec declares, so deleting the "
+            "matching validation token is enough to reach green with no edit to the spec's intent. "
+            "Add it to validation."
+        )
+    elif covered:
+        return []
+    elif not declared and not content:
         detail = (
             "the fileset is unanchored: metadata.expected_paths yields no usable path, so any "
             "readable zip passes, including one containing junk.txt. Declare a list of paths and "
             "request has_paths."
-        )
-    elif "has_paths" not in requested:
-        detail = (
-            f"metadata.expected_paths declares {sorted(declared)} but has_paths is not requested, "
-            "so the grader never looks for them. Add has_paths to validation."
         )
     elif requested & FILESET_BODY_CHECKS:
         detail = (
             "has_content is requested but metadata.required_content is empty, so every "
             "artifact fails on an unconfigured gate rather than on its contents."
         )
-
     else:
         detail = (
             f"has_paths only checks that {sorted(declared)} exist and are non-empty. "
@@ -1308,7 +1492,7 @@ def check_unanchored_fileset(spec: TaskSpec, path: Path | None = None) -> list[F
     return [
         Finding(
             rule="unanchored_fileset",
-            severity=WARN,
+            severity=ERROR,
             task_id=spec.id,
             path=str(path) if path else None,
             detail=detail,
@@ -1559,6 +1743,7 @@ PER_SPEC_RULES = (
     check_validation_names,
     check_inert_metadata_required,
     check_absent_grading_contract,
+    check_presence_only_extract_contract,
     check_structural_only,
     check_judge_gated_media,
     check_unanchored_fileset,

@@ -12,8 +12,23 @@ permissions:
 # job as soon as one step fails, so a single job meant a red `Tests` step
 # silently skipped `Lint` and `Types` and the run could still look green.
 # Separate jobs report independently: one red never hides the others.
-# The `test` job keeps its original name so a branch-protection required check
-# by that name still reports. tests/test_ci_gate_independence.py enforces this.
+# This job is a matrix, so GitHub reports its check runs as `test (3.11)`
+# through `test (3.14)` — never as a bare `test`. The job key is not the check
+# name. Do not assume they match.
+#
+# That distinction is not academic. On 2026-09-26T16:58:50Z a ruleset was
+# created on `main` requiring the context `test`, which was correct then: this
+# job was not yet a matrix. Four hours later PR #68 merged the support-range
+# matrix (#2914b9b) and the emitted names changed, so the required context
+# became unproducible and every pull request was blocked. Nothing failed. A
+# green guard test stood next to it the whole time, because it read the YAML job
+# key rather than the name GitHub emits.
+#
+# When you change a job's name, its matrix, or its `name:` key, you change what
+# branch protection must require. `.github/required-checks.json` records the
+# required contexts and tests/test_required_check_contract.py fails if the
+# workflow can no longer emit one. Update that file in the same change.
+# See DUK-227.
 jobs:
   test:
     runs-on: ubuntu-latest

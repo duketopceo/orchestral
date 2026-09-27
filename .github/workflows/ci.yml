@@ -44,6 +44,13 @@ jobs:
         # Warnings are reported but do not gate: they mark known gaming surface.
         run: python harness.py audit --strict
 
+      - name: Spec selfcheck
+        # Replays each spec's own reference through its graders, then runs
+        # hidden tests against reference implementations — this is the gate
+        # that would have caught a suite contradicting its own spec.
+        # --execute runs repo-authored content only, never model artifacts.
+        run: python harness.py selfcheck --execute
+
   lint:
     runs-on: ubuntu-latest
     steps:

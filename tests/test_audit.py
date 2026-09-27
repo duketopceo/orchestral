@@ -2234,7 +2234,8 @@ class TestDocumentedClaimsAreExecuted(TestCase):
 # `expected_answer`, which two rules read.
 _METADATA_KEYS = (
     "calls", "difficulty", "expected", "expected_answer", "fields", "holdout",
-    "module", "pattern", "reference_sql", "required", "tests",
+    "module", "patch", "pattern", "reference", "reference_sql", "required",
+    "tests",
 )
 
 _HOSTILE_VALUES = (

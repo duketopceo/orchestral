@@ -96,6 +96,7 @@ orchestral dashboard               # reports/dashboard.html
 | `scrub` | Redact secrets/paths from `runs/` into `runs-pub/` + `manifest.json`, withholding the answer key |
 | `calibrate` | Judge-vs-human agreement from a labels file (`--labels`, `--json`) |
 | `audit` | Static task-spec audit — fail-open checks, structural-only graders, contamination risk (`--json`, `--strict`) — see [docs/task-audit.md](docs/task-audit.md) |
+| `selfcheck` | Spec self-verification — replays each spec's own reference through its graders (`--execute` runs hidden tests against spec references; `--runs` flags wall/ceiling checks across stored runs) |
 | `scrub` | Redact secrets/paths from `runs/` into `runs-pub/` + `manifest.json` |
 | `calibrate` | Judge-vs-human agreement; `--emit <group>` writes a label skeleton, `--labels` computes + persists (`--json`) |
 | `revalidate` | Replay mechanical validators on stored artifacts (no model calls) — repairs `score`/`passes`/`checks` on report + index, stamps `report.revalidated` with old values |

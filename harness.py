@@ -1515,6 +1515,37 @@ def cmd_scrub(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_selfcheck(args: argparse.Namespace) -> None:
+    """Replay each spec's own reference material through its validators."""
+    from orchestral.selfcheck import run_selfcheck
+
+    findings, exit_code = run_selfcheck(
+        args.tasks_dir,
+        execute=args.execute,
+        runs_dir=args.runs_dir if args.runs else None,
+        task_id=args.task,
+    )
+    if args.json:
+        print(json.dumps([f.to_dict() for f in findings], indent=2))
+    else:
+        by_rule: dict[str, list] = {}
+        for f in findings:
+            by_rule.setdefault(f.rule, []).append(f)
+        print(f"orchestral selfcheck — {len(findings)} finding(s)")
+        for rule in sorted(by_rule):
+            group = by_rule[rule]
+            print(f"\n{rule} ({group[0].severity}) — {len(group)}")
+            for f in group[:20]:
+                ident = f.task_id or "suite"
+                print(f"  {ident}: {f.detail[:180]}")
+            if len(group) > 20:
+                print(f"  … and {len(group) - 20} more")
+        if not findings:
+            print("all references pass their own grading")
+    if exit_code:
+        sys.exit(exit_code)
+
+
 def cmd_audit(args: argparse.Namespace) -> None:
     """Static task-spec audit: can every declared check fire, and can a model pass without working?"""
     report = audit_tree(
@@ -1937,6 +1968,26 @@ def build_parser() -> argparse.ArgumentParser:
         help="Do not count a generatable holdout arm — reports no_holdout_arm whenever no spec sets metadata.holdout",
     )
     audit.set_defaults(func=cmd_audit)
+
+    selfcheck = sub.add_parser(
+        "selfcheck",
+        help="Spec self-verification — replay each spec's reference through its own grading (no model calls)",
+    )
+    selfcheck.add_argument("--tasks-dir", default=argparse.SUPPRESS, help="Task spec directory")
+    selfcheck.add_argument("--task", default=None, help="Limit to one task id")
+    selfcheck.add_argument(
+        "--execute",
+        action="store_true",
+        help="Also run metadata.tests against spec references in a host subprocess "
+             "(repo-authored content only — never run artifacts)",
+    )
+    selfcheck.add_argument(
+        "--runs",
+        action="store_true",
+        help="Advisory: flag wall/ceiling/rubber-stamp checks across stored live runs",
+    )
+    selfcheck.add_argument("--json", action="store_true", help="Machine-readable output")
+    selfcheck.set_defaults(func=cmd_selfcheck)
 
     serve = sub.add_parser("serve", help="Local web observatory — browse, launch, and cancel runs in a browser (localhost only)")
     serve.add_argument("--port", type=int, default=8787, help="Port to bind on 127.0.0.1 (default 8787)")

@@ -17,6 +17,7 @@ prompt: |
 validation: []
 assets: []
 metadata:
+  difficulty: medium
   strict: true
   stub:
     - {method: GET, path: /health, status: 200, json: {ok: true}}

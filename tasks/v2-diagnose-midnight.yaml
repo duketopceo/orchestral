@@ -12,6 +12,7 @@ prompt: |
   Return {"patch": "<unified diff>"} — diff paths relative to the repo
   root (e.g. `totals.py`). Fix the root cause, not the test.
 metadata:
+  difficulty: hard
   module: totals.py
   timeout_seconds: 30
   max_code_lines: 80

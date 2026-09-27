@@ -1443,7 +1443,11 @@ def _oracle_probe_needles(
         needles.append("repo_root")
     if re.search(r"tasks/[^\s'\"]+\.ya?ml", text):
         needles.append("task_spec")
-    if "metadata.tests" in text or "hidden test" in text.lower():
+    if (
+        "metadata.tests" in text
+        or "metadata.reference" in text
+        or "hidden test" in text.lower()
+    ):
         needles.append("oracle")
     return needles
 

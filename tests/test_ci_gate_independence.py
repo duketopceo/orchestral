@@ -64,6 +64,22 @@ class TestCIGatesAreSeparateJobs(unittest.TestCase):
                 f"the `{job_id}` job does not run `{command}`",
             )
 
+    def test_every_job_is_a_declared_gate(self):
+        """A job in ci.yml that is not in GATES is invisible to the gate rules.
+
+        Without this, adding a legitimate new check produced "job `security`
+        runs the gates []; split them so a failure in one cannot skip the
+        others" — advice that is wrong, since the job runs exactly one gate.
+        A guard whose failure message misdirects gets disabled.
+        """
+        undeclared = {j for j in _jobs() if j not in GATES and j not in REPORTERS}
+        self.assertEqual(
+            undeclared, set(),
+            f"job(s) {sorted(undeclared)} run in ci.yml but are not declared in "
+            f"GATES, so the gate rules skip them. Add each to GATES with the "
+            f"command it runs, and wire it into the reporter's needs",
+        )
+
     def test_no_job_bundles_two_gates(self):
         """A shared job re-couples the gates: a failing step skips the rest."""
         for job_id, job in _jobs().items():
@@ -81,18 +97,26 @@ class TestCIGatesAreSeparateJobs(unittest.TestCase):
                 "failure in one cannot skip the others",
             )
 
-    def test_reporter_needs_every_gate(self):
-        """A required check that skips counts as not passing, so the reporter
-        must depend on all three gates or it can report while one never ran."""
+    def test_reporter_needs_every_job_in_the_workflow(self):
+        """No job in ci.yml may fail while the required reporter says success.
+
+        The invariant is deliberately about *every* non-reporter job, not about
+        the GATES map. An earlier version compared the reporter's `needs` against
+        GATES, which is a declared list: a job added to ci.yml without being
+        declared in GATES was invisible to it, so a new check could fail while
+        `test` still reported green. A negative control caught exactly that.
+        """
         jobs = _jobs()
+        expected = {job_id for job_id in jobs if job_id not in REPORTERS}
         for job_id in REPORTERS:
             needs = jobs[job_id].get("needs") or []
             if isinstance(needs, str):
                 needs = [needs]
             self.assertEqual(
-                set(needs), set(GATES),
-                f"reporter `{job_id}` needs {sorted(needs)}; it must need every "
-                f"gate {sorted(GATES)} or a skipped gate would still report success",
+                set(needs), expected,
+                f"reporter `{job_id}` needs {sorted(needs)} but ci.yml defines "
+                f"{sorted(expected)}. Every job must be wired in, or one can fail "
+                f"while the required check reports success",
             )
 
     def test_reporter_runs_unconditionally(self):

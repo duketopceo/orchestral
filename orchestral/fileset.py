@@ -361,31 +361,24 @@ def expected_paths(task_metadata: dict[str, Any], *, preserve_case: bool = False
     return [canon(p) for p in declared if isinstance(p, str) and p.strip()]
 
 
-def member_requirements(
-    task_metadata: dict[str, Any], *, preserve_case: bool = False
-) -> dict[str, list[str]]:
-    """Sanitized `metadata.member_required` for validation and dry runs.
+def required_content(task_metadata: dict[str, Any]) -> dict[str, list[str]]:
+    """Sanitized `metadata.required_content`: path -> tokens that must be in that file.
 
-    Member names go through the same canonicalizer `has_paths` uses —
-    `sanitize_path` for chat filesets, the case-preserving executor variant
-    when `preserve_case` is set; token values normalize to list[str] so a
-    bare string is one token, not an iterable of characters."""
-    declared = task_metadata.get("member_required")
+    `has_paths` proves a name exists with a byte in it. This is the companion
+    that reads the body, so a spec can demand the artifact is *about* its
+    subject rather than merely named after it. Keys go through
+    `sanitize_path` so a declared path cannot escape the archive.
+    """
+    declared = task_metadata.get("required_content") or {}
     if not isinstance(declared, dict):
         return {}
-    canon = sanitize_path_exec if preserve_case else sanitize_path
     out: dict[str, list[str]] = {}
-    for member, tokens in declared.items():
-        if not isinstance(member, str) or not member.strip():
+    for path, tokens in declared.items():
+        if not isinstance(path, str) or not isinstance(tokens, list):
             continue
-        if isinstance(tokens, str):
-            tokens = [tokens]
-        if not isinstance(tokens, list):
-            continue
-        clean = [str(t) for t in tokens if str(t).strip()]
+        clean = [t for t in tokens if isinstance(t, str) and t.strip()]
         if clean:
-            canonical = canon(member)
-            out[canonical] = sorted(set(out.get(canonical, ())) | set(clean))
+            out[sanitize_path(path)] = clean
     return out
 
 

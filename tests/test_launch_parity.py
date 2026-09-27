@@ -82,7 +82,7 @@ class TestFieldSetParity(unittest.TestCase):
             self.assertNotIn("allow-agent-exec", fields)
 
     def test_cli_run_parser_covers_shared_fields(self):
-        parser = harness._build_parser()
+        parser = harness.build_parser()
         subs = next(
             a for a in parser._actions
             if isinstance(a, argparse._SubParsersAction)
@@ -91,7 +91,7 @@ class TestFieldSetParity(unittest.TestCase):
         self.assertLessEqual(state.LAUNCH_FIELDS, run_dests)
 
     def test_executor_optin_flag_on_every_cli_surface(self):
-        parser = harness._build_parser()
+        parser = harness.build_parser()
         subs = next(
             a for a in parser._actions
             if isinstance(a, argparse._SubParsersAction)

@@ -10,6 +10,7 @@ from pathlib import Path
 from orchestral.config import ModelConfig, TaskSpec
 from orchestral.runner import Runner
 from orchestral.terminal import check_terminal, run_command
+from tests.execstub import real_unittest_suite
 
 FS = {
     "app.ini": "[app]\ndebug = true\n",
@@ -246,7 +247,10 @@ class TestBugfix(unittest.TestCase):
                     return {"content": files_json, "usage": {"prompt_tokens": 1, "completion_tokens": 1}, "latency_ms": 1}
                 return super().chat(model, messages, max_tokens, temperature)
 
-        with tempfile.TemporaryDirectory() as tmp:
+        # fail-closed production runtime; run the trusted fixture suite for real
+        from unittest.mock import patch
+        with patch("orchestral.runner.run_unittest_suite",
+                   side_effect=real_unittest_suite),                 tempfile.TemporaryDirectory() as tmp:
             client = C(plans=["x"])
             meta = Runner(
                 runs_dir=tmp, planner="raw",

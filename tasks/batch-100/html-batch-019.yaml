@@ -7,6 +7,9 @@ prompt: Create a landing page for a electric bike targeted at data engineering t
 validation:
 - html
 - has_required
+- matches_pattern
 metadata:
   required:
   - bike
+  pattern: data engineer|data platform|data team|pipeline|warehouse|\betl\b|streaming|\bdbt\b|analytics
+    engineer|airflow|\bspark\b|lakehouse|data ingestion|transformation

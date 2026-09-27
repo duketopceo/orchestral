@@ -25,7 +25,49 @@ metadata: {}                  # optional free-form map (video tasks read generat
 | `blurb` | str | `""` | One-line "what this task asks" for cards and tables; `validate` warns when absent |
 | `validation` | list[str] | `[]` | Check names; empty means the type's default set |
 | `assets` | list[str] | `[]` | Reserved; not consumed by the runner yet |
-| `metadata` | map | `{}` | Free-form; carried into run records. `video` tasks read `duration`, `resolution`, `aspect_ratio`, `generate_audio`, `seed`; `multi-file` tasks read `expected_paths` and `member_required`; `code` tasks read `module`, `tests`, `timeout_seconds`, `expected_paths`, plus quality bounds `max_code_lines`, `max_functions`, `max_complexity_lite`, `no_unsafe`, `no_external_deps`, `forbidden_patterns` |
+| `metadata` | map | `{}` | Free-form; carried into run records. `video` tasks read `duration`, `resolution`, `aspect_ratio`, `generate_audio`, `seed`; `multi-file` tasks read `expected_paths` and `required_content`; `code` tasks read `module`, `tests`, `timeout_seconds`, `expected_paths`, plus quality bounds `max_code_lines`, `max_functions`, `max_complexity_lite`, `no_unsafe`, `no_external_deps`, `forbidden_patterns`; every type reads `version` to label a spec revision (recorded as `task_version`) |
+| `metadata.holdout` | bool | `false` | Marks the spec as part of the unpublished holdout arm. See below. |
+
+## The holdout arm
+
+`metadata.holdout: true` marks a spec as belonging to the **unpublished** arm —
+the problems used to estimate whether a score is inflated by having seen the
+published ones. It is honoured in three places:
+
+- **Leaderboard** (`report --leaderboard`) — holdout runs are left out of every
+  rate, median, and cost figure, and the count of excluded runs is printed. A
+  pairing with only holdout runs is listed separately as unranked rather than
+  dropped, so a measured pairing is never mistaken for an unmeasured one.
+- **Publication** (`scrub`) — a holdout run is withheld whole and recorded in
+  the published manifest under `withheld`. Nothing is copied, because there is no
+  safe subset: the plan carries the prompt and a `needle` artifact *is* the
+  answer. `scrub_run` raises `HoldoutRunError` rather than write a partial dir.
+- **Audit** (`audit`) — the presence of a holdout arm clears `no_holdout_arm`.
+
+Do not commit holdout specs. A spec in git is a published problem wearing a
+holdout label, which is the exact thing the arm exists to avoid. Generate the arm
+into a run-scoped directory instead:
+
+```bash
+python harness.py holdout --out runs-holdout --count 8 --seed 4242
+```
+
+Generated specs span several question shapes rather than one template — an arm
+built from a single shape is one problem counted many times, which is what
+`near_duplicate_family` reports for the shipped `html-batch-*` specs. The task id
+is a slot name and is the same across seeds; the prompt is not, so two seeds give
+two different problems under one id.
+
+Read the result with `python harness.py report --contamination`, which prints
+mean score per arm per task type plus the gap, and the `n` behind each mean.
+
+
+Editing a spec changes its `task_hash` (sha256 of the spec content, recorded
+in the manifest). Runs recorded under the old hash stay valid artifacts but no
+longer pair with runs of the edited spec, so set `metadata.version` (recorded
+as `task_version`) to label the revision and note in the spec why it changed.
+That applies to a bug fix in the expected answer too: a corrected spec is a
+new hash.
 
 ## Task types
 
@@ -178,6 +220,43 @@ metadata: {}                  # optional free-form map (video tasks read generat
   can still burn CPU until the step cap trips). `validation:` entries are
   unused — the check set is fixed (`executed`, `matches_reference`). See
   `tasks/sql-monthly-revenue.yaml`.
+
+  The reference defines truth, so it must return at least one row. An empty
+  reference result is a broken spec (error, null score), not an empty answer
+  to match against — otherwise any candidate returning zero rows, including a
+  nonsense one, scores `1.0`. That is a liveness check only: a reference that
+  is wrong but non-empty still grades, so pin a spec's expected answer in a
+  test. Three rules keep a reference from answering nothing by accident, and
+  from answering more than the prompt asked for:
+
+  - **Round both sides of a comparison, or neither.** `ROUND(SUM(x), 2)`
+    compared against a bare `MAX(SUM(x)) OVER (...)` matches only while the
+    winning total already equals its own 2-decimal rounding, and stops matching
+    the moment it does not — `3 x 12.34` is `37.019999999999996`, which rounds
+    to `37.02`, so that month loses its only row. The condition is that rounding
+    gap, not binary representability: `0.1` is no more exactly representable
+    than `37.019999999999996`, but `ROUND(0.1, 2) = 0.1`, so its month still
+    answers. The reference therefore silently drops every month with a rounding
+    gap and keeps answering normally for the months without one. That partial
+    answer is harder to notice than a total failure, and a non-empty reference
+    passes the check above. Aggregate the rounded value:
+    `MAX(ROUND(SUM(x), 2)) OVER (...)`.
+
+  - **Seed values that exercise the comparison.** Prices like `30.0` and
+    `12.5` are exact binary fractions, so they hide the case above. Use prices
+    with a fractional cent (`12.34`) and quantities that are not powers of two.
+  - **Break ties, or say how to break them.** A comparison against the month's
+    maximum — `WHERE revenue = best` — matches *every* row tied at that
+    maximum, so a reference can return more rows than a prompt promising "one
+    row per month" ever asked for, and a candidate that resolves the tie is
+    graded wrong. Pick one: state the tie-break in the prompt and implement it
+    in the reference (`ROW_NUMBER() OVER (PARTITION BY month ORDER BY revenue
+    DESC, product ASC) = 1`), or state in the prompt that every tied product
+    gets a row. When `metadata.ordered` is true, the reference's `ORDER BY` must
+    fully determine row order either way, because the compare is positional.
+    `tasks/sql-monthly-revenue.yaml` is the worked example: its prompt names the
+    alphabetical tie-break and its `reference_sql` picks the same row.
+
 - **`extract`** — workers extract a JSON object per subtask; the orchestrator
   picks the best candidate (same selection flow as `image`/`video`); the
   chosen extraction is stored as `artifact.json` and graded deterministically.
@@ -191,7 +270,7 @@ metadata: {}                  # optional free-form map (video tasks read generat
     expected:             # deep-equality graded keys — defines truth
       name: "Ada"
       tier: "gold"
-    pass_threshold: 1.0   # min score to pass; required+type checks always apply
+    pass_threshold: 1.0   # score floor in (0, 1]; required+type checks always apply
   ```
 
   Score is the fraction of `expected` keys that match (partial credit);
@@ -199,6 +278,15 @@ metadata: {}                  # optional free-form map (video tasks read generat
   requires every `required` field present, all type/enum checks green, and
   `score >= pass_threshold`. Unparseable artifacts score null. See
   `tasks/extract-invoice.yaml`.
+
+  **`pass_threshold` is a score floor, not a dial to loosen.** A score is a
+  fraction, so a floor of `0` declares no floor at all: a wrong artifact scores
+  0.0, clears the gate, and passes with its value mismatches still reported. The
+  floor is therefore `(0, 1]`, and `bool` is refused rather than coerced —
+  `pass_threshold: no` reads as `float(False) == 0.0`. A value outside the range
+  or a non-number is recorded in the report's `errors` and fails the run closed
+  rather than being clamped. Leaving `pass_threshold:` blank means "not declared"
+  and takes the 1.0 default.
 
   **Every declared field must be graded.** A field is graded when it is
   `required: true` or named in `expected`. A field that is neither is
@@ -303,9 +391,7 @@ metadata: {}                  # optional free-form map (video tasks read generat
 | `non_empty` | the artifact has bytes |
 | `zip_signature` | the archive opens as a zip |
 | `has_paths` | every path in `metadata.expected_paths` is present as a non-empty regular file |
-| `member_required` | every member named in `metadata.member_required` exists, decodes as UTF-8 text (members are already size-capped by the file-set limits), and contains each listed token (case-insensitive) |
-
-`member_required` metadata shape: `member_required: {"index.html": ["coffee"], "style.css": ["pricing"]}` — a member listed but absent, a token missing inside it, or an undecodable (binary) member each fails the check with a distinct error.
+| `has_content` | every token in `metadata.required_content[path]` appears in that file's body (case-insensitive); scoped per path, so one file cannot vouch for another |
 
 `code` tasks ignore `validation:` — the check is execution:
 
@@ -328,7 +414,13 @@ Each fails closed when requested but its metadata key is missing:
 | `no_pattern` | the regex does not match | `forbidden_pattern` |
 
 Unknown check names fail the run — including in a list that also contains known
-checks.
+checks. This holds for `html`, `constraint`, `needle`, `image`, `video`, and
+`multi-file`. The `code`, `sql`, `extract`, and `api` types never read
+`validation:` at all: they compute a fixed check set from `metadata`, so
+anything declared there is a phantom gate and the run still reports a pass.
+`python harness.py audit --strict` is the gate for that case and for the first —
+it fails CI on a spec that asks for a check which cannot run. See
+[docs/task-audit.md](task-audit.md).
 
 ## Example
 
@@ -342,14 +434,19 @@ validation: [html, has_cta, has_form, has_viewport, no_placeholder]
 ```
 
 A multi-file task declares the files it expects, so `has_paths` can check the
-archive against the brief:
+archive against the brief. `has_paths` alone accepts a one-byte file per name,
+so a spec that wants the artifact graded on content adds `has_content` and maps
+each path to the tokens that file must contain:
 
 ```yaml
 id: multi-file-site
 type: multi-file
 prompt: |
   Build a small static site: a landing page and the stylesheet it depends on.
-validation: [non_empty, zip_signature, has_paths]
+validation: [non_empty, zip_signature, has_paths, has_content]
 metadata:
   expected_paths: [index.html, style.css]
+  required_content:
+    index.html: [hero, pricing, email]
+    style.css: [pricing, form]
 ```

@@ -10,6 +10,7 @@ from pathlib import Path
 from orchestral.config import ModelConfig, TaskSpec
 from orchestral.patch import PatchError, apply_unified_diff, extract_patch
 from orchestral.runner import Runner
+from tests.execstub import real_unittest_suite
 
 FILES = {
     "config.py": 'DEFAULTS = {\n    "timeout_ms": 5000,\n    "retries": 3,\n}\n\ndef load(overrides=None):\n    cfg = dict(DEFAULTS)\n    cfg.update(overrides or {})\n    return cfg\n',
@@ -130,7 +131,11 @@ class TestPatchRunner(unittest.TestCase):
             self.assertTrue((Path(meta.run_dir) / "artifact.diff").exists())
 
     def test_live_valid_patch_passes(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        # the suite is fail-closed in production until an isolated runtime
+        # exists; run it for real here against the trusted fixture
+        from unittest.mock import patch
+        with patch("orchestral.runner.run_unittest_suite",
+                   side_effect=real_unittest_suite),                 tempfile.TemporaryDirectory() as tmp:
             client = _FakeClient(payloads=[json.dumps({"patch": DIFF})])
             meta = Runner(
                 runs_dir=tmp, planner="raw",

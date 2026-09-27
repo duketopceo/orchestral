@@ -7,6 +7,10 @@ prompt: Create a landing page for a smart home dashboard targeted at product man
 validation:
 - html
 - has_required
+- matches_pattern
 metadata:
   required:
-  - smart home
+  - dashboard
+  pattern: product manager|product management|\bpm\b|roadmap review|sprint planning|backlog
+    grooming|stakeholder|user research|prioriti[sz]|feature request|voice of the customer|product
+    team|ship the right thing

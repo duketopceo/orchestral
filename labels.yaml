@@ -1,0 +1,97 @@
+version: 1
+source: runs/
+selection:
+  status: finished
+  config_dry_run: false
+  report_present: true
+  artifact_present: true
+  review_method: QA review of each artifact against its task contract
+  reviewed_on: 2026-09-25
+labels:
+  - run_id: 002c266353c4
+    score: 0.0
+    passed: false
+  - run_id: 043e3376970c
+    score: 1.0
+    passed: true
+  - run_id: 0a162cbcb2ab
+    score: 0.0
+    passed: false
+  - run_id: 0e108d49c231
+    score: 0.0
+    passed: false
+  - run_id: 1390990c4e62
+    score: 0.0
+    passed: false
+  - run_id: 1b9a6e306cd7
+    score: 0.0
+    passed: false
+  - run_id: 21ebf303051f
+    score: 0.0
+    passed: false
+  - run_id: 22d7f96c0245
+    score: 1.0
+    passed: true
+  - run_id: 248b2ed6c0c3
+    score: 0.0
+    passed: false
+  - run_id: 251e875eb6bb
+    score: 0.0
+    passed: false
+  - run_id: 2d4ca0db932a
+    score: 0.0
+    passed: false
+  - run_id: 2fad2489b5bf
+    score: 0.0
+    passed: false
+  - run_id: 3f29c9a50876
+    score: 0.0
+    passed: false
+  - run_id: 493d300173d0
+    score: 0.0
+    passed: false
+  - run_id: 532b6baa365b
+    score: 0.0
+    passed: false
+  - run_id: 72ef70b7fd0c
+    score: 1.0
+    passed: true
+  - run_id: 7eb4bcabb1eb
+    score: 0.0
+    passed: false
+  - run_id: 832163881f5c
+    score: 0.0
+    passed: false
+  - run_id: 90672de8660d
+    score: 0.0
+    passed: false
+  - run_id: a56e24e31aa1
+    score: 0.0
+    passed: false
+  - run_id: aad665151222
+    score: 0.0
+    passed: false
+  - run_id: abae0ae07617
+    score: 0.0
+    passed: false
+  - run_id: bcaea57f58bb
+    score: 0.0
+    passed: false
+  - run_id: bf1c9cd4e62a
+    score: 0.0
+    passed: false
+  - run_id: c9c4b982d274
+    score: 1.0
+    passed: true
+  - run_id: ceec73b76487
+    score: 1.0
+    passed: true
+  - run_id: d194f26fa417
+    score: 0.0
+    passed: false
+  - run_id: e273a6e50034
+    score: 0.0
+    passed: false
+  - run_id: ebe054c745d7
+    score: 0.0
+    passed: false

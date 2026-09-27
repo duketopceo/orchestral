@@ -1,30 +1,27 @@
-"""Execution validator for `code` tasks — run hidden tests against a fileset.
+"""Execution validator for `code` tasks.
 
-A code task's workers return a file set (same contract as multi-file). The
-harness materializes it into a temp dir, writes the task's test source, and
-runs `python -Es -m unittest` in a subprocess. Workers never see the tests —
-they are evaluation evidence, not part of the spec. Live CLI runs default to
-the disposable Docker backend; the local backend remains available for
-trusted tests and backwards-compatible library callers.
+A code task's workers return a file set (same contract as multi-file). Live
+execution is disabled in this release because no isolated runtime exists yet.
+The dry-run path still performs a compile-only check through the runner.
 
-The Docker backend is a disposable container boundary for verifier code, not
-a VM boundary. The explicit ``local`` backend remains host execution and is
-only for trusted development/tests.
+The ``ORCHESTRAL_CODE_RUNTIME`` setting is a configuration boundary, not a
+sandbox switch. Only an explicit isolated runtime adapter may replace the
+current disabled result; host subprocess execution is not a supported fallback.
 """
 
 from __future__ import annotations
 
 import ast
+import os
 import re
-import subprocess
 import sys
-import tempfile
 from pathlib import Path
 from typing import Any
 
-from orchestral.sandbox import SandboxError, run_docker_unittest
-
 DEFAULT_TIMEOUT_SECONDS = 30
+CODE_RUNTIME_ENV = "ORCHESTRAL_CODE_RUNTIME"
+DISABLED_CODE_RUNTIME = "disabled"
+ISOLATED_CODE_RUNTIME = "isolated"
 
 # Patterns that flag unsafe generated code — always scanned into the report's
 # quality section; gating happens only when the task declares `no_unsafe`.
@@ -44,11 +41,28 @@ UNSAFE_PATTERNS: dict[str, str] = {
 }
 _COMPILED_UNSAFE = {name: re.compile(p) for name, p in UNSAFE_PATTERNS.items()}
 _BRANCH_TOKENS = {"if", "elif", "else", "for", "while", "except", "and", "or", "assert", "with"}
-# unittest's summary lines, e.g. "FAILED (failures=2, errors=1, skipped=1)"
-_RAN_RE = re.compile(r"Ran (\d+) tests? in [\d.]+s")
-_FAILED_RE = re.compile(r"FAILED \(([^)]*)\)")
-_COUNT_RE = re.compile(r"(\w+)=(\d+)")
-_TAIL_BYTES = 2000
+
+
+def _configured_code_runtime() -> str:
+    value = os.environ.get(CODE_RUNTIME_ENV, DISABLED_CODE_RUNTIME).strip().lower()
+    return value or DISABLED_CODE_RUNTIME
+
+
+def _disabled_execution_report(error: str, timeout_seconds: float) -> dict[str, Any]:
+    return {
+        "executed": False,
+        "tests_run": 0,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0,
+        "ok": False,
+        "timed_out": False,
+        "returncode": None,
+        "output_tail": "",
+        "runtime": DISABLED_CODE_RUNTIME,
+        "requested_timeout_seconds": timeout_seconds,
+        "error": error,
+    }
 
 
 def materialize(files: dict[str, str], dest: Path) -> None:
@@ -64,112 +78,21 @@ def run_unittest_suite(
     tests_source: str,
     *,
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
-    sandbox: str = "local",
-    sandbox_image: str | None = None,
 ) -> dict[str, Any]:
-    """Run the task's unittest source against `files`; return a report.
+    """Return a fail-closed report until an isolated runtime is configured.
 
-    The report carries counts and a truncated output tail — never full file
-    contents. `executed=False` means the subprocess never ran (e.g. no test
-    source), distinct from a suite that ran and failed.
+    ``files`` and ``tests_source`` are intentionally not materialized in this
+    release. A future runtime adapter must own materialization, execution, and
+    output parsing outside the host process.
     """
-    report: dict[str, Any] = {
-        "executed": False,
-        "tests_run": 0,
-        "failures": 0,
-        "errors": 0,
-        "skipped": 0,
-        "ok": False,
-        "timed_out": False,
-        "returncode": None,
-        "output_tail": "",
-        "sandbox": sandbox,
-    }
-    if not tests_source.strip():
-        report["error"] = "code task has no metadata.tests"
-        return report
-
-    if sandbox == "docker":
-        try:
-            result = run_docker_unittest(
-                files,
-                tests_source,
-                timeout_seconds=timeout_seconds,
-                image=sandbox_image,
-            )
-        except SandboxError as exc:
-            report["error"] = str(exc)
-            report["sandbox_error"] = True
-            return report
-        report["sandbox_image"] = result.image
-        return _finish_unittest_report(
-            report,
-            returncode=result.returncode,
-            output=result.output,
-            timed_out=result.timed_out,
-        )
-
-    if sandbox != "local":
-        report["error"] = f"unknown code sandbox: {sandbox}"
-        report["sandbox_error"] = True
-        return report
-
-    with tempfile.TemporaryDirectory(prefix="orchestral-code-") as tmp:
-        dest = Path(tmp)
-        materialize(files, dest)
-        test_path = dest / "task_tests.py"
-        test_path.write_text(tests_source, encoding="utf-8")
-        try:
-            proc = subprocess.run(
-                # -Es: ignore PYTHON* env vars and user site-packages, but
-                # keep cwd importable (unlike -I, which would hide task_tests)
-                [sys.executable, "-Es", "-m", "unittest", "-v", "task_tests"],
-                cwd=dest,
-                capture_output=True,
-                timeout=timeout_seconds,
-                # no env passthrough — no secrets in the child's environment
-                env={"PATH": "/usr/bin:/bin"},
-            )
-        except subprocess.TimeoutExpired:
-            report["timed_out"] = True
-            report["executed"] = True
-            report["output_tail"] = f"tests exceeded {timeout_seconds}s"
-            return report
-
-    out = (proc.stdout + proc.stderr).decode("utf-8", errors="replace")
-    return _finish_unittest_report(
-        report,
-        returncode=proc.returncode,
-        output=out,
-    )
-
-
-def _finish_unittest_report(
-    report: dict[str, Any],
-    *,
-    returncode: int,
-    output: str | bytes,
-    timed_out: bool = False,
-) -> dict[str, Any]:
-    """Populate the common result fields for local and Docker execution."""
-    report["executed"] = True
-    report["returncode"] = returncode
-    report["timed_out"] = timed_out
-    out = output.decode("utf-8", errors="replace") if isinstance(output, bytes) else output
-    report["output_tail"] = out[-_TAIL_BYTES:]
-
-    ran = _RAN_RE.search(out)
-    if ran:
-        report["tests_run"] = int(ran.group(1))
-    failed = _FAILED_RE.search(out)
-    if failed:
-        for name, count in _COUNT_RE.findall(failed.group(1)):
-            if name in ("failures", "errors", "skipped", "expected_failures", "unexpected_successes"):
-                report[name if name in report else "errors"] = int(count)
-    # a suite that ran zero tests is not a pass — import/collection failures
-    # exit nonzero with no "Ran N tests" line at all
-    report["ok"] = returncode == 0 and ran is not None and report["tests_run"] > 0 and "OK" in out
-    return report
+    runtime = _configured_code_runtime()
+    if runtime == DISABLED_CODE_RUNTIME:
+        error = "code execution disabled: no isolated runtime is configured"
+    elif runtime == ISOLATED_CODE_RUNTIME:
+        error = "code execution unavailable: isolated runtime adapter is not configured"
+    else:
+        error = "code execution rejected: host subprocess fallback is disabled; use an isolated runtime"
+    return _disabled_execution_report(error, timeout_seconds)
 
 
 def score_from_report(report: dict[str, Any]) -> float | None:
@@ -279,13 +202,6 @@ def check_code_quality(
             for name, rx in patterns.items():
                 if rx.search(line):
                     totals["unsafe_hits"].append({"file": rel, "line": lineno, "pattern": name})
-
-    # imports that resolve to a sibling module in the file set are local,
-    # not external — a multi-module submission isn't pulling a dependency
-    local_modules = {
-        Path(rel).stem for rel in files if rel.endswith(".py")
-    } | {rel.split("/")[0] for rel in files if "/" in rel}
-    all_external -= local_modules
 
     totals["imports"] = sorted(all_imports)
     totals["external_imports"] = sorted(all_external)

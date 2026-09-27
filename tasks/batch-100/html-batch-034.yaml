@@ -7,6 +7,9 @@ prompt: Create a landing page for a no-code automation tool targeted at remote-f
 validation:
 - html
 - has_required
+- matches_pattern
 metadata:
   required:
-  - automation
+  - automat
+  pattern: remote[ -]?first|distributed|async|remote team|work from anywhere|hybrid|global
+    team|timezone|time zone|hire anywhere

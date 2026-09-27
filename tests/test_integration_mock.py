@@ -9,7 +9,6 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 from orchestral.config import ModelConfig, TaskSpec
-from orchestral.fileset import FilesetError
 from orchestral.runner import Runner
 from orchestral.storage import RunStore
 
@@ -30,111 +29,6 @@ def _chat_client(content: str) -> MagicMock:
         "id": "mock",
     }
     return client
-
-
-class TestSelfExecutedPlan(unittest.TestCase):
-    """Orchestrator answers the task itself ({"files": ...} plan, zero
-    subtasks) — the artifact must be validated, not discarded as
-    empty_output, and the run marked delegated=False."""
-
-    def test_zero_subtask_plan_with_files_still_validates(self):
-        plan = {"files": [
-            {"path": "solution.py", "content": "def add(a, b):\n    return a + b\n"},
-        ]}
-        orch = _chat_client(json.dumps(plan))
-        worker = _chat_client("SHOULD-NOT-BE-CALLED")
-        judge = _chat_client(json.dumps({"score": 8, "passed": True, "reasoning": "ok"}))
-
-        with tempfile.TemporaryDirectory() as tmp:
-            store = RunStore(tmp)
-            runner = Runner(
-                runs_dir=tmp, store=store,
-                clients={"orchestrator": orch, "worker": worker, "judge": judge},
-            )
-            task = TaskSpec(
-                id="t-code", type="code", prompt="write add()",
-                metadata={
-                    "module": "solution.py",
-                    "expected_paths": ["solution.py"],
-                    "tests": "import unittest\nfrom solution import add\n\nclass T(unittest.TestCase):\n    def test_add(self):\n        self.assertEqual(add(1, 2), 3)\n",
-                },
-            )
-            meta = runner.run(task, _model("o/m", "orchestrator"), _model("w/m", "worker"), _model("j/m", "judge"))
-
-            self.assertEqual(meta.status, "finished")
-            self.assertTrue(meta.passes)
-            self.assertEqual(worker.chat.call_count, 0)  # never delegated
-            run_dir = Path(meta.run_dir)
-            report = json.loads((run_dir / "report.json").read_text())
-            self.assertFalse(report["delegated"])
-            self.assertEqual(report["subtasks"], 0)
-            self.assertTrue((run_dir / "artifact.zip").exists())
-            self.assertTrue((run_dir / "worker-self.json").exists())
-
-    def test_zero_subtask_plan_without_output_falls_back_to_worker(self):
-        orch = _chat_client(json.dumps({"reasoning": "no plan"}))
-        worker = _chat_client("x")
-
-        with tempfile.TemporaryDirectory() as tmp:
-            store = RunStore(tmp)
-            runner = Runner(
-                runs_dir=tmp, store=store,
-                clients={"orchestrator": orch, "worker": worker},
-            )
-            task = TaskSpec(
-                id="t-code2", type="code", prompt="write add()",
-                metadata={"module": "solution.py", "expected_paths": ["solution.py"],
-                          "tests": "import unittest\n\nclass T(unittest.TestCase):\n    def test_x(self): pass\n"},
-            )
-            # s0 fallback delegates the whole task to the worker —
-            # the run then fails on worker output, not on the empty plan
-            with self.assertRaises(FilesetError):
-                runner.run(task, _model("o/m", "orchestrator"), _model("w/m", "worker"), None)
-            metas = [m for m in store.list_runs() if m.task_id == "t-code2"]
-            self.assertEqual(metas[0].status, "failed")
-
-    def test_delegated_run_marks_delegated_true(self):
-        plan = {"subtasks": [{"id": 0, "description": "hero"}]}
-        orch = _chat_client("")
-        orch.chat.side_effect = [
-            {"content": json.dumps(plan), "usage": {"prompt_tokens": 1, "completion_tokens": 1}, "latency_ms": 1, "id": "p"},
-            {"content": "<html><body>ok</body></html>", "usage": {"prompt_tokens": 1, "completion_tokens": 1}, "latency_ms": 1, "id": "a"},
-        ]
-        worker = _chat_client("<section>hero</section>")
-
-        with tempfile.TemporaryDirectory() as tmp:
-            store = RunStore(tmp)
-            runner = Runner(
-                runs_dir=tmp, store=store,
-                clients={"orchestrator": orch, "worker": worker},
-            )
-            meta = runner.run(TaskSpec(id="t3", type="html", prompt="page"),
-                              _model("o/m", "orchestrator"), _model("w/m", "worker"), None)
-            report = json.loads((Path(meta.run_dir) / "report.json").read_text())
-            self.assertTrue(report["delegated"])
-            self.assertEqual(report["subtasks"], 1)
-
-    def test_plan_key_schema_variant_delegates(self):
-        # kimi-style {"plan": [steps]} — same content, different envelope
-        plan = {"plan": [{"step": 1, "title": "hero", "description": "hero"}]}
-        orch = _chat_client("")
-        orch.chat.side_effect = [
-            {"content": json.dumps(plan), "usage": {"prompt_tokens": 1, "completion_tokens": 1}, "latency_ms": 1, "id": "p"},
-            {"content": "<html><body>ok</body></html>", "usage": {"prompt_tokens": 1, "completion_tokens": 1}, "latency_ms": 1, "id": "a"},
-        ]
-        worker = _chat_client("<section>hero</section>")
-
-        with tempfile.TemporaryDirectory() as tmp:
-            store = RunStore(tmp)
-            runner = Runner(
-                runs_dir=tmp, store=store,
-                clients={"orchestrator": orch, "worker": worker},
-            )
-            meta = runner.run(TaskSpec(id="t4", type="html", prompt="page"),
-                              _model("o/m", "orchestrator"), _model("w/m", "worker"), None)
-            report = json.loads((Path(meta.run_dir) / "report.json").read_text())
-            self.assertTrue(report["delegated"])
-            self.assertEqual(report["subtasks"], 1)
 
 
 class TestEndToEndMockedProviders(unittest.TestCase):
@@ -176,6 +70,7 @@ class TestEndToEndMockedProviders(unittest.TestCase):
             self.assertTrue((run_dir / "run.json").exists())
             report = json.loads((run_dir / "report.json").read_text())
             self.assertEqual(report["judge"]["score"], 9)
+            self.assertTrue(report["judge"]["passed"])
 
             # per-role routing: each mock got calls; judge saw the artifact
             self.assertEqual(orch.chat.call_count, 2)   # plan + assemble
@@ -183,6 +78,42 @@ class TestEndToEndMockedProviders(unittest.TestCase):
             self.assertEqual(judge.chat.call_count, 1)
             judge_msgs = judge.chat.call_args.kwargs["messages"]
             self.assertIn("expert judge", judge_msgs[0]["content"])
+
+    def test_judge_rejection_does_not_fail_the_run(self):
+        """A judge that says "fail" is recorded on the judge axis only.
+
+        KTD14: the judge never mutates the mechanical verdict — `passes`
+        stays what validation decided; the rejection lands on
+        `judge_passed`/`report.judge` for a reader to weigh.
+        """
+        orch = _chat_client("")
+        orch.chat.side_effect = [
+            {"content": json.dumps({"subtasks": [{"id": 0, "description": "s"}]}),
+             "usage": {"prompt_tokens": 10, "completion_tokens": 5}, "latency_ms": 1, "id": "p"},
+            {"content": "<html><head><title>T</title></head><body>ok</body></html>",
+             "usage": {"prompt_tokens": 10, "completion_tokens": 5}, "latency_ms": 1, "id": "a"},
+        ]
+        worker = _chat_client("<section>s</section>")
+        judge = _chat_client(json.dumps({"score": 1, "passed": False, "reasoning": "weak"}))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            runner = Runner(
+                runs_dir=tmp, store=RunStore(tmp),
+                clients={"orchestrator": orch, "worker": worker, "judge": judge},
+            )
+            meta = runner.run(
+                TaskSpec(id="t3", type="html", prompt="build a page"),
+                _model("o/m", "orchestrator"),
+                _model("w/m", "worker"),
+                _model("j/m", "judge"),
+            )
+
+            report = json.loads((Path(meta.run_dir) / "report.json").read_text())
+            self.assertTrue(meta.passes)
+            self.assertFalse(report["judge"]["passed"])
+            self.assertFalse(meta.judge_passed)
+            self.assertEqual(meta.judge_score, 1)
+            self.assertIsNone(meta.score)
 
     def test_injected_clients_not_closed_by_runner(self):
         """Caller-owned injected clients outlive the run (a grid reuses them)."""

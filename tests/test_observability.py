@@ -22,7 +22,7 @@ from orchestral.openrouter import (
     OpenRouterVideoSubmittedError,
     ProviderConfigError,
 )
-from orchestral.planners import PlanError, _extract_json
+from orchestral.planners import PlanError, PlanParseFault, _extract_json
 from orchestral.runner import Runner, ValidationError
 from orchestral.storage import RunStore
 from orchestral.taxonomy import CATEGORIES, classify_exception
@@ -66,8 +66,9 @@ class TestTaxonomy(unittest.TestCase):
     def test_extract_json_failure_is_malformed(self):
         # An unparseable model response must land in malformed_output, not
         # exception:unknown — the stale-label class this regression produced.
-        with self.assertRaises(PlanError):
+        with self.assertRaises(PlanParseFault) as ctx:
             _extract_json("no json at all")
+        self.assertEqual(classify_exception(ctx.exception), "malformed_output")
 
     def test_every_category_reachable(self):
         self.assertGreaterEqual(len(set(CATEGORIES)), 10)
@@ -328,10 +329,11 @@ class TestRunnerObservability(unittest.TestCase):
             metrics = json.loads((run_dir / "metrics.json").read_text())
             self.assertGreater(metrics["phases"]["plan"]["orchestrator"]["calls"], 0)
 
-            # calls table has the three llm_calls
+            # calls table has the three llm_calls; the mocked clients report no
+            # provider cost, so the rate-card fallback label is the correct one
             calls = store.calls_for_run(meta.run_id)
             self.assertEqual(len(calls), 3)
-            self.assertTrue(all(c["pricing_source"] == "configured" for c in calls))
+            self.assertTrue(all(c["pricing_source"] == "configured_estimate" for c in calls))
 
             # run.json + run.started carry the labels
             run_json = json.loads((run_dir / "run.json").read_text())

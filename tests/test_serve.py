@@ -257,6 +257,36 @@ class TestPureLayer(unittest.TestCase):
             self.assertEqual(st, "not_judgeable")
             self.assertIn("no artifact", why)
 
+    def test_html_artifact_carries_render_url(self):
+        """HTML artifacts carry render_url so the card shows the rendered
+        page in a sandboxed frame, not raw markup."""
+        with tempfile.TemporaryDirectory() as tmp:
+            rid = _seed_run(tmp)
+            store = RunStore(tmp)
+            meta = store.get_run(rid)
+            art = state._artifact_reference(Path(meta.run_dir), rid)
+            self.assertEqual(art["ext"], "html")
+            self.assertEqual(art["render_url"], art["url"])
+
+    def test_zip_artifact_render_url_prefers_index_html(self):
+        """A multi-file site's proof renders index.html while the source
+        link still points at the inspectable member."""
+        with tempfile.TemporaryDirectory() as tmp:
+            rid = _seed_run(tmp)
+            store = RunStore(tmp)
+            run_dir = Path(store.get_run(rid).run_dir)
+            for a in run_dir.glob("artifact.*"):
+                a.unlink()
+            with zipfile.ZipFile(run_dir / "artifact.zip", "w") as archive:
+                archive.writestr("src/main.py", "print('x')\n")
+                archive.writestr("site/index.html", "<h1>hi</h1>\n")
+                archive.writestr("deep/nested/page.html", "<p>nested</p>\n")
+            art = state._artifact_reference(run_dir, rid)
+            self.assertEqual(art["media_type"], "archive")
+            self.assertEqual(art["render_name"], "site/index.html")
+            self.assertTrue(art["render_url"].endswith("site%2Findex.html"))
+            self.assertNotEqual(art["name"], "site/index.html")
+
 
     def test_load_groups_validates_shape(self):
         from orchestral.config import ConfigError, load_groups

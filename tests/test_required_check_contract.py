@@ -6,18 +6,27 @@ reports `test (3.11)`, never `test`. If branch protection requires a context no
 job can emit, every pull request is blocked forever and nothing in CI reports
 why.
 
-That is not hypothetical. On 2026-09-26 a ruleset on `main` was created
-requiring the context `test`. The workflow's `test` job had been a four-way
-matrix well before that, so the required context was never emitted and the
-branch was wedged. The workflow even carried a comment claiming the job "keeps
-its original name so a branch-protection required check by that name still
-reports", and `test_ci_gate_independence.py` "enforced" it — by reading the YAML
-job key, which is the declared name, not the name GitHub emits. The control
-believed to cover this could never fire.
+That is not hypothetical, and the mechanism is worse than a typo. On
+2026-09-26T16:58:50Z a ruleset was created on `main` requiring the context
+`test`. At that moment this workflow was correct: the `test` job was a single
+non-matrix job and a bare `test` check run existed. Four hours later PR #68
+merged the declared-support-range matrix (`2914b9b`), the emitted names became
+`test (3.11)` through `test (3.14)`, and from that commit every pull request was
+blocked because the required context could no longer be produced. No one
+weakened the rule. A routine CI merge invalidated it as a side effect, and
+nothing noticed.
+
+Two things made it invisible. The workflow carried a comment claiming the job
+"keeps its original name so a branch-protection required check by that name still
+reports", which was false from the moment the matrix landed. And
+`test_ci_gate_independence.py` read the YAML job key, so its name-coverage
+claim could never fire. That guard is still worth having — it catches
+re-coupling, `continue-on-error` and `always()` conditions, and it is not
+replaced here. Only its claim to cover check names was false.
 
 So: `.github/required-checks.json` records the contexts branch protection
-requires, and these tests assert the workflow can produce every one of them.
-See DUK-227.
+requires, and these tests assert the workflow can still produce every one of
+them. See DUK-227.
 
 The limitation is real and worth stating: CI cannot read branch protection, so
 this file must be updated in the same change that alters protection. It detects

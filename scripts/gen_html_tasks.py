@@ -158,7 +158,7 @@ def _task_for(i: int, product: str, audience: str, index_offset: int) -> dict[st
             "and a call-to-action button. Output a single self-contained HTML file with inline CSS."
         ),
         "validation": ["html", "has_required", "matches_pattern"],
-        "metadata": {"required": [required], "pattern": pattern},
+        "metadata": {"difficulty": "easy", "required": [required], "pattern": pattern},
     }
 
 

@@ -1295,6 +1295,46 @@ def check_presence_only_extract_contract(spec: TaskSpec, path: Path | None = Non
     ]
 
 
+def check_missing_reference(spec: TaskSpec, path: Path | None = None) -> list[Finding]:
+    """Executable grading (metadata.tests) with no reference cannot be self-verified.
+
+    A spec's hidden suite is only trustworthy if it has been run against an
+    implementation the spec itself vouches for — that is how the
+    fanout-records contradiction (tests demanded `skipped == 3` where the
+    documented rules produced 4) survived until every model failed it.
+    `swe-patch` already carries its reference as `metadata.patch`; `code` and
+    `bugfix` declare `metadata.reference`.
+    """
+    tests = str(spec.metadata.get("tests") or "").strip()
+    if not tests:
+        return []
+    if spec.type == "swe-patch":
+        has_ref = bool(str(spec.metadata.get("patch") or "").strip())
+        fix = "add the reference diff under metadata.patch"
+    elif spec.type in ("code", "bugfix"):
+        ref = spec.metadata.get("reference")
+        has_ref = isinstance(ref, dict) and bool(ref)
+        fix = "add a conforming fileset under metadata.reference"
+    else:
+        return []
+    if has_ref:
+        return []
+    return [
+        Finding(
+            rule="missing_reference",
+            severity=ERROR,
+            task_id=spec.id,
+            path=str(path) if path else None,
+            detail=(
+                f"metadata.tests gates this {spec.type} spec but no reference implementation "
+                "exists to prove the suite can be passed — an unverifiable gate graded "
+                f"{len(tests.splitlines())} lines nobody has run green. To fix: {fix} "
+                "(verified by `harness.py selfcheck --execute`)."
+            ),
+        )
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Warnings — a model can score without doing the work
 # ---------------------------------------------------------------------------
@@ -1750,6 +1790,7 @@ PER_SPEC_RULES = (
     check_inert_metadata_required,
     check_absent_grading_contract,
     check_presence_only_extract_contract,
+    check_missing_reference,
     check_structural_only,
     check_judge_gated_media,
     check_unanchored_fileset,

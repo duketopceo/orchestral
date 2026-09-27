@@ -8,6 +8,7 @@ validation:
 - has_required
 - matches_pattern
 metadata:
+  difficulty: easy
   required:
   - crm
   pattern: product manager|product management|\bpm\b|roadmap review|sprint planning|backlog

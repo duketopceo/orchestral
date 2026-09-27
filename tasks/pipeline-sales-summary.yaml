@@ -20,5 +20,6 @@ prompt: |
   `prior_outputs` — the outputs of every earlier subtask.
 validation: [has_required]
 metadata:
+  difficulty: medium
   reference_text: "Total revenue is $4,700, driven by Enterprise seats at $2,400."
   required: ["$4,700", "Enterprise seats"]

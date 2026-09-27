@@ -49,6 +49,50 @@ metadata:
   max_code_lines: 300
   no_unsafe: true
   no_external_deps: true
+  difficulty: medium
+  reference:
+    config.py: |
+      SERVICE_VERSION = "1.4.0"
+      MAX_QTY = 100
+    service.py: |
+      from config import MAX_QTY, SERVICE_VERSION
+
+      ROUTES = {
+          "get_user": "/users/{id}",
+          "list_orders": "/orders",
+          "create_order": "/orders",
+      }
+
+
+      def get_user(user_id):
+          return {"id": user_id, "name": "stub"}
+
+
+      def list_orders():
+          return []
+
+
+      def create_order(item: str, qty: int):
+          if qty > MAX_QTY:
+              raise ValueError("qty exceeds MAX_QTY")
+          return {"item": item, "qty": qty, "status": "created"}
+    client.py: |
+      import service
+
+
+      def build_url(route_name: str, **params) -> str:
+          path = service.ROUTES[route_name]
+          for key, value in params.items():
+              path = path.replace("{" + key + "}", str(value))
+          return path
+
+
+      def call(route_name: str, **params):
+          service.ROUTES[route_name]
+          fn = getattr(service, route_name, None)
+          if not callable(fn):
+              raise KeyError(route_name)
+          return fn(**params)
   tests: |
     import unittest, re
     import service, client, config

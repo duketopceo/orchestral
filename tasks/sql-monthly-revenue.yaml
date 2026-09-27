@@ -16,6 +16,7 @@ prompt: >
 validation: []
 assets: []
 metadata:
+  difficulty: medium
   # v2: reference_sql compared a rounded revenue against an unrounded window
 
   # max, so any non-representable price made it return zero rows and turn the

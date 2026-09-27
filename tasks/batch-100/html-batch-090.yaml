@@ -9,6 +9,7 @@ validation:
 - has_required
 - matches_pattern
 metadata:
+  difficulty: easy
   required:
   - dashboard
   pattern: early adopter|early access|early bird|early|first[ -]?look|be the first|get

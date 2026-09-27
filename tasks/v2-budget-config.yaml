@@ -13,9 +13,9 @@ metadata:
   fs:
     app.ini: "[server]\ndebug = true\nworkers = 1\nlog_level = verbose\nport = 8080\n"
   commands:
-    - run: "sed -i 's/debug = true/debug = false/; s/workers = 1/workers = 8/; s/log_level = verbose/log_level = info/' app.ini"
+    - run: "echo \"[server]\\ndebug = false\\nworkers = 8\\nlog_level = info\\nport = 8080\" > app.ini"
   expect:
     files:
       app.ini:
-        matches: "debug = false[\\s\\S]*workers = 8[\\s\\S]*log_level = info"
+        equals: "[server]\ndebug = false\nworkers = 8\nlog_level = info\nport = 8080\n"
     max_commands: 2

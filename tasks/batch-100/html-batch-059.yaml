@@ -9,6 +9,7 @@ validation:
 - has_required
 - matches_pattern
 metadata:
+  difficulty: easy
   required:
   - assistant
   pattern: data engineer|data platform|data team|pipeline|warehouse|\betl\b|streaming|\bdbt\b|analytics

@@ -21,6 +21,38 @@ metadata:
   max_code_lines: 200
   no_unsafe: true
   no_external_deps: true
+  difficulty: hard
+  reference:
+    tokenizer.py: |
+      def parse_line(line: str) -> list:
+          """Parse one CSV line into fields. Quoted fields may contain
+          commas; "" inside quotes is a literal quote."""
+          fields = []
+          buf = []
+          in_quotes = False
+          i = 0
+          while i < len(line):
+              ch = line[i]
+              if in_quotes:
+                  if ch == '"':
+                      if i + 1 < len(line) and line[i + 1] == '"':
+                          buf.append('"')
+                          i += 1
+                      else:
+                          in_quotes = False
+                  else:
+                      buf.append(ch)
+              else:
+                  if ch == '"':
+                      in_quotes = True
+                  elif ch == ',':
+                      fields.append(''.join(buf))
+                      buf = []
+                  else:
+                      buf.append(ch)
+              i += 1
+          fields.append(''.join(buf))
+          return fields
   files:
     tokenizer.py: |
       def parse_line(line: str) -> list[str]:

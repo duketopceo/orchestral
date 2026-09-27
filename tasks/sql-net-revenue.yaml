@@ -16,6 +16,7 @@ prompt: >
 validation: []
 assets: []
 metadata:
+  difficulty: medium
   ordered: true
   schema:
     - "CREATE TABLE products (id INTEGER PRIMARY KEY, name TEXT NOT NULL)"

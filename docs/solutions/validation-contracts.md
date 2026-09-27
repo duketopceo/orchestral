@@ -30,15 +30,15 @@ validation. Whatever the spec declares, the stub must satisfy:
 - `metadata.reference_text` — pipeline/constraint dry-run artifact
 - `metadata.required` — appended to the dry-run text artifact (runner.py,
   the assemble branch)
-- `metadata.member_required` — injected into declared dry-run file-set
-  members (planners.py `delegate_multi`)
+- `metadata.required_content` — injected into declared dry-run file-set
+  members (planners.py `delegate_multi`, consumed by `has_content`)
 - `metadata.expected_answer` / `reference_sql` / `reference_patch` —
   type-specific delegate stubs return the reference
 
 The asymmetry to avoid: injecting tokens only where the validator happens to
 read them today. Spec-declared requirements belong in the stub regardless of
 which check currently consumes them — a validator that deepens later
-(member_required did) must not turn a green dry-run red.
+(required_content did) must not turn a green dry-run red.
 
 `member_requirements()` in `fileset.py` is the shared sanitizer: member names
 canonicalize through `sanitize_path` (same form `build_zip` and `expected_paths`

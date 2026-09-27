@@ -142,7 +142,12 @@ class OpenRouterClient:
                 self._dbg("http_retry", path=path, attempt=attempt, status=exc.response.status_code, delay_s=round(delay, 3))
                 time.sleep(delay)
                 continue
-            except (httpx.TimeoutException, httpx.NetworkError) as exc:
+            except httpx.TransportError as exc:
+                # TransportError covers timeouts, connection errors, and
+                # protocol-level failures (ProxyError, UnsupportedProtocol,
+                # RemoteProtocolError, DecodingError, ...) — a narrower catch
+                # would let server-side disconnects escape as raw httpx
+                # exceptions outside the harness failure taxonomy.
                 if attempt > MAX_RETRIES:
                     raise OpenRouterError(f"OpenRouter request failed after {MAX_RETRIES} retries: {exc}") from exc
                 delay = BASE_RETRY_DELAY_SECONDS * (2 ** (attempt - 1))
@@ -172,7 +177,10 @@ class OpenRouterClient:
         })
 
         data = response.json()
-        choice = data.get("choices", [{}])[0]
+        choices = data.get("choices")
+        if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+            raise OpenRouterError("Malformed chat response: no choices")
+        choice = choices[0]
         content = choice.get("message", {}).get("content") or ""
         usage = data.get("usage", {})
         latency_ms = (time.time() - start) * 1000
@@ -274,6 +282,10 @@ class OpenRouterClient:
             image_bytes = base64.b64decode(first["b64_json"])
         elif first.get("url"):
             image_bytes = self._download(first["url"])
+        if not image_bytes:
+            # same contract as videos: empty media would look like "worker
+            # returned nothing" to the runner and trigger a billable resubmission
+            raise OpenRouterError("images response contained no image data")
 
         self._dbg("images", model=model, bytes=len(image_bytes), latency_ms=round((time.time() - start) * 1000, 1))
         return {
@@ -322,10 +334,20 @@ class OpenRouterClient:
             if value is not None:
                 payload[key] = value
 
-        data = self._post_with_retry("/videos", payload).json()
+        try:
+            response = self._post_with_retry("/videos", payload)
+        except OpenRouterError as exc:
+            # We cannot tell whether the request was actually dispatched, so
+            # treat the job as submitted: the runner must never resubmit and
+            # risk a duplicate billable generation.
+            raise OpenRouterVideoSubmittedError(f"video submit failed ({type(exc).__name__})") from exc
+        data = response.json()
         job_id = data.get("id")
         if not job_id:
-            raise OpenRouterError("Malformed videos response: missing job id")
+            # the job may already have been submitted — never retry
+            raise OpenRouterVideoSubmittedError(
+                f"video submit: malformed response, no job id ({type(data).__name__})"
+            )
         self._dbg("video_submit", model=model, job_id=job_id)
 
         # Everything below this point happens with a billable job already
@@ -433,6 +455,7 @@ class OpenRouterClient:
             "model": data.get("model", model),
             "video_bytes": video_bytes,
             "usage": data.get("usage", {}),
+            "api_cost_usd": data.get("usage", {}).get("cost"),
             "latency_ms": (time.time() - start) * 1000,
             "raw_response": data,
         }
@@ -561,11 +584,19 @@ def _find_retry_after(value: Any) -> float | None:
 
 
 def _coerce_retry_after(value: Any) -> float | None:
+    # Clamp provider-controlled values: a negative Retry-After would make
+    # time.sleep() raise ValueError, and an arbitrarily large one would hang
+    # the harness far past any deadline.
+    MAX_RETRY_AFTER_SECONDS = 60.0
     if isinstance(value, (int, float)):
-        return float(value)
-    if isinstance(value, str):
+        delay = float(value)
+    elif isinstance(value, str):
         try:
-            return float(value)
+            delay = float(value)
         except ValueError:
             return None
-    return None
+    else:
+        return None
+    if delay <= 0:
+        return None
+    return min(delay, MAX_RETRY_AFTER_SECONDS)

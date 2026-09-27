@@ -7,6 +7,10 @@ prompt: Create a landing page for a dev-ops observability platform targeted at p
 validation:
 - html
 - has_required
+- matches_pattern
 metadata:
   required:
-  - observability
+  - observab
+  pattern: product manager|product management|\bpm\b|roadmap review|sprint planning|backlog
+    grooming|stakeholder|user research|prioriti[sz]|feature request|voice of the customer|product
+    team|ship the right thing

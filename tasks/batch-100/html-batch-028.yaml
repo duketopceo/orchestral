@@ -6,6 +6,10 @@ prompt: Create a landing page for a personal CRM targeted at product managers. W
 validation:
 - html
 - has_required
+- matches_pattern
 metadata:
   required:
   - crm
+  pattern: product manager|product management|\bpm\b|roadmap review|sprint planning|backlog
+    grooming|stakeholder|user research|prioriti[sz]|feature request|voice of the customer|product
+    team|ship the right thing

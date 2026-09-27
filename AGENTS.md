@@ -19,9 +19,6 @@ python3 harness.py dashboard
 python3 harness.py tui
 python3 harness.py history
 python3 harness.py ablate --task landing-page-coffee --orchestrator deepseek/deepseek-v4-flash-0731 --worker z-ai/glm-5.3-flash --sweep retry_limit=0,1,2 --dry-run
-python3 harness.py review --model x-ai/grok-4.3 --limit 5 --dry-run
-python3 harness.py judge --judge moonshotai/kimi-k2 --group GROUP --dry-run
-python3 harness.py revalidate --group GROUP --dry-run
 python3 harness.py scrub
 ```
 
@@ -50,12 +47,56 @@ for per-action logging.
 
 ## Verification
 
-Before committing, run:
+Before committing, run all four CI gates in a throwaway venv built by
+`scripts/bootstrap-venv.sh <dir>` — the same `.[dev,tui]` environment CI
+installs. A shared `.venv` is mutated by every concurrent run, and a local run
+that reports green is only meaningful if the `[tui]` extra was present.
 
 ```bash
-python3 -m compileall orchestral harness.py
-python3 harness.py init
-python3 harness.py validate
-python3 harness.py run --task landing-page-coffee --orchestrator deepseek/deepseek-v4-flash-0731 --worker z-ai/glm-5.3-flash --dry-run
-python3 harness.py report --html
+scripts/bootstrap-venv.sh /tmp/gate-venv
+/tmp/gate-venv/bin/python -m unittest discover -s tests
+/tmp/gate-venv/bin/python -m ruff check .
+/tmp/gate-venv/bin/python -m mypy orchestral harness.py
 ```
+
+`python -m compileall` is not verification, and a skipped test is not a
+passing test. To exercise a run end to end:
+
+```bash
+/tmp/gate-venv/bin/python harness.py init
+/tmp/gate-venv/bin/python harness.py run --task landing-page-coffee --orchestrator deepseek/deepseek-v4-flash-0731 --worker z-ai/glm-5.3-flash --dry-run
+/tmp/gate-venv/bin/python harness.py report --html
+```
+
+## Merge gate
+
+The company reviews a merge by **green CI plus an independent second agent's
+check report**. Your own green checks do not close it; one agent does not review
+itself. That is the practice, and it is not yet what the repository enforces —
+see below. A GitHub approving review is not obtainable here, because every agent
+authenticates as the single `duketopceo` login and GitHub reads an agent review
+of another agent's PR as a self-review:
+
+```console
+$ gh pr review <pr> --approve
+failed to create review: GraphQL: Review Can not approve your own pull request
+```
+
+`main` keeps branch protection and required status checks. The branch-protection
+rule is unreadable from an integration-class token (`branches/main/protection`
+returns 403), so no agent can inspect or change it.
+
+The second agent's report is the review the company uses, but that is a company
+rule and not yet the state of the repository: the approving-review condition is
+still set on `main`, so a green, conflict-free PR reports
+
+```console
+$ gh pr view <pr> --json reviewDecision,mergeStateStatus,mergeable
+{"reviewDecision":"REVIEW_REQUIRED","mergeStateStatus":"BLOCKED","mergeable":"MERGEABLE"}
+```
+
+and stays blocked until that condition is removed, which needs a board action
+holding repo admin. Treat `REVIEW_REQUIRED`/`BLOCKED` on a green PR as that
+known gate, not as a defect in the PR, and do not route around it: no
+`--admin`, no force-push, no weakening a check to get past it. Report the block
+and name who can clear it. The open decision is tracked in DUK-210.

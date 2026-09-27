@@ -113,6 +113,7 @@ def collect_pairs(store: RunStore, labels: list[dict[str, Any]]) -> dict[str, An
     unjudged: list[str] = []
     duplicates: list[str] = []
     seen: set[str] = set()
+    corrupt = 0
     for label in labels:
         meta = _resolve_run(metas, str(label["run_id"]))
         if meta is None:
@@ -126,8 +127,12 @@ def collect_pairs(store: RunStore, labels: list[dict[str, Any]]) -> dict[str, An
         report: dict[str, Any] = {}
         report_path = run_dir / "report.json"
         if report_path.exists():
-            with contextlib.suppress(json.JSONDecodeError, OSError):
+            try:
                 report = json.loads(report_path.read_text())
+            except (json.JSONDecodeError, OSError):
+                # a corrupt judge report must not silently contaminate the
+                # agreement metrics — count it so the gap is visible
+                corrupt += 1
         judge = report.get("judge")
         if not isinstance(judge, dict) or not judge:
             unjudged.append(str(label["run_id"]))
@@ -154,6 +159,7 @@ def collect_pairs(store: RunStore, labels: list[dict[str, Any]]) -> dict[str, An
         "unmatched": unmatched,
         "unjudged": unjudged,
         "duplicates": duplicates,
+        "corrupt": corrupt,
         "score_pairs": sum(1 for p in pairs if p.get("human_score") is not None and p.get("judge_score") is not None),
         "verdict_pairs": sum(1 for p in pairs if p.get("human_passed") is not None and p.get("judge_passed") is not None),
     }

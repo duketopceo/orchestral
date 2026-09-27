@@ -7,6 +7,9 @@ prompt: Create a landing page for a AI coding assistant targeted at enterprise s
 validation:
 - html
 - has_required
+- matches_pattern
 metadata:
   required:
-  - coding
+  - assistant
+  pattern: security|compliance|soc ?2|zero trust|encrypt|audit|identity|access control|\brisk\b|governance|pen
+    test|least privilege|threat

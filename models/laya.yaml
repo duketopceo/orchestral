@@ -1,0 +1,19 @@
+# Laya — local typed-decision model served by scripts/serve_laya.py (OpenAI-compatible).
+# Start the server before running evals (see docs/laya.md for the full command):
+#   uv run --python 3.11 --with torch --with transformers --with safetensors \
+#       --with huggingface_hub --with numpy \
+#       python scripts/serve_laya.py --port 8090
+# Zero API cost; the first call downloads the checkpoint (~1-2 GB from Hugging Face).
+models:
+  - slug: "laya/local-decision"
+    name: "Laya (local typed-decision)"
+    role: worker
+    input_price_per_mtok: 0.0
+    output_price_per_mtok: 0.0
+    context: 4096
+    max_tokens: 64
+    retry_limit: 1
+    metadata:
+      provider: openai-compatible
+      base_url: http://127.0.0.1:8090/v1
+      modalities: ["text"]

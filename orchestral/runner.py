@@ -23,6 +23,7 @@ from orchestral.agentexec import (
     preflight,
 )
 from orchestral.apistub import check_api
+from orchestral.audit import VALIDATION_CHECKS
 from orchestral.codeexec import (
     DEFAULT_TIMEOUT_SECONDS,
     check_code_quality,
@@ -37,9 +38,11 @@ from orchestral.fileset import (
     build_zip,
     expected_paths,
     files_listing_with_content,
-    member_requirements,
     merge_filesets,
+    required_content,
 )
+from orchestral.holdout import is_holdout, spec_seed
+from orchestral.judge import judge_artifact
 from orchestral.judge import (
     JUDGE_CHAT_ARTIFACT_CAP,
     JUDGE_DECISIONS_ARTIFACT_CAP,
@@ -227,6 +230,10 @@ class Runner:
             if model is not None
         }
         env = _environment()
+        # A generated spec already knows the seed its task data came from. Prefer
+        # that over None so the run record names the seed that chose the problem,
+        # and an explicit --seed still wins when the caller passes one.
+        run_seed = self.seed if self.seed is not None else spec_seed(task)
         run_config = {
             "dry_run": self.dry_run,
             "planner": self.planner,
@@ -235,7 +242,9 @@ class Runner:
             "judge": judge.slug if judge else None,
             "run_group": self.run_group,
             "replicate": self.replicate,
-            "seed": self.seed,
+            "seed": run_seed,
+            "holdout": is_holdout(task),
+            "task_type": task.type,
             "orchestrator": orchestrator.to_dict(),
             "worker": worker.to_dict(),
         }
@@ -269,7 +278,7 @@ class Runner:
             worker=worker, judge=judge, providers=providers, env=env,
             config=run_config, planner=self.planner,
             prompt_variant=self.prompt_variant, dry_run=self.dry_run,
-            seed=self.seed, run_group=self.run_group, replicate=self.replicate,
+            seed=run_seed, run_group=self.run_group, replicate=self.replicate,
         )
         write_manifest(run_dir, manifest)
         if self.on_run_created is not None:
@@ -380,6 +389,15 @@ class Runner:
             file_sets: list[tuple[int, dict[str, str]]] = []
             media_ext = _artifact_ext(task.type)
             subtasks = plan.get("subtasks") or plan.get("sections", {}).get("subtasks", [])
+            if not subtasks:
+                # Raw/none planners may emit no subtasks; every task type's
+                # delegate paths are single-shot over one subtask (extract,
+                # sql, api, needle, constraint, media, multi). With zero
+                # subtasks the loop would run zero times and the assembly
+                # branches would write empty artifacts — fall back to one
+                # default subtask so the worker still runs.
+                subtasks = [{"id": "s0", "description": task.prompt}]
+
             if not isinstance(subtasks, list):
                 raise ValidationError(
                     f"Plan subtasks must be a list, got {type(subtasks).__name__}"
@@ -667,7 +685,7 @@ class Runner:
                             "delegate", "empty worker output; retrying",
                             subtask_id=sub.get("id", i), attempt=attempt + 1,
                         )
-                if out is None:
+                if not out:  # None or exhausted-empty dict must not reach assembly
                     logger.lifecycle(
                         "worker.failed", phase="delegate", role="worker",
                         worker_id=wid, subtask_id=sub.get("id", i),
@@ -883,10 +901,10 @@ class Runner:
                         language="text" if is_multi else "html",
                     )
                 except Exception as exc:
-                    # the judge is advisory — its failure must not convert a
-                    # mechanically-verified run into a `failed` record; the
-                    # exception records judge_inconclusive on the judge axis
-                    # (the same rule as parse failure and null verdicts)
+                    # a judge failure must not convert a mechanically-verified
+                    # run into a `failed` record; the exception records
+                    # judge_inconclusive on the judge axis (the same rule as
+                    # parse failure and null verdicts)
                     logger.log(
                         phase="judge",
                         step=assembly_step + 3,
@@ -907,9 +925,20 @@ class Runner:
                 else:
                     ledger.add_many(judge_costs)
                     report["judge"] = judge_result
-                    # KTD14: the judge never mutates `passes` or `score` — the
-                    # stored verdict is mechanical-only; judge evidence lives
-                    # on the judge_* fields and report.judge.
+                    code_execution_pending = (
+                        task.type == "code"
+                        and report.get("execution", {}).get("executed") is not True
+                    )
+                    # The judge sets `score` when it produced one and no code
+                    # execution is still pending; it never mutates `passes`.
+                    if judge_result.get("score") is not None and not code_execution_pending:
+                        report["score"] = judge_result["score"]
+                        report["score_source"] = "judge"
+
+            # The record says which rule produced `score`, so a reader never has
+            # to guess whether the stored number is measured or judged.
+            report.setdefault("score_source", "mechanical")
+
 
             logger.lifecycle(
                 "evaluation.completed", phase="validate", role="judge" if judge else "harness",
@@ -923,21 +952,23 @@ class Runner:
                 artifact_path = run_dir / "artifact.html"
                 if artifact_path.exists():
                     try:
-                        from orchestral.shots import capture_html
-
-                        capture_html(artifact_path, run_dir / "screenshot.png")
-                    except Exception as exc:
-                        # observability garnish, never a run outcome
-                        logger.log(
-                            phase="shots",
-                            step=assembly_step + 5,
-                            event_type="screenshot_skipped",
-                            model="",
-                            role="harness",
-                            input_data={"artifact": str(artifact_path)},
-                            output_data={"reason": str(exc)},
-                            reasoning="Screenshot capture failed or unavailable; skipped.",
-                        )
+                        from orchestral.shots import ScreenshotUnavailable, capture_html
+                    except ImportError:
+                        pass  # shots extras not installed — screenshot degrades cleanly
+                    else:
+                        try:
+                            capture_html(artifact_path, run_dir / "screenshot.png")
+                        except ScreenshotUnavailable as exc:
+                            logger.log(
+                                phase="shots",
+                                step=assembly_step + 5,
+                                event_type="screenshot_skipped",
+                                model="",
+                                role="harness",
+                                input_data={"artifact": str(artifact_path)},
+                                output_data={"reason": str(exc)},
+                                reasoning="Playwright or browser binaries unavailable; screenshot skipped.",
+                            )
 
             # 6. Final accounting
             total_cost, total_input, total_output = _flush_ledger(run_dir, ledger)
@@ -962,6 +993,9 @@ class Runner:
                 meta.judge_passed = judge_result.get("passed")
             meta.latency_ms = (time.perf_counter() - t0) * 1000
             if passes is False:
+                # The judge no longer decides `passes`, so a failure here is a
+                # validation failure. A judge disagreement is preserved in
+                # `report.judge` rather than relabelled as the cause.
                 meta.failure_reason = "validation"
             self.store.update_meta(meta)
 
@@ -1239,12 +1273,7 @@ class Runner:
                     checks["no_pattern"] = False
                     errors.append(f"metadata.forbidden_pattern is not a valid regex: {exc}.")
 
-        known = {
-            "html", "html_parses", "non_empty", "has_title", "has_cta", "has_form",
-            "has_viewport", "no_placeholder", "within_budget", "has_required",
-            "no_forbidden", "exact_answer", "matches_pattern", "no_pattern",
-        }
-        unknown = sorted(requested - known)
+        unknown = sorted(requested - VALIDATION_CHECKS["html"])
         if unknown:
             errors.append(f"Unknown validation check(s): {', '.join(unknown)}.")
         passes, report = _validation_report(task, checks, errors, len(artifact))
@@ -1265,7 +1294,7 @@ class Runner:
             if not checks["png_signature"]:
                 errors.append("Artifact is not a well-formed PNG (bad magic or missing IEND).")
 
-        unknown = sorted(requested - known)
+        unknown = sorted(requested - VALIDATION_CHECKS["image"])
         if unknown:
             errors.append(f"Unknown validation check(s): {', '.join(unknown)}.")
         passes, report = _validation_report(task, checks, errors, len(artifact))
@@ -1279,7 +1308,7 @@ class Runner:
         preserve_case: bool = False,
     ) -> tuple[bool, dict[str, Any]]:
         requested = set(task.validation) if task.validation else {"non_empty", "zip_signature"}
-        known = {"non_empty", "zip_signature", "has_paths", "member_required"}
+        known = VALIDATION_CHECKS["multi-file"]
         checks: dict[str, bool] = {}
         errors: list[str] = []
 
@@ -1287,22 +1316,27 @@ class Runner:
             checks["non_empty"] = bool(artifact)
             if not checks["non_empty"]:
                 errors.append("Artifact is empty.")
-
-        archive: zipfile.ZipFile | None = None
-        if requested & {"zip_signature", "has_paths", "member_required"}:
+        present: dict[str, int] = {}
+        bodies: dict[str, bytes] = {}
+        zip_ok = False
+        if "zip_signature" in requested or "has_paths" in requested or "has_content" in requested:
             try:
-                archive = zipfile.ZipFile(io.BytesIO(artifact))
-            except zipfile.BadZipFile:
-                archive = None
+                with zipfile.ZipFile(io.BytesIO(artifact)) as archive:
+                    for info in archive.infolist():
+                        if info.filename.endswith("/"):
+                            continue
+                        present[info.filename] = info.file_size
+                        if "has_content" in requested:
+                            bodies[info.filename] = archive.read(info)
+                    zip_ok = True
+            except (zipfile.BadZipFile, RuntimeError, OSError):
+                present = {}
+                bodies = {}
         if "zip_signature" in requested:
-            checks["zip_signature"] = archive is not None
+            checks["zip_signature"] = zip_ok
             if not checks["zip_signature"]:
                 errors.append("Artifact is not a readable zip archive.")
         if "has_paths" in requested:
-            present = (
-                {info.filename: info.file_size for info in archive.infolist() if not info.filename.endswith("/")}
-                if archive is not None else {}
-            )
             declared = expected_paths(task.metadata, preserve_case=preserve_case)
             missing = [p for p in declared if present.get(p, 0) <= 0]
             checks["has_paths"] = bool(declared) and not missing
@@ -1310,41 +1344,24 @@ class Runner:
                 errors.append("has_paths requested but metadata.expected_paths is empty.")
             elif missing:
                 errors.append(f"Missing or empty expected files: {', '.join(missing)}.")
-        if "member_required" in requested:
-            member_req = member_requirements(task.metadata, preserve_case=preserve_case)
-            if not member_req:
-                checks["member_required"] = False
-                errors.append("member_required requested but metadata.member_required is empty.")
-            elif archive is None:
-                checks["member_required"] = False
-                errors.append("Artifact is not a readable zip archive.")
-            else:
-                member_missing: list[str] = []
-                token_missing: list[str] = []
-                for member, tokens in member_req.items():
-                    try:
-                        raw = archive.read(member)
-                    except KeyError:
-                        member_missing.append(member)
-                        continue
-                    except (RuntimeError, NotImplementedError, zipfile.BadZipFile, OSError) as exc:
-                        member_missing.append(f"{member} (unreadable: {type(exc).__name__})")
-                        continue
-                    try:
-                        text = raw.decode("utf-8").lower()
-                    except UnicodeDecodeError:
-                        member_missing.append(f"{member} (not decodable text)")
-                        continue
-                    absent = [t for t in tokens if t.lower() not in text]
-                    if absent:
-                        token_missing.append(f"{member}: {', '.join(absent)}")
-                checks["member_required"] = not (member_missing or token_missing)
-                if member_missing:
-                    errors.append(f"Members listed in member_required absent: {', '.join(member_missing)}.")
-                if token_missing:
-                    errors.append(f"Required content missing in members: {'; '.join(token_missing)}.")
-        if archive is not None:
-            archive.close()
+        if "has_content" in requested:
+            declared_content = required_content(task.metadata)
+            absent: list[str] = []
+            unmatched: list[str] = []
+            for path, tokens in sorted(declared_content.items()):
+                body = bodies.get(path)
+                if body is None:
+                    absent.append(path)
+                    continue
+                haystack = body.decode("utf-8", errors="replace").lower()
+                unmatched.extend(f"{path}:{token}" for token in tokens if token.lower() not in haystack)
+            checks["has_content"] = bool(declared_content) and not absent and not unmatched
+            if not declared_content:
+                errors.append("has_content requested but metadata.required_content is empty.")
+            if absent:
+                errors.append(f"No file body to read for: {', '.join(absent)}.")
+            if unmatched:
+                errors.append(f"Required token(s) missing from file bodies: {', '.join(unmatched)}.")
 
         unknown = sorted(requested - known)
         if unknown:
@@ -1410,9 +1427,16 @@ class Runner:
             timeout_seconds=float(task.metadata.get("timeout_seconds", DEFAULT_TIMEOUT_SECONDS)),
         )
         report["execution"] = suite
-        checks["tests_pass"] = bool(suite.get("ok"))
+        suite_passed = (
+            suite.get("executed") is True
+            and int(suite.get("tests_run") or 0) > 0
+            and bool(suite.get("ok"))
+        )
+        checks["tests_pass"] = suite_passed
         if not suite.get("executed"):
             errors.append(suite.get("error", "tests did not execute"))
+        elif not suite_passed:
+            errors.append("code execution did not complete a successful non-empty test suite")
         report["score"] = score_from_report(suite)
         return bool(all(checks.values())), report
 
@@ -1432,7 +1456,7 @@ class Runner:
             if not checks["mp4_signature"]:
                 errors.append("Artifact is not a well-formed MP4 (missing leading ftyp box).")
 
-        unknown = sorted(requested - known)
+        unknown = sorted(requested - VALIDATION_CHECKS["video"])
         if unknown:
             errors.append(f"Unknown validation check(s): {', '.join(unknown)}.")
         passes, report = _validation_report(task, checks, errors, len(artifact))
@@ -1451,8 +1475,7 @@ class Runner:
                 "rows_got": report["rows_got"],
             }
         )
-        if report.get("expected_preview"):
-            out["expected_preview"] = report["expected_preview"]
+        if report.get("got_preview"):
             out["got_preview"] = report["got_preview"]
         return passes, out
 

@@ -7,6 +7,9 @@ prompt: Create a landing page for a smart home dashboard targeted at enterprise 
 validation:
 - html
 - has_required
+- matches_pattern
 metadata:
   required:
-  - smart home
+  - dashboard
+  pattern: security|compliance|soc ?2|zero trust|encrypt|audit|identity|access control|\brisk\b|governance|pen
+    test|least privilege|threat

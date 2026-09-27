@@ -451,7 +451,7 @@ class RunStore:
         if order_by not in _SORTABLE_COLUMNS:
             order_by = "started_at"
         query += f" ORDER BY {order_by} {'DESC' if descending else 'ASC'}"
-        if limit:
+        if limit is not None:
             query += " LIMIT ?"
             params.append(limit)
 
@@ -510,8 +510,8 @@ class RunStore:
             total = conn.execute("SELECT COUNT(*) FROM runs").fetchone()[0]
             cost = conn.execute("SELECT SUM(total_cost_usd) FROM runs").fetchone()[0] or 0.0
             tokens = conn.execute("SELECT SUM(total_input_tokens + total_output_tokens) FROM runs").fetchone()[0] or 0
-            orchestrators = conn.execute("SELECT orchestrator, COUNT(*) FROM runs GROUP BY orchestrator").fetchall()
-            workers = conn.execute("SELECT worker, COUNT(*) FROM runs GROUP BY worker").fetchall()
+            orchestrators = conn.execute("SELECT orchestrator, COUNT(*) FROM runs GROUP BY orchestrator ORDER BY orchestrator").fetchall()
+            workers = conn.execute("SELECT worker, COUNT(*) FROM runs GROUP BY worker ORDER BY worker").fetchall()
         return {
             "runs": total,
             "total_cost_usd": cost,

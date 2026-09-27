@@ -7,6 +7,9 @@ prompt: Create a landing page for a coffee roaster targeted at remote-first star
 validation:
 - html
 - has_required
+- matches_pattern
 metadata:
   required:
-  - coffee
+  - roast
+  pattern: remote[ -]?first|distributed|async|remote team|work from anywhere|hybrid|global
+    team|timezone|time zone|hire anywhere

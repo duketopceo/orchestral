@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from orchestral.agentexec import ExecutorPreflightError, launch_gate
+from orchestral.audit import audit_tree, default_holdout_probe
 from orchestral.calibrate import (
     MIN_CALIBRATION_PAIRS,
     agreement_metrics,
@@ -37,7 +38,8 @@ from orchestral.config import (
     resolve_model,
 )
 from orchestral.export import leaderboard_csv, run_audit_markdown, runs_csv
-from orchestral.fileset import expected_paths, member_requirements
+from orchestral.fileset import expected_paths, required_content
+from orchestral.holdout import DEFAULT_ARM_SIZE, DEFAULT_SEED, generate_arm, materialize
 from orchestral.judge import DEFAULT_JUDGE
 from orchestral.planners import available_prompt_variants, load_prompt_variant
 from orchestral.pricing import DEFAULT_DRIFT_THRESHOLD, pricing_drift
@@ -45,7 +47,12 @@ from orchestral.privacy import scrub_all
 from orchestral.providers import provider_for, provider_key
 from orchestral.reporter import generate_dashboard, generate_html_report, model_history
 from orchestral.runner import Runner
-from orchestral.stats import MIN_LEADERBOARD_SAMPLES, aggregate, pairing_leaderboard
+from orchestral.stats import (
+    MIN_LEADERBOARD_SAMPLES,
+    aggregate,
+    contamination_gap,
+    pairing_leaderboard,
+)
 from orchestral.storage import RunStore
 from orchestral.tui import run_tui
 
@@ -280,6 +287,27 @@ def _apply_retry_limit(worker: ModelConfig, args: argparse.Namespace) -> ModelCo
     return worker
 
 
+def _attempt_budget(worker: ModelConfig) -> str:
+    """State the retry budget that actually applied, per phase.
+
+    Only the delegate loop retries; every orchestrator call, the plan included,
+    is single-shot. A failure line that omits this reads as "attempt 1 of some
+    policy", which is how a truncated provider response came to be read as a
+    harness regression.
+    """
+    return f"orchestrator 1 per call, worker {worker.retry_limit + 1} (retry_limit={worker.retry_limit})"
+
+
+def _fail_line(label: str, rep: int, n_reps: int, budget: str, exc: Exception) -> str:
+    """One failure line, shared by every harness command.
+
+    `rep` names a replicate, not an attempt — saying so explicitly is the point.
+    With one replicate the bare `rep 1` of the previous format was
+    indistinguishable from a retry counter.
+    """
+    return f"[fail] {label} replicate {rep}/{n_reps} (attempts: {budget}): {type(exc).__name__}: {exc}"
+
+
 def _resolve_replicates(args: argparse.Namespace) -> tuple[str | None, int]:
     """Return (run_group, count). Auto-names a group when N > 1 and none
     was given so every replicate of the invocation shares a label."""
@@ -324,7 +352,7 @@ _REQUIRED_META: dict[str, tuple[str, ...]] = {
 # the metadata silently no-ops or errors at run time
 _VALIDATION_META = {
     "has_required": "required",
-    "member_required": "member_required",
+    "has_content": "required_content",
     "no_forbidden": "forbidden",
     "exact_answer": "expected_answer",
     "matches_pattern": "pattern",
@@ -344,7 +372,7 @@ _CHECK_NAMES = {
     "constraint": _TEXT_CHECKS,
     "needle": _TEXT_CHECKS,
     "pipeline": _TEXT_CHECKS,
-    "multi-file": {"non_empty", "zip_signature", "has_paths", "member_required"},
+    "multi-file": {"non_empty", "zip_signature", "has_paths", "has_content"},
     "image": {"non_empty", "png_signature"},
     "video": {"non_empty", "mp4_signature"},
 }
@@ -365,7 +393,7 @@ def cmd_validate(args: argparse.Namespace) -> None:
         missing = [k for k in _REQUIRED_META.get(task.type, ()) if k not in task.metadata]
         try:
             expected_paths(task.metadata)
-            member_requirements(task.metadata)
+            required_content(task.metadata)
         except Exception as exc:
             missing.append(f"path sanitizer: {exc}")
         known = _CHECK_NAMES.get(task.type)
@@ -405,6 +433,7 @@ def cmd_run(args: argparse.Namespace) -> None:
     _budget_check(args, store, n_reps, orchestrator=orchestrator.slug, worker=worker.slug)
     metas = []
     failures = 0
+    budget = _attempt_budget(worker)
     for i in range(1, n_reps + 1):
         rep = i if n_reps > 1 else getattr(args, "replicate", None)
         try:
@@ -414,7 +443,7 @@ def cmd_run(args: argparse.Namespace) -> None:
             # Runner.record_failure persists the failed run before re-raising;
             # keep going so one flake doesn't lose the remaining replicates
             failures += 1
-            print(f"[fail] rep {i}: {exc}", file=sys.stderr)
+            print(_fail_line("run", i, n_reps, budget, exc), file=sys.stderr)
     if args.json:
         out: Any = [m.to_dict() for m in metas] if n_reps > 1 else (metas[0].to_dict() if metas else None)
         print(json.dumps(out, indent=2, default=str))
@@ -486,14 +515,14 @@ def cmd_grid(args: argparse.Namespace) -> None:
     failures = 0
     if args.jobs > 1:
         with ThreadPoolExecutor(max_workers=args.jobs) as pool:
-            futures = {pool.submit(_one, o, w, i): (o.slug, w.slug, i) for o, w, i in cells}
+            futures = {pool.submit(_one, o, w, i): (o.slug, w.slug, i, _attempt_budget(w)) for o, w, i in cells}
             for fut in as_completed(futures):
-                o_slug, w_slug, i = futures[fut]
+                o_slug, w_slug, i, budget = futures[fut]
                 try:
                     results.append(fut.result())
                 except Exception as exc:
                     failures += 1
-                    print(f"[fail] {o_slug} × {w_slug} rep {i}: {exc}", file=sys.stderr)
+                    print(_fail_line(f"{o_slug} × {w_slug}", i, n_reps, budget, exc), file=sys.stderr)
         results.sort(key=lambda r: (r["orchestrator"], r["worker"], r["replicate"] or 0))
     else:
         for o, w, i in cells:
@@ -501,7 +530,7 @@ def cmd_grid(args: argparse.Namespace) -> None:
                 results.append(_one(o, w, i))
             except Exception as exc:
                 failures += 1
-                print(f"[fail] {o.slug} × {w.slug} rep {i}: {exc}", file=sys.stderr)
+                print(_fail_line(f"{o.slug} × {w.slug}", i, n_reps, _attempt_budget(w), exc), file=sys.stderr)
 
     print("\nGrid summary")
     rep_col = f"{'rep':>4} " if n_reps > 1 else ""
@@ -564,6 +593,7 @@ def cmd_batch(args: argparse.Namespace) -> None:
     group, n_reps = _resolve_replicates(args)
     cells = [(p, i) for p in paths for i in range(1, n_reps + 1)]
     _budget_check(args, store, len(cells), orchestrator=orchestrator.slug, worker=worker.slug)
+    budget = _attempt_budget(worker)
 
     def _one(path: Path, rep: int) -> dict[str, Any]:
         _spend_recheck(args, store)
@@ -591,7 +621,7 @@ def cmd_batch(args: argparse.Namespace) -> None:
                     results.append(fut.result())
                 except Exception as exc:
                     failures += 1
-                    print(f"[fail] {p} rep {i}: {exc}", file=sys.stderr)
+                    print(_fail_line(f"{p}", i, n_reps, budget, exc), file=sys.stderr)
         results.sort(key=lambda r: (r["task_id"], r["replicate"] or 0))
     else:
         for path, i in cells:
@@ -599,7 +629,7 @@ def cmd_batch(args: argparse.Namespace) -> None:
                 results.append(_one(path, i))
             except Exception as exc:
                 failures += 1
-                print(f"[fail] {path} rep {i}: {exc}", file=sys.stderr)
+                print(_fail_line(f"{path}", i, n_reps, budget, exc), file=sys.stderr)
 
     print(f"\nBatch summary ({len(results)} runs across {len(paths)} tasks)")
     rep_col = f"{'rep':>4} " if n_reps > 1 else ""
@@ -608,6 +638,11 @@ def cmd_batch(args: argparse.Namespace) -> None:
         score = f"{r['score']:.2f}" if r['score'] is not None else "-"
         rep = f"{r['replicate']:>4} " if n_reps > 1 else ""
         print(f"{r['task_id']:<30} {rep}${r['cost']:.6f} {r['tokens']:>8} {r['passes']!s:>6} {score:>6}")
+
+    total_cost = sum(r["cost"] for r in results)
+    n_pass = sum(1 for r in results if r["passes"])
+    rate = f"{n_pass / len(results):.0%}" if results else "-"
+    print(f"TOTAL: {n_pass}/{len(results)} passed ({rate}) | ${total_cost:.6f} | {failures} failures")
 
     if n_reps > 1:
         for cell in aggregate(store.list_runs(run_group=group)):
@@ -657,8 +692,13 @@ def cmd_ablate(args: argparse.Namespace) -> None:
 
     group, n_reps = _resolve_replicates(args)
 
+    def _worker(value: Any) -> ModelConfig:
+        if knob == "retry_limit":
+            return replace(base_worker, role="worker", retry_limit=value)
+        return _apply_retry_limit(replace(base_worker, role="worker"), args)
+
     def _one(value: Any, rep: int) -> dict[str, Any]:
-        worker = replace(base_worker, role="worker", retry_limit=value) if knob == "retry_limit" else _apply_retry_limit(replace(base_worker, role="worker"), args)
+        worker = _worker(value)
         kwargs = _rep_kwargs(args, store, group, rep if n_reps > 1 else getattr(args, "replicate", None))
         kwargs["sweep"] = {"knob": knob, "value": value}
         if knob == "prompt_variant":
@@ -686,14 +726,14 @@ def cmd_ablate(args: argparse.Namespace) -> None:
                     results.append(fut.result())
                 except Exception as exc:
                     failures += 1
-                    print(f"[fail] {knob}={v} rep {i}: {exc}", file=sys.stderr)
+                    print(_fail_line(f"{knob}={v}", i, n_reps, _attempt_budget(_worker(v)), exc), file=sys.stderr)
     else:
         for v, i in cells:
             try:
                 results.append(_one(v, i))
             except Exception as exc:
                 failures += 1
-                print(f"[fail] {knob}={v} rep {i}: {exc}", file=sys.stderr)
+                print(_fail_line(f"{knob}={v}", i, n_reps, _attempt_budget(_worker(v)), exc), file=sys.stderr)
     order = {v: i for i, v in enumerate(values)}
     results.sort(key=lambda r: (order[r["value"]], r["replicate"] or 0))
 
@@ -731,6 +771,32 @@ def cmd_history(args: argparse.Namespace) -> None:
             print(f"{name:<45} {s['runs']:>5} {pass_pct:>7} {score:>9} ${s['avg_cost']:>10.6f} ${s['total_cost']:>10.4f}")
 
 
+def cmd_holdout(args: argparse.Namespace) -> None:
+    """Generate a holdout arm into a run-scoped directory.
+
+    The arm is written wherever `--out` points and is meant to point somewhere
+    git ignores. Nothing in the generator writes into the repository, so the
+    caller owns that choice; the warning below is there because publishing the
+    arm's task text is the one mistake that makes the whole arm worthless.
+    """
+    specs = generate_arm(args.count, seed=args.seed)
+    out_dir = Path(args.out)
+    written = materialize(specs, out_dir)
+    print(f"generated {len(written)} holdout spec(s), seed {args.seed} -> {out_dir}")
+    by_type: dict[str, int] = {}
+    for spec in specs:
+        by_type[spec.type] = by_type.get(spec.type, 0) + 1
+    print("  " + ", ".join(f"{k}={v}" for k, v in sorted(by_type.items())))
+    print("\nRun the arm with:")
+    print(f"  python harness.py batch --batch-dir {out_dir} --orchestrator <slug> --worker <slug> --dry-run")
+    print("\n`--dry-run` is enough to prove the arm is runnable: sql and needle specs are graded")
+    print("against real reference answers, so a dry run executes the checks without a provider.")
+    print("\nThese task texts are the holdout arm. Keep the directory out of git and out of")
+    print("runs-pub/; `harness.py scrub` withholds holdout runs from published output.")
+    if args.json:
+        print(json.dumps([{"id": s.id, "type": s.type, "path": str(p)} for s, p in zip(specs, written, strict=True)], indent=2))
+
+
 def cmd_report(args: argparse.Namespace) -> None:
     if args.html:
         path = generate_html_report(args.runs_dir, args.reports_dir)
@@ -751,6 +817,14 @@ def cmd_report(args: argparse.Namespace) -> None:
         descending=args.desc,
         limit=args.limit,
     )
+
+    if getattr(args, "contamination", False):
+        arms = contamination_gap(runs)
+        if args.json:
+            print(json.dumps([r.to_dict() for r in arms], indent=2, default=str))
+            return
+        _print_contamination(arms)
+        return
 
     if getattr(args, "leaderboard", False):
         min_samples = getattr(args, "min_samples", None) or MIN_LEADERBOARD_SAMPLES
@@ -827,7 +901,7 @@ def _print_pairing_table(runs: list[Any]) -> None:
         # a partial score set would hide unscored runs' pass results
         avg_score = sum(scored) / len(scored) if len(scored) == len(group) and scored else None
         quality = avg_score if avg_score is not None else passed / len(group)
-        qpd = quality / cost if cost > 0 else float("inf")
+        qpd = quality / cost if cost > 0 else (float("inf") if quality > 0 else 0.0)
         rows.append((orch, work, len(group), passed, avg_score, cost, tokens, qpd))
 
     rows.sort(key=lambda r: -r[7])
@@ -849,22 +923,41 @@ def _print_leaderboard(
     if not rows:
         print("No runs match.")
         return
-    print(f"{'orchestrator':<30} {'worker':<30} {'n':>3} {'tasks':>5} {'pass%':>6} {'med judge':>9} {'med cost':>9} {'med ms':>8} {'fail%':>6} {'$/pass':>9}")
-    print("-" * 120)
-    rank = 0
-    divided = False
-    for p in rows:
-        if p.low_sample and not divided:
-            divided = True
-            print(f"{'':<4}── unranked: fewer than {min_samples} runs — anecdote, not evidence ──")
-        rank += 0 if p.low_sample else 1
-        score = f"{p.judge_score_median:.2f}" if p.judge_score_median is not None else "-"
-        cpp = f"${p.cost_per_pass:.4f}" if p.cost_per_pass is not None else "-"
-        rank_txt = "—" if p.low_sample else str(rank)
+    ranked = [p for p in rows if not p.holdout_only]
+    held = [p for p in rows if p.holdout_only]
+    if ranked:
+        print(f"{'orchestrator':<30} {'worker':<30} {'n':>3} {'tasks':>5} {'pass%':>6} {'med score':>9} {'med judge':>9} {'med cost':>9} {'med ms':>8} {'fail%':>6} {'$/pass':>9} {'holdout':>7}")
+        print("-" * 140)
+        rank = 0
+        divided = False
+        for p in ranked:
+            if p.low_sample and not divided:
+                divided = True
+                print(f"{'':<4}── unranked: fewer than {min_samples} runs — anecdote, not evidence ──")
+            rank += 0 if p.low_sample else 1
+            score = f"{p.score_median:.2f}" if p.score_median is not None else "-"
+            judge_score = f"{p.judge_score_median:.2f}" if p.judge_score_median is not None else "-"
+            cpp = f"${p.cost_per_pass:.4f}" if p.cost_per_pass is not None else "-"
+            rank_txt = "—" if p.low_sample else str(rank)
+            print(
+                f"{rank_txt:>3} {p.orchestrator:<30} {p.worker:<30} {p.runs:>3} {p.tasks_covered:>5} "
+                f"{(p.pass_rate or 0) * 100:>5.0f}% {score:>9} {judge_score:>9} ${p.cost_median:>8.4f} "
+                f"{p.duration_median_ms:>8.0f} {(p.failure_rate or 0) * 100:>5.0f}% {cpp:>9} "
+                f"{p.holdout_runs:>7}"
+            )
+    if held:
         print(
-            f"{rank_txt:>3} {p.orchestrator:<30} {p.worker:<30} {p.runs:>3} {p.tasks_covered:>5} "
-            f"{(p.pass_rate or 0) * 100:>5.0f}% {score:>9} ${p.cost_median:>8.4f} "
-            f"{p.duration_median_ms:>8.0f} {(p.failure_rate or 0) * 100:>5.0f}% {cpp:>9}"
+            f"\n{len(held)} pairing(s) have holdout runs only and are unranked — they have no "
+            "published evidence to rank on. They are listed here so a measured pairing is not "
+            "mistaken for an unmeasured one:"
+        )
+        for p in held:
+            print(f"  {p.orchestrator:<30} {p.worker:<30} {p.holdout_runs:>7} holdout run(s)")
+    withheld_total = sum(p.holdout_runs for p in rows)
+    if withheld_total:
+        print(
+            f"\nholdout arm: {withheld_total} run(s) excluded from every figure above and "
+            f"withheld from publication. Compare arms with: python harness.py report --contamination"
         )
     if store is not None and metas:
         for slug in store.judge_slugs({m.task_id for m in metas}):
@@ -875,6 +968,46 @@ def _print_leaderboard(
                 detail = (f"uncalibrated — {st['verdict_pairs']} verdict pairs "
                           f"(need {MIN_CALIBRATION_PAIRS}+ labeled, kappa >= 0.7)")
             print(f"judge: {slug} — {detail}")
+
+def _print_contamination(rows: list[Any]) -> None:
+    """Published vs holdout means per task type, with the gap between them."""
+    if not rows:
+        print("No scored runs match — nothing to compare between arms.")
+        return
+    print("contamination estimate — mean score by arm, per task type")
+    print()
+    print(f"{'task type':<14} {'pub n':>5} {'pub mean':>9} {'hold n':>6} {'hold mean':>10} {'gap':>8}")
+    print("-" * 60)
+    for r in rows:
+        pub = f"{r.published_mean:.2f}" if r.published_mean is not None else "-"
+        hold = f"{r.holdout_mean:.2f}" if r.holdout_mean is not None else "-"
+        gap = f"{r.gap:+.2f}" if r.gap is not None else "n/a"
+        print(f"{r.task_type:<14} {r.published_n:>5} {pub:>9} {r.holdout_n:>6} {hold:>10} {gap:>8}")
+    print()
+    comparable = [r for r in rows if r.comparable]
+    if not comparable:
+        print("No task type appears in both arms, so no gap is defined.")
+        print(
+            "A gap is only meaningful within one task type: across types it measures a "
+            "difference of subject, not of contamination."
+        )
+        return
+    widest = max(comparable, key=lambda r: abs(r.gap or 0.0))
+    print(
+        f"{len(comparable)} type(s) comparable. A positive gap means the published arm scored "
+        "higher than the holdout arm of the same type."
+    )
+    print(
+        f"Widest: {widest.task_type} {widest.gap:+.2f} "
+        f"(published n={widest.published_n}, holdout n={widest.holdout_n})."
+    )
+    thin = [r for r in comparable if min(r.published_n, r.holdout_n) < 5]
+    if thin:
+        print(
+            "Under-powered (fewer than 5 runs on a side): "
+            + ", ".join(f"{r.task_type} ({r.published_n}/{r.holdout_n})" for r in thin)
+            + " — read these as anecdote."
+        )
 
 
 def _print_groups_table(cells: list[Any]) -> None:
@@ -964,11 +1097,20 @@ def cmd_export(args: argparse.Namespace) -> None:
         if meta is None:
             print(f"No run found with id {args.run}", file=sys.stderr)
             sys.exit(1)
+        if args.format == "csv":
+            print("error: --format csv exports all runs; use --format md or jsonl with --run", file=sys.stderr)
+            sys.exit(2)
         if args.format == "jsonl":
             src = Path(meta.run_dir) / "events.jsonl"
-            content = src.read_text(encoding="utf-8") if src.exists() else ""
+            if not src.exists():
+                print(f"error: no events.jsonl for run {args.run} ({meta.run_dir}); nothing to export", file=sys.stderr)
+                sys.exit(1)
+            content = src.read_text(encoding="utf-8")
         else:
             content = run_audit_markdown(meta.run_dir)
+    elif args.format in ("md", "jsonl"):
+        print("error: --format md/jsonl require --run; plain exports are CSV only", file=sys.stderr)
+        sys.exit(2)
     elif args.leaderboard:
         rows = pairing_leaderboard(store.list_runs(limit=None), min_samples=args.min_samples)
         content = leaderboard_csv(rows)
@@ -1277,11 +1419,78 @@ def cmd_audit(args: argparse.Namespace) -> None:
               f"{sev:>9.1f} {r['strength']:>9.1f}{verdict}")
 
 
-def cmd_scrub(args: argparse.Namespace) -> None:
-    copied = scrub_all(Path(args.runs_dir), Path(args.scrub_dir))
+def cmd_scrub(args: argparse.Namespace) -> int:
+    """Scrub every run for publication and fail if anything was withheld.
+
+    `scrub_all` withholds files it cannot redact and records each one in the
+    manifest. A withheld file is a hole in the published record, so a caller
+    that only reads the exit status — a CI publish step, a shell pipeline —
+    must be able to tell a complete publication from an incomplete one. It
+    cannot from the exit status alone, so it exits non-zero when the manifest
+    records any blocked file.
+    """
+    source = Path(args.runs_dir)
+    # Validate before scrubbing: scrub_all clears the output directory first, so
+    # a wrong --runs-dir used to destroy the previous runs-pub/ and repopulate it
+    # from a directory the caller never named. Fail before any write.
+    if not source.is_dir():
+        print(
+            f"error: runs directory not found: {source}. Nothing was written. "
+            "Set --runs-dir (before or after `scrub`) to the tree holding run.json files.",
+            file=sys.stderr,
+        )
+        return 1
+    if not any(source.rglob("run.json")):
+        print(
+            f"error: no runs found under {source} (no run.json). Nothing was written. "
+            "Check --runs-dir — an empty source must not be published as a success.",
+            file=sys.stderr,
+        )
+        return 1
+    copied = scrub_all(source, Path(args.scrub_dir))
     print(f"Scrubbed {len(copied)} runs to {args.scrub_dir}")
     for c in copied:
         print(f"  {c}")
+
+    blocked: list[str] = []
+    manifest_path = Path(args.scrub_dir) / "manifest.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        manifest = []
+    for entry in manifest:
+        for item in entry.get("scrub_blocked") or []:
+            blocked.append(f"{entry.get('run', '?')}/{item.get('file', '?')}")
+
+    if blocked:
+        print(
+            f"error: {len(blocked)} file(s) were withheld from publication and are "
+            "listed under `scrub_blocked` in the manifest. This run's output is "
+            "incomplete until each is reviewed:",
+            file=sys.stderr,
+        )
+        for name in blocked:
+            print(f"  {name}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def cmd_audit(args: argparse.Namespace) -> None:
+    """Static task-spec audit: can every declared check fire, and can a model pass without working?"""
+    report = audit_tree(
+        args.tasks_dir,
+        min_family=args.min_family,
+        similarity=args.similarity,
+        # A generated arm is the normal shape: holdout task text must not be
+        # committed, so its absence from tasks/ is the point, not the problem.
+        holdout_probe=None if args.no_holdout_arm else default_holdout_probe,
+    )
+    if args.json:
+        print(json.dumps(report.to_dict(), indent=2))
+    else:
+        print(report.to_text())
+    if args.strict and not report.ok:
+        sys.exit(1)
 
 
 def cmd_dashboard(args: argparse.Namespace) -> None:
@@ -1414,7 +1623,28 @@ def cmd_shots(args: argparse.Namespace) -> None:
     print(f"screenshots: {captured} captured, {current} already current, {no_artifact} no HTML artifact, {failed} unavailable")
 
 
-def _build_parser() -> argparse.ArgumentParser:
+# Global directory flags are declared on the top-level parser. A subparser that
+# also declares one must use SUPPRESS: argparse copies subparser defaults onto
+# the shared namespace *after* the top-level value is parsed, so a plain
+# default silently overwrote `harness.py --runs-dir X scrub` with "runs".
+GLOBAL_DIR_FLAGS = {"--runs-dir": "runs", "--tasks-dir": "tasks", "--models-dir": "models"}
+
+
+def _add_global_dir_flag(sp: argparse.ArgumentParser, flag: str, help_text: str) -> None:
+    """Re-declare a top-level directory flag on a subparser without shadowing it.
+
+    SUPPRESS leaves the top-level value in place when the flag is absent, and
+    overrides it when given — so both spellings work and the subcommand-local
+    one wins.
+    """
+    if flag not in GLOBAL_DIR_FLAGS:
+        raise ValueError(f"{flag} is not a global directory flag: {sorted(GLOBAL_DIR_FLAGS)}")
+    sp.add_argument(flag, default=argparse.SUPPRESS, help=help_text)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    """Build the full CLI parser. Split out of main() so tests can inspect the
+    flag wiring without executing a subcommand."""
     p = argparse.ArgumentParser(description="orchestral eval harness")
     p.add_argument("--runs-dir", default="runs", help="Root directory for run data")
     p.add_argument("--tasks-dir", default="tasks", help="Task spec directory")
@@ -1442,7 +1672,17 @@ def _build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--group", default=None, help="Label this run with a group name for replicate/variance analysis")
         sp.add_argument("--replicate", type=int, default=None, help="Replicate index within --group")
         sp.add_argument("--replicates", type=int, default=1, help="Run each cell N times under one --group for variance analysis")
-        sp.add_argument("--seed", type=int, default=None, help="Record a seed label on the run config")
+        sp.add_argument(
+            "--seed",
+            type=int,
+            default=None,
+            help=(
+                "Seed for this run. Recorded on the run config and manifest, and "
+                "forwarded to the provider for video generation. A holdout spec "
+                "carries the seed its task data was generated from, so a run over "
+                "the arm records that seed when this is not given."
+            ),
+        )
         sp.add_argument("--daily-cap", type=float, default=_env_float("ORCHESTRAL_DAILY_CAP", 5.0),
                         help="Abort launches once today's recorded spend reaches this USD (0=off, env ORCHESTRAL_DAILY_CAP, default 5)")
         sp.add_argument("--max-cost", type=float, default=_env_float("ORCHESTRAL_MAX_GRID_COST", 10.0),
@@ -1496,9 +1736,10 @@ def _build_parser() -> argparse.ArgumentParser:
     report.add_argument("--orchestrator", help="Filter by orchestrator")
     report.add_argument("--worker", help="Filter by worker")
     report.add_argument("--sort", default="started_at", help="Column to sort by")
-    report.add_argument("--desc", action="store_true", default=True, help="Sort descending")
+    report.add_argument("--desc", action=argparse.BooleanOptionalAction, default=True, help="Sort descending (use --no-desc for ascending)")
     report.add_argument("--pairings", action="store_true", help="Aggregate by orchestrator × worker, sorted by quality per dollar")
     report.add_argument("--leaderboard", action="store_true", help="Pairing leaderboard: pass rate, medians, cost per pass, failure rate")
+    report.add_argument("--contamination", action="store_true", help="Mean score on published vs holdout specs per task type, and the gap")
     report.add_argument("--min-samples", type=int, default=MIN_LEADERBOARD_SAMPLES, help="Leaderboard sample-size floor for the low-evidence flag")
     report.add_argument("--groups", action="store_true", help="Aggregate by run_group × task × pairing with variance stats")
     report.add_argument("--group", default=None, help="Only include runs from this run_group")
@@ -1513,7 +1754,7 @@ def _build_parser() -> argparse.ArgumentParser:
     prices.set_defaults(func=cmd_prices)
 
     export = sub.add_parser("export", help="Export runs as CSV, or a single run as Markdown/JSONL")
-    export.add_argument("--runs-dir", default="runs", help="Root directory for run data")
+    _add_global_dir_flag(export, "--runs-dir", "Root directory for run data")
     export.add_argument("--format", choices=["csv", "md", "jsonl"], default="csv", help="Export format")
     export.add_argument("--run", default=None, help="Export a single run id (md audit or jsonl events)")
     export.add_argument("--leaderboard", action="store_true", help="Export pairing leaderboard as CSV")
@@ -1522,17 +1763,27 @@ def _build_parser() -> argparse.ArgumentParser:
     export.set_defaults(func=cmd_export)
 
     scrub = sub.add_parser("scrub", help="Redact sensitive data from all runs for sharing")
-    scrub.add_argument("--runs-dir", default="runs", help="Source runs directory")
+    _add_global_dir_flag(scrub, "--runs-dir", "Source runs directory")
     scrub.add_argument("--scrub-dir", default="runs-pub", help="Where to write scrubbed runs")
     scrub.set_defaults(func=cmd_scrub)
 
+    holdout = sub.add_parser(
+        "holdout",
+        help="Generate a seeded holdout arm into a run-scoped directory (never into git)",
+    )
+    holdout.add_argument("--out", default="runs-holdout", help="Directory to write the generated specs into")
+    holdout.add_argument("--count", type=int, default=DEFAULT_ARM_SIZE, help="How many specs to generate")
+    holdout.add_argument("--seed", type=int, default=DEFAULT_SEED, help="Seed the generated task data")
+    holdout.add_argument("--json", action="store_true", help="Also emit the generated spec index as JSON")
+    holdout.set_defaults(func=cmd_holdout)
+
     dashboard = sub.add_parser("dashboard", help="Generate a unified stats dashboard")
-    dashboard.add_argument("--runs-dir", default="runs", help="Root directory for run data")
+    _add_global_dir_flag(dashboard, "--runs-dir", "Root directory for run data")
     dashboard.add_argument("--reports-dir", default="reports", help="Output directory for HTML reports")
     dashboard.set_defaults(func=cmd_dashboard)
 
     tui = sub.add_parser("tui", help="Interactive experiment observatory (needs the [tui] extra)")
-    tui.add_argument("--runs-dir", default="runs", help="Root directory for run data")
+    _add_global_dir_flag(tui, "--runs-dir", "Root directory for run data")
     tui.add_argument("--reports-dir", default="reports", help="Output directory for exports")
     tui.add_argument("--refresh", action="store_true", help="Auto-refresh every 5s")
     tui.add_argument("--allow-agent-exec", action="store_true",
@@ -1541,7 +1792,7 @@ def _build_parser() -> argparse.ArgumentParser:
     tui.set_defaults(func=cmd_tui)
 
     shots = sub.add_parser("shots", help="Screenshot HTML artifacts in stored runs (requires playwright extra)")
-    shots.add_argument("--runs-dir", default="runs", help="Root directory for run data")
+    _add_global_dir_flag(shots, "--runs-dir", "Root directory for run data")
     shots.add_argument("--task", default=None, help="Only capture runs for this task id")
     shots.add_argument("--all", action="store_true", help="Re-capture even when screenshots are current")
 
@@ -1556,7 +1807,7 @@ def _build_parser() -> argparse.ArgumentParser:
     calibrate.add_argument("--emit", metavar="GROUP",
                            help="Emit a labels skeleton for a run group's finished runs "
                                 "(or 'all') instead of computing metrics")
-    calibrate.add_argument("--runs-dir", default="runs", help="Root directory for run data")
+    _add_global_dir_flag(calibrate, "--runs-dir", "Root directory for run data")
     calibrate.add_argument("--reports-dir", default="reports",
                            help="Where calibration reports and label skeletons persist")
     calibrate.add_argument("--json", action="store_true", help="Machine-readable output")
@@ -1613,6 +1864,20 @@ def _build_parser() -> argparse.ArgumentParser:
     audit.add_argument("--reports-dir", default="reports", help="Output directory for claims-audit.json")
     audit.add_argument("--dry-run", action="store_true")
     audit.add_argument("--json", action="store_true")
+    audit = sub.add_parser(
+        "audit",
+        help="Static task-spec audit — fail-open checks, structural-only graders, contamination risk",
+    )
+    audit.add_argument("--tasks-dir", default=argparse.SUPPRESS, help="Task spec directory")
+    audit.add_argument("--min-family", type=int, default=5, help="Specs sharing one prompt before it is a family")
+    audit.add_argument("--similarity", type=float, default=0.8, help="Prompt token Jaccard threshold for a family")
+    audit.add_argument("--json", action="store_true", help="Machine-readable output")
+    audit.add_argument("--strict", action="store_true", help="Exit non-zero when any error-severity finding exists")
+    audit.add_argument(
+        "--no-holdout-arm",
+        action="store_true",
+        help="Do not count a generatable holdout arm — reports no_holdout_arm whenever no spec sets metadata.holdout",
+    )
     audit.set_defaults(func=cmd_audit)
 
     serve = sub.add_parser("serve", help="Local web observatory — browse, launch, and cancel runs in a browser (localhost only)")
@@ -1624,19 +1889,25 @@ def _build_parser() -> argparse.ArgumentParser:
     serve.set_defaults(func=cmd_serve)
     return p
 
+    return p
+
 
 def main() -> None:
-    p = _build_parser()
+    p = build_parser()
     args = p.parse_args()
     if not hasattr(args, "func"):
         p.print_help()
         return
     try:
-        args.func(args)
+        rc = args.func(args)
     except ConfigError as exc:
         sys.exit(f"error: {exc}")
     except FileNotFoundError as exc:
         sys.exit(f"error: {exc}")
+    # A command that reports its own failure status returns it. Every other
+    # command returns None, which leaves the exit status at 0 as before.
+    if isinstance(rc, int) and rc:
+        sys.exit(rc)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,9 @@
+{
+  "$comment": "Contexts branch protection requires on main. Must be updated in the same change that alters the protection rule. tests/test_required_check_contract.py asserts ci.yml can actually emit every name here. Live ruleset 'main-2' (24045474) still requires a bare 'test', which the four-way matrix job cannot emit; that is the defect DUK-227 tracks.",
+  "required": [
+    "test (3.11)",
+    "test (3.12)",
+    "test (3.13)",
+    "test (3.14)"
+  ]
+}

@@ -12,9 +12,9 @@ permissions:
 # job as soon as one step fails, so a single job meant a red `Tests` step
 # silently skipped `Lint` and `Types` and the run could still look green.
 # Separate jobs report independently: one red never hides the others.
-# This job is a matrix, so GitHub reports its check runs as `test (3.11)`
-# through `test (3.14)` — never as a bare `test`. The job key is not the check
-# name. Do not assume they match.
+# The suite job below is a matrix, so GitHub reports its check runs as
+# `test-matrix (3.11)` through `test-matrix (3.14)` — never as a bare `test`.
+# The job key is not the check name. Do not assume they match.
 #
 # That distinction is not academic. On 2026-09-26T16:58:50Z a ruleset was
 # created on `main` requiring the context `test`, which was correct then: this
@@ -92,9 +92,12 @@ jobs:
   # context `test`; a matrix job can never report that, because GitHub appends
   # the matrix value. This job is not a matrix, so it reports exactly `test`.
   #
-  # It must run even when a gate fails. A required check that is skipped counts
-  # as not-passing and blocks the pull request, so removing `always()` here
-  # would reintroduce the wedge this job exists to clear. It reports the gates'
+  # `if: always()` is load-bearing, for the opposite reason to the obvious one.
+  # GitHub reports a *skipped* job as "Success", and a skipped required check
+  # does not block a merge. So without `always()` a failed dependency would skip
+  # this job, this job would report Success, and the required context would be
+  # satisfied by a red build. `always()` plus the `exit 1` below is the only
+  # reason the context `test` means "every gate passed". It reports the gates'
   # result; it does not re-run them.
   test:
     runs-on: ubuntu-latest

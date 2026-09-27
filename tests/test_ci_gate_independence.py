@@ -47,6 +47,23 @@ def _run_text(job: dict) -> str:
     return "\n".join(str(step.get("run", "")) for step in job.get("steps", []))
 
 
+def _needs_list(job: dict) -> list[str]:
+    needs = job.get("needs") or []
+    return [needs] if isinstance(needs, str) else list(needs)
+
+
+def _evaluated_needs(job: dict) -> set[str]:
+    """Dependency ids whose `.result` this job actually reads.
+
+    Appearing in `needs` is not enough. A dependency that is wired in but never
+    read as `needs.<id>.result` cannot influence this job's conclusion, so a new
+    gate added to `needs` without being evaluated would let the reporter report
+    success after that gate failed. The whole job is serialized so `env:`
+    mappings and inline expressions are both seen.
+    """
+    return set(re.findall(r"needs\.([A-Za-z0-9_-]+)\.result", yaml.safe_dump(job, width=10**6)))
+
+
 def _gate_jobs() -> dict:
     jobs = _jobs()
     missing = sorted(set(GATES) - set(jobs))
@@ -109,26 +126,76 @@ class TestCIGatesAreSeparateJobs(unittest.TestCase):
         jobs = _jobs()
         expected = {job_id for job_id in jobs if job_id not in REPORTERS}
         for job_id in REPORTERS:
-            needs = jobs[job_id].get("needs") or []
-            if isinstance(needs, str):
-                needs = [needs]
             self.assertEqual(
-                set(needs), expected,
-                f"reporter `{job_id}` needs {sorted(needs)} but ci.yml defines "
-                f"{sorted(expected)}. Every job must be wired in, or one can fail "
-                f"while the required check reports success",
+                set(_needs_list(jobs[job_id])), expected,
+                f"reporter `{job_id}` needs {sorted(_needs_list(jobs[job_id]))} but "
+                f"ci.yml defines {sorted(expected)}. Every job must be wired in, "
+                f"or one can fail while the required check reports success",
             )
 
+    def test_reporter_evaluates_every_dependency_result(self):
+        """Wiring a job into `needs` does not let it fail this job.
+
+        A dependency listed in `needs` but never read as `needs.<id>.result`
+        cannot influence the reporter's conclusion. Adding a fourth gate to
+        `needs` without adding it to the failure check would therefore let `test`
+        report success after that gate failed — and
+        `test_reporter_needs_every_job_in_the_workflow` would still pass, since
+        it only inspects the `needs` list.
+        """
+        jobs = _jobs()
+        for job_id in REPORTERS:
+            needs = set(_needs_list(jobs[job_id]))
+            evaluated = _evaluated_needs(jobs[job_id])
+            self.assertEqual(
+                needs, evaluated,
+                f"reporter `{job_id}` needs {sorted(needs)} but reads the result "
+                f"of {sorted(evaluated)}. Every dependency must be evaluated as "
+                "needs.<id>.result, or one can fail while the required check "
+                "reports success",
+            )
+
+    def test_the_evaluation_check_catches_an_unevaluated_dependency(self):
+        """Negative control: the check above has to be able to fail.
+
+        The defect it guards is invisible by construction — a gate wired into
+        `needs` but left out of the failure check makes no test fail while the
+        gate is red. A guard that cannot fail is how this whole incident
+        happened, so the guard is given a shape that does.
+        """
+        wired_but_unevaluated = {
+            "needs": ["lint", "types", "security"],
+            "steps": [{
+                "env": {
+                    "LINT": "${{ needs.lint.result }}",
+                    "TYPES": "${{ needs.types.result }}",
+                },
+                "run": 'if [ "$LINT" != success ]; then exit 1; fi',
+            }],
+        }
+        self.assertEqual(
+            set(_needs_list(wired_but_unevaluated)) - _evaluated_needs(wired_but_unevaluated),
+            {"security"},
+            "the detector must flag a dependency that is wired in but never read",
+        )
+
     def test_reporter_runs_unconditionally(self):
-        """The opposite failure: if the reporter is itself conditional it is
-        skipped whenever a gate fails, and a skipped required check blocks the
-        pull request. That is the wedge this reporter was added to clear."""
+        """A conditional reporter is worse than no reporter.
+
+        GitHub reports a *skipped* job as "Success", and a skipped required check
+        does not block a merge. So a conditional reporter is skipped whenever a
+        gate fails, and the required context is then satisfied by that failure —
+        a false pass. The condition is compared exactly because `always() && x`
+        still contains `always()` and is still conditional.
+        """
         for job_id in REPORTERS:
             condition = str(_jobs()[job_id].get("if", ""))
-            self.assertIn(
+            self.assertEqual(
                 "always()", condition,
-                f"reporter `{job_id}` is conditional; a skipped required check "
-                "blocks the pull request, so it must run with if: always()",
+                f"reporter `{job_id}` has condition {condition!r}; it must be "
+                "exactly `always()`, because a skipped required check is "
+                "reported as Success and would satisfy the rule after a gate "
+                "failure",
             )
 
     def test_gate_jobs_do_not_wait_on_each_other(self):

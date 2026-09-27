@@ -1373,7 +1373,7 @@ def _group_evidence(store: RunStore, groups: list[str]) -> dict[str, Any]:
     return out
 
 
-def cmd_audit(args: argparse.Namespace) -> None:
+def cmd_claimsaudit(args: argparse.Namespace) -> None:
     """Decisions-engine audit of our own claims — scorch the ideas."""
     import yaml
 
@@ -1655,8 +1655,8 @@ def build_parser() -> argparse.ArgumentParser:
     init.set_defaults(func=cmd_init)
 
     validate = sub.add_parser("validate", help="Parse all task specs and model configs; check per-type metadata contracts")
-    validate.add_argument("--tasks-dir", default="tasks")
-    validate.add_argument("--models-dir", default="models")
+    _add_global_dir_flag(validate, "--tasks-dir", "Task spec directory")
+    _add_global_dir_flag(validate, "--models-dir", "Model config directory")
     validate.set_defaults(func=cmd_validate)
 
     def _add_run_flags(sp: argparse.ArgumentParser) -> None:
@@ -1857,13 +1857,15 @@ def build_parser() -> argparse.ArgumentParser:
     specaudit.add_argument("--json", action="store_true")
     specaudit.set_defaults(func=cmd_specaudit)
 
-    audit = sub.add_parser("audit", help="Decisions-engine audit of claims in audit/claims.yaml — scorch our own ideas")
-    audit.add_argument("--judge", required=True, help="Decisions-model slug (e.g. '~typesafe/jev-latest' — quote it)")
-    audit.add_argument("--claims", default="audit/claims.yaml", help="Claims battery file")
-    audit.add_argument("--jobs", type=int, default=4, help="Parallel audit calls")
-    audit.add_argument("--reports-dir", default="reports", help="Output directory for claims-audit.json")
-    audit.add_argument("--dry-run", action="store_true")
-    audit.add_argument("--json", action="store_true")
+    claimsaudit = sub.add_parser("claimsaudit", help="Decisions-engine audit of claims in audit/claims.yaml — scorch our own ideas")
+    claimsaudit.add_argument("--judge", required=True, help="Decisions-model slug (e.g. '~typesafe/jev-latest' — quote it)")
+    claimsaudit.add_argument("--claims", default="audit/claims.yaml", help="Claims battery file")
+    claimsaudit.add_argument("--jobs", type=int, default=4, help="Parallel audit calls")
+    claimsaudit.add_argument("--reports-dir", default="reports", help="Output directory for claims-audit.json")
+    claimsaudit.add_argument("--dry-run", action="store_true")
+    claimsaudit.add_argument("--json", action="store_true")
+    claimsaudit.set_defaults(func=cmd_claimsaudit)
+
     audit = sub.add_parser(
         "audit",
         help="Static task-spec audit — fail-open checks, structural-only graders, contamination risk",
@@ -1887,8 +1889,6 @@ def build_parser() -> argparse.ArgumentParser:
                        default=_env_flag("ORCHESTRAL_ALLOW_AGENT_EXEC"),
                        help="Opt in to executor workers at server start — never a per-request field (env ORCHESTRAL_ALLOW_AGENT_EXEC)")
     serve.set_defaults(func=cmd_serve)
-    return p
-
     return p
 
 

@@ -8,6 +8,7 @@ import contextlib
 import hashlib
 import html
 import json
+import random
 import re
 import subprocess
 import threading
@@ -31,8 +32,8 @@ from orchestral.fileset import (
     FilesetError,
     check_response_size,
     expected_paths,
-    required_content,
     parse_fileset,
+    required_content,
     summarize_fileset,
 )
 from orchestral.logger import EventLogger

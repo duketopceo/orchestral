@@ -286,14 +286,7 @@ def judge_artifact(
             raise ValueError(f"Judge did not return a JSON object: {_response_fingerprint(content)}")
         if "score" not in result or "passed" not in result:
             raise ValueError(f"Judge JSON missing score or passed: {_response_fingerprint(content)}")
-        result["score"] = _judge_score(result.get("score", 0.0), content)
-        passed = result.get("passed", False)
-        # bool("false") is True — a judge returning the string "false" must
-        # not be scored as a pass; only bools and true/false strings count
-        if isinstance(passed, bool):
-            result["passed"] = passed
-        else:
-            result["passed"] = str(passed).strip().lower() == "true"
+        result["score"] = _judge_score(result["score"], content)
     except (TypeError, ValueError) as exc:
         # `reasoning` is a designed, quoted field, not a log: `reporter.py`
         # renders it into the HTML report, the TUI shows it, and
@@ -311,7 +304,7 @@ def judge_artifact(
         result = {
             "score": None,
             "passed": None,
-            "reasoning": f"Could not parse judge response: {_response_fingerprint(content)}",
+            "reasoning": f"Could not parse judge response: {exc}",
             "parse_failed": True,
             # no answer is inconclusive, never a rejection (KTD7)
             "inconclusive": True,
@@ -366,16 +359,18 @@ def judge_artifact(
     }]
 
 
-def _judge_score(value: Any, response: str) -> float:
-    """`float(value)` with a model-free failure message.
+def _judge_score(value: Any, response: str) -> float | None:
+    """`float(value)` with a model-free failure message; `null` means no score.
 
     `float("high")` raises `could not convert string to float: 'high'`, which
     quotes the judge's own text — and `judge_artifact` turns that message into
-    the parse-failure reason that reaches the report. The values accepted and
-    the type raised are unchanged; only the message differs. The exception type
-    is kept in the label because it separates a wrong JSON type from a
-    non-numeric string, which are different judge faults.
+    the parse-failure reason that reaches the report. A null `score` is a
+    verdict without a number, not a fault; non-null garbage raises. The
+    exception type is kept in the label because it separates a wrong JSON type
+    from a non-numeric string, which are different judge faults.
     """
+    if value is None:
+        return None
     try:
         return float(value)
     except (TypeError, ValueError) as exc:

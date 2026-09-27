@@ -122,7 +122,7 @@ def classify_exception(exc: BaseException) -> str:
         if "no output" in msg or "no files" in msg:
             return "empty_output"
         return "validation"
-    if name in ("FilesetError", "PlanError") or isinstance(exc, json.JSONDecodeError):
+    if name in ("FilesetError", "PlanError", "PlanParseFault") or isinstance(exc, json.JSONDecodeError):
         return "malformed_output"
     if isinstance(exc, (KeyError, FileNotFoundError)):
         return "config"

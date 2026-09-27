@@ -254,9 +254,12 @@ class TestJudgingItselfIsUnchanged(unittest.TestCase):
         for fault, response in _all_responses():
             with self.subTest(fault=fault):
                 result = self._result(response)
-                self.assertEqual(result["score"], 0.0)
-                self.assertFalse(result["passed"])
+                # a parse failure is inconclusive — no score, no verdict,
+                # never a 0.0/fail that a reader could mistake for a verdict
+                self.assertIsNone(result["score"])
+                self.assertIsNone(result["passed"])
                 self.assertTrue(result["parse_failed"])
+                self.assertTrue(result["inconclusive"])
 
     def test_a_parse_failure_still_reports_its_cost(self):
         """The call happened, so it is billed and logged; dropping the result

@@ -31,6 +31,7 @@ from orchestral.privacy import scrub_run
 from orchestral.runner import Runner
 from orchestral.stats import pairing_leaderboard
 from orchestral.storage import RunMeta, RunStore
+from tests.execstub import real_unittest_suite
 
 # The stub ignores the prompt argv and branches on STUB_MODE (injected via
 # adapter.config_env) — delegate_agentic sends the real task prompt, which
@@ -196,6 +197,12 @@ class AgenticRunnerBase(unittest.TestCase):
         self.adapter_patch = patch.dict(ADAPTERS, {"runner-stub": _adapter()})
         self.adapter_patch.start()
         self.addCleanup(self.adapter_patch.stop)
+        # production code execution is fail-closed until an isolated runtime
+        # exists; the tests run the suite for real against trusted fixtures
+        self.exec_patch = patch(
+            "orchestral.runner.run_unittest_suite", side_effect=real_unittest_suite)
+        self.exec_patch.start()
+        self.addCleanup(self.exec_patch.stop)
         self.runs_dir = Path(self.tmp.name) / "runs"
         self.store = RunStore(self.runs_dir)
 

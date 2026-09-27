@@ -42,7 +42,6 @@ from orchestral.fileset import (
     required_content,
 )
 from orchestral.holdout import is_holdout, spec_seed
-from orchestral.judge import judge_artifact
 from orchestral.judge import (
     JUDGE_CHAT_ARTIFACT_CAP,
     JUDGE_DECISIONS_ARTIFACT_CAP,
@@ -925,19 +924,9 @@ class Runner:
                 else:
                     ledger.add_many(judge_costs)
                     report["judge"] = judge_result
-                    code_execution_pending = (
-                        task.type == "code"
-                        and report.get("execution", {}).get("executed") is not True
-                    )
-                    # The judge sets `score` when it produced one and no code
-                    # execution is still pending; it never mutates `passes`.
-                    if judge_result.get("score") is not None and not code_execution_pending:
-                        report["score"] = judge_result["score"]
-                        report["score_source"] = "judge"
-
-            # The record says which rule produced `score`, so a reader never has
-            # to guess whether the stored number is measured or judged.
-            report.setdefault("score_source", "mechanical")
+                    # KTD14: the judge never mutates `passes` or `score` — the
+                    # stored verdict is mechanical-only; judge evidence lives
+                    # on the judge_* fields and report.judge.
 
 
             logger.lifecycle(
@@ -1281,7 +1270,6 @@ class Runner:
 
     def _validate_image(self, task: TaskSpec, artifact: bytes) -> tuple[bool, dict[str, Any]]:
         requested = set(task.validation) if task.validation else {"non_empty", "png_signature"}
-        known = {"non_empty", "png_signature"}
         checks: dict[str, bool] = {}
         errors: list[str] = []
 
@@ -1442,7 +1430,6 @@ class Runner:
 
     def _validate_video(self, task: TaskSpec, artifact: bytes) -> tuple[bool, dict[str, Any]]:
         requested = set(task.validation) if task.validation else {"non_empty", "mp4_signature"}
-        known = {"non_empty", "mp4_signature"}
         checks: dict[str, bool] = {}
         errors: list[str] = []
 

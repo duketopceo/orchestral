@@ -187,7 +187,17 @@ class TestScoreAxesStaySeparate(unittest.TestCase):
         fake = _CodeJudgeFake(
             "def fizzbuzz(n):\n    return n\n",  # passes 1 of 2 tests
             json.dumps({"score": 0.9, "passed": True, "reasoning": "fine"}))
-        with tempfile.TemporaryDirectory() as tmp:
+        # code execution is fail-closed in this release, so stub the suite
+        # the way a real 1-of-2 run reports it — the point under test is that
+        # the mechanical fraction reaches `score` untouched by the judge
+        executed_suite = {
+            "executed": True, "tests_run": 2, "failures": 1, "errors": 0,
+            "skipped": 0, "ok": False, "timed_out": False, "returncode": 1,
+            "output_tail": "", "runtime": "stub",
+        }
+        with tempfile.TemporaryDirectory() as tmp, \
+                unittest.mock.patch(
+                    "orchestral.runner.run_unittest_suite", return_value=executed_suite):
             meta = Runner(
                 runs_dir=tmp, planner="raw",
                 clients={"orchestrator": fake, "worker": fake, "judge": fake},

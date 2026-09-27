@@ -1486,6 +1486,39 @@ class TestMediaSpecsAreNotJudgedByTextChecks(unittest.TestCase):
     def test_declared_difficulty_clears_the_info(self):
         self.assertNotIn("unlabeled_difficulty", _rules(_task(metadata={"difficulty": "hard"})))
 
+    def test_tests_gated_code_without_reference_is_an_error(self):
+        found = _rules(_task(type="code", metadata={
+            "module": "solution.py",
+            "tests": "import unittest\n\nclass T(unittest.TestCase):\n    def test_x(self): pass\n",
+        }))
+        self.assertEqual(found["missing_reference"][0].severity, ERROR)
+
+    def test_reference_fileset_clears_missing_reference(self):
+        found = _rules(_task(type="code", metadata={
+            "module": "solution.py",
+            "tests": "import unittest\n\nclass T(unittest.TestCase):\n    def test_x(self): pass\n",
+            "reference": {"solution.py": "def solve(x):\n    return x\n"},
+        }))
+        self.assertNotIn("missing_reference", found)
+
+    def test_swe_patch_patch_counts_as_reference(self):
+        meta = {
+            "module": "app.py",
+            "files": {"app.py": "X = 1\n"},
+            "tests": "import unittest\n\nclass T(unittest.TestCase):\n    def test_x(self): pass\n",
+        }
+        self.assertIn("missing_reference", _rules(_task(type="swe-patch", metadata=meta)))
+        self.assertNotIn("missing_reference", _rules(_task(
+            type="swe-patch",
+            metadata={**meta, "patch": "--- a/app.py\n+++ b/app.py\n@@ -1 +1 @@\n-X = 1\n+X = 2\n"})))
+
+    def test_non_executable_type_with_tests_is_unaffected(self):
+        # The rule scopes to code/bugfix/swe-patch only.
+        found = _rules(_task(type="extract", metadata={
+            "tests": "import unittest\n\nclass T(unittest.TestCase):\n    def test_x(self): pass\n",
+        }))
+        self.assertNotIn("missing_reference", found)
+
     def test_metadata_required_clears_the_finding_when_the_grader_will_read_it(self):
         """`has_required` is the only thing that makes the declaration mean anything."""
         spec = _task(validation=["html", "has_required"], metadata={"required": ["kite"]})

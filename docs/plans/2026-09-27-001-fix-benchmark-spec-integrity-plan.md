@@ -95,13 +95,13 @@ The failures break both directions of trust: conforming work can fail
   Each confirmed contradiction is fixed in the YAML; the commit message and
   plan handoff note which side (spec vs test) moved. Ambiguous spec text is
   tightened in the same edit.
-- **KTD-5 — Difficulty labels on curated specs only.** Add
-  `metadata.difficulty: easy|medium|hard` to the non-batch named specs.
-  The `html-batch-100`/`router-eval` families stay unlabeled — they are one
-  problem counted many times (see audit's `near_duplicate_family`), which is
-  a suite-composition question, not a labeling one. Audit's
-  `unlabeled_difficulty` check learns to skip family members that inherit
-  from a labeled parent or are marked `metadata.suite`.
+- **KTD-5 — Difficulty labels suite-wide.** Add
+  `metadata.difficulty: easy|medium|hard` to all named specs, and emit
+  `difficulty: easy` from `scripts/gen_html_tasks.py` so generated
+  `html-batch-*`/`router-eval` members carry it too (the generator is
+  authoritative — the committed YAMLs are pinned to its output). Note the
+  interpretation caveat: a labeled batch member is still one problem counted
+  ~100×; `near_duplicate_family` remains the de-weighting mechanism.
 
 ## Assumptions
 
@@ -131,7 +131,7 @@ The failures break both directions of trust: conforming work can fail
 ### Deferred to Follow-Up Work
 
 - Whether `html-batch-100` and `router-eval` stay as families, collapse to
-  representatives, or gain family-level difficulty labels.
+  representatives, or are de-weighted in headline aggregates.
 - Authoring harder developer-shaped tasks (multi-file repo bugfixes,
   log-driven debugging, refactor-with-constraints) once the suite is
   trustworthy enough for results to mean something.

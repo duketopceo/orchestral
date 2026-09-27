@@ -48,10 +48,19 @@ def _script(value: Any) -> str:
     return str(value or "")
 
 
+def _fixture_authorizer(action: int, _a: Any, _b: Any, _db: Any, _src: Any) -> int:
+    """Fixture scripts may create and fill tables — never attach or detach
+    databases, which would let spec SQL read/write outside the tmpdir."""
+    if action in (sqlite3.SQLITE_ATTACH, sqlite3.SQLITE_DETACH):
+        return sqlite3.SQLITE_DENY
+    return sqlite3.SQLITE_OK
+
+
 def build_fixture(dest: Path, schema_sql: str, seed_sql: str) -> Path:
     """Create the task's sqlite database under `dest`; return its path."""
     db = dest / "fixture.db"
     conn = sqlite3.connect(db)
+    conn.set_authorizer(_fixture_authorizer)
     try:
         if schema_sql:
             conn.executescript(schema_sql)

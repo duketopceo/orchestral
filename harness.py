@@ -1974,6 +1974,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Spec self-verification — replay each spec's reference through its own grading (no model calls)",
     )
     selfcheck.add_argument("--tasks-dir", default=argparse.SUPPRESS, help="Task spec directory")
+    selfcheck.add_argument("--runs-dir", default=argparse.SUPPRESS, help="Root directory for run data")
     selfcheck.add_argument("--task", default=None, help="Limit to one task id")
     selfcheck.add_argument(
         "--execute",

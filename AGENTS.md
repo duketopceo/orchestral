@@ -59,6 +59,14 @@ scripts/bootstrap-venv.sh /tmp/gate-venv
 /tmp/gate-venv/bin/python -m mypy orchestral harness.py
 ```
 
+When `tasks/` specs or grading behavior change, also run the spec-integrity
+gates — CI runs both:
+
+```bash
+/tmp/gate-venv/bin/python harness.py audit --strict
+/tmp/gate-venv/bin/python harness.py selfcheck --execute
+```
+
 `python -m compileall` is not verification, and a skipped test is not a
 passing test. To exercise a run end to end:
 

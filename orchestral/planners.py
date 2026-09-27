@@ -1490,22 +1490,26 @@ def delegate_agentic(
         # never spawn — return the spec's declared reference oracle so the
         # pipeline still proves itself end-to-end
         if is_fileset:
+            # `reference` is canonical (selfcheck replays it); `files` is the
+            # broken fixture for bugfix specs — only a last resort.
+            ref_key = next(
+                (k for k in ("reference", "reference_files", "files")
+                 if task.metadata.get(k)),
+                "files",
+            )
             files = {
                 str(k): str(v)
-                for k, v in (
-                    (task.metadata.get("reference_files")
-                     or task.metadata.get("files"))
-                    or {}
-                ).items()
+                for k, v in (task.metadata.get(ref_key) or {}).items()
             }
             reference_diff = ""
         else:
+            ref_key = "patch"
             files = {}
             reference_diff = str(task.metadata.get("patch") or "")
         completion = {
             "executor": adapter.name,
             "dry_run": True,
-            "reference": "metadata.files" if is_fileset else "metadata.patch",
+            "reference": f"metadata.{ref_key}",
         }
         cost = _fake_cost(worker, {"subtask": subtask.get("id")}, completion)
         cost["phase"] = "delegate"

@@ -77,26 +77,56 @@ class TestReferenceReplay(unittest.TestCase):
             "terminal",
             fs={"app.ini": "debug = true\n"},
             commands=[
-                {"run": "grep debug app.ini"},
+                {"run": "cat app.ini"},
                 {"run": 'echo "debug = false" > app.ini'},
             ],
             expect={"files": {"app.ini": {"contains": "debug = false"}}},
         )
-        # `echo >` may not be a supported verb — if the reference plan can't
-        # run in the virtual shell, that is itself the finding we report.
-        found = check_spec(spec, None, self.probe)
-        rules = [f.rule for f in found]
-        self.assertIn(rules, ([], ["reference_fails_validation"]))
+        self.assertEqual(check_spec(spec, None, self.probe), [])
 
-    def test_needle_without_answer_is_missing_reference(self) -> None:
+    def test_traversal_reference_path_flags_invalid(self) -> None:
+        spec = _spec(
+            "code",
+            module="solution.py",
+            expected_paths=["solution.py"],
+            tests="import unittest\n",
+            reference={"../escape.py": "x = 1\n", "solution.py": "def answer():\n    return 42\n"},
+        )
+        found = check_spec(spec, None, self.probe)
+        self.assertEqual([f.rule for f in found], ["invalid_reference"])
+        # Layer B degrades to info — the layer-A error already fired.
+        found = check_execution(spec, None)
+        self.assertEqual([(f.rule, f.severity) for f in found],
+                         [("execute_skipped_no_reference", "info")])
+
+    def test_shadowing_reference_member_flags_invalid(self) -> None:
+        spec = _spec(
+            "code",
+            module="solution.py",
+            tests=(
+                "import unittest\nimport solution\n\n"
+                "class T(unittest.TestCase):\n"
+                "    def test_x(self):\n"
+                "        self.assertEqual(solution.answer(), 42)\n"
+            ),
+            reference={
+                "solution.py": "def answer():\n    return 42\n",
+                "unittest/__main__.py": "import sys; sys.exit(0)\n",
+            },
+        )
+        found = check_execution(spec, None)
+        self.assertEqual([f.rule for f in found], ["invalid_reference"])
+        self.assertIn("unittest/__main__.py", found[0].detail)
+
+    def test_needle_without_answer_is_missing_replayable_reference(self) -> None:
         spec = _spec("needle", document="haystack", validation=["exact_answer"])
         found = check_spec(spec, None, self.probe)
-        self.assertEqual([f.rule for f in found], ["missing_reference"])
+        self.assertEqual([f.rule for f in found], ["missing_replayable_reference"])
 
-    def test_code_without_reference_is_missing_reference(self) -> None:
+    def test_code_without_reference_is_missing_replayable_reference(self) -> None:
         spec = _spec("code", module="solution.py", tests="import unittest")
         found = check_spec(spec, None, self.probe)
-        self.assertEqual([f.rule for f in found], ["missing_reference"])
+        self.assertEqual([f.rule for f in found], ["missing_replayable_reference"])
 
     def test_code_reference_failing_compile_flags(self) -> None:
         spec = _spec(
@@ -177,6 +207,50 @@ class TestExecuteLayer(unittest.TestCase):
     def test_no_tests_is_silent(self) -> None:
         self.assertEqual(check_execution(_spec("code", module="a.py"), None), [])
 
+    def test_zero_test_suite_flags(self) -> None:
+        # A suite that defines no TestCase must not self-certify.
+        spec = _spec(
+            "code",
+            module="solution.py",
+            tests="import unittest\n",
+            reference={"solution.py": "def answer():\n    return 42\n"},
+        )
+        found = check_execution(spec, None)
+        self.assertEqual([f.rule for f in found], ["reference_fails_tests"])
+        self.assertIn("zero tests", found[0].detail)
+
+    def test_timeout_flags(self) -> None:
+        spec = _spec(
+            "code",
+            module="solution.py",
+            timeout_seconds=1,
+            tests=(
+                "import time, unittest\n\n"
+                "class T(unittest.TestCase):\n"
+                "    def test_z(self):\n"
+                "        time.sleep(30)\n"
+            ),
+            reference={"solution.py": "def answer():\n    return 42\n"},
+        )
+        found = check_execution(spec, None)
+        self.assertEqual([f.rule for f in found], ["reference_fails_tests"])
+        self.assertIn("exceeded", found[0].detail)
+
+    def test_non_numeric_timeout_falls_back_to_default(self) -> None:
+        spec = _spec(
+            "code",
+            module="solution.py",
+            timeout_seconds="bogus",
+            tests=(
+                "import unittest\nimport solution\n\n"
+                "class T(unittest.TestCase):\n"
+                "    def test_x(self):\n"
+                "        self.assertEqual(solution.answer(), 42)\n"
+            ),
+            reference={"solution.py": "def answer():\n    return 42\n"},
+        )
+        self.assertEqual(check_execution(spec, None), [])
+
     def test_missing_fileset_is_info_not_error(self) -> None:
         spec = _spec("code", module="a.py", tests="import unittest\n")
         found = check_execution(spec, None)
@@ -228,6 +302,35 @@ class TestRunsLayer(unittest.TestCase):
             found = check_runs(RunStore(tmp))
         self.assertEqual([f.rule for f in found], ["no_run_data"])
 
+    def test_dirty_and_filtered_runs_are_skipped(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            store = RunStore(root)
+            # Malformed JSON, non-dict report, and missing-checks report.
+            for i, body in enumerate(("not json", "[1, 2]", '{"other": 1}')):
+                run_id, run_dir = store.new_run("o", "t", f"w{i}",
+                                              config={"dry_run": False})
+                meta = store.get_run(run_id)
+                assert meta is not None
+                meta.status = "finished"
+                meta.passes = False
+                store.index_meta(meta)
+                (run_dir / "report.json").write_text(body)
+            # Unfinished and dry-run runs never enter the analysis.
+            for i, (status, dry) in enumerate((("failed", False), ("finished", True))):
+                run_id, run_dir = store.new_run("o", "t2", f"w{i}",
+                                              config={"dry_run": dry})
+                meta = store.get_run(run_id)
+                assert meta is not None
+                meta.status = status
+                meta.dry_run = dry
+                meta.passes = False
+                store.index_meta(meta)
+                (run_dir / "report.json").write_text(json.dumps(
+                    {"checks": {"tests_pass": False}}))
+            found = check_runs(RunStore(tmp))
+        self.assertEqual([f.rule for f in found], [])
+
     def test_never_executed_check_not_counted_as_suspect(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             store = RunStore(tmp)
@@ -270,6 +373,44 @@ class TestRunSelfcheck(unittest.TestCase):
             findings, code = run_selfcheck(root, task_id="good")
             self.assertEqual(code, 0)
             self.assertFalse(any(f.severity == "error" for f in findings))
+
+    def test_unknown_task_id_is_an_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            findings, code = run_selfcheck(Path(tmp), task_id="nope")
+        self.assertEqual(code, 1)
+        self.assertEqual([f.rule for f in findings], ["unknown_task"])
+
+    def test_crashing_spec_becomes_selfcheck_error_not_abort(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write_spec(root, "hostile", {
+                "id": "hostile", "type": "terminal", "prompt": "fix",
+                # fs must be a mapping — a string crashes check_terminal.
+                "metadata": {"fs": "oops", "commands": [{"run": "ls"}],
+                             "expect": {"files": {"a": {"equals": "x"}}}},
+            })
+            _write_spec(root, "good", {
+                "id": "good", "type": "needle", "prompt": "find",
+                "metadata": {"document": "x", "expected_answer": "x"},
+                "validation": ["exact_answer"],
+            })
+            findings, code = run_selfcheck(root)
+        self.assertEqual(code, 1)
+        errors = {f.task_id: f.rule for f in findings if f.severity == "error"}
+        self.assertEqual(errors, {"hostile": "selfcheck_error"})
+
+    def test_runs_layer_does_not_create_an_index(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = Path(tmp) / "runs-absent"
+            findings, _ = run_selfcheck(REPO_TASKS, runs_dir=missing)
+            self.assertFalse((missing / "index.db").exists())
+        self.assertIn("no_run_data", [f.rule for f in findings])
+
+    def test_parser_accepts_runs_dir_on_subcommand(self) -> None:
+        from harness import build_parser
+        args = build_parser().parse_args(
+            ["selfcheck", "--runs", "--runs-dir", "elsewhere"])
+        self.assertEqual(args.runs_dir, "elsewhere")
 
 
 class TestShippedSuite(unittest.TestCase):

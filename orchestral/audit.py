@@ -54,6 +54,7 @@ TEXT_CHECKS = frozenset(
         "within_budget",
         "has_required",
         "no_forbidden",
+        "exact_answer",
         "matches_pattern",
         "no_pattern",
     }
@@ -66,6 +67,7 @@ VALIDATION_CHECKS: dict[str, frozenset[str]] = {
     "image": frozenset({"non_empty", "png_signature"}),
     "video": frozenset({"non_empty", "mp4_signature"}),
     "multi-file": frozenset({"non_empty", "zip_signature", "has_paths", "has_content"}),
+    "pipeline": TEXT_CHECKS,
 }
 
 # Registry names a validator expands into other checks instead of assigning
@@ -74,6 +76,7 @@ VALIDATION_SHORTHANDS: dict[str, frozenset[str]] = {
     "html": frozenset({"html"}),
     "constraint": frozenset({"html"}),
     "needle": frozenset({"html"}),
+    "pipeline": frozenset({"html"}),
 }
 
 # The grading contract each self-anchored type needs before its grader has
@@ -92,7 +95,7 @@ GRADING_CONTRACT: dict[str, tuple[str, ...]] = {
 
 # Types whose grader never reads `validation:` — they compute a fixed check set
 # from `metadata` instead. Declaring checks on these specs is always a mistake.
-IGNORES_VALIDATION = frozenset({"code", "sql", "extract", "api"})
+IGNORES_VALIDATION = frozenset({"code", "sql", "extract", "api", "bugfix", "terminal", "swe-patch"})
 
 # Types whose artifact is bytes the text checks cannot read. A `has_required`
 # token on a PNG is not a weaker gate, it is an unimplemented one — the audit
@@ -110,6 +113,9 @@ COMPUTED_CHECKS: dict[str, str] = {
     "sql": "executed, matches_reference",
     "extract": "json_parses, required_present, types_ok, contract_anchored, field score vs metadata.expected",
     "api": "missing, unexpected vs metadata.calls",
+    "bugfix": "expected_paths, quality_ok, compiles, tests_pass",
+    "terminal": "parsed, files_checked vs metadata.expect.files, command_errors, over_command_budget",
+    "swe-patch": "extracted, applies, quality_ok, tests_pass",
 }
 
 # Checks that can only pass if the artifact is *about* the task's subject.
@@ -129,7 +135,7 @@ _TEST_CASE_BASES = frozenset({"TestCase", "IsolatedAsyncioTestCase"})
 # through the same `_validate`, so a `validation: [html]` `constraint` spec gets
 # `html_parses` and `non_empty` and nothing topical. Keying this on the type name
 # was the same hole the anchor check just closed for `metadata.required`.
-SELF_ANCHORED_TYPES = frozenset({"code", "sql", "extract", "api", "multi-file"})
+SELF_ANCHORED_TYPES = frozenset({"code", "sql", "extract", "api", "multi-file", "bugfix", "terminal", "swe-patch"})
 
 # Textbook problems with heavy pretraining coverage. Matching one is a
 # contamination risk, not proof of contamination — the signal is that the

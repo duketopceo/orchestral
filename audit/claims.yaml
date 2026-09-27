@@ -1,0 +1,107 @@
+# Claims battery — audited by `harness.py audit --judge '~typesafe/jev-latest'`
+#
+# Each claim is what WE believe, with evidence attached. The judge rules on
+# support, fatal flaws, and evidentiary strength. Claims we expect to get
+# scorched stay in the file — the audit is worthless if it's rigged to pass.
+# `groups:` names are resolved to live index stats at audit time.
+
+claims:
+  - id: harness-v2-valid
+    statement: >-
+      The v2 grids measure model capability, and v1's ~25% pass rate on the
+      same pairings was mostly harness artifact (assembly picking the wrong
+      subtask output, empty artifacts reaching validation).
+    context: >-
+      Eval harness: orchestrator plans subtasks, workers execute, assembler
+      picks a final artifact, mechanical validators grade it. v1->v2 fixed
+      a pick-0 fallback, empty-artifact paths, and missing task context.
+    groups: [glm-vs-gemma, glm-vs-gemma-v2]
+    evidence:
+      delta_cells: "23 improved / 2 regressed / 19 stable / 0 one-sided"
+      mechanism: "assemble pick defaulted to candidate 0 on verbose responses"
+    caveats: ["failed runs excluded from finished-denominator pass rates"]
+
+  - id: cheap-pairs-competitive
+    statement: >-
+      A cheap orchestrator+worker pairing (GLM-5.3-flash orchestrating
+      Gemma-class workers) is competitive with a DeepSeek orchestrator
+      pairing on this suite.
+    context: >-
+      Groups differ in more than model: prompt variant (explicit-schema vs
+      default), failure rates, and sample completeness all differ between
+      them. Cost differs ~4x.
+    groups: [glm-vs-gemma-v2, deepseek-explicit-v2, anchor-deepseek-explicit]
+    evidence:
+      note: "deepseek-explicit-v2 has 84% pass-of-finished but 42% infra failure"
+    caveats:
+      - "prompt variant confounded with orchestrator identity"
+      - "42% failure rate on deepseek-explicit-v2 skews pass-of-finished"
+
+  - id: judge-axis-adds-signal
+    statement: >-
+      The semantic judge axis adds real signal that mechanical validation
+      misses — artifacts passing structural checks are rejected at a
+      materially higher rate once judged.
+    context: >-
+      v2 pass = mechanical only. v3 pass = mechanical AND judge. Same tasks,
+      same models, judge = decisions-engine noul on the stored artifact.
+    groups: [glm-vs-gemma-v2, glm-vs-gemma-v3]
+    evidence:
+      examples:
+        - "sql-dedup-latest-price: mechanical pass, jev noul 0.43 (fail)"
+        - "sql-cohort-repeat: mechanical pass, jev noul 0.80 (agree)"
+        - "sql-net-revenue: mechanical fail (truncated), jev noul 0.04 (agree)"
+    caveats: ["judge uncalibrated — no human-labeled agreement measured yet"]
+
+  - id: sql-suite-discriminates
+    statement: >-
+      The expanded SQL task suite discriminates SQL reasoning — fixtures are
+      engineered so plausible-looking wrong queries return different results.
+    context: >-
+      Four adversarial specs: dedup-latest-price (MAX vs latest tie-break),
+      net-revenue (1:N refund fan-out), cohort-repeat (MIN-order cohort vs
+      filter ordering), mom-growth (LAG + NULL boundary + status pollution).
+      Each verified to diverge on the trap query before commit.
+    groups: [sql-suite-smoke]
+    evidence:
+      spec_audit: "difficulty 1.5-2.0/4, adversarial 1.4-1.7/4, lowball 0.41-0.49"
+      smoke_result: "GLM worker: 2/4 pass, real failure classes (truncation, malformed)"
+    caveats: ["n=1 worker, 1 replicate — discrimination unproven at scale"]
+
+  - id: suite-breadth-honest
+    statement: >-
+      The 122-spec suite measures broad model capability across 13 task types.
+    context: >-
+      100 of 122 specs are html-batch-* near-duplicate landing-page prompts.
+      jev spec-audit scored them lowball ~0.69 with adversarial ~0.3.
+    groups: []
+    evidence:
+      spec_audit: "html-batch mean lowball 0.69, hand-authored mean lowball ~0.44"
+      composition: "100/122 specs are one task family"
+    caveats: ["aggregate pass rates are dominated by the batch family"]
+
+  - id: publishable-as-rankings
+    statement: >-
+      Current results are strong enough to publish as model pair rankings.
+    context: >-
+      Cells keyed on (task, orchestrator, worker, group). Replicates supported
+      but most grids ran rep=1. No judge calibration labels. Task specs are
+      public-ish patterns (fizzbuzz, LRU) likely in training corpora.
+    groups: [glm-vs-gemma-v3]
+    evidence:
+      replication: "24 of 191 finished cells are n=1"
+      calibration: "no human-vs-judge agreement measured"
+      contamination: "no held-out or novel-task check performed"
+    caveats: []
+
+  - id: cost-efficiency-real
+    statement: >-
+      The harness measures pairing quality at negligible cost — a 132-run
+      judge-gated grid costs under $0.30.
+    context: >-
+      Costs are provider-reported usage priced against configured rate cards,
+      logged per call into the calls table, summed per run.
+    groups: [glm-vs-gemma-v3]
+    evidence:
+      pricing_source: "provider usage fields + static rate card (models/*.yaml)"
+    caveats: ["rate-card drift possible — `harness.py prices` exists to check"]

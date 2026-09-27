@@ -18,14 +18,16 @@ from orchestral.storage import RunMeta
 
 _RUN_FIELDS = (
     "run_id", "started_at", "finished_at", "status", "task_id",
-    "orchestrator", "worker", "score", "passes", "failure_reason",
+    "orchestrator", "worker", "score", "judge_score", "judge_passed",
+    "passes", "failure_reason",
     "total_cost_usd", "total_input_tokens", "total_output_tokens",
     "latency_ms", "run_group", "replicate", "run_dir",
 )
 
 _PAIRING_FIELDS = (
     "orchestrator", "worker", "runs", "finished", "passed", "tasks_covered",
-    "pass_rate", "score_median", "score_mean", "cost_median", "cost_total",
+    "pass_rate", "score_median", "score_mean", "judge_score_median",
+    "cost_median", "cost_total",
     "duration_median_ms", "failure_rate", "cost_per_pass", "low_sample",
 )
 

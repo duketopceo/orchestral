@@ -186,6 +186,8 @@ def _groups_table_html(runs: list[Any]) -> str:
     rows = ""
     for c in cells:
         score = f"{c.score_mean:.2f} &plusmn; {c.score_sd:.2f}" if c.score_mean is not None else "-"
+        jscore = (f"{c.judge_score_mean:.2f} &plusmn; {c.judge_score_sd:.2f}"
+                  if c.judge_score_mean is not None else "-")
         cost = f"${c.cost_mean:.4f} &plusmn; ${c.cost_sd:.4f}"
         spd = f"{c.successes_per_dollar:.0f}" if c.successes_per_dollar is not None else "-"
         fails = ", ".join(f"{_esc(k.split(':')[-1])}&times;{v}" for k, v in sorted(c.failures.items()))
@@ -199,6 +201,7 @@ def _groups_table_html(runs: list[Any]) -> str:
             f"<td>{c.runs}</td>"
             f"<td>{pass_pct}</td>"
             f"<td>{score}</td>"
+            f"<td>{jscore}</td>"
             f"<td>{cost}</td>"
             f"<td>{c.latency_p50:.0f} / {c.latency_p95:.0f}</td>"
             f"<td>{spd}</td>"
@@ -210,7 +213,7 @@ def _groups_table_html(runs: list[Any]) -> str:
   <table>
     <tr>
       <th>group</th><th>task</th><th>orchestrator</th><th>worker</th>
-      <th>n</th><th>pass%</th><th>score &plusmn; sd</th><th>cost &plusmn; sd</th>
+      <th>n</th><th>pass%</th><th>mech &plusmn; sd</th><th>judge &plusmn; sd</th><th>cost &plusmn; sd</th>
       <th>p50 / p95 ms</th><th>succ/$</th><th>failures</th>
     </tr>
     {rows}
@@ -224,6 +227,7 @@ def _index_html(runs: list[Any]) -> str:
         pass_cls = "pass" if r.passes else "fail" if r.passes is False else ""
         pass_label = str(r.passes) if r.passes is not None else "-"
         score = f"{r.score:.2f}" if r.score is not None else "-"
+        jscore = f"{r.judge_score:.2f}" if r.judge_score is not None else "-"
         group_cell = _esc(r.run_group) if r.run_group else "-"
         rep_cell = str(r.replicate) if r.replicate is not None else "-"
         rows += (
@@ -237,6 +241,7 @@ def _index_html(runs: list[Any]) -> str:
             f"<td>{rep_cell}</td>"
             f"<td>${r.total_cost_usd:.6f}</td>"
             f"<td>{score}</td>"
+            f"<td>{jscore}</td>"
             f"<td><span class='tag {pass_cls}'>{pass_label}</span></td>"
             f"</tr>"
         )
@@ -256,7 +261,7 @@ def _index_html(runs: list[Any]) -> str:
   <table>
     <tr>
       <th>run_id</th><th>started</th><th>orchestrator</th><th>task</th><th>worker</th>
-      <th>group</th><th>rep</th><th>cost</th><th>score</th><th>pass</th>
+      <th>group</th><th>rep</th><th>cost</th><th>mech</th><th>judge</th><th>pass</th>
     </tr>
     {rows}
   </table>
@@ -333,6 +338,8 @@ def _gallery_card(run: Any, shots_dir: Path) -> str:
     pass_cls = "pass" if run.passes else "fail" if run.passes is False else ""
     pass_label = str(run.passes) if run.passes is not None else "-"
     score = f"{run.score:.2f}" if run.score is not None else "-"
+    jscore_tag = (f"<span class='tag'>judge {run.judge_score:.2f}</span> "
+                  if run.judge_score is not None else "")
     return (
         f"<div class='card'>"
         f"<a href='{run.run_id}.html'>{thumb}</a>"
@@ -340,7 +347,7 @@ def _gallery_card(run: Any, shots_dir: Path) -> str:
         f"<div><a href='{run.run_id}.html'>{run.run_id}</a></div>"
         f"<div>{_esc(run.orchestrator)} &rarr; {_esc(run.worker)}</div>"
         f"<div class='tags'><span class='tag {pass_cls}'>{pass_label}</span> "
-        f"<span class='tag'>score {score}</span> "
+        f"<span class='tag'>mech {score}</span> {jscore_tag}"
         f"<span class='tag'>${run.total_cost_usd:.4f}</span></div>"
         f"</div></div>"
     )
@@ -543,6 +550,8 @@ def _scatter_svg(runs: list[Any]) -> str:
     x_max = max(xs) or 1.0
 
     def quality(r: Any) -> float:
+        if r.judge_score is not None:
+            return r.judge_score
         if r.score is not None:
             return r.score
         return 1.0 if r.passes else 0.0
@@ -559,8 +568,9 @@ def _scatter_svg(runs: list[Any]) -> str:
         pairing = f"{r.orchestrator} → {r.worker}"
         color = pairing_colors.setdefault(pairing, _SCATTER_PALETTE[len(pairing_colors) % len(_SCATTER_PALETTE)])
         q = quality(r)
-        judged = r.score is not None
-        label = f"{_esc(pairing)} · {_esc(r.task_id)} · ${r.total_cost_usd:.4f} · {'score' if judged else 'pass'} {q:.2f}"
+        judged = r.judge_score is not None
+        axis = "judge" if judged else "score" if r.score is not None else "pass"
+        label = f"{_esc(pairing)} · {_esc(r.task_id)} · ${r.total_cost_usd:.4f} · {axis} {q:.2f}"
         circles.append(
             f"<circle cx='{px(r.total_cost_usd):.1f}' cy='{py(q):.1f}' r='5' fill='{color}'"
             f" fill-opacity='{0.85 if judged else 0.4}' stroke='{color}' stroke-width='1'>"

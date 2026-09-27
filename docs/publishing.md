@@ -135,9 +135,9 @@ manifest records any withheld file.
 - **Video runs**: `artifact.mp4`/`worker-*.mp4` copy verbatim; `events.jsonl`
   records the prompt and job id but never the video payload or job URLs.
 - **Copies only allowlisted names**: `run.json`, `events.jsonl`, `plan.json`,
-  `cost.json`, `report.json`, `metrics.json`, `manifest.json`, `worker-*`,
-  `artifact.*`, `screenshot.*`, `judge*`. Random files you dropped into a run
-  directory stay behind.
+  `cost.json`, `report.json`, `metrics.json`, `manifest.json`, `review.json`,
+  `worker-*`, `artifact.*`, `screenshot.*`, `judge*`. Random files you dropped
+  into a run directory stay behind.
 - **Writes `manifest.json`**: one entry per run with run_id, orchestrator,
   task_id, worker, status, score, passes, cost, token totals, and the
   `runs-pub` path — enough to build a gallery or results table. Every entry

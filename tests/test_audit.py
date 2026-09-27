@@ -146,6 +146,7 @@ VALIDATOR_FOR_TYPE = {
     "image": "_validate_image",
     "video": "_validate_video",
     "multi-file": "_validate_multi",
+    "pipeline": "_validate",
 }
 
 

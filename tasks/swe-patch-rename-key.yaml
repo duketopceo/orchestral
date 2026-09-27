@@ -1,0 +1,68 @@
+id: swe-patch-rename-key
+type: swe-patch
+prompt: |
+  The repo config key `timeout_ms` was renamed to `request_timeout_ms`.
+  `config.py` still reads the old name, and `app.py` passes the old name.
+
+  Produce a unified diff (---/+++ with @@ hunks) that renames the key
+  everywhere. Return a JSON object {"patch": "<unified diff>"}.
+
+  The patch must apply cleanly with `patch -p1` semantics against the
+  provided files.
+metadata:
+  module: config.py
+  timeout_seconds: 30
+  max_code_lines: 80
+  no_unsafe: true
+  no_external_deps: true
+  files:
+    config.py: |
+      DEFAULTS = {
+          "timeout_ms": 5000,
+          "retries": 3,
+      }
+
+      def load(overrides=None):
+          cfg = dict(DEFAULTS)
+          cfg.update(overrides or {})
+          return cfg
+    app.py: |
+      from config import load
+
+      def main():
+          cfg = load({"timeout_ms": 9000})
+          return cfg["timeout_ms"]
+  patch: |
+    --- a/config.py
+    +++ b/config.py
+    @@ -1,4 +1,4 @@
+     DEFAULTS = {
+    -    "timeout_ms": 5000,
+    +    "request_timeout_ms": 5000,
+         "retries": 3,
+     }
+     
+    --- a/app.py
+    +++ b/app.py
+    @@ -1,5 +1,5 @@
+     from config import load
+     
+     def main():
+    -    cfg = load({"timeout_ms": 9000})
+    -    return cfg["timeout_ms"]
+    +    cfg = load({"request_timeout_ms": 9000})
+    +    return cfg["request_timeout_ms"]
+  tests: |
+    import unittest
+    from app import main
+    from config import load
+
+    class TestRename(unittest.TestCase):
+        def test_main_uses_new_key(self):
+            self.assertEqual(main(), 9000)
+
+        def test_default_new_key(self):
+            self.assertEqual(load()["request_timeout_ms"], 5000)
+
+        def test_old_key_gone(self):
+            self.assertNotIn("timeout_ms", load())

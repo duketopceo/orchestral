@@ -122,5 +122,52 @@ class TestNeedleRunner(unittest.TestCase):
             self.assertFalse(meta.passes)
 
 
+class TestResolvePick(unittest.TestCase):
+    """The assemble pick must survive wrapped/verbose orchestrator output —
+    a `{"plan": ...}` object first then `{"subtask_id": N}` used to resolve
+    to nothing and silently pick candidate 0."""
+
+    def _results(self, n: int = 4) -> list[dict]:
+        return [{"subtask_id": i + 1, "content": f"out-{i + 1}"} for i in range(n)]
+
+    def test_wrapped_selection_finds_later_object(self):
+        from orchestral.planners import _resolve_pick
+        content = '{"plan": "reasoning about candidates"}\n{"subtask_id": 4}'
+        pos, resolved = _resolve_pick(content, self._results())
+        self.assertTrue(resolved)
+        self.assertEqual(pos, 3)
+
+    def test_bare_subtask_id(self):
+        from orchestral.planners import _resolve_pick
+        pos, resolved = _resolve_pick('{"subtask_id": 2}', self._results())
+        self.assertTrue(resolved)
+        self.assertEqual(pos, 1)
+
+    def test_index_is_zero_based_position(self):
+        from orchestral.planners import _resolve_pick
+        pos, resolved = _resolve_pick('{"index": 2}', self._results())
+        self.assertTrue(resolved)
+        self.assertEqual(pos, 2)
+
+    def test_index_inside_wrapper_object(self):
+        from orchestral.planners import _resolve_pick
+        pos, resolved = _resolve_pick(
+            '{"reasoning": "cand 3 is best", "index": 3}', self._results())
+        self.assertTrue(resolved)
+        self.assertEqual(pos, 3)
+
+    def test_unresolvable_falls_back_to_zero(self):
+        from orchestral.planners import _resolve_pick
+        pos, resolved = _resolve_pick("no json here at all", self._results())
+        self.assertFalse(resolved)
+        self.assertEqual(pos, 0)
+
+    def test_out_of_range_not_resolved(self):
+        from orchestral.planners import _resolve_pick
+        pos, resolved = _resolve_pick('{"subtask_id": 99}', self._results())
+        self.assertFalse(resolved)
+        self.assertEqual(pos, 0)
+
+
 if __name__ == "__main__":
     unittest.main()

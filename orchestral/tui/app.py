@@ -16,8 +16,19 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.widgets import DataTable, Footer, Header, Input
 
-from orchestral.config import ModelConfig, TaskSpec, find_task, load_models, load_task, load_yaml
+from orchestral.agentexec import ExecutorPreflightError, launch_gate
+from orchestral.config import (
+    ModelConfig,
+    TaskSpec,
+    find_task,
+    load_models,
+    load_task,
+    load_yaml,
+    resolve_judge,
+    resolve_model,
+)
 from orchestral.export import runs_csv
+from orchestral.judge import judge_choices
 from orchestral.runner import Runner
 from orchestral.storage import RunStore
 from orchestral.tui.screens import (
@@ -99,12 +110,14 @@ class OrchestralApp(App):
         tasks_dir: Path,
         models_dir: Path,
         reports_dir: Path | None = None,
+        allow_agent_exec: bool = False,
     ) -> None:
         super().__init__()
         self.runs_dir = runs_dir
         self.tasks_dir = tasks_dir
         self.models_dir = models_dir
         self.reports_dir = reports_dir or Path("reports")
+        self.allow_agent_exec = allow_agent_exec
         self.store = RunStore(runs_dir)
         self.jobs: list[Job] = []
         self._runs: list[Any] = []
@@ -272,7 +285,7 @@ class OrchestralApp(App):
         tasks = _task_ids(self.tasks_dir)
         orchestrators = _model_slugs(self.models_dir, "orchestrator")
         workers = _model_slugs(self.models_dir, "worker")
-        judges = [m.slug for m in self._all_models()]
+        judges = judge_choices([m.slug for m in self._all_models()])
         if not tasks or not orchestrators or not workers:
             self.notify("need at least one task, orchestrator, and worker configured", severity="error")
             return
@@ -290,7 +303,22 @@ class OrchestralApp(App):
     def _start_job(self, spec: dict[str, Any] | None) -> None:
         if not spec:
             return
-        label = f"{spec['task_id']}·{spec['worker'].split('/')[-1]}"
+        # Launch-gate parity with the web registry: a pairing/config error
+        # is a notification, not a failed run. A missing task spec is left
+        # for _execute's own error path (job failure with detail).
+        try:
+            task_path = find_task(spec["task"], str(self.tasks_dir))
+            if task_path is not None:
+                worker_cfg = resolve_model(spec["worker"], self.models_dir, role="worker")
+                launch_gate(
+                    worker_cfg, load_task(task_path),
+                    allow_agent_exec=self.allow_agent_exec,
+                    probe=not spec.get("dry_run"),
+                )
+        except ExecutorPreflightError as exc:
+            self.notify(str(exc), severity="error")
+            return
+        label = f"{spec['task']}·{spec['worker'].split('/')[-1]}"
         if spec["replicates"] > 1:
             label += f"×{spec['replicates']}"
         job = Job(label=label)
@@ -301,20 +329,13 @@ class OrchestralApp(App):
     def _execute(self, job: Job, spec: dict[str, Any]) -> None:
         """Runs on a worker thread — no widget access except call_from_thread."""
         try:
-            task_path = find_task(spec["task_id"], str(self.tasks_dir))
+            task_path = find_task(spec["task"], str(self.tasks_dir))
             if task_path is None:
-                raise FileNotFoundError(f"task '{spec['task_id']}' not found in {self.tasks_dir}")
+                raise FileNotFoundError(f"task '{spec['task']}' not found in {self.tasks_dir}")
             task: TaskSpec = load_task(task_path)
-            models = {m.slug: m for m in self._all_models()}
-            orchestrator = models.get(spec["orchestrator"]) or ModelConfig(
-                slug=spec["orchestrator"], name=spec["orchestrator"], role="orchestrator",
-                input_price_per_mtok=0.03, output_price_per_mtok=0.10,
-            )
-            worker = models.get(spec["worker"]) or ModelConfig(
-                slug=spec["worker"], name=spec["worker"], role="worker",
-                input_price_per_mtok=0.03, output_price_per_mtok=0.10,
-            )
-            judge = models.get(spec["judge"]) if spec.get("judge") else None
+            orchestrator = resolve_model(spec["orchestrator"], self.models_dir, role="orchestrator")
+            worker = resolve_model(spec["worker"], self.models_dir, role="worker")
+            judge = resolve_judge(spec["judge"], self.models_dir) if spec.get("judge") else None
         except Exception as exc:
             self._job_done(job, JobStatus.FAILED, f"setup failed: {exc}")
             return
@@ -335,6 +356,7 @@ class OrchestralApp(App):
                     seed=(spec["seed"] + i - 1) if spec.get("seed") is not None else None,
                     cancel_event=job.cancel_event,
                     on_run_created=job.run_ids.append,
+                    allow_agent_exec=self.allow_agent_exec,
                 ).run(task, orchestrator, worker, judge)
                 job.run_ids.append(meta.run_id)
                 job.run_ids = list(dict.fromkeys(job.run_ids))

@@ -84,6 +84,46 @@ def capture_html(
     return out_png
 
 
+def capture_page(
+    url: str,
+    *,
+    wait_for: str = "#view[data-ready]",
+    element: str | None = None,
+    width: int = 1280,
+    height: int = 800,
+    browser: Any = None,
+    timeout_ms: int = 20000,
+) -> bytes:
+    """Load a live page, wait for it to settle, return PNG bytes.
+
+    ``wait_for`` is the readiness selector (the SPA sets
+    ``#view[data-ready]`` after each render). ``element`` narrows the
+    shot to one node — e.g. ``.xcard`` for just the share card.
+    """
+
+    def _grab(b: Any) -> bytes:
+        page = b.new_page(viewport={"width": width, "height": height})
+        try:
+            page.goto(url)
+            page.wait_for_selector(wait_for, state="visible", timeout=timeout_ms)
+            if element:
+                page.wait_for_selector(element, state="visible", timeout=timeout_ms)
+                return page.locator(element).first.screenshot(type="png")
+            return page.locator(wait_for.split("[")[0]).first.screenshot(type="png")
+        finally:
+            page.close()
+
+    try:
+        if browser is not None:
+            return _grab(browser)
+        with browser_session() as shared:
+            return _grab(shared)
+    except ScreenshotUnavailable:
+        raise
+    except Exception as exc:
+        raise ScreenshotUnavailable(f"page capture failed: {exc}") from exc
+
+
 def capture_run(run_dir: str | Path, *, force: bool = False, browser: Any = None) -> tuple[Path | None, str]:
     """Screenshot a run's artifact.html into screenshot.png.
 

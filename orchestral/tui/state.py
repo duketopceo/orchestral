@@ -15,6 +15,14 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
+# Fields a launch spec may carry — must equal web.state.LAUNCH_FIELDS
+# (the parity test asserts it; divergence fails in CI, not production).
+# Executor opt-in is deliberately absent: it is a launch-context flag,
+# never a per-request field.
+LAUNCH_SPEC_FIELDS = frozenset({
+    "task", "orchestrator", "worker", "judge", "replicates", "seed", "dry_run",
+})
+
 
 class JobStatus(StrEnum):
     QUEUED = "queued"
@@ -293,16 +301,20 @@ def fmt_elapsed(started_at: str | None, finished_at: str | None = None) -> str:
         return "-"
 
 
-LB_SORTS: tuple[str, ...] = ("cost_per_pass", "pass_rate", "score_median", "cost_median", "duration_median_ms")
+LB_SORTS: tuple[str, ...] = ("cost_per_pass", "pass_rate", "judge_score_median", "cost_median", "duration_median_ms")
 
-_LB_DESC: frozenset[str] = frozenset({"pass_rate", "score_median"})
+_LB_DESC: frozenset[str] = frozenset({"pass_rate", "judge_score_median"})
 
 
 def sort_leaderboard(rows: list[Any], key: str) -> list[Any]:
-    """Sort PairingAggregate rows; None metrics always sort last."""
+    """Sort PairingAggregate rows; None metrics always sort last.
+
+    Low-sample rows never rank — they tail every ordering, so a 1-run
+    pairing can't claim a podium slot on any sort key.
+    """
     d = [r.to_dict() if hasattr(r, "to_dict") else r for r in rows]
     if key in _LB_DESC:
-        order = sorted(zip(d, rows, strict=True), key=lambda t: (t[0].get(key) is None, -(t[0].get(key) or 0)))
+        order = sorted(zip(d, rows, strict=True), key=lambda t: (bool(t[0].get("low_sample")), t[0].get(key) is None, -(t[0].get(key) or 0)))
     else:
-        order = sorted(zip(d, rows, strict=True), key=lambda t: (t[0].get(key) is None, t[0].get(key) or 0))
+        order = sorted(zip(d, rows, strict=True), key=lambda t: (bool(t[0].get("low_sample")), t[0].get(key) is None, t[0].get(key) or 0))
     return [r for _d, r in order]

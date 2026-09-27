@@ -88,6 +88,7 @@ ALLOWED_NAMES = {
     "report.json",
     "metrics.json",
     "manifest.json",
+    "review.json",
 }
 ALLOWED_PREFIXES = ("worker-", "artifact.", "screenshot.", "judge")
 

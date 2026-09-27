@@ -116,14 +116,107 @@ class TestPureLayer(unittest.TestCase):
             self.assertEqual(len(hist), 1)
             self.assertEqual(state.history_rows(store, "nomatch"), [])
 
-    def test_escaping_in_rendered_pages(self):
+    def test_annotation_roundtrip_upsert_and_validation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = RunStore(tmp)
+            store.set_annotation("run", "r1", "interesting", "worth a post")
+            store.set_annotation("group", "g1", "not")
+            anns = {(a["kind"], a["target"]): a for a in store.annotations()}
+            self.assertEqual(anns[("run", "r1")]["flag"], "interesting")
+            self.assertEqual(anns[("run", "r1")]["note"], "worth a post")
+            self.assertEqual(anns[("group", "g1")]["flag"], "not")
+            # upsert on the same (kind, target) updates rather than duplicating
+            store.set_annotation("run", "r1", "not", "revised")
+            anns = store.annotations()
+            self.assertEqual(len(anns), 2)
+            self.assertEqual(anns[0]["flag"] if anns[0]["target"] == "r1" else anns[1]["flag"], "not")
+            # clearing with '' keeps the row (note survives) but drops the flag
+            store.set_annotation("run", "r1", "", "still noted")
+            anns = {(a["kind"], a["target"]): a for a in store.annotations()}
+            self.assertEqual(anns[("run", "r1")]["flag"], "")
+            self.assertEqual(anns[("run", "r1")]["note"], "still noted")
+            with self.assertRaises(ValueError):
+                store.set_annotation("bogus", "x", "interesting")
+            with self.assertRaises(ValueError):
+                store.set_annotation("run", "x", "bogus")
+
+    def test_card_payload_run_group_and_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rid = _seed_run(tmp, run_group="g-cards")
+            store = RunStore(tmp)
+            store.set_annotation("run", rid, "interesting")
+            card = state.card_payload(store, "run", rid)
+            self.assertIsNotNone(card)
+            self.assertEqual(card["kind"], "run")
+            self.assertEqual(card["suite"], "v3")
+            self.assertEqual(card["task_id"], "t-task")
+            self.assertEqual(card["flag"], "interesting")
+            gcard = state.card_payload(store, "group", "g-cards")
+            self.assertIsNotNone(gcard)
+            self.assertEqual(gcard["suite"], "v3")
+            self.assertEqual(gcard["runs"], 1)
+            self.assertEqual(len(gcard["pairings"]), 1)
+            self.assertIn("verdict_line", gcard)
+            self.assertIn("pass_ci", gcard)
+            self.assertEqual(gcard["judged"], 0)
+            self.assertIn("verdict_line", card)
+            self.assertIn("judge_calibration", gcard)
+            # pre-made eval-set description + comparable rows
+            self.assertIn("1 tasks", gcard["description"])
+            self.assertIn("unjudged", gcard["description"])
+            self.assertEqual(len(gcard["pairing_rows"]), 1)
+            self.assertEqual(gcard["pairing_rows"][0]["pass_rate"], 1.0)
+            self.assertEqual(gcard["task_rows"][0]["task_id"], "t-task")
+            self.assertIsNone(state.card_payload(store, "run", "ghost"))
+            self.assertIsNone(state.card_payload(store, "group", "ghost"))
+
+    def test_card_payload_pairing_description_and_type_rows(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _seed_run(tmp, run_group="g1")
+            store = RunStore(tmp)
+            card = state.card_payload(store, "pairing", "o/model|w/model")
+            self.assertIsNotNone(card)
+            self.assertIn("plans", card["description"])
+            self.assertIn("mechanical pass", card["description"])
+            self.assertEqual(len(card["type_rows"]), 1)
+            self.assertEqual(card["type_rows"][0]["pass_rate"], 1.0)
+
+    def test_card_payload_judge_calibration(self):
+        """A judged run's card carries the judge's persisted calibration
+        state — uncalibrated when no labels exist yet."""
+        with tempfile.TemporaryDirectory() as tmp:
+            rid = _seed_run(tmp)
+            store = RunStore(tmp)
+            run_dir = Path(store.get_run(rid).run_dir)
+            report = json.loads((run_dir / "report.json").read_text())
+            report["judge"] = {"score": 0.9, "passed": True,
+                               "model": "j/judge", "engine": "chat"}
+            (run_dir / "report.json").write_text(json.dumps(report))
+            card = state.card_payload(store, "run", rid, reports_dir=tmp)
+            self.assertEqual(
+                card["judge_calibration"],
+                {"j/judge": {"calibrated": False, "kappa": None,
+                             "verdict_pairs": 0}})
+
+    def test_wilson_interval_and_verdict_lines(self):
+        # known binomial: 1/4 pass → wide honest interval
+        lo, hi = state._wilson(1, 4)
+        self.assertLess(lo, 0.25)
+        self.assertGreater(hi, 0.25)
+        self.assertIsNone(state._wilson(0, 0))
+        v = state._verdict_line
+        self.assertEqual(v(True, True, "finished"), "passes both axes — structure and semantics")
+        self.assertEqual(v(True, False, "finished"), "well-formed but semantically rejected")
+        self.assertEqual(v(False, True, "finished"), "mechanical reject, semantic rescue — inspect")
+        self.assertEqual(v(False, False, "finished"), "rejected on both axes")
+        self.assertEqual(v(True, None, "finished"), "mechanical pass — unjudged")
+        self.assertIn("no verdict", v(None, None, "running"))
+
+    def test_escaping_in_error_pages(self):
+        # model/path strings reach the browser through render.py's error
+        # pages — they must escape, same contract the SPA's esc() upholds
         evil = "<script>alert(1)</script>"
-        meta = {
-            "run_id": evil, "task_id": evil, "orchestrator": "o", "worker": "w",
-            "status": "finished", "passes": True, "score": 1.0,
-            "total_cost_usd": 0.01, "started_at": "t",
-        }
-        html = render.render_history([meta])
+        html = render.render_not_found(evil)
         self.assertIn("&lt;script&gt;", html)
         self.assertNotIn("<script>alert", html)
 
@@ -215,10 +308,12 @@ class TestHttpRoutes(unittest.TestCase):
         except urllib.error.HTTPError as e:
             return e.code, e.read().decode()
 
-    def _post(self, path: str, data: str) -> tuple[int, str, str]:
+    def _post(self, path: str, data: str,
+              headers: dict[str, str] | None = None) -> tuple[int, str, str]:
         req = urllib.request.Request(
             f"http://127.0.0.1:{self.port}{path}", data=data.encode(),
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            headers={"Content-Type": "application/x-www-form-urlencoded",
+                     **(headers or {})},
             method="POST",
         )
         opener = urllib.request.build_opener(_NoRedirect())
@@ -244,7 +339,11 @@ class TestHttpRoutes(unittest.TestCase):
         self.assertEqual(code, 200)
 
     def test_live_page_and_poll(self):
-        code, body = self._get(f"/run/{self.rid}/live")
+        # legacy /live URL redirects to the SPA hash route; the polling
+        # contract lives in app.js + /api/run/<id>/live
+        code, _ = self._get(f"/run/{self.rid}/live")
+        self.assertEqual(code, 200)
+        code, body = self._get("/static/app.js")
         self.assertEqual(code, 200)
         self.assertIn("/api/run/", body)
         code, body = self._get(f"/api/run/{self.rid}/live?after=0")
@@ -252,6 +351,45 @@ class TestHttpRoutes(unittest.TestCase):
         payload = json.loads(body)
         self.assertGreater(payload["next"], 0)
         self.assertIn("phase", payload)
+
+    def test_spa_shell_and_api_surface(self):
+        code, body = self._get("/")
+        self.assertEqual(code, 200)
+        self.assertIn('src="/static/app.js"', body)
+        for path in ("/api/overview", "/api/groups", "/api/tasks",
+                     "/api/models", "/api/leaderboard", "/api/runs"):
+            code, body = self._get(path)
+            self.assertEqual(code, 200, path)
+            json.loads(body)  # every API route returns parseable JSON
+        code, body = self._get(f"/api/run/{self.rid}")
+        self.assertEqual(code, 200)
+        payload = json.loads(body)
+        self.assertIn("timeline", payload)
+        self.assertIn("artifact", payload)
+
+    def test_flags_and_card_api(self):
+        # set a flag through the API, read it back through /api/flags + /api/card
+        code, _, body = self._post(
+            "/api/flag",
+            f"kind=run&target={self.rid}&flag=interesting&note=post+candidate",
+        )
+        self.assertEqual(code, 200)
+        self.assertEqual(json.loads(body)["flag"], "interesting")
+        code, body = self._get("/api/flags")
+        self.assertEqual(code, 200)
+        flags = {(a["kind"], a["target"]): a for a in json.loads(body)}
+        self.assertEqual(flags[("run", self.rid)]["flag"], "interesting")
+        code, body = self._get(f"/api/card?kind=run&target={self.rid}")
+        self.assertEqual(code, 200)
+        card = json.loads(body)
+        self.assertEqual(card["suite"], "v3")
+        self.assertEqual(card["flag"], "interesting")
+        code, _ = self._get("/api/card?kind=run&target=ghost")
+        self.assertEqual(code, 404)
+        # invalid flag values are rejected, not silently stored
+        code, _, body = self._post("/api/flag", "kind=run&target=x&flag=bogus")
+        self.assertEqual(code, 400)
+        self.assertIn("flag", json.loads(body)["error"])
 
     def test_unknown_routes_404(self):
         for path in ("/nope", "/run/nope", "/api/run/nope/live"):
@@ -264,8 +402,8 @@ class TestHttpRoutes(unittest.TestCase):
             "task=t-task&orchestrator=o/model&worker=w/model&replicates=1&dry_run=1",
         )
         self.assertEqual(code, 303)
-        self.assertTrue(location.startswith("/run/"), location)
-        run_id = location.split("/")[2]
+        self.assertTrue(location.startswith("/#/run/"), location)
+        run_id = location.split("/")[3]
         job = self.obs.registry.job_for_run(run_id)
         self.assertIsNotNone(job)
         self.assertTrue(_wait(lambda: job.status == JobStatus.SUCCEEDED))
@@ -282,6 +420,116 @@ class TestHttpRoutes(unittest.TestCase):
         )
         self.assertEqual(code, 400)
         self.assertIn("unknown fields", body)
+
+    def test_post_run_cannot_opt_into_executor(self):
+        # allow_agent_exec is a server-start flag — a POST field would be
+        # CSRF-triggerable from any web page the user visits
+        for path in ("/run", "/api/run"):
+            code, _, body = self._post(
+                path,
+                "task=t-task&orchestrator=o/model&worker=w/model"
+                "&replicates=1&dry_run=1&allow_agent_exec=1",
+            )
+            self.assertEqual(code, 400, path)
+            self.assertIn("unknown fields", body)
+
+    def test_post_rejects_foreign_origin_and_host(self):
+        # a cross-site form post carries the attacker's Origin — reject it
+        code, _, _ = self._post(
+            "/api/flag", "kind=run&target=x&flag=interesting",
+            headers={"Origin": "https://evil.example"},
+        )
+        self.assertEqual(code, 403)
+        # sandboxed/null origins can't prove same-origin either
+        code, _, _ = self._post(
+            "/api/flag", "kind=run&target=x&flag=interesting",
+            headers={"Origin": "null"},
+        )
+        self.assertEqual(code, 403)
+        # a foreign Host smells like DNS rebinding — reject it
+        code, _, _ = self._post(
+            "/api/flag", "kind=run&target=x&flag=interesting",
+            headers={"Host": "evil.example"},
+        )
+        self.assertEqual(code, 403)
+        code, _, _ = self._post(
+            "/api/flag", "kind=run&target=x&flag=interesting",
+            headers={"Host": "evil.example:8787",
+                     "Origin": "http://evil.example:8787"},
+        )
+        self.assertEqual(code, 403)
+
+    def test_post_accepts_same_origin_and_no_origin(self):
+        # matching Origin + Host → fine (a real same-site form post)
+        code, _, _ = self._post(
+            "/api/flag", "kind=run&target=x&flag=interesting",
+            headers={"Origin": f"http://127.0.0.1:{self.port}"},
+        )
+        self.assertEqual(code, 200)
+        # no Origin header → non-browser client, not a CSRF vector
+        code, _, _ = self._post(
+            "/api/flag", "kind=run&target=x&flag=not",
+        )
+        self.assertEqual(code, 200)
+
+    def test_models_api_exposes_executor_and_default_judge(self):
+        code, body = self._get("/api/models?role=worker")
+        self.assertEqual(code, 200)
+        rows = {r["slug"]: r for r in json.loads(body)}
+        self.assertIn("w/model", rows)
+        for row in rows.values():
+            self.assertIn("executor", row)
+            self.assertIn("capabilities", row)
+            self.assertIn("modalities", row)
+        # the default decisions judge is offered though no model file declares it
+        code, body = self._get("/api/models")
+        self.assertEqual(code, 200)
+        rows = {r["slug"]: r for r in json.loads(body)}
+        self.assertIn("~typesafe/jev-latest", rows)
+        self.assertTrue(rows["~typesafe/jev-latest"]["default"])
+        # role-filtered surfaces don't get the synthetic judge entry
+        code, body = self._get("/api/models?role=worker")
+        self.assertNotIn("~typesafe/jev-latest",
+                         {r["slug"] for r in json.loads(body)})
+
+    def test_shot_png_rejects_bad_routes(self):
+        # protocol-relative and relative routes could steer the headless
+        # browser off-origin — only app paths are allowed
+        for route in ("//evil.example/x", "not-a-path"):
+            code, _ = self._get(f"/api/shot.png?route={urllib.parse.quote(route)}")
+            self.assertEqual(code, 400, route)
+
+    def test_shot_png_503_when_capture_unavailable(self):
+        from orchestral.shots import ScreenshotUnavailable
+        with unittest.mock.patch("orchestral.shots.capture_page",
+                                 side_effect=ScreenshotUnavailable("nope")):
+            code, body = self._get("/api/shot.png?route=/leaderboard")
+        self.assertEqual(code, 503)
+        self.assertIn("nope", body)
+
+    def test_shot_png_returns_png_and_picks_xcard_for_cards(self):
+        from urllib.parse import quote
+
+        with unittest.mock.patch(
+                "orchestral.shots.capture_page",
+                return_value=b"\x89PNG-fake") as cap:
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{self.port}/api/shot.png"
+                f"?route={quote('/card?kind=pairing&target=o/m|w/m')}")
+            with urllib.request.urlopen(req) as r:
+                self.assertEqual(r.status, 200)
+                self.assertEqual(r.headers.get("Content-Type"), "image/png")
+                self.assertIn("filename=", r.headers.get("Content-Disposition", ""))
+                self.assertEqual(r.read(), b"\x89PNG-fake")
+        self.assertEqual(cap.call_args.kwargs["element"], ".xcard")
+        # non-card routes capture the settled view, not a card node
+        with unittest.mock.patch(
+                "orchestral.shots.capture_page",
+                return_value=b"\x89PNG-fake") as cap, urllib.request.urlopen(
+                f"http://127.0.0.1:{self.port}/api/shot.png?route=/leaderboard") as r:
+            self.assertEqual(r.status, 200)
+            self.assertEqual(r.read(), b"\x89PNG-fake")
+        self.assertIsNone(cap.call_args.kwargs["element"])
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):

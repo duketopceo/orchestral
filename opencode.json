@@ -1,0 +1,19 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "share": "disabled",
+  "permission": {
+    "edit": "allow",
+    "bash": {
+      "python3 harness.py *": "allow",
+      "python3 -m unittest *": "allow",
+      "python3 -m compileall *": "allow",
+      "python3 -m ruff *": "allow",
+      "python3 -m mypy *": "allow",
+      "git status": "allow",
+      "git diff*": "allow",
+      "git log*": "allow",
+      "*": "ask"
+    },
+    "webfetch": "ask"
+  }
+}

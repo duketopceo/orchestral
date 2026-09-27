@@ -195,16 +195,31 @@ class TestEventDerivation(unittest.TestCase):
 class TestLeaderboardSort(unittest.TestCase):
     def test_sort_leaderboard(self):
         rows = [
-            {"orchestrator": "a", "worker": "x", "cost_per_pass": 0.01, "pass_rate": 0.5, "score_median": None},
-            {"orchestrator": "b", "worker": "y", "cost_per_pass": None, "pass_rate": 0.9, "score_median": 0.8},
-            {"orchestrator": "c", "worker": "z", "cost_per_pass": 0.005, "pass_rate": 0.7, "score_median": 0.5},
+            {"orchestrator": "a", "worker": "x", "cost_per_pass": 0.01, "pass_rate": 0.5, "judge_score_median": None},
+            {"orchestrator": "b", "worker": "y", "cost_per_pass": None, "pass_rate": 0.9, "judge_score_median": 0.8},
+            {"orchestrator": "c", "worker": "z", "cost_per_pass": 0.005, "pass_rate": 0.7, "judge_score_median": 0.5},
         ]
         by_cost = [r["orchestrator"] for r in sort_leaderboard(rows, "cost_per_pass")]
         self.assertEqual(by_cost, ["c", "a", "b"])  # None (never passed) last
         by_pass = [r["orchestrator"] for r in sort_leaderboard(rows, "pass_rate")]
         self.assertEqual(by_pass, ["b", "c", "a"])
-        by_score = [r["orchestrator"] for r in sort_leaderboard(rows, "score_median")]
+        by_score = [r["orchestrator"] for r in sort_leaderboard(rows, "judge_score_median")]
         self.assertEqual(by_score, ["b", "c", "a"])
+
+    def test_sort_leaderboard_partitions_low_sample(self):
+        """A thin row tails every ordering — even when its metric wins."""
+        rows = [
+            {"orchestrator": "a", "worker": "x", "cost_per_pass": 0.50,
+             "pass_rate": 0.2, "judge_score_median": 0.1, "cost_median": 0.5,
+             "duration_median_ms": 9000, "low_sample": False},
+            {"orchestrator": "b", "worker": "y", "cost_per_pass": 0.001,
+             "pass_rate": 1.0, "judge_score_median": 1.0, "cost_median": 0.001,
+             "duration_median_ms": 1, "low_sample": True},
+        ]
+        for key in ("cost_per_pass", "pass_rate", "judge_score_median",
+                    "cost_median", "duration_median_ms"):
+            order = [r["orchestrator"] for r in sort_leaderboard(rows, key)]
+            self.assertEqual(order, ["a", "b"], key)
 
 
 class TestOnRunCreated(unittest.TestCase):

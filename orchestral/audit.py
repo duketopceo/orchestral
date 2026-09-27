@@ -1076,7 +1076,22 @@ def _references_module(tree: ast.Module, module: str) -> bool:
             alias.name.rsplit(".", 1)[-1] == stem for alias in node.names
         ):
             return True
-        if isinstance(node, ast.Constant) and node.value in (stem, module):
+        # A bare string literal proves nothing — a docstring or message that
+        # mentions the module is not a reference to it. The literal counts only
+        # as the argument of a dynamic import.
+        if (
+            isinstance(node, ast.Call)
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+            and node.args[0].value in (stem, module)
+            and (
+                (
+                    isinstance(node.func, ast.Attribute)
+                    and node.func.attr == "import_module"
+                )
+                or (isinstance(node.func, ast.Name) and node.func.id == "__import__")
+            )
+        ):
             return True
     return False
 

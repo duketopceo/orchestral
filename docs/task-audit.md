@@ -50,7 +50,7 @@ except editing the spec — which is the thing a gate exists to prevent. The
 other two states it also reports (a fileset that declares nothing, and one
 graded on names and byte counts only) are errors for the same reason: the
 grader measures nothing about the artifact, so the score cannot be a
-measurement. `has_paths` requested with an empty `metadata.required_content`
+measurement. `has_content` requested with an empty `metadata.required_content`
 stays inside the rule at the same severity because every artifact fails on it,
 so it is a broken spec rather than a scoring surface.
 

@@ -22,11 +22,19 @@ WORKFLOW = REPO_ROOT / ".github" / "workflows" / "ci.yml"
 CONTRIBUTING = REPO_ROOT / "CONTRIBUTING.md"
 
 # job id -> the command that gate must actually run
+#
+# The suite gate is `test-matrix`, not `test`. `test` is the aggregate reporter
+# that branch protection requires; it runs no gate command, it only reports the
+# three above. See the comment on the `test` job in ci.yml, and DUK-227.
 GATES = {
-    "test": "unittest discover",
+    "test-matrix": "unittest discover",
     "lint": "ruff check",
     "types": "mypy",
 }
+
+# Jobs that report gates rather than running one. Excluded from the
+# "one gate per job" rule, which would otherwise fail them for running zero.
+REPORTERS = {"test"}
 
 COUNT_WORDS = {"two": 2, "three": 3, "four": 4, "five": 5, "six": 6}
 
@@ -61,10 +69,42 @@ class TestCIGatesAreSeparateJobs(unittest.TestCase):
         for job_id, job in _jobs().items():
             run_text = _run_text(job)
             found = [gate for gate, command in GATES.items() if command in run_text]
+            if job_id in REPORTERS:
+                self.assertEqual(
+                    found, [],
+                    f"reporter `{job_id}` must not run a gate itself; it reports them",
+                )
+                continue
             self.assertEqual(
                 len(found), 1,
                 f"job `{job_id}` runs the gates {sorted(found)}; split them so a "
                 "failure in one cannot skip the others",
+            )
+
+    def test_reporter_needs_every_gate(self):
+        """A required check that skips counts as not passing, so the reporter
+        must depend on all three gates or it can report while one never ran."""
+        jobs = _jobs()
+        for job_id in REPORTERS:
+            needs = jobs[job_id].get("needs") or []
+            if isinstance(needs, str):
+                needs = [needs]
+            self.assertEqual(
+                set(needs), set(GATES),
+                f"reporter `{job_id}` needs {sorted(needs)}; it must need every "
+                f"gate {sorted(GATES)} or a skipped gate would still report success",
+            )
+
+    def test_reporter_runs_unconditionally(self):
+        """The opposite failure: if the reporter is itself conditional it is
+        skipped whenever a gate fails, and a skipped required check blocks the
+        pull request. That is the wedge this reporter was added to clear."""
+        for job_id in REPORTERS:
+            condition = str(_jobs()[job_id].get("if", ""))
+            self.assertIn(
+                "always()", condition,
+                f"reporter `{job_id}` is conditional; a skipped required check "
+                "blocks the pull request, so it must run with if: always()",
             )
 
     def test_gate_jobs_do_not_wait_on_each_other(self):

@@ -1,9 +1,6 @@
 {
-  "$comment": "Contexts branch protection requires on main. This list mirrors the live rule, so it must change in the same change as the rule, whichever repair is chosen. On 2026-09-26T16:58:50Z ruleset main-2 (24045474) required a bare 'test', which was correct then: the workflow's test job was not yet a matrix. PR #68 merged the support-range matrix at 2026-09-26T21:02:17Z, the emitted names changed, and the requirement became unsatisfiable. The defect DUK-227 tracks. The four entries below are the matrix-job shape, so this file matches repair D. Under repair E the matrix job is renamed and an aggregate job emits 'test', and this list becomes [\"test\"] in the same pull request. tests/test_required_check_contract.py passes under either shape as long as this list matches the workflow; a mismatch is reported, not assumed.",
+  "$comment": "Contexts branch protection requires on main. This list mirrors the live rule, so it must change in the same change as the rule. Ruleset main-2 (24045474) requires a bare 'test'. That name was correct while the workflow's suite job was a single non-matrix job, and became unproducible at 2026-09-26T21:02:17Z when PR #68 merged the support-range matrix and GitHub began reporting 'test (3.11)'..'test (3.14)'. Nothing failed and no rule was weakened; a routine CI merge invalidated the rule. This branch repairs it in CI rather than in the rule: the suite job is renamed test-matrix and a non-matrix aggregate named 'test' reports the three gates, so the existing rule is satisfied with no protection change. The defect and the repair are DUK-227. tests/test_required_check_contract.py passes under either shape as long as this list matches the workflow.",
   "required": [
-    "test (3.11)",
-    "test (3.12)",
-    "test (3.13)",
-    "test (3.14)"
+    "test"
   ]
 }

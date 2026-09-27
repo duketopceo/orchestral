@@ -102,11 +102,18 @@ Note that endpoint enumerates ruleset rules. It is readable where
 was missed for days because the unreadable endpoint was assumed to be the only
 way in.
 
-So a green PR reporting `BLOCKED` is **not** waiting on a reviewer. It is
-waiting on a status check the workflow cannot produce: the `test` job is a
+So a green PR reporting `BLOCKED` is **not** waiting on a reviewer. It was
+waiting on a status check the workflow could not produce: the suite job is a
 four-way matrix, GitHub reports matrix jobs as `test (3.11)` through
-`test (3.14)`, and the required context is the bare name `test`. That context
-is never emitted, so nothing merges.
+`test (3.14)`, and the required context is the bare name `test`, which a matrix
+job never emits. PR #68 merged that matrix at 2026-09-26T21:02:17Z, four hours
+after the rule was created, and `main` was wedged from that commit.
+
+That is repaired in CI, not in the rule: the suite job is `test-matrix`, and a
+non-matrix aggregate named `test` reports the three gates. The existing ruleset
+requirement is now satisfied with no protection change. If you rename a gate, add
+one, or change a matrix, you change what protection must require — see
+`.github/required-checks.json` and `tests/test_required_check_contract.py`.
 
 ```console
 $ gh pr view <pr> --json reviewDecision,mergeStateStatus,mergeable

@@ -199,3 +199,18 @@ sequenceDiagram
 - E2B OpenAPI (`docs.e2b.dev/api-reference`) — platform endpoints: `POST /sandboxes` (`{templateID, timeout, autoPause}`), `POST /sandboxes/{id}/connect`, kill; envd data plane on port 49983 routed via `E2b-Sandbox-Id`/`E2b-Sandbox-Port` headers — the SDK wraps all of it.
 - E2B SDK conventions — `Sandbox.create(template, timeout)`, `sandbox.files.write`, `sandbox.commands.run(timeout)`, `sandbox.kill()`; `E2B_API_KEY`/`E2B_DOMAIN` env contract.
 - Repo seams verified this session: `orchestral/sandbox.py` backend contract + docstring reservation for a remote microVM provider; `orchestral/codeexec.py::run_unittest_suite` as the single funnel for both `code` and `swe-patch`/`bugfix` validators; `orchestral/runner.py` `sandbox`/`sandbox_image` fields flowing from CLI args; `harness.py` `--sandbox` flag in `_add_run_flags` (line ~1512, applied to run/grid/batch/ablate) and the standalone `revalidate` flag (line ~1677); `pyproject.toml` extras convention.
+
+---
+
+## Shipped shape (2026-09-27 reconciliation)
+
+This plan predates the fail-closed merge that dropped `orchestral/sandbox.py`
+and the `--sandbox`/`--sandbox-image` flags. As shipped, the selection seam is
+`ORCHESTRAL_CODE_RUNTIME=isolated` (the env boundary `codeexec.py` already
+carried), dispatching to `orchestral/cubeexec.py` — the E2B-compatible
+adapter. `docker`/`local` backends no longer exist; default posture is
+`disabled` fail-closed. The report contract gains `runtime`/`sandbox_image`
+provenance fields as designed. Everything else in this plan (E2B SDK behind an
+`[e2b]` extra, `E2B_DOMAIN`/`E2B_API_KEY` as the endpoint contract, file-write
++ `commands.run` bootstrap, `-Es` interpreter hardening, no-egress create flag,
+destroy-on-every-exit, confidentiality clause) shipped as specified.

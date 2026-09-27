@@ -108,19 +108,20 @@ new hash.
 - **`code`** — same file-set contract as `multi-file` (workers return
   `{"files": [...]}`, merged into `artifact.zip`), but validation executes
   hidden tests: the file set plus the task's `metadata.tests` (a unittest
-  source string, never sent to workers) are passed to the selected execution
-  backend. The local backend materializes a temp dir and runs
-  `python -Es -m unittest`; the Docker backend sends an in-memory archive to a
-  disposable container. `metadata.module` names
+  source string, never sent to workers) are passed to the configured execution
+  runtime. Execution is fail-closed by default — with no isolated runtime
+  configured the suite never runs and the report records
+  `runtime: "disabled"`. `ORCHESTRAL_CODE_RUNTIME=isolated` dispatches to the
+  E2B-compatible adapter (`orchestral/cubeexec.py`, `pip install
+  orchestral[e2b]`): the fileset plus `task_tests.py` are written into a
+  disposable E2B/CubeSandbox microVM and `python3 -Es -m unittest` runs there
+  with no egress and an env allowlist. `metadata.module` names
   the required file (default `solution.py`; also the `expected_paths`
   default). `metadata.timeout_seconds` caps execution (default 30). `passes`
   requires every expected file present *and* the suite green; `score` is the
   fraction of tests passed (0.0 when the suite crashes, errors on import, or
   times out — `None` only when the suite never ran). Replicates give pass@k.
-  Live CLI/TUI/web runs default to the Docker verifier backend: each suite gets
-  a fresh network-disabled, resource-limited container with no host mounts or
-  Docker socket. `--sandbox local` is an explicit trusted-host mode and is not
-  a security boundary. The executor/agent-CLI path remains a separate
+  The executor/agent-CLI path remains a separate
   host-containment path and is not made safe by the code verifier sandbox. Dry
   runs skip execution and compile-check `.py` files instead
   (`executed: false`).

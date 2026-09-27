@@ -70,12 +70,18 @@ class TestRunUnittestSuite(unittest.TestCase):
             self.assertFalse(report["executed"])
             self.assertIn("host subprocess", report["error"])
 
-    def test_isolated_runtime_setting_still_requires_an_adapter(self):
-        with patch.dict(os.environ, {"ORCHESTRAL_CODE_RUNTIME": "isolated"}, clear=True), patch("subprocess.run") as host_run:
+    def test_isolated_runtime_setting_dispatches_to_the_adapter(self):
+        # The adapter itself fails closed when the `[e2b]` extra is absent —
+        # `isolated` selects it, it does not bypass it. The SDK is stubbed out
+        # so the assertion holds even in a venv where `e2b` is installed.
+        with patch.dict(os.environ, {"ORCHESTRAL_CODE_RUNTIME": "isolated"}, clear=True), \
+                patch("orchestral.cubeexec._load_sandbox_class", return_value=None), \
+                patch("subprocess.run") as host_run:
             report = run_unittest_suite({"fizzbuzz.py": GOOD_IMPL}, TESTS)
         host_run.assert_not_called()
         self.assertFalse(report["executed"])
-        self.assertIn("isolated runtime adapter", report["error"])
+        self.assertEqual(report["runtime"], "e2b")
+        self.assertIn("e2b", report["error"])
 
     def test_no_tests_source_is_still_disabled(self):
         with patch.dict(os.environ, {}, clear=True):

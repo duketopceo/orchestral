@@ -31,7 +31,12 @@ from pathlib import Path
 from typing import Any
 
 from .audit import ERROR, INFO, WARN, Finding, load_specs
-from .codeexec import DEFAULT_TIMEOUT_SECONDS, materialize
+from .codeexec import (
+    DEFAULT_TIMEOUT_SECONDS,
+    materialize,
+    shadowing_members,
+    summarize_unittest_output,
+)
 from .config import TaskSpec
 from .fileset import FilesetError, sanitize_path
 from .patch import PatchError, apply_unified_diff, extract_patch
@@ -43,13 +48,7 @@ CEILING_RATE = 0.95
 # Spec-declared suite timeouts are honored up to this ceiling — the execute
 # layer is a CI gate, not a license to block a job indefinitely.
 MAX_TIMEOUT_SECONDS = 300.0
-# Top-level members a reference fileset must not ship: they would shadow the
-# invoked module, the test module, or interpreter-startup imports inside the
-# suite subprocess's cwd (sys.path[0] for `python -m`).
-_SHADOW_DENYLIST = frozenset({
-    "unittest", "test_submitted", "site", "sitecustomize", "usercustomize",
-    "builtins", "__main__",
-})
+
 
 
 class _Probe(Runner):
@@ -263,21 +262,11 @@ def _run_suite_locally(
         report["executed"] = True
         tail = (err or out or "").strip().splitlines()
         report["output_tail"] = "\n".join(tail[-15:])
-        ran = 0
-        for line in tail:
-            if line.startswith("Ran "):
-                with contextlib.suppress(IndexError, ValueError):
-                    ran = int(line.split()[1])
+        ran, error = summarize_unittest_output("\n".join(tail), proc.returncode)
         report["tests_run"] = ran
-        # unittest exits nonzero iff anything failed or errored; parsing the
-        # summary line for counts double-counts "expected failures=".
         report["ok"] = proc.returncode == 0 and ran > 0
-        if ran == 0:
-            # 3.14+ exits 5 with "NO TESTS RAN" and prints no "Ran N" line;
-            # older versions print "Ran 0 tests" and exit 0. Same defect.
-            report["error"] = "suite ran zero tests"
-        elif proc.returncode != 0:
-            report["error"] = f"unittest exited {proc.returncode}"
+        if error:
+            report["error"] = error
     return report
 
 
@@ -305,11 +294,7 @@ def check_execution(
             path=str(path) if path else None,
             detail="hidden tests could not be executed: no reference fileset.",
         )]
-    shadowed = sorted(
-        p for p in fileset
-        if p.split("/", 1)[0] in _SHADOW_DENYLIST
-        or Path(p).stem in _SHADOW_DENYLIST
-    )
+    shadowed = shadowing_members(fileset)
     if shadowed:
         return [Finding(
             rule="invalid_reference",

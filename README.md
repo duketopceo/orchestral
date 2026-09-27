@@ -104,25 +104,22 @@ orchestral dashboard               # reports/dashboard.html
 
 Shared run flags (on `run`, `grid`, `batch`, `ablate`): `--planner raw|ce-plan`,
 `--judge <slug>`, `--no-judge-cache`, `--retry-limit N`, `--prompt-variant NAME`,
-`--replicates N`, `--group NAME`, `--replicate I`, `--seed S`, `--sandbox docker|local`,
-`--sandbox-image IMAGE`, `--verbose`, `--dry-run`, `--json`.
+`--replicates N`, `--group NAME`, `--replicate I`, `--seed S`, `--verbose`,
+`--dry-run`, `--json`.
 
-Live code-task verification defaults to the `docker` sandbox. It runs each
-verifier in a fresh, network-disabled, resource-limited container with no host
-mounts or Docker socket. Pull the image explicitly before a run (Docker is
-never allowed to pull implicitly):
+Live code-task verification is fail-closed: hidden suites do not run unless an
+isolated runtime is configured, and host subprocess execution is never a
+fallback. Set `ORCHESTRAL_CODE_RUNTIME=isolated` to dispatch to the
+E2B-compatible adapter (`pip install orchestral[e2b]`) — self-hosted
+CubeSandbox or hosted E2B, chosen by the SDK's own `E2B_DOMAIN`/`E2B_API_KEY`
+contract; `ORCHESTRAL_CUBE_TEMPLATE` selects the sandbox template.
 
-```bash
-docker pull python:3.11-slim
-python3 harness.py run --task code-expr-parser \
-  --orchestrator deepseek/deepseek-v4-flash-0731 \
-  --worker z-ai/glm-5.3-flash --sandbox docker
-```
-
-`--sandbox local` is an explicit trusted-host escape hatch for development
-and tests; it is not an isolation boundary. Set `ORCHESTRAL_DOCKER_IMAGE` to
-an immutable image digest for reproducible runs. The TUI and local web
-observatory use Docker for launched code tasks by default.
+Self-hosting keeps the worker fileset *and* the hidden verifier source on
+owned infrastructure; hosted E2B discloses evaluation oracles to a third
+party — do not point `E2B_DOMAIN` at a third-party endpoint for oracle-bearing
+or holdout tasks. Sandboxes are created with `allow_internet_access=False`,
+a fixed guest env allowlist (control-plane credentials never enter the guest),
+and are destroyed on every exit path.
 
 `--replicates N` runs each cell N times under one `run_group` (auto-named when
 `--group` is absent); replicate `i` records seed `S+i-1`. `report --groups`

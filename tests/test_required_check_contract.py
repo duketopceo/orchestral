@@ -28,6 +28,12 @@ So: `.github/required-checks.json` records the contexts branch protection
 requires, and these tests assert the workflow can still produce every one of
 them. See DUK-227.
 
+The list is not a constant and is not tied to one repair. It mirrors whatever
+the live rule requires, so under the "require the four real contexts" repair it
+holds four matrix names, and under the "emit a stable test" repair it holds a
+single `test`. The tests here pass under either shape; only the JSON differs.
+The commit that changes protection must change it too.
+
 The limitation is real and worth stating: CI cannot read branch protection, so
 this file must be updated in the same change that alters protection. It detects
 drift in the workflow (a matrix entry removed, a job renamed) and makes the
@@ -41,6 +47,7 @@ import json
 import unittest
 from itertools import product
 from pathlib import Path
+from typing import ClassVar
 
 import yaml
 
@@ -155,28 +162,50 @@ class TestGitHubContextNaming(unittest.TestCase):
 
 
 class TestTheRegressionThisExistsFor(unittest.TestCase):
-    def test_detector_flags_the_context_that_wedged_main(self):
-        """The live ruleset requires `test`; this workflow cannot emit it.
+    """Fixtures, not live state.
 
-        If this assertion ever starts passing, the detector has gone lax and the
-        guard no longer protects anything. Keep it failing.
-        """
-        self.assertNotIn(CONTEXT_THAT_BROKE_MAIN, emitted_contexts())
-        self.assertEqual(
-            unproducible([CONTEXT_THAT_BROKE_MAIN], emitted_contexts()),
-            [CONTEXT_THAT_BROKE_MAIN],
-        )
+    An earlier version of this file asserted that the live workflow cannot emit
+    `test`. That is true today and false the moment option E lands — E adds a
+    job that emits exactly `test`. A test that fails when the bug is fixed is a
+    test that pins the wrong thing, so the incident is asserted with synthetic
+    workflows and the live state is left to the tests above.
+    """
 
-    def test_the_old_guard_could_not_have_caught_this(self):
+    # The shape on `main` at the time of the incident: a matrix job, so no bare
+    # `test` is emitted.
+    MATRIX_WORKFLOW: ClassVar[dict] = {
+        "test": {"strategy": {"matrix": {"python-version": ["3.11", "3.12"]}}},
+    }
+    # The shape option E produces: renamed matrix plus a non-matrix aggregate.
+    AGGREGATE_WORKFLOW: ClassVar[dict] = {
+        "test-matrix": {"strategy": {"matrix": {"python-version": ["3.11", "3.12"]}}},
+        "test": {"runs-on": "ubuntu-latest", "needs": ["test-matrix"]},
+    }
+
+    def test_matrix_shape_cannot_satisfy_a_bare_test_requirement(self):
+        # What actually wedged `main` on 2026-09-26T21:02:17Z.
+        emitted = emitted_contexts(self.MATRIX_WORKFLOW)
+        self.assertNotIn(CONTEXT_THAT_BROKE_MAIN, emitted)
+        self.assertEqual(unproducible([CONTEXT_THAT_BROKE_MAIN], emitted), [CONTEXT_THAT_BROKE_MAIN])
+
+    def test_aggregate_shape_does_satisfy_it(self):
+        # So the guard is not just a permanent red: the repair clears it, and
+        # the guard reports green once the contract matches the new shape.
+        emitted = emitted_contexts(self.AGGREGATE_WORKFLOW)
+        self.assertIn(CONTEXT_THAT_BROKE_MAIN, emitted)
+        self.assertEqual(unproducible([CONTEXT_THAT_BROKE_MAIN], emitted), [])
+
+    def test_the_old_guard_read_the_wrong_artifact(self):
         """Why a second test was needed, stated as an executable claim.
 
-        `test_ci_gate_independence.py` reads the YAML job key. The key exists and
-        is called `test`, so a key-based check passes while the branch is wedged.
+        `test_ci_gate_independence.py` reads the YAML job key. The key is `test`
+        in the wedging shape, so a key-based check passes while the branch is
+        wedged. The declared key and the emitted name are different artifacts.
         """
-        self.assertIn("test", _jobs(), "the job key is `test`, which is what the old guard read")
-        self.assertEqual(
-            unproducible([CONTEXT_THAT_BROKE_MAIN], emitted_contexts()),
-            [CONTEXT_THAT_BROKE_MAIN],
+        self.assertIn("test", self.MATRIX_WORKFLOW, "the job key is `test`, which is what the old guard read")
+        self.assertNotIn(
+            CONTEXT_THAT_BROKE_MAIN,
+            emitted_contexts(self.MATRIX_WORKFLOW),
             "the declared key and the emitted name diverge, which is the whole defect",
         )
 

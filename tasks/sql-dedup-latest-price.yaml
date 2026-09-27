@@ -1,4 +1,6 @@
 id: sql-dedup-latest-price
+title: "Latest-price dedup SQL"
+blurb: "SQL: current price per product from price_history by latest effective_date."
 type: sql
 prompt: >
   Write a single read-only SQL query (SQLite dialect) that returns the current

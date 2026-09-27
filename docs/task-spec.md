@@ -21,6 +21,8 @@ metadata: {}                  # optional free-form map (video tasks read generat
 | `id` | str | required | Unique across `tasks/`; becomes a path component (`runs/{orch}/{task}/{worker}/{run_id}/`) |
 | `type` | str | required | `html`, `image`, `video`, `multi-file`, `code`, `bugfix`, `terminal`, `swe-patch`, `pipeline`, `constraint`, `needle`, `sql`, `extract`, `api` — all implemented; see per-type sections below |
 | `prompt` | str | required | Full task brief; the orchestrator decomposes it into subtasks |
+| `title` | str | `""` | Human label shown in the observatory (e.g. `Expression parser`); `validate` warns when absent |
+| `blurb` | str | `""` | One-line "what this task asks" for cards and tables; `validate` warns when absent |
 | `validation` | list[str] | `[]` | Check names; empty means the type's default set |
 | `assets` | list[str] | `[]` | Reserved; not consumed by the runner yet |
 | `metadata` | map | `{}` | Free-form; carried into run records. `video` tasks read `duration`, `resolution`, `aspect_ratio`, `generate_audio`, `seed`; `multi-file` tasks read `expected_paths` and `required_content`; `code` tasks read `module`, `tests`, `timeout_seconds`, `expected_paths`, plus quality bounds `max_code_lines`, `max_functions`, `max_complexity_lite`, `no_unsafe`, `no_external_deps`, `forbidden_patterns`; every type reads `version` to label a spec revision (recorded as `task_version`) |
@@ -106,17 +108,22 @@ new hash.
 - **`code`** — same file-set contract as `multi-file` (workers return
   `{"files": [...]}`, merged into `artifact.zip`), but validation executes
   hidden tests: the file set plus the task's `metadata.tests` (a unittest
-  source string, never sent to workers) are materialized into a temp dir and
-  run via `python -Es -m unittest` in a subprocess. `metadata.module` names
+  source string, never sent to workers) are passed to the selected execution
+  backend. The local backend materializes a temp dir and runs
+  `python -Es -m unittest`; the Docker backend sends an in-memory archive to a
+  disposable container. `metadata.module` names
   the required file (default `solution.py`; also the `expected_paths`
   default). `metadata.timeout_seconds` caps execution (default 30). `passes`
   requires every expected file present *and* the suite green; `score` is the
   fraction of tests passed (0.0 when the suite crashes, errors on import, or
   times out — `None` only when the suite never ran). Replicates give pass@k.
-  The subprocess runs `-Es` with a stripped environment in a fresh temp dir —
-  containment, not a security sandbox: generated code still runs with your OS
-  privileges, so only pair trusted models with this task type. Dry runs skip
-  execution and compile-check `.py` files instead (`executed: false`).
+  Live CLI/TUI/web runs default to the Docker verifier backend: each suite gets
+  a fresh network-disabled, resource-limited container with no host mounts or
+  Docker socket. `--sandbox local` is an explicit trusted-host mode and is not
+  a security boundary. The executor/agent-CLI path remains a separate
+  host-containment path and is not made safe by the code verifier sandbox. Dry
+  runs skip execution and compile-check `.py` files instead
+  (`executed: false`).
 - **`constraint`** — workers produce candidate text per subtask; the
   orchestrator picks the best (same selection flow as `image`/`video`); the
   chosen text is stored as `artifact.txt` and checked against hard

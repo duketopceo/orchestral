@@ -1,4 +1,6 @@
 id: sql-net-revenue
+title: "Net revenue SQL"
+blurb: "SQL: net revenue per product — shipped totals minus refunds."
 type: sql
 prompt: >
   Write a single read-only SQL query (SQLite dialect) that returns net revenue

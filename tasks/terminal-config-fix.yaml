@@ -1,4 +1,6 @@
 id: terminal-config-fix
+title: "Fix a broken deploy"
+blurb: "Diagnose and repair a broken app deploy on a real filesystem via terminal commands."
 type: terminal
 prompt: |
   A small app deploy is broken. The filesystem contains:

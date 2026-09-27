@@ -1,4 +1,6 @@
 id: bugfix-lru-evict
+title: "Fix a buggy LRU cache"
+blurb: "A shipped lru.py has two real eviction bugs — find and fix both."
 type: bugfix
 prompt: |
   The module `lru.py` ships an LRU cache with two real bugs:

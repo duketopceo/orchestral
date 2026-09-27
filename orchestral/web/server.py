@@ -21,7 +21,7 @@ import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, cast
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 from orchestral.storage import RunStore
 from orchestral.web import render, state
@@ -57,6 +57,7 @@ class Observatory:
         )
         self.tasks_dir = Path(tasks_dir)
         self.models_dir = Path(models_dir)
+        self.groups_file = Path(tasks_dir).parent / "groups.yaml"
 
     def run_dir(self, run_id: str) -> Path | None:
         meta = self.store.get_run(run_id)
@@ -80,7 +81,13 @@ def _provider_ready(slug: str) -> bool:
 
 def _safe_member(name: str) -> str | None:
     """Reject zip members that would escape the archive (../, absolute)."""
-    if not name or name.startswith("/") or ".." in Path(name).parts:
+    normalized = name.replace("\\", "/")
+    if (
+        not name
+        or "\x00" in name
+        or normalized.startswith("/")
+        or ".." in Path(normalized).parts
+    ):
         return None
     return name
 
@@ -177,7 +184,9 @@ def make_handler(obs: Observatory) -> type[BaseHTTPRequestHandler]:
 
         def _api_get(self, path: str, qs: dict[str, list[str]]) -> None:
             if path == "/api/overview":
-                self._json(state.overview_payload(obs.store, obs.registry))
+                self._json(state.overview_payload(
+                    obs.store, obs.registry, tasks_dir=obs.tasks_dir,
+                    groups_file=obs.groups_file))
             elif path == "/api/runs":
                 self._json(state.runs_payload(
                     obs.store,
@@ -185,9 +194,12 @@ def make_handler(obs: Observatory) -> type[BaseHTTPRequestHandler]:
                     task=self._q1(qs, "task"),
                     status=self._q1(qs, "status"),
                     q=self._q1(qs, "q", "") or "",
+                    tasks_dir=obs.tasks_dir,
                 ))
             elif path == "/api/groups":
-                self._json(state.groups_payload(obs.store))
+                self._json(state.groups_payload(obs.store, obs.groups_file))
+            elif path == "/api/matrix":
+                self._json(state.task_matrix_payload(obs.store, obs.tasks_dir))
             elif path == "/api/compare":
                 a, b = self._q1(qs, "a", "") or "", self._q1(qs, "b", "") or ""
                 if not a or not b:
@@ -195,12 +207,25 @@ def make_handler(obs: Observatory) -> type[BaseHTTPRequestHandler]:
                 self._json(state.compare_payload(obs.store, a, b))
             elif path == "/api/flags":
                 self._json(obs.store.annotations())
+            elif path == "/api/cards":
+                flagged = (self._q1(qs, "flagged", "0") or "0").lower() in {"1", "true", "yes"}
+                self._json(state.card_catalog_payload(
+                    obs.store,
+                    tasks_dir=obs.tasks_dir,
+                    groups_file=obs.groups_file,
+                    group=self._q1(qs, "group"),
+                    scope=self._q1(qs, "scope", "all") or "all",
+                    lens=self._q1(qs, "lens", "overall") or "overall",
+                    flagged=flagged,
+                ))
             elif path == "/api/card":
                 kind = self._q1(qs, "kind", "group") or "group"
                 target = self._q1(qs, "target", "") or ""
                 payload = state.card_payload(
                     obs.store, kind, target,
                     group=self._q1(qs, "group"), tasks_dir=obs.tasks_dir,
+                    groups_file=obs.groups_file,
+                    lens=self._q1(qs, "lens", "overall") or "overall",
                 )
                 if payload is None:
                     return self._json({"error": f"no {kind} '{target}'"}, 404)
@@ -259,7 +284,10 @@ def make_handler(obs: Observatory) -> type[BaseHTTPRequestHandler]:
             meta = obs.store.get_run(run_id)
 
             if len(parts) == 3:
-                payload = state.run_detail_payload(obs.store, run_id)
+                payload = state.run_detail_payload(
+                    obs.store, run_id,
+                    tasks_dir=obs.tasks_dir, groups_file=obs.groups_file,
+                )
                 if payload is None:
                     return self._json({"error": f"unknown run {run_id}"}, 404)
                 payload["cancellable"] = bool(
@@ -277,8 +305,23 @@ def make_handler(obs: Observatory) -> type[BaseHTTPRequestHandler]:
                 job = obs.registry.job_for_run(run_id)
                 payload["cancellable"] = bool(job and job.active)
                 return self._json(payload)
+            if parts[3] == "evidence" and len(parts) == 4:
+                try:
+                    max_bytes = int((qs.get("max_bytes") or ["6000"])[0])
+                except ValueError:
+                    max_bytes = 6000
+                try:
+                    max_lines = int((qs.get("max_lines") or ["80"])[0])
+                except ValueError:
+                    max_lines = 80
+                payload = state.run_evidence_payload(
+                    obs.store, run_id, max_bytes=max_bytes, max_lines=max_lines,
+                )
+                if payload is None:
+                    return self._json({"error": f"unknown run {run_id}"}, 404)
+                return self._json(payload)
             if parts[3] == "artifact":
-                member = "/".join(parts[4:]) if len(parts) > 4 else None
+                member = unquote("/".join(parts[4:])) if len(parts) > 4 else None
                 return self._artifact(run_dir, member)
             self._json({"error": f"not found: {path}"}, 404)
 
@@ -380,9 +423,24 @@ def make_handler(obs: Observatory) -> type[BaseHTTPRequestHandler]:
             card = state.card_payload(
                 obs.store, kind, target,
                 group=form.get("group") or None, tasks_dir=obs.tasks_dir,
+                groups_file=obs.groups_file,
+                lens=form.get("lens") or "overall",
             )
             if card is None:
                 return self._json({"error": f"no {kind} '{target}'"}, 404)
+            # A card whose judge axis is missing because report.json could not
+            # be read must not reach a public post: "nothing judged yet" on a
+            # cohort that was judged is a false claim about real work.
+            unreadable = int(card.get("judge_reports_unreadable") or 0)
+            if card.get("judge_state") == "unreadable":
+                unreadable = max(unreadable, 1)
+            if unreadable:
+                return self._json({
+                    "error": (f"{unreadable} judge report(s) could not be read — this card's "
+                              "judge numbers are incomplete, so it is not publishable"),
+                    "judge_reports_unreadable": unreadable,
+                    "recoverable": "restore or re-run the affected run(s), then draft again",
+                }, 409)
             try:
                 n = max(1, min(4, int(form.get("n", "3"))))
             except ValueError:

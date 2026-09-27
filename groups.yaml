@@ -1,0 +1,40 @@
+# Human-facing metadata for run groups. Raw group names are set at launch
+# (--group) and age badly; label/description keep "what experiment was this"
+# answerable in the observatory. `harness.py validate` parses this file.
+groups:
+  grok47-eval:
+    label: Grok 4.7 eval run
+    description: 10-task smoke test — grok-4.7 orchestrates glm-5.3-flash, judged by jev.
+  glm-vs-gemma:
+    label: GLM vs Gemma matrix (v1)
+    description: Orchestrator×worker pairing sweep over the cheap tier — first pass.
+  glm-vs-gemma-v2:
+    label: GLM vs Gemma matrix (v2)
+    description: Second sweep over the same pairings — replicate evidence.
+  glm-vs-gemma-v3:
+    label: GLM vs Gemma matrix (v3)
+    description: Third sweep — extended task coverage over the same pairings.
+  anchor-deepseek:
+    label: DeepSeek anchor series
+    description: DeepSeek orchestrator anchoring cheap workers — baseline delegation.
+  anchor-deepseek-explicit:
+    label: DeepSeek anchor, explicit delegation
+    description: Same anchor shape with explicit worker-delegation prompts.
+  deepseek-explicit-v2:
+    label: DeepSeek explicit v2
+    description: Second pass on the explicit-delegation prompt variant.
+  rep-20260918-151333-f6db99:
+    label: Replicate sweep 2026-09-18
+    description: 200-run replication batch — variance evidence for leaderboard cells.
+  v3-rep3:
+    label: v3 replicate ×3
+    description: Three-replicate pass over the v3 task sweep.
+  mainstream-sweep:
+    label: Mainstream worker sweep
+    description: Grok 4.7 orchestrating six mainstream/beyond workers (GPT 5.6 Luna, Gemini 3.8 Flash, Kimi K2.7 Code, MiniMax M2.7, MiMo V2.6 Flash, Nemotron 3 Ultra) over 6 text/code tasks ×2 replicates, judged by jev. Qwen 3.8 Flash was attempted but its only provider (alibaba) is outside this account's allowlist — its failed runs are preserved as provider-error evidence.
+  v2-suite:
+    label: v2 orchestration benchmark
+    description: Real-orchestration suite — 9 new specs (cross-file invariants, fan-out aggregation, repair, context partition, injection resistance, multi-source synthesis, adaptive diagnosis, budget planning, SQL cohorts) plus code-expr-parser as calibration anchor. Designed from the spec critique to measure delegation quality, not just worker skill.
+  v2-probe:
+    label: v2 wave-A probe
+    description: Coverage probe — small task slice across candidate orchestrator×worker pairings to select the wave-B matrix.

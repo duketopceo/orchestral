@@ -1,4 +1,6 @@
 id: sql-mom-growth
+title: "MoM growth SQL"
+blurb: "SQL: month-over-month revenue growth for shipped orders."
 type: sql
 prompt: >
   Write a single read-only SQL query (SQLite dialect) that reports month-over-

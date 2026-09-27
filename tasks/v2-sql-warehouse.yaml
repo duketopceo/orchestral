@@ -1,0 +1,48 @@
+id: v2-sql-warehouse
+title: "Warehouse: cohort revenue by channel"
+blurb: "Three-table join: per-channel revenue for each customer's first-purchase month cohort."
+type: sql
+prompt: >
+  Write a single read-only SQL query (SQLite dialect) over a warehouse
+  schema. Report, for each acquisition channel, the revenue generated in
+  each calendar month by customers whose FIRST order fell in that same
+  month (a new-customer cohort revenue report). Columns: channel (from
+  customers.channel), cohort_month (YYYY-MM of the customer's first
+  shipped order), revenue (total shipped order-line revenue from those
+  customers in that month, rounded to 2 decimals). Only shipped orders
+  count. One row per (channel, cohort_month), ordered by channel then
+  cohort_month.
+  Tables: customers(id, channel, joined_on DATE),
+  orders(id, customer_id, placed_on DATE, status),
+  order_lines(id, order_id, qty, unit_price).
+validation: []
+assets: []
+metadata:
+  ordered: true
+  schema:
+    - "CREATE TABLE customers (id INTEGER PRIMARY KEY, channel TEXT NOT NULL, joined_on DATE NOT NULL)"
+    - "CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER NOT NULL, placed_on DATE NOT NULL, status TEXT NOT NULL)"
+    - "CREATE TABLE order_lines (id INTEGER PRIMARY KEY, order_id INTEGER NOT NULL, qty INTEGER NOT NULL, unit_price REAL NOT NULL)"
+  seed:
+    - "INSERT INTO customers VALUES (1, 'ads', '2025-01-01'), (2, 'organic', '2025-01-15'), (3, 'ads', '2025-02-01'), (4, 'organic', '2025-02-10')"
+    - "INSERT INTO orders VALUES (1, 1, '2025-01-10', 'shipped'), (2, 2, '2025-01-20', 'shipped'), (3, 3, '2025-02-05', 'shipped'), (4, 1, '2025-02-15', 'shipped'), (5, 4, '2025-03-01', 'shipped'), (6, 3, '2025-02-20', 'pending')"
+    - "INSERT INTO order_lines VALUES (1, 1, 1, 100.0), (2, 2, 2, 50.0), (3, 3, 1, 200.0), (4, 4, 1, 75.0), (5, 5, 3, 30.0), (6, 6, 1, 500.0)"
+  reference_sql: |
+    WITH first_ship AS (
+      SELECT o.customer_id,
+             MIN(strftime('%Y-%m', o.placed_on)) AS cohort_month
+      FROM orders o
+      WHERE o.status = 'shipped'
+      GROUP BY o.customer_id
+    )
+    SELECT c.channel,
+           fs.cohort_month,
+           ROUND(SUM(ol.qty * ol.unit_price), 2) AS revenue
+    FROM first_ship fs
+    JOIN customers c ON c.id = fs.customer_id
+    JOIN orders o ON o.customer_id = c.id
+                  AND o.status = 'shipped'
+                  AND strftime('%Y-%m', o.placed_on) = fs.cohort_month
+    JOIN order_lines ol ON ol.order_id = o.id
+    GROUP BY c.channel, fs.cohort_month
+    ORDER BY c.channel, fs.cohort_month

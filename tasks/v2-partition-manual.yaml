@@ -1,0 +1,72 @@
+id: v2-partition-manual
+title: "Partition: ops manual"
+blurb: "Four questions, four different sections of one manual — answer needs the right section each time."
+type: needle
+prompt: 'The subtask payload contains `document`: an operations manual with
+  clearly labeled sections. Answer ALL of these, separated by " | ":
+  (1) the exact listen port from §NETWORKING, (2) the exact rate limit from
+  §THROTTLING, (3) the exact failover pool name from §RESILIENCE, (4) the exact
+  backup retention window from §BACKUPS. Sections §LEGACY and §DEPRECATED
+  describe retired values — do not use them. Answer with only the four
+  values separated by " | ", nothing else.'
+validation:
+- non_empty
+- has_required
+- no_forbidden
+assets: []
+metadata:
+  difficulty: medium
+  document: '§PREAMBLE
+
+    This manual covers the gateway service. Values are authoritative per
+    section; where a section conflicts with §LEGACY or §DEPRECATED, the
+    numbered section wins.
+
+    §NETWORKING
+
+    The gateway listens on loopback only by default. For container
+    deployments bind 0.0.0.0. Listen port: 8841. TLS terminates at the
+    edge proxy, not the gateway. Idle keep-alive is 75s. The admin port
+    is 9100 and serves /metrics and /healthz only.
+
+    §THROTTLING
+
+    Per-IP rate limiting is enforced by the edge token bucket. Default
+    sustained limit: 330ms between requests per source IP. Burst
+    allowance: 40 requests. Abuse flag after 3 sustained violations.
+
+    §RESILIENCE
+
+    On upstream failure the gateway drains to the failover pool
+    POOL-EXHAUST-7 after 5 consecutive 5xx responses. Pool health is
+    checked every 10s. Do not confuse with the retired POOL-LEGACY-2
+    configuration below.
+
+    §BACKUPS
+
+    WAL archives ship to object storage hourly. Backup retention window:
+    35 days. PITR granularity is 5 minutes.
+
+    §LEGACY (retired 2024-11)
+
+    The legacy edge listened on port 7712 with a 120ms sustained limit
+    and retention of 14 days. These values are obsolete.
+
+    §DEPRECATED (retired 2025-02)
+
+    The deprecated failover config used pool FAILOVER-OLD-9 with a 90-day
+    retention window and port 9090. Do not deploy these values.'
+  required:
+  - "8841"
+  - "330ms"
+  - "POOL-EXHAUST-7"
+  - "35 days"
+  forbidden:
+  - "7712"
+  - "120ms"
+  - "POOL-LEGACY-2"
+  - "FAILOVER-OLD-9"
+  - "14 days"
+  - "90-day"
+  - "9090"
+  expected_answer: "8841 | 330ms | POOL-EXHAUST-7 | 35 days"

@@ -45,11 +45,16 @@ class TestBackfill(unittest.TestCase):
         self.runs = self.root / "runs"
         self.judge = _model("j/model", "judge")
 
-    def _seed(self) -> str:
+    def _seed(self, dry_run_meta: bool = False) -> str:
         meta = Runner(dry_run=True, runs_dir=str(self.runs),
                       store=RunStore(self.runs)).run(
             TaskSpec(id="t-task", type="html", prompt="make a page"),
             _model("o/model", "orchestrator"), _model("w/model", "worker"))
+        # the Runner only produces artifacts in dry-run mode; flip the index
+        # flag so backfill treats the seed as a real finished run
+        if not dry_run_meta:
+            meta.dry_run = False
+            RunStore(self.runs).update_meta(meta)
         return meta.run_id
 
     def test_backfill_writes_judge_and_score(self):
@@ -100,6 +105,8 @@ class TestBackfill(unittest.TestCase):
             meta = Runner(dry_run=True, runs_dir=tmp, store=store).run(
                 TaskSpec(id="t-task", type="html", prompt="p"),
                 _model("o/model", "orchestrator"), _model("w/model", "worker"))
+            meta.dry_run = False
+            store.update_meta(meta)
             for a in Path(meta.run_dir).glob("artifact.*"):
                 a.unlink()
             res = backfill_judgments(store, self.judge, FakeJudgeClient(),
@@ -149,6 +156,73 @@ class TestBackfill(unittest.TestCase):
         res2 = backfill_judgments(RunStore(self.runs), self.judge,
                                   FakeJudgeClient(0.6), tasks_dir=self.root / "tasks")
         self.assertEqual(res2["judged"], 1)
+
+    def test_skip_reconciles_index_with_report_verdict(self):
+        """A run judged before the index had judge columns carries its verdict
+        in report.json only — skipping it must still mirror the score into the
+        index so aggregates can see it."""
+        run_id = self._seed()
+        store = RunStore(self.runs)
+        run_dir = Path(store.get_run(run_id).run_dir)  # type: ignore[union-attr]
+        report_path = run_dir / "report.json"
+        report = json.loads(report_path.read_text())
+        report["judge"] = {"score": 0.66, "passed": True, "reasoning": "pre-index",
+                           "model": self.judge.slug}
+        report_path.write_text(json.dumps(report))
+
+        client = FakeJudgeClient()
+        res = backfill_judgments(store, self.judge, client,
+                                 tasks_dir=self.root / "tasks")
+        self.assertEqual(res["judged"], 0)
+        self.assertEqual(client.calls, 0)
+        meta = store.get_run(run_id)
+        self.assertEqual(meta.judge_score, 0.66)
+        self.assertTrue(meta.judge_passed)
+
+    def test_second_judge_lands_under_judges_without_displacing_primary(self):
+        """A second judge's verdict is evidence, not a takeover: it lands in
+        report.judges while report.judge and the index keep the primary axis."""
+        run_id = self._seed()
+        store = RunStore(self.runs)
+        backfill_judgments(store, self.judge, FakeJudgeClient(0.9),
+                           tasks_dir=self.root / "tasks")
+        j2 = _model("j/model-b", "judge")
+        res = backfill_judgments(RunStore(self.runs), j2, FakeJudgeClient(0.4),
+                                 tasks_dir=self.root / "tasks")
+        self.assertEqual(res["judged"], 1)
+        report = json.loads(
+            (Path(store.get_run(run_id).run_dir) / "report.json").read_text())  # type: ignore[union-attr]
+        self.assertEqual(report["judge"]["score"], 0.9)
+        self.assertEqual(report["judges"]["j/model"]["score"], 0.9)
+        self.assertEqual(report["judges"]["j/model-b"]["score"], 0.4)
+        meta = store.get_run(run_id)
+        self.assertEqual(meta.judge_score, 0.9)
+
+    def test_same_judge_skip_still_recognized_via_judges_map(self):
+        """Once judged by judge B, a second B pass skips — even though the
+        primary judge block belongs to judge A."""
+        self._seed()
+        store = RunStore(self.runs)
+        backfill_judgments(store, self.judge, FakeJudgeClient(0.9),
+                           tasks_dir=self.root / "tasks")
+        j2 = _model("j/model-b", "judge")
+        client = FakeJudgeClient(0.4)
+        backfill_judgments(RunStore(self.runs), j2, client,
+                           tasks_dir=self.root / "tasks")
+        res = backfill_judgments(RunStore(self.runs), j2, client,
+                                 tasks_dir=self.root / "tasks")
+        self.assertEqual(res["judged"], 0)
+        self.assertEqual(res["skipped"], 1)
+
+    def test_dry_run_runs_never_reach_the_judge(self):
+        """Dry-run stub artifacts are synthetic — spending real judge calls on
+        them would pollute the corpus with verdicts on fake data."""
+        self._seed(dry_run_meta=True)
+        client = FakeJudgeClient()
+        res = backfill_judgments(RunStore(self.runs), self.judge, client,
+                                 tasks_dir=self.root / "tasks")
+        self.assertEqual(res["runs_seen"], 0)
+        self.assertEqual(client.calls, 0)
 
     def test_dry_run_writes_nothing(self):
         run_id = self._seed()

@@ -1,4 +1,6 @@
 id: multi-file-site
+title: "Multi-file site"
+blurb: "Landing page plus its stylesheet — a real two-file static site."
 type: multi-file
 prompt: |
   Build a small static site for a coffee subscription service: a landing page

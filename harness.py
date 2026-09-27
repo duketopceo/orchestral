@@ -31,6 +31,7 @@ from orchestral.config import (
     ModelConfig,
     TaskSpec,
     find_task,
+    load_groups,
     load_models,
     load_task,
     load_yaml,
@@ -406,11 +407,18 @@ def cmd_validate(args: argparse.Namespace) -> None:
                 want = (want,)
             if want and not any(task.metadata.get(k) for k in want):
                 missing.append(f"{want[0]} (required by validation '{check}')")
+        if not task.title or not task.blurb:
+            print(f"  warn {path.name}: no title/blurb — observatory shows the raw slug")
         if missing:
             failures += 1
             print(f"  FAIL {path.name}: missing metadata {', '.join(missing)}")
         else:
             print(f"  ok   {path.name} ({task.type})")
+    try:
+        load_groups(Path(args.tasks_dir).parent / "groups.yaml")
+    except Exception as exc:
+        failures += 1
+        print(f"  FAIL groups.yaml: {exc}")
     try:
         load_models(args.models_dir)
     except Exception as exc:
@@ -1125,6 +1133,38 @@ def cmd_export(args: argparse.Namespace) -> None:
         print(content, end="")
 
 
+def cmd_dataset(args: argparse.Namespace) -> None:
+    """Export an RL-ready dataset — one JSONL record per LLM call (or per run
+    with --episodes), each carrying the run's outcome and reward.
+
+    --backfill rebuilds `calls` payloads from events.jsonl first so runs that
+    predate payload indexing are included with full text.
+    """
+    from orchestral.dataset import write_dataset
+
+    store = RunStore(args.runs_dir)
+    if args.backfill:
+        metas = [m for m in store.list_runs(limit=None) if m.status != "running"]
+        n = sum(store.backfill_calls(m) for m in metas)
+        print(f"backfilled {n} call payloads across {len(metas)} runs")
+    ts = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+    out = Path(args.out) if args.out else Path("reports") / f"dataset-steps-{ts}.jsonl"
+    ep = (Path(args.episodes_out) if args.episodes_out
+          else (Path("reports") / f"dataset-episodes-{ts}.jsonl") if args.episodes else None)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    counts = write_dataset(
+        store, out,
+        reward=args.reward, include_payloads=not args.no_payloads,
+        episodes_path=ep,
+        group=args.group, task=args.task,
+        orchestrator=args.orchestrator, worker=args.worker,
+        include_dry=args.include_dry,
+    )
+    print(f"wrote {counts['steps']} steps -> {out}")
+    if ep:
+        print(f"wrote {counts['episodes']} episodes -> {ep}")
+
+
 def cmd_prices(args: argparse.Namespace) -> None:
     """Pricing drift: provider-reported cost vs the configured rate card."""
     store = RunStore(args.runs_dir)
@@ -1761,6 +1801,22 @@ def build_parser() -> argparse.ArgumentParser:
     export.add_argument("--min-samples", type=int, default=MIN_LEADERBOARD_SAMPLES, help="Leaderboard low-evidence floor")
     export.add_argument("--out", default=None, help="Write to this file instead of stdout")
     export.set_defaults(func=cmd_export)
+
+    dataset = sub.add_parser("dataset", help="Export an RL-ready JSONL dataset — one record per LLM call joined to run outcome and judge rewards")
+    _add_global_dir_flag(dataset, "--runs-dir", "Root directory for run data")
+    dataset.add_argument("--out", default=None, help="Steps JSONL path (default reports/dataset-steps-<ts>.jsonl)")
+    dataset.add_argument("--group", default=None, help="Limit to a run group")
+    dataset.add_argument("--task", default=None, help="Limit to a task id")
+    dataset.add_argument("--orchestrator", default=None, help="Limit to an orchestrator slug")
+    dataset.add_argument("--worker", default=None, help="Limit to a worker slug")
+    dataset.add_argument("--reward", choices=["judge", "mechanical", "best"], default="best",
+                         help="Which signal lands in outcome.reward (judge=primary judge score, mechanical=test score, best=judge else mechanical)")
+    dataset.add_argument("--episodes", action="store_true", help="Also write one record per run (bandit view)")
+    dataset.add_argument("--episodes-out", default=None, help="Episodes JSONL path (implies --episodes)")
+    dataset.add_argument("--no-payloads", action="store_true", help="Metadata-only steps — omit prompt/completion text")
+    dataset.add_argument("--include-dry", action="store_true", help="Include dry-run rows (default excludes: synthetic artifacts)")
+    dataset.add_argument("--backfill", action="store_true", help="Rebuild calls payloads from events.jsonl for all stored runs first")
+    dataset.set_defaults(func=cmd_dataset)
 
     scrub = sub.add_parser("scrub", help="Redact sensitive data from all runs for sharing")
     _add_global_dir_flag(scrub, "--runs-dir", "Source runs directory")

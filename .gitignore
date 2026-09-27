@@ -3,6 +3,7 @@ __pycache__/
 .venv/
 .env
 runs/
+runs-v1/
 runs-pub/
 # default `harness.py holdout --out`; holdout task text must never be committed
 runs-holdout/

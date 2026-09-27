@@ -1,4 +1,6 @@
 id: sql-monthly-revenue
+title: "Top-product-per-month SQL"
+blurb: "SQL: which product earned the most revenue each month."
 type: sql
 prompt: >
   Write a single read-only SQL query (SQLite dialect) that answers: which

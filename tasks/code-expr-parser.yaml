@@ -1,4 +1,6 @@
 id: code-expr-parser
+title: "Expression parser"
+blurb: "Write a real math-expression parser (+-*/, parens, unary minus) — eval() is banned."
 type: code
 prompt: |
   Implement a Python module `calc.py` with `evaluate(expr: str) -> float`.

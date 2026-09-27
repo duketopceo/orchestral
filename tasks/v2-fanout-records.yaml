@@ -1,0 +1,79 @@
+id: v2-fanout-records
+title: "Fan-out record aggregation"
+blurb: "Parse independent record docs, dedupe across them, aggregate — naturally parallel work."
+type: code
+prompt: |
+  Implement `aggregate.py` with `aggregate(documents: list[str]) -> dict`.
+
+  Each document is a multi-line string of records, one per line, in the
+  format `TYPE|id|amount|tag` where TYPE is `credit` or `debit`, id is an
+  alphanumeric record id, amount is a decimal number, tag is a category
+  word. Example line: `credit|r1042|19.95|books`.
+
+  Rules:
+    - The same record id may appear in multiple documents (deduplication
+      across documents is required) — the FIRST occurrence wins.
+      Documents are processed in list order.
+    - Lines that are blank, malformed, or have a non-numeric amount are
+      skipped, not fatal.
+    - Duplicate ids with DIFFERENT types/amounts still dedupe by id only.
+
+  Return value:
+    {"credits": {"total": <float>, "count": <int>},
+     "debits":  {"total": <float>, "count": <int>},
+     "by_tag":  {<tag>: <float net amount (credits - debits)>, ...},
+     "skipped": <int>}
+
+  Totals rounded to 2 decimals. A document with zero valid records still
+  counts its skipped lines.
+
+  Return a JSON object {"files": [{"path": "aggregate.py", "content": "..."}]}.
+metadata:
+  module: aggregate.py
+  expected_paths: [aggregate.py]
+  timeout_seconds: 30
+  max_code_lines: 200
+  no_unsafe: true
+  no_external_deps: true
+  tests: |
+    import unittest
+    from aggregate import aggregate
+
+    class TestAggregate(unittest.TestCase):
+        def test_basic(self):
+            docs = ["credit|r1|10.00|a\ndebit|r2|4.50|a"]
+            out = aggregate(docs)
+            self.assertEqual(out["credits"], {"total": 10.0, "count": 1})
+            self.assertEqual(out["debits"], {"total": 4.5, "count": 1})
+            self.assertEqual(out["by_tag"]["a"], 5.5)
+            self.assertEqual(out["skipped"], 0)
+
+        def test_cross_doc_dedup_first_wins(self):
+            docs = ["credit|r1|10.00|a", "credit|r1|99.00|b\ndebit|r3|1.00|b"]
+            out = aggregate(docs)
+            self.assertEqual(out["credits"]["total"], 10.0)
+            self.assertEqual(out["credits"]["count"], 1)
+            self.assertEqual(out["debits"]["total"], 1.0)
+            self.assertAlmostEqual(out["by_tag"]["a"], 10.0)
+            self.assertAlmostEqual(out["by_tag"]["b"], -1.0)
+
+        def test_malformed_and_blank_skipped(self):
+            docs = ["\n\nbad line\ncredit|r1|abc|x\ncredit|r2|5.00|ok"]
+            out = aggregate(docs)
+            self.assertEqual(out["skipped"], 3)
+            self.assertEqual(out["credits"]["total"], 5.0)
+
+        def test_empty_documents(self):
+            out = aggregate(["", "  "])
+            self.assertEqual(out["credits"], {"total": 0.0, "count": 0})
+            self.assertEqual(out["by_tag"], {})
+
+        def test_tag_nets_across_types(self):
+            docs = ["credit|r1|10.00|tools\ndebit|r2|3.25|tools\ncredit|r3|2.00|books"]
+            out = aggregate(docs)
+            self.assertAlmostEqual(out["by_tag"]["tools"], 6.75)
+            self.assertAlmostEqual(out["by_tag"]["books"], 2.0)
+
+        def test_whitespace_tolerance(self):
+            out = aggregate(["  credit|r1| 10.00 |a "])
+            self.assertEqual(out["credits"]["count"], 1)

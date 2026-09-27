@@ -1,4 +1,6 @@
 id: code-lru-cache
+title: "LRU cache"
+blurb: "Implement an LRUCache class with O(1) get/put from scratch."
 type: code
 prompt: |
   Implement a Python module `lru.py` with a class `LRUCache`.

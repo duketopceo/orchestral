@@ -1,0 +1,21 @@
+id: v2-budget-config
+title: "Budget: three-key config fix"
+blurb: "Fix three config keys in as few commands as possible — command count is graded."
+type: terminal
+prompt: 'A deployed app has three wrong settings in `app.ini`: `debug =
+  true` (must be false), `workers = 1` (must be 8), and `log_level =
+  verbose` (must be info). Produce a command plan that fixes all three.
+  Fewer commands is better — there is a hard budget.'
+validation: []
+assets: []
+metadata:
+  difficulty: easy
+  fs:
+    app.ini: "[server]\ndebug = true\nworkers = 1\nlog_level = verbose\nport = 8080\n"
+  commands:
+    - run: "sed -i 's/debug = true/debug = false/; s/workers = 1/workers = 8/; s/log_level = verbose/log_level = info/' app.ini"
+  expect:
+    files:
+      app.ini:
+        matches: "debug = false[\\s\\S]*workers = 8[\\s\\S]*log_level = info"
+    max_commands: 2

@@ -1,4 +1,6 @@
 id: extract-invoice
+title: "Invoice extraction"
+blurb: "Pull invoice_id, vendor, total, currency from raw invoice text as strict JSON."
 type: extract
 prompt: |
   Extract structured data from this invoice text. Return ONLY a JSON object

@@ -1,0 +1,90 @@
+id: v2-crossfile-service
+title: "Cross-file service contract"
+blurb: "Three files that must agree — routes, a client, and config. Decompose it wrong and nothing links."
+type: code
+prompt: |
+  Build a tiny service contract across THREE Python files that must agree
+  with each other exactly.
+
+  `service.py` — the provider side:
+    - A module-level constant `SERVICE_VERSION = "1.4.0"`.
+    - A `ROUTES` dict mapping route names to URL paths:
+        {"get_user": "/users/{id}", "list_orders": "/orders",
+         "create_order": "/orders"}
+    - One function per route, same name as the route key:
+        get_user(user_id) -> dict   returns {"id": user_id, "name": "stub"}
+        list_orders() -> list       returns []
+        create_order(item: str, qty: int) -> dict
+                                      returns {"item": item, "qty": qty,
+                                               "status": "created"}
+
+  `client.py` — the consumer side:
+    - `build_url(route_name: str, **params) -> str` that looks the path up
+      from the SAME ROUTES table (import it — do not retype the paths) and
+      substitutes `{param}` placeholders. Unknown route names raise
+      KeyError.
+    - `call(route_name: str, **params)` that dispatches to the matching
+      function in service.py via the ROUTES table (import service, do not
+      retype function names). Unknown route names raise KeyError.
+
+  `config.py` — the single source of truth for constants:
+    - `SERVICE_VERSION` (same value, imported by service.py so there is one
+      definition).
+    - `MAX_QTY = 100` — service.create_order must raise ValueError when
+      qty > MAX_QTY (import it — do not retype 100).
+
+  The contract that is graded: every route in ROUTES has a same-named
+  function; client.build_url and client.call both go through the shared
+  ROUTES table (changing the path in ROUTES must change build_url's output);
+  SERVICE_VERSION and MAX_QTY are defined once in config.py and imported
+  everywhere else. Circular imports will fail the suite — config.py must
+  not import the other two.
+
+  Return a JSON object {"files": [{"path": "...", "content": "..."}]}
+  containing service.py, client.py, and config.py.
+metadata:
+  module: service.py
+  expected_paths: [service.py, client.py, config.py]
+  timeout_seconds: 30
+  max_code_lines: 300
+  no_unsafe: true
+  no_external_deps: true
+  tests: |
+    import unittest, re
+    import service, client, config
+
+    class TestCrossFileContract(unittest.TestCase):
+        def test_routes_have_matching_functions(self):
+            for name in service.ROUTES:
+                self.assertTrue(callable(getattr(service, name, None)),
+                                f"service.{name} missing")
+
+        def test_client_uses_shared_route_table(self):
+            # mutating the shared table must change client output —
+            # proves client didn't retype the paths
+            original = service.ROUTES["get_user"]
+            try:
+                service.ROUTES["get_user"] = "/members/{id}"
+                self.assertEqual(client.build_url("get_user", id=7), "/members/7")
+            finally:
+                service.ROUTES["get_user"] = original
+
+        def test_build_url_substitutes_params(self):
+            self.assertEqual(client.build_url("get_user", id=42), "/users/42")
+            self.assertEqual(client.build_url("list_orders"), "/orders")
+
+        def test_client_dispatch(self):
+            self.assertEqual(client.call("get_user", user_id=9)["id"], 9)
+            self.assertEqual(client.call("create_order", item="pen", qty=2)["status"], "created")
+            with self.assertRaises(KeyError):
+                client.call("no_such_route")
+
+        def test_single_source_version(self):
+            self.assertEqual(service.SERVICE_VERSION, config.SERVICE_VERSION)
+
+        def test_max_qty_defined_once(self):
+            import inspect
+            src = inspect.getsource(service.create_order)
+            self.assertNotRegex(src, r"\b100\b", "service retyped MAX_QTY instead of importing it")
+            with self.assertRaises(ValueError):
+                service.create_order(item="x", qty=config.MAX_QTY + 1)

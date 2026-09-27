@@ -1,0 +1,44 @@
+name: argus review identity probe
+
+# Throwaway probe (DUK-227). Answers one question by read-back: does a review
+# submitted with the Actions GITHUB_TOKEN satisfy require_approving_reviews on
+# main, or does the gate ignore it?
+#
+# The verdict is read from .argus-probe/verdict in the PR head branch:
+#   APPROVE          -> submit event=APPROVE
+#   REQUEST_CHANGES  -> submit event=REQUEST_CHANGES
+#
+# This is a measurement, not the shipping integration. Argus itself does not
+# post reviews yet; see duketopceo/Argus src/report/comment.ts, which only
+# writes a sticky issue comment.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  pull-requests: write
+
+jobs:
+  submit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read requested verdict
+        id: verdict
+        run: |
+          echo "value=$(tr -d '[:space:]' < .argus-probe/verdict)" >> "$GITHUB_OUTPUT"
+
+      - name: Submit pull request review
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          EVENT: ${{ steps.verdict.outputs.value }}
+        run: |
+          gh api --method POST \
+            "repos/${REPO}/pulls/${PR}/reviews" \
+            -f event="${EVENT}" \
+            -f body="argus identity probe: submitting ${EVENT} as the acting identity." \
+            --jq '{id, state, user: .user.login, submitted_at}'

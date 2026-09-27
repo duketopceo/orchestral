@@ -23,6 +23,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import secrets
 import signal
 import subprocess
 import sys
@@ -31,7 +32,13 @@ from pathlib import Path
 from typing import Any
 
 from .audit import ERROR, INFO, WARN, Finding, load_specs
-from .codeexec import DEFAULT_TIMEOUT_SECONDS, materialize
+from .codeexec import (
+    DEFAULT_TIMEOUT_SECONDS,
+    materialize,
+    shadowing_members,
+    suite_result_report,
+    suite_runner_source,
+)
 from .config import TaskSpec
 from .fileset import FilesetError, sanitize_path
 from .patch import PatchError, apply_unified_diff, extract_patch
@@ -43,13 +50,7 @@ CEILING_RATE = 0.95
 # Spec-declared suite timeouts are honored up to this ceiling — the execute
 # layer is a CI gate, not a license to block a job indefinitely.
 MAX_TIMEOUT_SECONDS = 300.0
-# Top-level members a reference fileset must not ship: they would shadow the
-# invoked module, the test module, or interpreter-startup imports inside the
-# suite subprocess's cwd (sys.path[0] for `python -m`).
-_SHADOW_DENYLIST = frozenset({
-    "unittest", "test_submitted", "site", "sitecustomize", "usercustomize",
-    "builtins", "__main__",
-})
+
 
 
 class _Probe(Runner):
@@ -241,8 +242,16 @@ def _run_suite_locally(
             "LANG": os.environ.get("LANG", "C.UTF-8"),
             "PYTHONHASHSEED": "0",
         }
+        # The verdict comes from the runner's result payload, not stdout —
+        # spec-authored content could otherwise forge a "Ran N tests" tail.
+        result_path = root / f".orch-result-{secrets.token_hex(8)}.json"
+        runner = root / "_orch_selfcheck_runner.py"
+        runner.write_text(
+            suite_runner_source(str(root), "test_submitted.py", str(result_path)),
+            encoding="utf-8",
+        )
         proc = subprocess.Popen(
-            [sys.executable, "-m", "unittest", "test_submitted"],
+            [sys.executable, "-Es", str(runner)],
             cwd=tmp,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -262,22 +271,21 @@ def _run_suite_locally(
             return report
         report["executed"] = True
         tail = (err or out or "").strip().splitlines()
-        report["output_tail"] = "\n".join(tail[-15:])
-        ran = 0
-        for line in tail:
-            if line.startswith("Ran "):
-                with contextlib.suppress(IndexError, ValueError):
-                    ran = int(line.split()[1])
+        report["output_tail"] = "\n".join(tail[-15:])[-4000:]
+        try:
+            payload = json.loads(result_path.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict):
+                raise ValueError("non-dict result payload")
+        except Exception:
+            report["error"] = "no result payload from verifier runner"
+            return report
+        for key in ("tests_run", "failures", "errors", "skipped"):
+            report[key] = int(payload.get(key) or 0)
+        ran, error = suite_result_report(payload, proc.returncode)
         report["tests_run"] = ran
-        # unittest exits nonzero iff anything failed or errored; parsing the
-        # summary line for counts double-counts "expected failures=".
-        report["ok"] = proc.returncode == 0 and ran > 0
-        if ran == 0:
-            # 3.14+ exits 5 with "NO TESTS RAN" and prints no "Ran N" line;
-            # older versions print "Ran 0 tests" and exit 0. Same defect.
-            report["error"] = "suite ran zero tests"
-        elif proc.returncode != 0:
-            report["error"] = f"unittest exited {proc.returncode}"
+        report["ok"] = bool(payload.get("ok")) and ran > 0
+        if error:
+            report["error"] = error
     return report
 
 
@@ -305,11 +313,7 @@ def check_execution(
             path=str(path) if path else None,
             detail="hidden tests could not be executed: no reference fileset.",
         )]
-    shadowed = sorted(
-        p for p in fileset
-        if p.split("/", 1)[0] in _SHADOW_DENYLIST
-        or Path(p).stem in _SHADOW_DENYLIST
-    )
+    shadowed = shadowing_members(fileset)
     if shadowed:
         return [Finding(
             rule="invalid_reference",

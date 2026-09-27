@@ -1425,7 +1425,7 @@ def _repo_status(root: Path) -> set[str]:
 
 
 def _oracle_probe_needles(
-    transcript_path: Path | None,
+    transcript_text: str,
     repo_root: Path | None,
     task: TaskSpec,
 ) -> list[str]:
@@ -1434,16 +1434,24 @@ def _oracle_probe_needles(
     The filesystem is open to the agent — containment is environmental, so
     reads of task oracles are *detected*, not prevented. A mention is not
     proof of a read, which is why this is a warning milestone.
+
+    Takes the transcript as text, not a path. The agent shares write access
+    to the workspace, so re-reading the path here would scan whatever the
+    agent left there instead of what the harness captured — and would hang
+    outright on a FIFO. It also never returns `[]` for an absent transcript:
+    `[]` means "checked, clean", and a missing or empty capture is
+    *unchecked*, which is the condition a tripwire exists to surface. So an
+    empty capture is reported under its own needle rather than passing
+    silently.
     """
-    if transcript_path is None or not Path(transcript_path).exists():
-        return []
-    text = Path(transcript_path).read_text(encoding="utf-8", errors="replace")
+    if not transcript_text.strip():
+        return ["empty_transcript"]
     needles: list[str] = []
-    if repo_root is not None and str(repo_root) in text:
+    if repo_root is not None and str(repo_root) in transcript_text:
         needles.append("repo_root")
-    if re.search(r"tasks/[^\s'\"]+\.ya?ml", text):
+    if re.search(r"tasks/[^\s'\"]+\.ya?ml", transcript_text):
         needles.append("task_spec")
-    if "metadata.tests" in text or "hidden test" in text.lower():
+    if "metadata.tests" in transcript_text or "hidden test" in transcript_text.lower():
         needles.append("oracle")
     return needles
 
@@ -1580,7 +1588,7 @@ def delegate_agentic(
 
     # tripwire 2: transcript references the repo or task oracles — reads are
     # detected, not prevented (open filesystem is the documented boundary)
-    needles = _oracle_probe_needles(result.transcript_path, repo_root, task)
+    needles = _oracle_probe_needles(result.transcript_text, repo_root, task)
     if needles:
         logger.log(
             phase="delegate",

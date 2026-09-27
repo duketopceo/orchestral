@@ -25,6 +25,30 @@ Honesty notes:
   be signalled or detected by pgid — a documented containment limit.
 - `raw/` evidence is agent-writable in principle: the transcript hash in
   the manifest makes later modification detectable, not impossible.
+
+Isolation posture for the non-Docker child (CTO decision, DUK-277):
+
+- This executor is a *measurement harness*, not a privilege boundary. The
+  child runs as the harness user with the host filesystem readable, and no
+  transcript-level fix changes that. Gating the non-Docker child behind
+  `sandbox.py` would be a scope change, not a hardening step, so it is not
+  taken unilaterally here.
+- What *is* owned by this module is the integrity of the harness's own
+  evidence. The child shares write access to the workspace, so the harness
+  must never publish attacker-chosen bytes as its own transcript, and must
+  never be parked by a filesystem object the child left behind. The
+  transcript descriptor is therefore opened before spawn and read back
+  from that same descriptor: the child's ability to unlink and replace the
+  path has no referent for the harness. That is the boundary being defended
+  here, and it is a real one — an uncontrolled child could otherwise forge
+  the transcript that the oracle tripwire and the redaction pass consume.
+- Detection remains the containment model, as the first bullet says. The
+  tripwire scans the captured text, and an empty capture now trips it
+  rather than reading as "checked, clean".
+- Residual risk accepted: the child can still read any file the harness
+  user can read and can exfiltrate through its own stdout, which the
+  transcript faithfully records. `--allow-agent-exec` defaults to `False`
+  precisely because of this, and that default is the control.
 """
 
 from __future__ import annotations
@@ -35,6 +59,7 @@ import hashlib
 import os
 import queue
 import re
+import select
 import shutil
 import signal
 import stat
@@ -162,6 +187,11 @@ ADAPTERS: dict[str, AgentAdapter] = {
 DEFAULT_TIMEOUT_SECONDS = 900.0          # 15 min — agentic work is slow
 KILL_GRACE_SECONDS = 5.0
 TRANSCRIPT_CAP_BYTES = 8 * 1024 * 1024   # every untrusted byte flow is capped
+_READ_CHUNK_BYTES = 64 * 1024            # transcript read granularity
+# wall-clock bound on reading the transcript back; the read is fd-anchored to
+# a regular file we opened, so this only ever fires on a pathological kernel
+# or filesystem, never on agent-controlled input
+TRANSCRIPT_READ_TIMEOUT_SECONDS = 30.0
 MAX_SEED_BYTES = 4 * 1024 * 1024
 MAX_HARVEST_FILES = 50
 MAX_PATH_LENGTH = 512
@@ -399,6 +429,124 @@ def _new_workspace(work_dir: Path | None = None) -> Path:
 
 
 # ---------------------------------------------------------------------------
+# Transcript capture — fd-anchored, never re-resolved by path
+# ---------------------------------------------------------------------------
+
+
+def _open_transcript_fd(transcript_path: Path) -> int:
+    """Open the harness-owned transcript for append; refuse anything but a
+    regular file.
+
+    The fd is opened *before* the child is spawned and held for the whole
+    attempt, so the transcript is addressed by inode for its entire life.
+    Every flag earns its place against a hostile writer that shares the
+    agent's write access to the workspace:
+
+    - `O_NOFOLLOW` — a symlink planted at the path fails `open` with ELOOP
+      instead of redirecting the capture to an arbitrary host file.
+    - `O_NONBLOCK` — a FIFO planted at the path would otherwise make a
+      write-only `open` block forever waiting for a reader, which is an
+      unbounded harness hang, not a failed attempt. On a regular file
+      `O_NONBLOCK` is a no-op, so it is never cleared. A FIFO the harness
+      opens read-write with `O_NONBLOCK` still fails on the platforms that
+      return ENXIO for a writer with no reader, which is the same refusal.
+    - `O_RDWR` — the same descriptor is read back at the end of the attempt,
+      and `O_WRONLY` would make that read `EBADF`. The descriptor is
+      `O_CLOEXEC` and the child is spawned after it exists, so the child
+      never inherits it; the child reaches the transcript only through the
+      path, which is what the flags above police.
+    - `fstat` on the resulting descriptor, not `lstat` on the path — the
+      descriptor is the object we will read, and re-checking it here is
+      what makes a swapped path irrelevant. A device, socket, or directory
+      that slipped past the open is rejected on the descriptor itself.
+    """
+    flags = os.O_RDWR | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW | os.O_NONBLOCK
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    try:
+        fd = os.open(transcript_path, flags, 0o600)
+    except OSError as exc:
+        raise WorkspaceError(
+            f"Refusing to open transcript at {transcript_path.name}: {exc.strerror or exc}"
+        ) from exc
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            # close before raising: a refusal that leaks the descriptor leaks
+            # one per attempt, and the process has an fd ceiling
+            os.close(fd)
+            raise WorkspaceError(
+                f"Transcript path is not a regular file: {transcript_path.name}"
+            )
+    except OSError:
+        os.close(fd)
+        raise
+    return fd
+
+
+def _write_transcript(fd: int, data: bytes) -> None:
+    """Append one chunk to the held transcript descriptor.
+
+    Only reached for a descriptor that already passed `_open_transcript_fd`,
+    so a `None` return means the harness's own write failed — never that the
+    transcript was unusable, which is rejected at open time.
+    """
+    if not data:
+        return
+    view = memoryview(data)
+    while view:
+        view = view[os.write(fd, view):]
+
+
+def _read_transcript_fd(
+    fd: int,
+    *,
+    cap: int,
+    timeout: float,
+) -> tuple[bytes, bool]:
+    """Read the held descriptor back from offset 0. Return (bytes, complete).
+
+    Two independent bounds, because they fail differently:
+
+    - `cap` — an agent cannot make the harness allocate without limit, and
+      an over-cap transcript is reported rather than silently truncated.
+    - `timeout` — a wall-clock bound, enforced with `select` per chunk, so
+      even a descriptor that somehow stops being readable returns instead of
+      parking the attempt. `select` is not used to decide *whether* to read;
+      it only enforces the deadline.
+
+    Reading the same descriptor that was written, rather than reopening the
+    path, is what closes the TOCTOU: an unlink-and-replace performed by the
+    agent mid-run cannot redirect these bytes.
+    """
+    os.lseek(fd, 0, os.SEEK_SET)
+    deadline = time.monotonic() + max(timeout, 0.0)
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return b"".join(chunks), False
+        # a regular file is always "readable" to select, so this bounds the
+        # loop rather than filtering anything out
+        readable, _, _ = select.select([fd], [], [], min(remaining, 0.25))
+        if not readable:
+            continue
+        want = min(_READ_CHUNK_BYTES, cap - total + 1)
+        if want <= 0:
+            break
+        chunk = os.read(fd, want)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > cap:
+            # one byte past the cap proves the transcript is over — keep the
+            # bounded prefix and let the caller report the breach
+            chunks.append(chunk[: cap - (total - len(chunk))])
+            return b"".join(chunks), False
+        chunks.append(chunk)
+    return b"".join(chunks), True
+
+
+# ---------------------------------------------------------------------------
 # Spawn + stream + process-group lifecycle
 # ---------------------------------------------------------------------------
 
@@ -466,7 +614,7 @@ def _kill_group(proc: subprocess.Popen, pgid: int, grace: float = KILL_GRACE_SEC
 def _wait_or_kill(
     proc: subprocess.Popen,
     pgid: int,
-    transcript_path: Path,
+    transcript_fd: int,
     chunks: queue.Queue[bytes | None],
     *,
     timeout: float,
@@ -478,71 +626,75 @@ def _wait_or_kill(
     The pgid was captured at spawn (it equals proc.pid) and is only ever
     signalled while the group is confirmed live — after the leader reaps,
     a recycled PGID could belong to an unrelated process.
+
+    `transcript_fd` is the descriptor opened by the caller *before* spawn.
+    Writes go through it, so the agent's ability to unlink and replace the
+    path mid-run cannot redirect a single byte of captured output.
     """
     deadline = time.monotonic() + timeout
     written = 0
     reader_done = False
     outcome = "exited"
 
-    with transcript_path.open("ab") as fh:
-        while True:
-            # drain queued output
-            try:
-                while True:
-                    data = chunks.get(timeout=0.1)
-                    if data is None:
-                        reader_done = True
-                    else:
-                        if written + len(data) > cap:
-                            outcome = "cap_breach"
-                            break
-                        fh.write(data)
-                        fh.flush()
-                        written += len(data)
-            except queue.Empty:
-                pass
-
-            if outcome != "exited":
-                break
-            if cancel_event is not None and cancel_event.is_set():
-                outcome = "cancelled"
-                break
-            if time.monotonic() > deadline:
-                outcome = "timeout"
-                break
-            if proc.poll() is not None:
-                break  # leader out — do NOT wait on EOF (see below)
-
-        # kill the group before draining: a daemonized descendant holds the
-        # stdout pipe open, so waiting on EOF before kill would stall until
-        # the attempt deadline. Once the group is dead the pipe closes.
-        stragglers = _group_alive(pgid)
-        if outcome == "exited":
-            survivors = stragglers  # daemon-detection milestone
-            if stragglers:
-                _kill_group(proc, pgid)
-        else:
-            survivors = _kill_group(proc, pgid)
-
-        # drain whatever the reader buffered — bounded, so a reader that
-        # never finishes can't hang the attempt
-        drain_deadline = time.monotonic() + KILL_GRACE_SECONDS
-        while not reader_done and time.monotonic() < drain_deadline:
-            try:
+    while True:
+        # drain queued output
+        try:
+            while True:
                 data = chunks.get(timeout=0.1)
-            except queue.Empty:
-                continue
-            if data is None:
-                reader_done = True
-            elif written + len(data) <= cap:
-                fh.write(data)
-                fh.flush()
-                written += len(data)
-            else:
-                outcome = "cap_breach"
+                if data is None:
+                    reader_done = True
+                else:
+                    if written + len(data) > cap:
+                        outcome = "cap_breach"
+                        break
+                    _write_transcript(transcript_fd, data)
+                    written += len(data)
+        except queue.Empty:
+            pass
 
-        if outcome == "cap_breach":
-            fh.write(b"\n[orchestral: transcript truncated - byte cap reached]\n")
+        if outcome != "exited":
+            break
+        if cancel_event is not None and cancel_event.is_set():
+            outcome = "cancelled"
+            break
+        if time.monotonic() > deadline:
+            outcome = "timeout"
+            break
+        if proc.poll() is not None:
+            break  # leader out — do NOT wait on EOF (see below)
+
+    # kill the group before draining: a daemonized descendant holds the
+    # stdout pipe open, so waiting on EOF before kill would stall until
+    # the attempt deadline. Once the group is dead the pipe closes.
+    stragglers = _group_alive(pgid)
+    if outcome == "exited":
+        survivors = stragglers  # daemon-detection milestone
+        if stragglers:
+            _kill_group(proc, pgid)
+    else:
+        survivors = _kill_group(proc, pgid)
+
+    # drain whatever the reader buffered — bounded, so a reader that
+    # never finishes can't hang the attempt
+    drain_deadline = time.monotonic() + KILL_GRACE_SECONDS
+    while not reader_done and time.monotonic() < drain_deadline:
+        try:
+            data = chunks.get(timeout=0.1)
+        except queue.Empty:
+            continue
+        if data is None:
+            reader_done = True
+        elif written + len(data) <= cap:
+            _write_transcript(transcript_fd, data)
+            written += len(data)
+        else:
+            outcome = "cap_breach"
+
+    if outcome == "cap_breach":
+        _write_transcript(
+            transcript_fd,
+            b"\n[orchestral: transcript truncated - byte cap reached]\n",
+        )
 
     code = proc.poll()
     if code is None:
@@ -692,6 +844,10 @@ class ExecutorResult:
     transcript_path: Path | None
     transcript_sha256: str
     transcript_bytes: int
+    # the redacted, scrubbed transcript as text. Held so downstream checks
+    # scan the bytes the harness captured rather than re-reading a path the
+    # agent still has write access to.
+    transcript_text: str
     redactions: int
     group_survivors: bool
     workspace: Path
@@ -712,11 +868,17 @@ def run_attempt(
 ) -> ExecutorResult:
     """Run one agent attempt end-to-end.
 
-    Seeds a fresh external workspace, spawns the CLI under the minimal env,
-    streams output to a capped transcript, kills the process group on
-    timeout/cancel/cap-breach, harvests the diff in pure Python, redacts
-    declared env values at capture time, and copies evidence under
-    `evidence_dir` (the run's raw/ dir) when given.
+    Seeds a fresh external workspace, opens the transcript descriptor before
+    the child exists, spawns the CLI under the minimal env, streams output
+    through the held descriptor to a capped transcript, kills the process
+    group on timeout/cancel/cap-breach, harvests the diff in pure Python,
+    redacts declared env values and scrubs privacy patterns at capture time,
+    and copies evidence under `evidence_dir` (the run's raw/ dir) when given.
+
+    The transcript is addressed by descriptor for its whole life. That is
+    the point of the ordering: the child shares write access to the
+    workspace, so any check that re-resolves the path after spawn is a check
+    the child can invalidate between the check and the read.
     """
     ws = _new_workspace(work_dir)
     try:
@@ -735,53 +897,69 @@ def run_attempt(
         else:
             argv = adapter.run_argv(binary_path, prompt_text)
 
+        # before spawn: the descriptor is the capture, so a path the child
+        # swaps afterwards has no referent for the harness to read through
         transcript_path = ws / SCRATCH_DIR / "transcript.log"
+        transcript_fd = _open_transcript_fd(transcript_path)
         try:
-            proc = subprocess.Popen(
-                argv,
-                cwd=ws,
-                env=env,
-                stdin=subprocess.PIPE if adapter.prompt_via == "stdin" else subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                start_new_session=True,  # own process group; pgid == proc.pid
+            try:
+                proc = subprocess.Popen(
+                    argv,
+                    cwd=ws,
+                    env=env,
+                    stdin=subprocess.PIPE if adapter.prompt_via == "stdin" else subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    start_new_session=True,  # own process group; pgid == proc.pid
+                )
+            except OSError as exc:
+                raise SpawnFailedError(f"{adapter.name} spawn failed: {exc}") from exc
+
+            pgid = proc.pid  # captured at spawn — never re-derived post-reap
+            if adapter.prompt_via == "stdin" and proc.stdin is not None:
+                # daemon feed: a prompt larger than the pipe buffer would
+                # deadlock a synchronous write if the child stalls reading
+                def _feed(stream: Any, data: bytes) -> None:
+                    try:
+                        stream.write(data)
+                        stream.close()
+                    except Exception:
+                        pass
+
+                threading.Thread(
+                    target=_feed,
+                    args=(proc.stdin, prompt_text.encode("utf-8")),
+                    daemon=True,
+                ).start()
+
+            chunks: queue.Queue[bytes | None] = queue.Queue()
+            reader = threading.Thread(target=_stream_reader, args=(proc, chunks), daemon=True)
+            reader.start()
+
+            wait = _wait_or_kill(
+                proc, pgid, transcript_fd, chunks,
+                timeout=timeout, cancel_event=cancel_event, cap=transcript_cap,
             )
-        except OSError as exc:
-            raise SpawnFailedError(f"{adapter.name} spawn failed: {exc}") from exc
+            with contextlib.suppress(Exception):
+                if proc.stdout is not None:
+                    proc.stdout.close()
 
-        pgid = proc.pid  # captured at spawn — never re-derived post-reap
-        if adapter.prompt_via == "stdin" and proc.stdin is not None:
-            # daemon feed: a prompt larger than the pipe buffer would
-            # deadlock a synchronous write if the child stalls reading
-            def _feed(stream: Any, data: bytes) -> None:
-                try:
-                    stream.write(data)
-                    stream.close()
-                except Exception:
-                    pass
+            # transcript: same descriptor we wrote, bounded on both axes.
+            # read back before redacting so no unredacted byte is retained.
+            raw_transcript, transcript_complete = _read_transcript_fd(
+                transcript_fd, cap=transcript_cap,
+                timeout=TRANSCRIPT_READ_TIMEOUT_SECONDS,
+            )
+        finally:
+            os.close(transcript_fd)
 
-            threading.Thread(
-                target=_feed,
-                args=(proc.stdin, prompt_text.encode("utf-8")),
-                daemon=True,
-            ).start()
-
-        chunks: queue.Queue[bytes | None] = queue.Queue()
-        reader = threading.Thread(target=_stream_reader, args=(proc, chunks), daemon=True)
-        reader.start()
-
-        wait = _wait_or_kill(
-            proc, pgid, transcript_path, chunks,
-            timeout=timeout, cancel_event=cancel_event, cap=transcript_cap,
-        )
-        with contextlib.suppress(Exception):
-            if proc.stdout is not None:
-                proc.stdout.close()
-
-        # transcript: redact declared env values before bytes leave the module
-        raw_transcript = transcript_path.read_bytes() if transcript_path.exists() else b""
+        # transcript: declared env values redacted, then privacy patterns
+        # scrubbed — same two stages the diff and the fileset get, so a
+        # transcript is never the one artifact published unscrubbed
         transcript_text, transcript_redactions = redact_secrets(
             raw_transcript.decode("utf-8", errors="replace"), declared)
+        transcript_text = scrub_text(transcript_text)
+        # fingerprint what is actually written to evidence, not the raw input
         transcript_sha = hashlib.sha256(transcript_text.encode()).hexdigest()
 
         def _copy_evidence(diff_text: str | None = None) -> None:
@@ -806,6 +984,16 @@ def run_attempt(
             _copy_evidence()
             raise WorkspaceError(
                 f"{adapter.name} transcript exceeded {transcript_cap} bytes; process group killed"
+            )
+        if not transcript_complete:
+            # backstop, after the attempt outcomes above: the transcript is the
+            # input to the oracle tripwire, so an attempt that exits clean with
+            # a partial transcript would pass that check having never really
+            # run it. The outcome-specific messages stay first — they say why.
+            _copy_evidence()
+            raise WorkspaceError(
+                f"{adapter.name} transcript read did not complete within the "
+                f"bounds set for it; evidence is incomplete"
             )
 
         exit_code = wait.exit_code
@@ -855,6 +1043,7 @@ def run_attempt(
             ),
             transcript_sha256=transcript_sha,
             transcript_bytes=len(raw_transcript),
+            transcript_text=transcript_text,
             redactions=transcript_redactions + diff_redactions + file_redactions,
             group_survivors=wait.group_survivors,
             workspace=ws,

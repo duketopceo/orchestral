@@ -346,7 +346,7 @@ def overview_payload(
     tmeta = _task_meta(store, tasks_dir)
     recent = []
     for r in runs[:10]:
-        d = r.to_dict()
+        d = r.to_public_dict()
         d["task_title"] = (tmeta.get(r.task_id) or {}).get("title") or ""
         d["judge_state"], d["judge_reason"] = judge_state(r)
         recent.append(d)
@@ -473,7 +473,7 @@ def runs_payload(
     tmeta = _task_meta(store, tasks_dir)
     out = []
     for r in rows:
-        d = r.to_dict()
+        d = r.to_public_dict()
         tm = tmeta.get(r.task_id) or {}
         d["task_title"] = tm.get("title") or ""
         d["judge_state"], d["judge_reason"] = judge_state(r)
@@ -514,7 +514,14 @@ def timeline_payload(run_dir: Path) -> list[dict[str, Any]]:
 
 def artifact_info(run_dir: Path) -> dict[str, Any] | None:
     """Metadata for the stored artifact — the SPA decides how to preview it.
-    Zip members come as a listing (never bodies — same rule as the judge)."""
+
+    Zip members come as a listing and never as bodies: the member table is read
+    with `zf.infolist()`, which yields names and uncompressed sizes out of the
+    central directory, so no member content is decompressed or returned. The
+    SPA fetches an artifact body on its own via `/api/run/<id>/artifact`. Same
+    rule as the judge and the transcript: bound the read, do not bound the
+    response afterwards.
+    """
     import zipfile
 
     run_dir = Path(run_dir)
@@ -551,14 +558,14 @@ def run_detail_payload(
     gm = _groups_meta(groups_file).get(meta.run_group or "") or {}
     jstate, jreason = judge_state(meta)
     return {
-        "meta": meta.to_dict(),
+        "meta": meta.to_public_dict(),
         "judge_state": jstate,
         "judge_reason": jreason,
         "task_title": tm.get("title") or "",
         "task_blurb": tm.get("blurb") or "",
         "group_label": gm.get("label") or "",
         "group_description": gm.get("description") or "",
-        "calls": store.calls_for_run(run_id),
+        "calls": store.call_previews(run_id),
         "report": read_json(run_dir / "report.json"),
         "review": read_json(run_dir / "review.json"),
         "manifest": read_json(run_dir / "manifest.json"),
@@ -1104,7 +1111,18 @@ def _bounded_text(text: str, *, max_bytes: int, max_lines: int, tail: bool = Tru
 
 
 def _event_transcript(run_dir: Path) -> str:
-    """Render a short terminal-like view from lifecycle events, never raw prompts."""
+    """Render a short terminal-like view from lifecycle events, never raw prompts.
+
+    "Never raw prompts" is enforced in two places, and both have to hold for
+    the promise to mean anything. Here: the wanted event types are fixed, each
+    rendered field is read off `output` and sliced to 60 chars, and an
+    absolute harness path is rewritten to `[run]`. In the call ledger, the
+    other place prompts could reach a browser: `RunStore.call_previews` is
+    what `/api/run/<id>` reads, and it caps each body at
+    `CALL_PREVIEW_MAX_BYTES` inside the SQL query. If you add a prompt source
+    to a payload, cap it there too — a guarantee that lives only in a
+    docstring is not one.
+    """
     events, _ = tail_events(run_dir / "events.jsonl", 0)
     wanted = {
         "evaluation.completed", "worker_error", "worker.failed", "worker_retry",

@@ -35,6 +35,33 @@ DB_NAME = "index.db"
 # trusted. v1 was the bare result dict (pre-inconclusive rule).
 JUDGE_CACHE_SCHEMA = 2
 
+# Byte cap on a call's prompt/completion body when a caller wants a *preview*
+# (the web observatory) rather than the ledger (dataset export, the TUI).
+# `input_json` holds the whole `{"messages": [...]}` prompt, so an unbounded
+# read hands every prompt ever sent to whoever can open the endpoint. The cap
+# is applied in SQL by `call_previews`, not to the response afterwards, so the
+# bytes never leave SQLite in the first place.
+CALL_PREVIEW_MAX_BYTES = 2000
+
+
+def _bounded_body(raw: Any, total: Any) -> tuple[str, int, bool]:
+    """Decode a `substr(CAST(col AS BLOB), 1, cap)` slice, marked if it was cut.
+
+    `raw` is the leading bytes SQLite already capped, `total` the true byte
+    count. Returns `(text, total, truncated)`; a body at or under the cap comes
+    back unchanged, so a healthy prompt is never mangled by the cap. The
+    truncated flag has to come from the length comparison — the caller cannot
+    infer it from `raw`, which is a string either way.
+    """
+    if raw is None:
+        return "", int(total or 0), False
+    text = (raw.decode("utf-8", errors="ignore")
+            if isinstance(raw, bytes) else str(raw))
+    size = int(total or 0)
+    if size <= len(raw):
+        return text, size, False
+    return f"{text}…[truncated {size - len(raw)} of {size} bytes]", size, True
+
 
 @dataclass
 class RunMeta:
@@ -64,6 +91,19 @@ class RunMeta:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+    def to_public_dict(self) -> dict[str, Any]:
+        """`to_dict()` minus `run_dir`.
+
+        `run_dir` is the store's own filesystem path, so it is an absolute
+        host path on any store created from an absolute root. It is an
+        implementation detail the web observatory has no use for, and
+        publishing it hands out local filesystem layout. `to_dict()` stays
+        for the on-disk `run.json`, where the real path must survive.
+        """
+        d = asdict(self)
+        d.pop("run_dir", None)
+        return d
 
 
 class RunStore:
@@ -337,12 +377,80 @@ class RunStore:
             )
 
     def calls_for_run(self, run_id: str) -> list[dict[str, Any]]:
+        """The full ledger, prompt and completion bodies included.
+
+        Deliberately unbounded: `dataset.py` exports these bodies and the TUI
+        shows them. Anything serving a caller that is not the local operator
+        wants `call_previews` instead.
+        """
         with self._connect() as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 "SELECT * FROM calls WHERE run_id = ? ORDER BY call_id", (run_id,)
             ).fetchall()
         return [dict(r) for r in rows]
+
+    def call_previews(
+        self, run_id: str, *, max_bytes: int = CALL_PREVIEW_MAX_BYTES
+    ) -> list[dict[str, Any]]:
+        """`calls_for_run` with each body cut to `max_bytes` of leading bytes,
+        plus a truncation marker, for callers that render a run rather than
+        export it.
+
+        Two differences from `calls_for_run`, both load-bearing:
+
+        - Explicit column list. `SELECT *` silently widens the payload when a
+          migration appends a column, which is how a prompt column shipped
+          once already.
+        - The cut happens in SQL, on the byte-cast blob, so the body never
+          crosses the process boundary whole. Capping the returned value
+          instead would leave the disclosure intact for the next caller and
+          make the guarantee a claim rather than a bound. `substr` on the BLOB
+          cast is also a byte bound: `length()` on TEXT counts characters, so
+          a CJK prompt would slip through at three times the budget.
+
+        Adds `input_bytes`/`output_bytes` (true size) and
+        `input_truncated`/`output_truncated` so a reader can tell a short
+        prompt from a cut one, and a marker carrying both numbers. A body at
+        or under the cap is returned byte-for-byte.
+
+        `error` rides through uncapped here because it is already bounded at
+        the write — `record_call` and `backfill_calls` both store
+        `(error or "")[:500]`, under the cap. If that write-side bound is ever
+        lifted, this projection needs one too.
+
+        The cut keeps the *leading* bytes, so this bounds size, it does not
+        redact: whatever sits in the first `max_bytes` of a body still ships.
+        Callers that need redaction have to omit the body, not shrink the cap.
+        """
+        with self._connect() as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                """
+                SELECT call_id, run_id, phase, step, role, model,
+                       input_tokens, output_tokens, cost_usd, api_cost_usd,
+                       pricing_source, latency_ms, attempt, error_category,
+                       error, dry_run, created_at, worker_id, sequence,
+                       finish_reason,
+                       substr(CAST(input_json AS BLOB), 1, ?) AS input_json,
+                       length(CAST(input_json AS BLOB)) AS input_bytes,
+                       substr(CAST(output_json AS BLOB), 1, ?) AS output_json,
+                       length(CAST(output_json AS BLOB)) AS output_bytes
+                FROM calls WHERE run_id = ? ORDER BY call_id
+                """,
+                (max_bytes, max_bytes, run_id),
+            ).fetchall()
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            d = dict(row)
+            for body, total in (("input_json", "input_bytes"),
+                                ("output_json", "output_bytes")):
+                text, size, truncated = _bounded_body(d.get(body), d[total])
+                d[body] = text
+                d[f"{body.rsplit('_', 1)[0]}_truncated"] = truncated
+                d[total] = size
+            out.append(d)
+        return out
 
     def backfill_calls(self, meta: RunMeta) -> int:
         """Rebuild a run's `calls` rows from its events.jsonl, payloads and all.

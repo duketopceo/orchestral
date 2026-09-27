@@ -396,5 +396,51 @@ class TestScrub(unittest.TestCase):
             self.assertIn("raw/", omissions)
 
 
+class TestOracleProbeNeedles(unittest.TestCase):
+    """The oracle tripwire scans the captured transcript for oracle-adjacent
+    references. `[]` means 'checked, clean', so an absent or empty capture has
+    to surface rather than pass — that distinction is the whole control."""
+
+    def _task(self) -> TaskSpec:
+        return TaskSpec(id="t", type="code", prompt="p")
+
+    def _needles(self, text: str, repo_root: Path | None = None) -> list[str]:
+        from orchestral.planners import _oracle_probe_needles
+
+        return _oracle_probe_needles(text, repo_root, self._task())
+
+    def test_empty_capture_trips_rather_than_reading_as_clean(self):
+        for empty in ("", "   ", "\n\t\n"):
+            with self.subTest(capture=repr(empty)):
+                self.assertEqual(self._needles(empty), ["empty_transcript"])
+
+    def test_real_transcript_with_no_needles_is_clean(self):
+        self.assertEqual(
+            self._needles("edited src/app.py and ran the tests\n"), [])
+
+    def test_repo_root_reference_trips(self):
+        self.assertEqual(
+            self._needles("reading /srv/orchestral/orchestral/planner.py", Path("/srv/orchestral")),
+            ["repo_root"])
+
+    def test_task_spec_reference_trips(self):
+        self.assertEqual(
+            self._needles("cat tasks/landing-page.yaml"), ["task_spec"])
+
+    def test_oracle_reference_trips(self):
+        self.assertEqual(
+            self._needles("let me check metadata.tests"), ["oracle"])
+        self.assertEqual(
+            self._needles("where is the hidden test?"), ["oracle"])
+
+    def test_scan_is_on_text_not_a_path(self):
+        # the agent shares write access to the workspace, so the scan must not
+        # depend on the path still resolving to what the harness captured
+        from orchestral.planners import _oracle_probe_needles
+
+        needles = _oracle_probe_needles("tasks/x.yaml", None, self._task())
+        self.assertEqual(needles, ["task_spec"])
+
+
 if __name__ == "__main__":
     unittest.main()

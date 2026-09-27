@@ -443,13 +443,14 @@ def _open_transcript_fd(transcript_path: Path) -> int:
     agent's write access to the workspace:
 
     - `O_NOFOLLOW` — a symlink planted at the path fails `open` with ELOOP
-      instead of redirecting the capture to an arbitrary host file.
-    - `O_NONBLOCK` — a FIFO planted at the path would otherwise make a
-      write-only `open` block forever waiting for a reader, which is an
-      unbounded harness hang, not a failed attempt. On a regular file
-      `O_NONBLOCK` is a no-op, so it is never cleared. A FIFO the harness
-      opens read-write with `O_NONBLOCK` still fails on the platforms that
-      return ENXIO for a writer with no reader, which is the same refusal.
+      instead of redirecting the capture to an arbitrary host file. This one
+      is load-bearing: removing it turns the symlink tests red.
+    - `O_NONBLOCK` — defence in depth, and honestly labelled as such. The
+      refusal for a planted FIFO is carried by `O_RDWR` plus the `fstat`
+      check: an `O_RDWR` open of a FIFO does not block waiting for a peer on
+      POSIX, and the platforms that reject it outright need no help. On a
+      regular file `O_NONBLOCK` is a no-op. Dropping it breaks no test,
+      which is the point of recording it rather than claiming it as a gate.
     - `O_RDWR` — the same descriptor is read back at the end of the attempt,
       and `O_WRONLY` would make that read `EBADF`. The descriptor is
       `O_CLOEXEC` and the child is spawned after it exists, so the child
@@ -459,6 +460,7 @@ def _open_transcript_fd(transcript_path: Path) -> int:
       descriptor is the object we will read, and re-checking it here is
       what makes a swapped path irrelevant. A device, socket, or directory
       that slipped past the open is rejected on the descriptor itself.
+      Load-bearing: removing it turns the device and FIFO tests red.
     """
     flags = os.O_RDWR | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW | os.O_NONBLOCK
     flags |= getattr(os, "O_CLOEXEC", 0)

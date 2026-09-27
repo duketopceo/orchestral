@@ -133,6 +133,15 @@ elif behavior == "manyfiles":
 elif behavior == "usage":
     open("out.py", "w").write("x = 1\\n")
     print('{"tokens": 1234}')
+elif behavior == "envprint":
+    # the declared env value on *stdout*, so it reaches the transcript
+    open("real.py", "w").write("x = 1\\n")
+    print("key=" + os.environ.get("ORCHESTRAL_AGENT_API_KEY", "unset"))
+elif behavior == "scrubme":
+    # emits a line scrub_text must rewrite. A fixture with nothing scrubbable
+    # would make the scrub assertion pass with the control removed.
+    open("out.py", "w").write("x = 1\\n")
+    print("ping me at agent@example.com about /Users/someone/private/notes.md")
 elif behavior == "steal-transcript":
     # point the harness-owned transcript at a host file. Swapping the path
     # mid-run is the TOCTOU the fd-anchored capture has to survive.
@@ -451,13 +460,32 @@ class TestContainment(AgentexecTestBase):
 
     def test_transcript_is_scrubbed_not_just_redacted(self):
         # the diff and the fileset both pass scrub_text; the transcript used
-        # to be the one artifact published with only env redaction applied
+        # to be the one artifact published with only env redaction applied.
+        # The fixture emits a real email and a real mac path, so removing the
+        # scrub call turns this red instead of leaving it vacuous.
         evidence = Path(self.tmp.name) / "evidence"
         result = agentexec.run_attempt(
-            _adapter(), prompt="usage", evidence_dir=evidence)
-        for blob in (result.transcript_text,
-                     (evidence / "transcript.log").read_text()):
-            self.assertEqual(blob, agentexec.scrub_text(blob))
+            _adapter(), prompt="scrubme", evidence_dir=evidence)
+        for label, blob in (("result", result.transcript_text),
+                            ("evidence", (evidence / "transcript.log").read_text())):
+            with self.subTest(where=label):
+                self.assertNotIn("agent@example.com", blob)
+                self.assertNotIn("/Users/someone/private/notes.md", blob)
+                self.assertIn("[REDACTED_email]", blob)
+                self.assertIn("[REDACTED_mac_path]", blob)
+
+    def test_declared_env_redaction_still_runs_before_scrub(self):
+        # The two stages are ordered, not exclusive. The stub's key would match
+        # scrub_text's api_key pattern, so seeing the *env* marker and not the
+        # *api_key* one proves redact ran and got there first.
+        evidence = Path(self.tmp.name) / "evidence"
+        result = agentexec.run_attempt(
+            _adapter(), prompt="envprint", evidence_dir=evidence)
+        self.assertIn("[REDACTED_ENV_ORCHESTRAL_AGENT_API_KEY]", result.transcript_text)
+        self.assertNotIn("[REDACTED_api_key]", result.transcript_text)
+        self.assertNotIn("sk-agent-testkey-123456", result.transcript_text)
+        self.assertNotIn(
+            "sk-agent-testkey-123456", (evidence / "transcript.log").read_text())
 
     def test_transcript_hash_covers_the_published_text(self):
         evidence = Path(self.tmp.name) / "evidence"

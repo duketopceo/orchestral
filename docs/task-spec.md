@@ -149,8 +149,8 @@ new hash.
   injected into every worker subtask as `broken_files` so the worker repairs
   instead of generating from scratch. The task prompt describes the defect;
   workers return the complete corrected file set. `metadata.module`,
-  `expected_paths`, quality bounds, and the verifier execution notes all carry
-  over from `code`. See `tasks/bugfix-lru-evict.yaml`.
+  `expected_paths`, quality bounds, and the subprocess containment notes all
+  carry over from `code`. See `tasks/bugfix-lru-evict.yaml`.
 - **`terminal`** — Terminal-Bench-flavored shell plans: workers produce a
   JSON command plan (`[{"run": "sed -i 's/a/b/' f"}, ...]`); the orchestrator
   picks the best (same candidate flow as `api`); the harness seeds a tmpdir

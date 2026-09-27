@@ -38,6 +38,7 @@ from orchestral.fileset import (
 )
 from orchestral.logger import EventLogger
 from orchestral.openrouter import OpenRouterClient
+from orchestral.privacy import scrub_text
 from orchestral.sqlexec import extract_sql
 
 # 1x1 transparent PNG used as the deterministic dry-run image artifact
@@ -1425,7 +1426,7 @@ def _repo_status(root: Path) -> set[str]:
 
 
 def _oracle_probe_needles(
-    transcript_path: Path | None,
+    transcript_text: str,
     repo_root: Path | None,
     task: TaskSpec,
 ) -> list[str]:
@@ -1434,16 +1435,41 @@ def _oracle_probe_needles(
     The filesystem is open to the agent — containment is environmental, so
     reads of task oracles are *detected*, not prevented. A mention is not
     proof of a read, which is why this is a warning milestone.
+
+    Takes the transcript as text, not a path. The agent shares write access
+    to the workspace, so re-reading the path here would scan whatever the
+    agent left there instead of what the harness captured — and would hang
+    outright on a FIFO. It also never returns `[]` for an absent transcript:
+    `[]` means "checked, clean", and a missing or empty capture is
+    *unchecked*, which is the condition a tripwire exists to surface. So an
+    empty capture is reported under its own needle rather than passing
+    silently.
+
+    The scan runs on the *scrubbed* transcript, so each needle is matched in
+    its scrubbed form as well as its raw form. Without that, routing the
+    transcript through `scrub_text` silently disabled this tripwire: a repo
+    under `/Users/` is rewritten to `[REDACTED_mac_path]`, the raw path never
+    appears, and the `repo_root` needle could not fire at all. Scrubbing is
+    the stronger control and is not going to be undone for this one, so the
+    match has to follow the text.
+
+    The cost of that is over-triggering: `[REDACTED_mac_path]` is a shared
+    marker, so any mac path in the transcript attributes `repo_root`. This
+    is a warning milestone and a mention is not proof of a read, so a false
+    positive costs a warning while the false negative cost a tripwire that
+    never fires.
     """
-    if transcript_path is None or not Path(transcript_path).exists():
-        return []
-    text = Path(transcript_path).read_text(encoding="utf-8", errors="replace")
+    if not transcript_text.strip():
+        return ["empty_transcript"]
     needles: list[str] = []
-    if repo_root is not None and str(repo_root) in text:
+    if repo_root is not None and any(
+        form in transcript_text
+        for form in {str(repo_root), scrub_text(str(repo_root))}
+    ):
         needles.append("repo_root")
-    if re.search(r"tasks/[^\s'\"]+\.ya?ml", text):
+    if re.search(r"tasks/[^\s'\"]+\.ya?ml", transcript_text):
         needles.append("task_spec")
-    if "metadata.tests" in text or "hidden test" in text.lower():
+    if "metadata.tests" in transcript_text or "hidden test" in transcript_text.lower():
         needles.append("oracle")
     return needles
 
@@ -1580,7 +1606,7 @@ def delegate_agentic(
 
     # tripwire 2: transcript references the repo or task oracles — reads are
     # detected, not prevented (open filesystem is the documented boundary)
-    needles = _oracle_probe_needles(result.transcript_path, repo_root, task)
+    needles = _oracle_probe_needles(result.transcript_text, repo_root, task)
     if needles:
         logger.log(
             phase="delegate",

@@ -35,6 +35,21 @@ from orchestral.patch import _parse_diff
 STUB = """#!/usr/bin/env python3
 import os, sys, time, signal
 
+def _swap(path, make):
+    # build the replacement beside the target, then rename over it. rename is
+    # atomic and replaces whatever is already there, so the swap cannot fail
+    # because the harness created the transcript after we looked for it.
+    tmp = path + ".swap"
+    if os.path.lexists(tmp):
+        os.unlink(tmp)
+    make(tmp)
+    os.rename(tmp, path)
+
+def _victim():
+    # the child runs under a minimal env, so the host path cannot arrive in
+    # an env var — it comes in as a seeded fixture, like any other task input
+    return open("target_path.txt").read().strip()
+
 behavior = sys.argv[1] if len(sys.argv) > 1 else sys.stdin.read().strip()
 if os.path.exists(behavior):  # prompt_via="file" passes a prompt path
     behavior = open(behavior).read().strip()
@@ -118,6 +133,35 @@ elif behavior == "manyfiles":
 elif behavior == "usage":
     open("out.py", "w").write("x = 1\\n")
     print('{"tokens": 1234}')
+elif behavior == "envprint":
+    # the declared env value on *stdout*, so it reaches the transcript
+    open("real.py", "w").write("x = 1\\n")
+    print("key=" + os.environ.get("ORCHESTRAL_AGENT_API_KEY", "unset"))
+elif behavior == "scrubme":
+    # emits a line scrub_text must rewrite. A fixture with nothing scrubbable
+    # would make the scrub assertion pass with the control removed.
+    open("out.py", "w").write("x = 1\\n")
+    print("ping me at agent@example.com about /Users/someone/private/notes.md")
+elif behavior == "steal-transcript":
+    # point the harness-owned transcript at a host file. Swapping the path
+    # mid-run is the TOCTOU the fd-anchored capture has to survive.
+    secret = open("host_secret.txt").read()
+    _swap("_orchestral/transcript.log", lambda t: os.symlink(_victim(), t))
+    open("out.py", "w").write("x = 1\\n")
+    print("wrote out.py; secret was " + secret[:3])
+elif behavior == "steal-transcript-mkfile":
+    # the other shape: leave a decoy regular file, then make the link
+    _swap("_orchestral/transcript.log", lambda t: open(t, "w").write("decoy"))
+    _swap("_orchestral/transcript.log", lambda t: os.symlink(_victim(), t))
+    open("out.py", "w").write("x = 1\\n")
+    print("done")
+elif behavior == "fifo-transcript":
+    # replace the transcript with a FIFO nothing ever writes to. A path-based
+    # read blocks here forever, hanging the attempt past its own deadline.
+    _swap("_orchestral/transcript.log", os.mkfifo)
+    open("out.py", "w").write("x = 1\\n")
+    print("replaced transcript with a fifo")
+    time.sleep(0.5)
 else:
     print("unknown behavior " + behavior)
     sys.exit(2)
@@ -142,6 +186,15 @@ def _adapter(**kw) -> AgentAdapter:
     }
     base.update(kw)
     return StubAdapter(**base)
+
+
+def _open_fd_count() -> int:
+    """Descriptors this process holds open — proves a refused open does not
+    leak one per attempt. `/proc/self/fd` on Linux, `/dev/fd` on macOS."""
+    for root in ("/proc/self/fd", "/dev/fd"):
+        if os.path.isdir(root):
+            return len(os.listdir(root))
+    raise unittest.SkipTest("no fd enumeration available on this platform")
 
 
 class AgentexecTestBase(unittest.TestCase):
@@ -405,6 +458,82 @@ class TestContainment(AgentexecTestBase):
         transcript = (evidence / "transcript.log").read_text()
         self.assertIn("transcript truncated", transcript)
 
+    def test_transcript_read_cap_leaves_room_for_the_truncation_marker(self):
+        # Writes stop at `transcript_cap` and the marker is appended *after*
+        # that, so reading back with the bare cap cuts the marker off the end
+        # whenever the last accepted chunk lands close to the cap. The
+        # flood test above does not catch that: 20MB trips the cap on the
+        # first chunk, so `written` is 0 and the marker lands in an otherwise
+        # empty file. This asserts the cap itself leaves the room.
+        seen: list[int] = []
+        real = agentexec._read_transcript_fd
+
+        def _capture(fd, *, cap, timeout):
+            seen.append(cap)
+            return real(fd, cap=cap, timeout=timeout)
+
+        with (
+            patch.object(agentexec, "_read_transcript_fd", _capture),
+            self.assertRaises(WorkspaceError),
+        ):
+            agentexec.run_attempt(
+                _adapter(), prompt="flood", transcript_cap=1024)
+        self.assertEqual(len(seen), 1, "expected exactly one transcript read")
+        self.assertGreaterEqual(
+            seen[0], 1024 + len(agentexec.TRANSCRIPT_TRUNCATION_MARKER),
+            "read cap must accommodate the marker appended past the byte cap")
+
+    def test_marker_survives_a_read_capped_exactly_at_the_file(self):
+        # the shape the fix protects: a transcript sitting at cap, plus the
+        # marker, read with cap + len(marker)
+        target = Path(self.tmp.name) / "capped.log"
+        cap = 1024
+        target.write_bytes(b"x" * cap + agentexec.TRANSCRIPT_TRUNCATION_MARKER)
+        fd = agentexec._open_transcript_fd(target)
+        self.addCleanup(os.close, fd)
+        data, complete = agentexec._read_transcript_fd(
+            fd, cap=cap + len(agentexec.TRANSCRIPT_TRUNCATION_MARKER), timeout=5.0)
+        self.assertTrue(complete)
+        self.assertTrue(data.endswith(agentexec.TRANSCRIPT_TRUNCATION_MARKER))
+
+    def test_transcript_is_scrubbed_not_just_redacted(self):
+        # the diff and the fileset both pass scrub_text; the transcript used
+        # to be the one artifact published with only env redaction applied.
+        # The fixture emits a real email and a real mac path, so removing the
+        # scrub call turns this red instead of leaving it vacuous.
+        evidence = Path(self.tmp.name) / "evidence"
+        result = agentexec.run_attempt(
+            _adapter(), prompt="scrubme", evidence_dir=evidence)
+        for label, blob in (("result", result.transcript_text),
+                            ("evidence", (evidence / "transcript.log").read_text())):
+            with self.subTest(where=label):
+                self.assertNotIn("agent@example.com", blob)
+                self.assertNotIn("/Users/someone/private/notes.md", blob)
+                self.assertIn("[REDACTED_email]", blob)
+                self.assertIn("[REDACTED_mac_path]", blob)
+
+    def test_declared_env_redaction_still_runs_before_scrub(self):
+        # The two stages are ordered, not exclusive. The stub's key would match
+        # scrub_text's api_key pattern, so seeing the *env* marker and not the
+        # *api_key* one proves redact ran and got there first.
+        evidence = Path(self.tmp.name) / "evidence"
+        result = agentexec.run_attempt(
+            _adapter(), prompt="envprint", evidence_dir=evidence)
+        self.assertIn("[REDACTED_ENV_ORCHESTRAL_AGENT_API_KEY]", result.transcript_text)
+        self.assertNotIn("[REDACTED_api_key]", result.transcript_text)
+        self.assertNotIn("sk-agent-testkey-123456", result.transcript_text)
+        self.assertNotIn(
+            "sk-agent-testkey-123456", (evidence / "transcript.log").read_text())
+
+    def test_transcript_hash_covers_the_published_text(self):
+        evidence = Path(self.tmp.name) / "evidence"
+        result = agentexec.run_attempt(
+            _adapter(), prompt="usage", evidence_dir=evidence)
+        published = (evidence / "transcript.log").read_text()
+        self.assertEqual(
+            result.transcript_sha256, hashlib.sha256(published.encode()).hexdigest())
+
+
     def test_dotfile_rejected_without_allow_hidden(self):
         with self.assertRaises(WorkspaceError):
             agentexec.run_attempt(_adapter(), prompt="dotfile")
@@ -440,6 +569,152 @@ class TestContainment(AgentexecTestBase):
         self.assertIn("ORCHESTRAL_AGENT_API_KEY", adapter.env_keys)
         self.assertIn("OPENCODE_DISABLE_PROJECT_CONFIG", adapter.config_env)
 
+
+class TestTranscriptPathHostileInput(AgentexecTestBase):
+    """The transcript path lives inside the agent-writable workspace, so the
+    agent can unlink it and leave a symlink or a FIFO behind. The harness must
+    neither publish the target's bytes as its own evidence nor block on it."""
+
+    def setUp(self):
+        super().setUp()
+        self.secret_path = Path(self.tmp.name) / "host-secret.txt"
+        self.secret_body = "HOST_SECRET_CANARY_9f2b7c1e\n"
+        self.secret_path.write_text(self.secret_body)
+        # the child runs under a minimal env, so the host path reaches it as
+        # a seeded fixture rather than an env var
+        self.fixtures = {
+            "target_path.txt": f"{self.secret_path}\n",
+            "host_secret.txt": self.secret_body,
+        }
+
+    def _assert_no_host_bytes(self, evidence: Path) -> None:
+        for path in evidence.rglob("*"):
+            if not path.is_file() or path.is_symlink():
+                continue
+            self.assertNotIn(
+                self.secret_body, path.read_text(errors="replace"),
+                f"host secret leaked into {path}")
+
+    def test_symlink_swap_does_not_exfiltrate_into_evidence(self):
+        evidence = Path(self.tmp.name) / "evidence"
+        result = agentexec.run_attempt(
+            _adapter(), prompt="steal-transcript", files=self.fixtures,
+            evidence_dir=evidence, keep_workspace=True)
+        self._assert_no_host_bytes(evidence)
+        # the captured transcript is the real stream, not the symlink target
+        self.assertIn("wrote out.py", result.transcript_text)
+        self.assertNotIn("HOST_SECRET_CANARY", result.transcript_text)
+
+    def test_symlink_swap_via_regular_file_first_does_not_exfiltrate(self):
+        evidence = Path(self.tmp.name) / "evidence"
+        result = agentexec.run_attempt(
+            _adapter(), prompt="steal-transcript-mkfile", files=self.fixtures,
+            evidence_dir=evidence, keep_workspace=True)
+        self._assert_no_host_bytes(evidence)
+        self.assertNotIn("HOST_SECRET_CANARY", result.transcript_text)
+        self.assertNotEqual(result.transcript_text, "decoy")
+
+    def test_fifo_swap_does_not_hang_the_attempt(self):
+        # a path-based read of the FIFO blocks forever; the fd-anchored read
+        # never resolves the path again, so the attempt finishes on its own
+        evidence = Path(self.tmp.name) / "evidence"
+        started = time.monotonic()
+        result = agentexec.run_attempt(
+            _adapter(), prompt="fifo-transcript", files=self.fixtures,
+            evidence_dir=evidence, timeout=60, keep_workspace=True)
+        elapsed = time.monotonic() - started
+        self.assertLess(elapsed, 45, "run_attempt hung on the FIFO transcript")
+        self._assert_no_host_bytes(evidence)
+        self.assertIn("replaced transcript with a fifo", result.transcript_text)
+
+    def test_pre_planted_symlink_is_refused_at_open(self):
+        ws = Path(self.tmp.name) / "ws"
+        scratch = ws / agentexec.SCRATCH_DIR
+        scratch.mkdir(parents=True)
+        target = scratch / "transcript.log"
+        target.symlink_to(self.secret_path)
+        with self.assertRaises(WorkspaceError) as ctx:
+            agentexec._open_transcript_fd(target)
+        self.assertNotIn("CANARY", str(ctx.exception))
+        self.assertEqual(self.secret_path.read_text(), self.secret_body)
+
+    def test_pre_planted_fifo_is_refused_at_open(self):
+        # O_NONBLOCK is what makes this return at all. Linux opens a FIFO
+        # O_RDWR|O_NONBLOCK and hands back a descriptor that fstat then
+        # rejects; macOS returns ENXIO from open itself. Both are the same
+        # refusal, so the assertion is the refusal, not the errno.
+        scratch = Path(self.tmp.name) / "ws" / agentexec.SCRATCH_DIR
+        scratch.mkdir(parents=True)
+        target = scratch / "transcript.log"
+        os.mkfifo(target)
+        started = time.monotonic()
+        with self.assertRaises(WorkspaceError) as ctx:
+            agentexec._open_transcript_fd(target)
+        self.assertLess(time.monotonic() - started, 5.0, "open blocked on the FIFO")
+        self.assertRegex(
+            str(ctx.exception),
+            r"not a regular file|Refusing to open transcript")
+
+    def test_non_regular_file_is_refused_at_open(self):
+        # a character device opens fine and is only caught by the fstat check
+        if not os.path.exists("/dev/null"):
+            self.skipTest("no character device available")
+        with self.assertRaises(WorkspaceError) as ctx:
+            agentexec._open_transcript_fd(Path("/dev/null"))
+        self.assertIn("not a regular file", str(ctx.exception))
+
+    def test_refused_open_releases_the_descriptor(self):
+        # a leaked descriptor on every attempt would exhaust the process
+        scratch = Path(self.tmp.name) / "ws" / agentexec.SCRATCH_DIR
+        scratch.mkdir(parents=True)
+        target = scratch / "transcript.log"
+        os.mkfifo(target)
+        before = _open_fd_count()
+        for _ in range(64):
+            with self.assertRaises(WorkspaceError):
+                agentexec._open_transcript_fd(target)
+        self.assertLessEqual(_open_fd_count() - before, 8)
+
+    def test_read_is_capped_and_bounded(self):
+        target = Path(self.tmp.name) / "capped.log"
+        target.write_bytes(b"x" * 5000)
+        fd = agentexec._open_transcript_fd(target)
+        self.addCleanup(os.close, fd)
+        data, complete = agentexec._read_transcript_fd(
+            fd, cap=1000, timeout=5.0)
+        self.assertFalse(complete, "an over-cap read must not report complete")
+        self.assertEqual(len(data), 1000)
+
+    def test_read_times_out_instead_of_blocking(self):
+        target = Path(self.tmp.name) / "slow.log"
+        target.write_bytes(b"y" * 4096)
+        fd = agentexec._open_transcript_fd(target)
+        self.addCleanup(os.close, fd)
+        started = time.monotonic()
+        # a zero budget must return promptly rather than start reading
+        _, complete = agentexec._read_transcript_fd(fd, cap=10 ** 6, timeout=0.0)
+        self.assertFalse(complete)
+        self.assertLess(time.monotonic() - started, 2.0)
+
+    def test_incomplete_read_does_not_pass_as_a_clean_attempt(self):
+        # the transcript feeds the oracle tripwire, so a partial one must not
+        # reach the success path where it would read as "checked, clean"
+        with (
+            patch.object(agentexec, "_read_transcript_fd",
+                         return_value=(b"partial", False)),
+            self.assertRaises(WorkspaceError) as ctx,
+        ):
+            agentexec.run_attempt(_adapter(), prompt="write")
+        self.assertIn("did not complete", str(ctx.exception))
+
+    def test_cap_breach_keeps_its_own_diagnostic(self):
+        # the outcome-specific message must win over the read backstop
+        evidence = Path(self.tmp.name) / "evidence"
+        with self.assertRaises(WorkspaceError) as ctx:
+            agentexec.run_attempt(
+                _adapter(), prompt="flood",
+                transcript_cap=1024, evidence_dir=evidence)
+        self.assertIn("exceeded 1024 bytes", str(ctx.exception))
 
 if __name__ == "__main__":
     unittest.main()

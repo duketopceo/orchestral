@@ -74,6 +74,10 @@ jobs:
       - name: Lint
         run: ruff check .
 
+      - name: TEMPORARY red-probe (duk227)
+        if: always()
+        run: echo "deliberate failure to prove the aggregate reports red"; exit 1
+
   types:
     runs-on: ubuntu-latest
     steps:

@@ -23,6 +23,7 @@ from orchestral.openrouter import (
     ProviderConfigError,
 )
 from orchestral.planners import PlanError, PlanParseFault, _extract_json
+from orchestral.privacy import scrub_text
 from orchestral.runner import Runner, ValidationError
 from orchestral.storage import RunStore
 from orchestral.taxonomy import CATEGORIES, classify_exception
@@ -421,6 +422,26 @@ class TestOracleProbeNeedles(unittest.TestCase):
     def test_repo_root_reference_trips(self):
         self.assertEqual(
             self._needles("reading /srv/orchestral/orchestral/planner.py", Path("/srv/orchestral")),
+            ["repo_root"])
+
+    def test_repo_root_still_trips_after_scrubbing_rewrites_it(self):
+        # the transcript reaches this scan already scrubbed, and a repo under
+        # /Users/ is rewritten to [REDACTED_mac_path]. Matching only the raw
+        # path made the tripwire unfireable for every mac repo — scrubbing the
+        # transcript silently disabled the check that consumes it.
+        root = Path("/Users/someone/GitHub/acme/orchestral")
+        text = f"reading {root}/orchestral/planner.py"
+        self.assertEqual(
+            self._needles(scrub_text(text), root), ["repo_root"])
+
+    def test_unrelated_mac_path_over_triggers_rather_than_going_dark(self):
+        # documented tradeoff: the shared [REDACTED_mac_path] marker means any
+        # mac path attributes repo_root. A warning is the cheap side to err on;
+        # the needle failing to fire is the expensive one. The scan's input is
+        # scrubbed text in production, so the fixture is scrubbed here too.
+        text = "wrote /Users/someone/elsewhere/notes.md"
+        self.assertEqual(
+            self._needles(scrub_text(text), Path("/Users/someone/GitHub/acme/orchestral")),
             ["repo_root"])
 
     def test_task_spec_reference_trips(self):

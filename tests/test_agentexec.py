@@ -458,6 +458,44 @@ class TestContainment(AgentexecTestBase):
         transcript = (evidence / "transcript.log").read_text()
         self.assertIn("transcript truncated", transcript)
 
+    def test_transcript_read_cap_leaves_room_for_the_truncation_marker(self):
+        # Writes stop at `transcript_cap` and the marker is appended *after*
+        # that, so reading back with the bare cap cuts the marker off the end
+        # whenever the last accepted chunk lands close to the cap. The
+        # flood test above does not catch that: 20MB trips the cap on the
+        # first chunk, so `written` is 0 and the marker lands in an otherwise
+        # empty file. This asserts the cap itself leaves the room.
+        seen: list[int] = []
+        real = agentexec._read_transcript_fd
+
+        def _capture(fd, *, cap, timeout):
+            seen.append(cap)
+            return real(fd, cap=cap, timeout=timeout)
+
+        with (
+            patch.object(agentexec, "_read_transcript_fd", _capture),
+            self.assertRaises(WorkspaceError),
+        ):
+            agentexec.run_attempt(
+                _adapter(), prompt="flood", transcript_cap=1024)
+        self.assertEqual(len(seen), 1, "expected exactly one transcript read")
+        self.assertGreaterEqual(
+            seen[0], 1024 + len(agentexec.TRANSCRIPT_TRUNCATION_MARKER),
+            "read cap must accommodate the marker appended past the byte cap")
+
+    def test_marker_survives_a_read_capped_exactly_at_the_file(self):
+        # the shape the fix protects: a transcript sitting at cap, plus the
+        # marker, read with cap + len(marker)
+        target = Path(self.tmp.name) / "capped.log"
+        cap = 1024
+        target.write_bytes(b"x" * cap + agentexec.TRANSCRIPT_TRUNCATION_MARKER)
+        fd = agentexec._open_transcript_fd(target)
+        self.addCleanup(os.close, fd)
+        data, complete = agentexec._read_transcript_fd(
+            fd, cap=cap + len(agentexec.TRANSCRIPT_TRUNCATION_MARKER), timeout=5.0)
+        self.assertTrue(complete)
+        self.assertTrue(data.endswith(agentexec.TRANSCRIPT_TRUNCATION_MARKER))
+
     def test_transcript_is_scrubbed_not_just_redacted(self):
         # the diff and the fileset both pass scrub_text; the transcript used
         # to be the one artifact published with only env redaction applied.

@@ -188,6 +188,10 @@ DEFAULT_TIMEOUT_SECONDS = 900.0          # 15 min — agentic work is slow
 KILL_GRACE_SECONDS = 5.0
 TRANSCRIPT_CAP_BYTES = 8 * 1024 * 1024   # every untrusted byte flow is capped
 _READ_CHUNK_BYTES = 64 * 1024            # transcript read granularity
+# appended to the transcript when the byte cap is hit, so published evidence
+# says it was truncated instead of just stopping. Defined once because the
+# writer and the reader's cap both have to account for it.
+TRANSCRIPT_TRUNCATION_MARKER = b"\n[orchestral: transcript truncated - byte cap reached]\n"
 # wall-clock bound on reading the transcript back; the read is fd-anchored to
 # a regular file we opened, so this only ever fires on a pathological kernel
 # or filesystem, never on agent-controlled input
@@ -693,10 +697,7 @@ def _wait_or_kill(
             outcome = "cap_breach"
 
     if outcome == "cap_breach":
-        _write_transcript(
-            transcript_fd,
-            b"\n[orchestral: transcript truncated - byte cap reached]\n",
-        )
+        _write_transcript(transcript_fd, TRANSCRIPT_TRUNCATION_MARKER)
 
     code = proc.poll()
     if code is None:
@@ -948,8 +949,13 @@ def run_attempt(
 
             # transcript: same descriptor we wrote, bounded on both axes.
             # read back before redacting so no unredacted byte is retained.
+            # The cap carries room for the truncation marker: writes stop at
+            # `transcript_cap` and the marker is appended after that, so
+            # reading with the bare cap would cut the marker off the end and
+            # publish evidence that stops silently instead of saying why.
             raw_transcript, transcript_complete = _read_transcript_fd(
-                transcript_fd, cap=transcript_cap,
+                transcript_fd,
+                cap=transcript_cap + len(TRANSCRIPT_TRUNCATION_MARKER),
                 timeout=TRANSCRIPT_READ_TIMEOUT_SECONDS,
             )
         finally:

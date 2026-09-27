@@ -38,6 +38,7 @@ from orchestral.fileset import (
 )
 from orchestral.logger import EventLogger
 from orchestral.openrouter import OpenRouterClient
+from orchestral.privacy import scrub_text
 from orchestral.sqlexec import extract_sql
 
 # 1x1 transparent PNG used as the deterministic dry-run image artifact
@@ -1443,11 +1444,28 @@ def _oracle_probe_needles(
     *unchecked*, which is the condition a tripwire exists to surface. So an
     empty capture is reported under its own needle rather than passing
     silently.
+
+    The scan runs on the *scrubbed* transcript, so each needle is matched in
+    its scrubbed form as well as its raw form. Without that, routing the
+    transcript through `scrub_text` silently disabled this tripwire: a repo
+    under `/Users/` is rewritten to `[REDACTED_mac_path]`, the raw path never
+    appears, and the `repo_root` needle could not fire at all. Scrubbing is
+    the stronger control and is not going to be undone for this one, so the
+    match has to follow the text.
+
+    The cost of that is over-triggering: `[REDACTED_mac_path]` is a shared
+    marker, so any mac path in the transcript attributes `repo_root`. This
+    is a warning milestone and a mention is not proof of a read, so a false
+    positive costs a warning while the false negative cost a tripwire that
+    never fires.
     """
     if not transcript_text.strip():
         return ["empty_transcript"]
     needles: list[str] = []
-    if repo_root is not None and str(repo_root) in transcript_text:
+    if repo_root is not None and any(
+        form in transcript_text
+        for form in {str(repo_root), scrub_text(str(repo_root))}
+    ):
         needles.append("repo_root")
     if re.search(r"tasks/[^\s'\"]+\.ya?ml", transcript_text):
         needles.append("task_spec")

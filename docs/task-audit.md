@@ -261,16 +261,19 @@ A declaration is compared against `metadata.pattern` as written, exactly as
 
 
 
-**Why that matters here.** At this commit code execution is live:
-`run_unittest_suite` writes the suite to `task_tests.py` in a temp directory and
-runs `python -Es -m unittest -v task_tests` in a subprocess with
-`env={"PATH": "/usr/bin:/bin"}` and a wall-clock timeout. A suite that passes for
-any artifact therefore scores `score=1.0` against a stub, and the cases above are
-where that can still happen. There is no OS-level isolation around that
-subprocess — no container, no seccomp, no separate user, no resource limits
-beyond the timeout. Whether that is an acceptable boundary for model-authored
-code is a security review, tracked in DUK-87 and routed to the Identity Auditor.
-This file records the exposure; it does not bless it.
+**Why that matters here.** At this commit code execution is fail-closed by
+default and dispatches to an isolated runtime when
+`ORCHESTRAL_CODE_RUNTIME=isolated`: `run_unittest_suite` writes the fileset and
+`task_tests.py` into a disposable E2B/CubeSandbox sandbox, where a
+verifier-authored runner executes the suite and reports the verdict through a
+nonce-named result payload rather than forgeable stdout. A suite that passes
+for a stub artifact therefore still scores `score=1.0`, and the cases above are
+where that can still happen. The exposed surface is now the configured sandbox
+endpoint — self-hosted CubeSandbox keeps worker files and verifier source on
+owned infrastructure, while hosted E2B discloses them to a third party. Whether
+that is an acceptable boundary for model-authored code is a security review,
+tracked in DUK-87 and routed to the Identity Auditor. This file records the
+exposure; it does not bless it.
 
 **The audit is built not to wedge, and what that claim rests on.** It is a
 whole-suite gate, so a rule that never returns, or raises, costs every spec its

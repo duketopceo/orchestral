@@ -9,6 +9,7 @@ validation:
 - has_required
 - matches_pattern
 metadata:
+  difficulty: easy
   required:
   - assistant
   pattern: product manager|product management|\bpm\b|roadmap review|sprint planning|backlog

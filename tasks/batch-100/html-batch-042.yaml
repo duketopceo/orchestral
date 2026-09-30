@@ -9,6 +9,7 @@ validation:
 - has_required
 - matches_pattern
 metadata:
+  difficulty: easy
   required:
   - observab
   pattern: open[ -]source|developer|dev team|contributor|codebase|self[ -]host|\bcli\b|api[-

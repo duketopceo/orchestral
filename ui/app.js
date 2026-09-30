@@ -927,6 +927,8 @@ function cardProof(proof, evidence) {
     right = `<img class="xc-proof-media" src="${esc(artifact.url)}" alt="${esc(artifact.name)} stored artifact">`;
   } else if (artifact.media_type === "video" || artifact.kind === "video") {
     right = `<video class="xc-proof-media" src="${esc(artifact.url)}" controls muted></video>`;
+  } else if (artifact.render_url) {
+    right = `<iframe class="xc-proof-frame" sandbox="allow-scripts" src="${esc(artifact.render_url)}" title="rendered artifact ${esc(artifact.render_name || artifact.name)}" loading="lazy"></iframe>`;
   } else if (artifact.preview) {
     right = `<pre class="xc-proof-code artifact">${esc(artifact.preview)}</pre>`;
   } else {

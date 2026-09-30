@@ -9,6 +9,7 @@ validation:
 - has_required
 - matches_pattern
 metadata:
+  difficulty: easy
   required:
   - assistant
   pattern: open[ -]source|developer|dev team|contributor|codebase|self[ -]host|\bcli\b|api[-

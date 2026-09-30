@@ -16,6 +16,7 @@ prompt: >
 validation: []
 assets: []
 metadata:
+  difficulty: hard
   ordered: true
   schema:
     - "CREATE TABLE customers (id INTEGER PRIMARY KEY, name TEXT NOT NULL)"

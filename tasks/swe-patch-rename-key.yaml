@@ -12,6 +12,7 @@ prompt: |
   The patch must apply cleanly with `patch -p1` semantics against the
   provided files.
 metadata:
+  difficulty: easy
   module: config.py
   timeout_seconds: 30
   max_code_lines: 80

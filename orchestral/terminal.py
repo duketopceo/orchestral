@@ -189,7 +189,11 @@ def check_terminal(metadata: dict[str, Any], plan_text: str) -> dict[str, Any]:
     with tempfile.TemporaryDirectory(prefix="orchestral-term-") as tmp:
         root = Path(tmp).resolve()
         for rel, body in (metadata.get("fs") or {}).items():
-            path = root / rel
+            try:
+                path = _resolve(root, root, str(rel))
+            except ValueError as exc:
+                report["command_errors"].append(f"fs seed: {exc}")
+                continue
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(str(body))
         cwd = root
@@ -203,7 +207,13 @@ def check_terminal(metadata: dict[str, Any], plan_text: str) -> dict[str, Any]:
         matched = 0
         for rel, rule in want_files.items():
             rule = rule or {}
-            path = root / rel
+            try:
+                path = _resolve(root, root, str(rel))
+            except ValueError as exc:
+                report["command_errors"].append(f"expect.files: {exc}")
+                report["files_checked"][rel] = False
+                report["missing"].append(rel)
+                continue
             if rule.get("absent"):
                 ok = not path.exists()
             elif not path.is_file():

@@ -9,6 +9,7 @@ validation:
 - has_required
 - matches_pattern
 metadata:
+  difficulty: easy
   required:
   - fonts
   pattern: indie|hacker|solo founder|bootstrapped|side project|side hustle|one[ -]person|ship

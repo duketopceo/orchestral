@@ -9,6 +9,7 @@ validation:
 - has_required
 - matches_pattern
 metadata:
+  difficulty: easy
   required:
   - bike
   pattern: design system|design token|\btokens?\b|typograph|accessib|\bwcag\b|ui kit|figma|a11y|visual

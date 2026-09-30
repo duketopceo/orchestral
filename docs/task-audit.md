@@ -66,6 +66,7 @@ so it is a broken spec rather than a scoring surface.
 | `structural_only` | warn | Nothing in the grader requires topical content. `has_title` / `has_cta` / `has_form` prove markup exists, not that the artifact is about the task, so only `has_required` with a non-empty `metadata.required`, or `matches_pattern` with a non-empty `metadata.pattern`, clear this. Both halves are required: the runner reads each declaration in exactly one place, inside that check, so a declaration without the check anchors nothing and the check without a declaration has nothing to compare against. The declaration's *shape* is modelled the way the runner reads it, because the runner iterates `required`: a mapping contributes its keys, and a bare string its characters, so `required: kite` anchors nothing. This is not keyed on the task type — `constraint` and `needle` are labels the runner uses, not graders, so a `validation: [html]` spec of either type is checked like any other. The suggested fix is type-aware: a type whose grader never reads text (`image`, `video`) has no compliant way to anchor the subject from the spec. |
 | `unanchored_fileset` | error | `multi-file` grades filenames and byte counts only, or nothing at all. A fileset is anchored only when the grader reads a body: `has_paths` plus `has_content` with tokens in `metadata.required_content`. Fires in every other state — no usable `metadata.expected_paths`, a declared input no requested check reads, declared paths checked only for existence, or `has_content` requested with nothing to look for. |
 | `presence_only_extract_contract` | warn | An `extract` spec grades `required` fields with no `metadata.expected`. `required` is checked for presence and type and never compared to a value, so a fabricated value scores 1.0 exactly as a correct one and `field_results` stays empty. `orchestral/extract.py` treats `required` as a legitimate anchor on purpose, so this is a coverage gap and not a contradiction of the runner. |
+| `missing_reference` | error | `metadata.tests` gates the spec but nothing proves the suite can be passed: `code` / `bugfix` declare the conforming fileset under `metadata.reference`, `swe-patch` carries it as `metadata.patch`. Without one, a suite that contradicts its own spec — every conforming model fails — looks identical to a hard task. `harness.py selfcheck --execute` is the enforcement arm: it runs the suite against the reference. |
 
 
 | `judge_gated_media` | info | An `image` / `video` artifact is encoded bytes, so no text check can anchor its subject. `png_signature` / `mp4_signature` prove format only; topicality rests on the vision judge, so a run without `--judge` grades these specs on file format alone. |
@@ -260,16 +261,19 @@ A declaration is compared against `metadata.pattern` as written, exactly as
 
 
 
-**Why that matters here.** At this commit code execution is live:
-`run_unittest_suite` writes the suite to `task_tests.py` in a temp directory and
-runs `python -Es -m unittest -v task_tests` in a subprocess with
-`env={"PATH": "/usr/bin:/bin"}` and a wall-clock timeout. A suite that passes for
-any artifact therefore scores `score=1.0` against a stub, and the cases above are
-where that can still happen. There is no OS-level isolation around that
-subprocess — no container, no seccomp, no separate user, no resource limits
-beyond the timeout. Whether that is an acceptable boundary for model-authored
-code is a security review, tracked in DUK-87 and routed to the Identity Auditor.
-This file records the exposure; it does not bless it.
+**Why that matters here.** At this commit code execution is fail-closed by
+default and dispatches to an isolated runtime when
+`ORCHESTRAL_CODE_RUNTIME=isolated`: `run_unittest_suite` writes the fileset and
+`task_tests.py` into a disposable E2B/CubeSandbox sandbox, where a
+verifier-authored runner executes the suite and reports the verdict through a
+nonce-named result payload rather than forgeable stdout. A suite that passes
+for a stub artifact therefore still scores `score=1.0`, and the cases above are
+where that can still happen. The exposed surface is now the configured sandbox
+endpoint — self-hosted CubeSandbox keeps worker files and verifier source on
+owned infrastructure, while hosted E2B discloses them to a third party. Whether
+that is an acceptable boundary for model-authored code is a security review,
+tracked in DUK-87 and routed to the Identity Auditor. This file records the
+exposure; it does not bless it.
 
 **The audit is built not to wedge, and what that claim rests on.** It is a
 whole-suite gate, so a rule that never returns, or raises, costs every spec its

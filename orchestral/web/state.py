@@ -1055,6 +1055,23 @@ def _preferred_artifact_member(names: list[str]) -> str | None:
     return sorted(candidates)[0] if candidates else None
 
 
+def _renderable_member(names: list[str]) -> str | None:
+    """Pick the member an iframe should render: index.html first (shallowest
+    wins), then any HTML file. Returns None for non-HTML archives."""
+    normalized = {n.replace("\\", "/"): n for n in names}
+    html = [
+        orig for norm, orig in normalized.items()
+        if norm and not norm.startswith("/") and ".." not in Path(norm).parts
+        and not norm.endswith("/") and "__MACOSX" not in norm
+        and norm.lower().endswith((".html", ".htm"))
+    ]
+    if not html:
+        return None
+    index = [n for n in html if Path(n).name.lower() == "index.html"]
+    pool = index or html
+    return min(pool, key=lambda n: (n.count("/"), n))
+
+
 def _artifact_reference(run_dir: Path, run_id: str) -> dict[str, Any] | None:
     """Reference-only artifact metadata; bytes are loaded by the evidence endpoint."""
     artifacts = sorted(run_dir.glob("artifact.*"))
@@ -1067,13 +1084,16 @@ def _artifact_reference(run_dir: Path, run_id: str) -> dict[str, Any] | None:
                 infos = archive.infolist()
                 member = _preferred_artifact_member([i.filename for i in infos])
                 member_info = archive.getinfo(member) if member else None
+                render_member = _renderable_member(
+                    [i.filename for i in infos])
         except (OSError, zipfile.BadZipFile):
             member_info = None
             member = None
+            render_member = None
         if not member or member_info is None or member_info.is_dir():
             return None
         ext = Path(member).suffix.lstrip(".").lower()
-        return {
+        ref: dict[str, Any] = {
             "name": member,
             "ext": ext,
             "kind": _media_kind(ext),
@@ -1081,12 +1101,19 @@ def _artifact_reference(run_dir: Path, run_id: str) -> dict[str, Any] | None:
             "bytes": max(0, int(member_info.file_size)),
             "url": f"/api/run/{quote(run_id, safe='')}/artifact/{quote(member, safe='')}",
         }
+        if render_member:
+            ref["render_url"] = (
+                f"/api/run/{quote(run_id, safe='')}/artifact/"
+                f"{quote(render_member, safe='')}"
+            )
+            ref["render_name"] = render_member
+        return ref
     ext = artifact.suffix.lstrip(".").lower()
     try:
         size = artifact.stat().st_size
     except OSError:
         size = 0
-    return {
+    ref = {
         "name": artifact.name,
         "ext": ext,
         "kind": _media_kind(ext),
@@ -1094,6 +1121,10 @@ def _artifact_reference(run_dir: Path, run_id: str) -> dict[str, Any] | None:
         "bytes": size,
         "url": f"/api/run/{quote(run_id, safe='')}/artifact",
     }
+    if ext in {"html", "htm"}:
+        ref["render_url"] = ref["url"]
+        ref["render_name"] = artifact.name
+    return ref
 
 
 def _bounded_text(text: str, *, max_bytes: int, max_lines: int, tail: bool = True) -> str:

@@ -35,7 +35,7 @@ python3 harness.py scrub
 - Do not load or reference the user's LifeOS, TELOS, skills, or private rules.
 - Do not add unrelated dependencies. Keep the stack: Python 3.11+,
   `pyyaml`, `httpx`, `rich`. Optional extras only: `textual` ([tui]),
-  `playwright` ([shots]).
+  `playwright` ([shots]), `e2b` ([e2b]).
 - Do not commit eval artifacts or API keys.
 
 ## Storage model
@@ -57,6 +57,14 @@ scripts/bootstrap-venv.sh /tmp/gate-venv
 /tmp/gate-venv/bin/python -m unittest discover -s tests
 /tmp/gate-venv/bin/python -m ruff check .
 /tmp/gate-venv/bin/python -m mypy orchestral harness.py
+```
+
+When `tasks/` specs or grading behavior change, also run the spec-integrity
+gates — CI runs both:
+
+```bash
+/tmp/gate-venv/bin/python harness.py audit --strict
+/tmp/gate-venv/bin/python harness.py selfcheck --execute
 ```
 
 `python -m compileall` is not verification, and a skipped test is not a

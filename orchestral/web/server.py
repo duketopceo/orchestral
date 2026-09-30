@@ -20,7 +20,7 @@ import time
 import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, ClassVar, cast
 from urllib.parse import parse_qs, unquote, urlparse
 
 from orchestral.storage import RunStore
@@ -31,6 +31,7 @@ UI_DIR = Path(__file__).resolve().parents[2] / "ui"
 
 _ARTIFACT_TYPES = {
     "html": "text/html; charset=utf-8",
+    "htm": "text/html; charset=utf-8",
     "css": "text/css; charset=utf-8",
     "js": "text/javascript; charset=utf-8",
     "json": "application/json",
@@ -103,10 +104,13 @@ def make_handler(obs: Observatory) -> type[BaseHTTPRequestHandler]:
         # -- helpers ------------------------------------------------------
 
         def _send(self, body: str | bytes, status: int = 200,
-                  content_type: str = "text/html; charset=utf-8") -> None:
+                  content_type: str = "text/html; charset=utf-8",
+                  headers: dict[str, str] | None = None) -> None:
             data = body.encode("utf-8") if isinstance(body, str) else body
             self.send_response(status)
             self.send_header("Content-Type", content_type)
+            for name, value in (headers or {}).items():
+                self.send_header(name, value)
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
             self.wfile.write(data)
@@ -325,6 +329,14 @@ def make_handler(obs: Observatory) -> type[BaseHTTPRequestHandler]:
                 return self._artifact(run_dir, member)
             self._json({"error": f"not found: {path}"}, 404)
 
+        # Model-authored HTML/JS must never execute in the observatory
+        # origin — CSP sandbox applies whether the artifact is iframed or
+        # navigated to directly.
+        _ARTIFACT_HEADERS: ClassVar[dict[str, str]] = {
+            "Content-Security-Policy": "sandbox allow-scripts",
+            "X-Content-Type-Options": "nosniff",
+        }
+
         def _artifact(self, run_dir: Path, member: str | None) -> None:
             """Serve artifact bytes. Top-level file by extension; a member
             path reads that file out of artifact.zip. Model output is treated
@@ -343,9 +355,9 @@ def make_handler(obs: Observatory) -> type[BaseHTTPRequestHandler]:
                 except (KeyError, zipfile.BadZipFile):
                     return self._json({"error": f"no member {safe}"}, 404)
                 ctype = _ARTIFACT_TYPES.get(safe.rsplit(".", 1)[-1].lower(), "text/plain; charset=utf-8")
-                return self._send(body, 200, ctype)
+                return self._send(body, 200, ctype, headers=self._ARTIFACT_HEADERS)
             ctype = _ARTIFACT_TYPES.get(p.suffix.lstrip(".").lower(), "application/octet-stream")
-            self._send(p.read_bytes(), 200, ctype)
+            self._send(p.read_bytes(), 200, ctype, headers=self._ARTIFACT_HEADERS)
 
         # -- POST ---------------------------------------------------------
 

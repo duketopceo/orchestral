@@ -35,6 +35,55 @@ metadata:
   max_code_lines: 200
   no_unsafe: true
   no_external_deps: true
+  difficulty: medium
+  reference:
+    aggregate.py: |
+      """Aggregate pipe-delimited records across documents."""
+
+
+      def aggregate(documents: list) -> dict:
+          credits = {"total": 0.0, "count": 0}
+          debits = {"total": 0.0, "count": 0}
+          by_tag: dict = {}
+          skipped = 0
+          seen: set = set()
+          for doc in documents:
+              for line in doc.splitlines():
+                  if not line.strip():
+                      skipped += 1
+                      continue
+                  parts = [p.strip() for p in line.split("|")]
+                  if len(parts) != 4:
+                      skipped += 1
+                      continue
+                  rtype, rid, raw_amount, tag = parts
+                  if rtype not in ("credit", "debit") or not rid or not tag:
+                      skipped += 1
+                      continue
+                  try:
+                      amount = float(raw_amount)
+                  except ValueError:
+                      skipped += 1
+                      continue
+                  if rid in seen:
+                      continue
+                  seen.add(rid)
+                  if rtype == "credit":
+                      credits["total"] += amount
+                      credits["count"] += 1
+                      by_tag[tag] = by_tag.get(tag, 0.0) + amount
+                  else:
+                      debits["total"] += amount
+                      debits["count"] += 1
+                      by_tag[tag] = by_tag.get(tag, 0.0) - amount
+          credits["total"] = round(credits["total"], 2)
+          debits["total"] = round(debits["total"], 2)
+          return {
+              "credits": credits,
+              "debits": debits,
+              "by_tag": {k: round(v, 2) for k, v in by_tag.items()},
+              "skipped": skipped,
+          }
   tests: |
     import unittest
     from aggregate import aggregate
@@ -60,7 +109,8 @@ metadata:
         def test_malformed_and_blank_skipped(self):
             docs = ["\n\nbad line\ncredit|r1|abc|x\ncredit|r2|5.00|ok"]
             out = aggregate(docs)
-            self.assertEqual(out["skipped"], 3)
+            # 2 blank + 1 malformed + 1 non-numeric amount = 4 skipped lines
+            self.assertEqual(out["skipped"], 4)
             self.assertEqual(out["credits"]["total"], 5.0)
 
         def test_empty_documents(self):

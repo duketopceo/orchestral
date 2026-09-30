@@ -376,6 +376,16 @@ class TestCostShapes(AgenticRunnerBase):
         call_output = call["output"]
         self.assertTrue(call_output.get("dry_run"))
 
+    def test_dry_run_oracle_prefers_metadata_reference_over_files(self):
+        # `files` is the broken fixture for bugfix/code specs; `reference`
+        # is the canonical known-good fileset the oracle must replay.
+        reference = {"solution.py": "def add(a, b):\n    return a + b\n"}
+        meta = self.run_task(_code_task(reference=reference), dry_run=True)
+        import zipfile
+        with zipfile.ZipFile(Path(meta.run_dir) / "artifact.zip") as zf:
+            body = zf.read("solution.py").decode()
+        self.assertIn("return a + b", body)
+
 
 class TestJudgeIntegration(AgenticRunnerBase):
     def _judge_client(self) -> MagicMock:

@@ -23,6 +23,7 @@ from orchestral.openrouter import (
     ProviderConfigError,
 )
 from orchestral.planners import PlanError, PlanParseFault, _extract_json
+from orchestral.privacy import scrub_text
 from orchestral.runner import Runner, ValidationError
 from orchestral.storage import RunStore
 from orchestral.taxonomy import CATEGORIES, classify_exception
@@ -394,6 +395,72 @@ class TestScrub(unittest.TestCase):
             omissions = json.dumps(manifest, default=str)
             self.assertIn("debug.jsonl", omissions)
             self.assertIn("raw/", omissions)
+
+
+class TestOracleProbeNeedles(unittest.TestCase):
+    """The oracle tripwire scans the captured transcript for oracle-adjacent
+    references. `[]` means 'checked, clean', so an absent or empty capture has
+    to surface rather than pass — that distinction is the whole control."""
+
+    def _task(self) -> TaskSpec:
+        return TaskSpec(id="t", type="code", prompt="p")
+
+    def _needles(self, text: str, repo_root: Path | None = None) -> list[str]:
+        from orchestral.planners import _oracle_probe_needles
+
+        return _oracle_probe_needles(text, repo_root, self._task())
+
+    def test_empty_capture_trips_rather_than_reading_as_clean(self):
+        for empty in ("", "   ", "\n\t\n"):
+            with self.subTest(capture=repr(empty)):
+                self.assertEqual(self._needles(empty), ["empty_transcript"])
+
+    def test_real_transcript_with_no_needles_is_clean(self):
+        self.assertEqual(
+            self._needles("edited src/app.py and ran the tests\n"), [])
+
+    def test_repo_root_reference_trips(self):
+        self.assertEqual(
+            self._needles("reading /srv/orchestral/orchestral/planner.py", Path("/srv/orchestral")),
+            ["repo_root"])
+
+    def test_repo_root_still_trips_after_scrubbing_rewrites_it(self):
+        # the transcript reaches this scan already scrubbed, and a repo under
+        # /Users/ is rewritten to [REDACTED_mac_path]. Matching only the raw
+        # path made the tripwire unfireable for every mac repo — scrubbing the
+        # transcript silently disabled the check that consumes it.
+        root = Path("/Users/someone/GitHub/acme/orchestral")
+        text = f"reading {root}/orchestral/planner.py"
+        self.assertEqual(
+            self._needles(scrub_text(text), root), ["repo_root"])
+
+    def test_unrelated_mac_path_over_triggers_rather_than_going_dark(self):
+        # documented tradeoff: the shared [REDACTED_mac_path] marker means any
+        # mac path attributes repo_root. A warning is the cheap side to err on;
+        # the needle failing to fire is the expensive one. The scan's input is
+        # scrubbed text in production, so the fixture is scrubbed here too.
+        text = "wrote /Users/someone/elsewhere/notes.md"
+        self.assertEqual(
+            self._needles(scrub_text(text), Path("/Users/someone/GitHub/acme/orchestral")),
+            ["repo_root"])
+
+    def test_task_spec_reference_trips(self):
+        self.assertEqual(
+            self._needles("cat tasks/landing-page.yaml"), ["task_spec"])
+
+    def test_oracle_reference_trips(self):
+        self.assertEqual(
+            self._needles("let me check metadata.tests"), ["oracle"])
+        self.assertEqual(
+            self._needles("where is the hidden test?"), ["oracle"])
+
+    def test_scan_is_on_text_not_a_path(self):
+        # the agent shares write access to the workspace, so the scan must not
+        # depend on the path still resolving to what the harness captured
+        from orchestral.planners import _oracle_probe_needles
+
+        needles = _oracle_probe_needles("tasks/x.yaml", None, self._task())
+        self.assertEqual(needles, ["task_spec"])
 
 
 if __name__ == "__main__":

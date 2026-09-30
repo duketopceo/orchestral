@@ -9,6 +9,7 @@ validation:
 - has_required
 - matches_pattern
 metadata:
+  difficulty: easy
   required:
   - retreat
   pattern: remote[ -]?first|distributed|async|remote team|work from anywhere|hybrid|global

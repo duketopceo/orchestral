@@ -12,6 +12,7 @@ current disabled result; host subprocess execution is not a supported fallback.
 from __future__ import annotations
 
 import ast
+import contextlib
 import os
 import re
 import sys
@@ -73,23 +74,118 @@ def materialize(files: dict[str, str], dest: Path) -> None:
         path.write_text(body, encoding="utf-8")
 
 
+# Top-level members a fileset must not ship into a suite process's cwd: they
+# would shadow the invoked module, the test module, or interpreter-startup
+# imports (sys.path[0] for `python -m`). Applies to references and model
+# artifacts alike — the hazard lives wherever the suite runs.
+SUITE_SHADOW_DENYLIST = frozenset({
+    "unittest", "test_submitted", "task_tests", "site", "sitecustomize",
+    "usercustomize", "builtins", "__main__",
+})
+
+
+def shadowing_members(paths: Any) -> list[str]:
+    """Sorted fileset members whose top-level name would shadow the suite."""
+    return sorted(
+        p for p in paths
+        if p.split("/", 1)[0] in SUITE_SHADOW_DENYLIST
+        or Path(p).stem in SUITE_SHADOW_DENYLIST
+    )
+
+
+# Verifier-side runner: unittest's stdout tail is forgeable by graded code
+# (an imported module can register atexit handlers or print its own "Ran N
+# tests" line), so the verdict is derived from the unittest result object and
+# written to a file read back out-of-band. `os._exit` skips atexit/shutdown
+# handlers — nothing imported under test gets a chance to rewrite the file.
+# The result path carries a per-run nonce so forging it requires recovering
+# the path from the runner source and racing the verifier, not one print.
+_SUITE_RUNNER = """\
+import json
+import os
+import sys
+import unittest
+
+suite = unittest.TestLoader().discover({start_dir!r}, pattern={pattern!r})
+result = unittest.TextTestRunner(verbosity=2).run(suite)
+with open({result_path!r}, "w", encoding="utf-8") as fh:
+    json.dump({{
+        "collected": suite.countTestCases(),
+        "tests_run": result.testsRun,
+        "failures": len(result.failures),
+        "errors": len(result.errors),
+        "skipped": len(result.skipped),
+        "ok": result.wasSuccessful(),
+    }}, fh)
+sys.stdout.flush()
+sys.stderr.flush()
+os._exit(0 if result.wasSuccessful() else 1)
+"""
+
+
+def suite_runner_source(start_dir: str, pattern: str, result_path: str) -> str:
+    """Verifier-authored runner program for a hidden unittest suite."""
+    return _SUITE_RUNNER.format(
+        start_dir=start_dir, pattern=pattern, result_path=result_path
+    )
+
+
+def suite_result_report(
+    payload: dict[str, Any], returncode: int | None
+) -> tuple[int, str | None]:
+    """Derive (tests_run, error) from the runner's JSON result payload."""
+    ran = int(payload.get("tests_run") or 0)
+    if ran == 0:
+        return 0, "suite ran zero tests"
+    if not payload.get("ok"):
+        return ran, f"unittest exited {returncode}"
+    return ran, None
+
+
+def summarize_unittest_output(tail: str, returncode: int) -> tuple[int, str | None]:
+    """Extract (tests_run, error) from unittest's summary tail.
+
+    unittest exits nonzero iff anything failed or errored; parsing the summary
+    line for counts double-counts "expected failures=". 3.14+ exits 5 with
+    "NO TESTS RAN" and prints no "Ran N" line; older versions print
+    "Ran 0 tests" and exit 0. Both are the same defect: a suite that ran
+    nothing verifies nothing.
+    """
+    ran = 0
+    for line in tail.strip().splitlines():
+        if line.startswith("Ran "):
+            with contextlib.suppress(IndexError, ValueError):
+                ran = int(line.split()[1])
+    if ran == 0:
+        return ran, "suite ran zero tests"
+    if returncode != 0:
+        return ran, f"unittest exited {returncode}"
+    return ran, None
+
+
 def run_unittest_suite(
     files: dict[str, str],
     tests_source: str,
     *,
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
 ) -> dict[str, Any]:
-    """Return a fail-closed report until an isolated runtime is configured.
+    """Run the hidden suite, or return a fail-closed report.
 
-    ``files`` and ``tests_source`` are intentionally not materialized in this
-    release. A future runtime adapter must own materialization, execution, and
-    output parsing outside the host process.
+    ``ORCHESTRAL_CODE_RUNTIME=isolated`` dispatches to the E2B-compatible
+    adapter in ``orchestral.cubeexec`` (self-hosted CubeSandbox or hosted
+    E2B — see that module's docstring for the endpoint contract). Host
+    subprocess execution is not a supported fallback.
     """
     runtime = _configured_code_runtime()
+    if runtime == ISOLATED_CODE_RUNTIME:
+        # Lazy import: the e2b SDK is an optional `[e2b]` extra.
+        from orchestral.cubeexec import run_unittest_suite as isolated_suite
+
+        return isolated_suite(
+            files, tests_source, timeout_seconds=timeout_seconds
+        )
     if runtime == DISABLED_CODE_RUNTIME:
         error = "code execution disabled: no isolated runtime is configured"
-    elif runtime == ISOLATED_CODE_RUNTIME:
-        error = "code execution unavailable: isolated runtime adapter is not configured"
     else:
         error = "code execution rejected: host subprocess fallback is disabled; use an isolated runtime"
     return _disabled_execution_report(error, timeout_seconds)

@@ -26,6 +26,7 @@ from orchestral.calibrate import (
     load_labels,
     persist_calibration,
 )
+from orchestral.codeexec import CODE_RUNTIME_ENV, ISOLATED_CODE_RUNTIME
 from orchestral.config import (
     ConfigError,
     ModelConfig,
@@ -254,6 +255,13 @@ def _check_provider_envs(args: argparse.Namespace, *models: ModelConfig | None) 
         env = provider_key(m)[2]
         if env and not os.environ.get(env):
             missing_env.add(env)
+    # The isolated code runtime fails closed mid-run if its endpoint contract
+    # is absent — catch it here, before any model spend. `harness.py doctor`
+    # probes the endpoint itself.
+    if os.environ.get(CODE_RUNTIME_ENV, "").strip().lower() == ISOLATED_CODE_RUNTIME:
+        for env in ("E2B_DOMAIN", "E2B_API_KEY"):
+            if not os.environ.get(env):
+                missing_env.add(env)
     if missing_env or problems:
         parts = problems[:]
         if missing_env:
@@ -1546,6 +1554,14 @@ def cmd_selfcheck(args: argparse.Namespace) -> None:
         sys.exit(exit_code)
 
 
+def cmd_doctor(args: argparse.Namespace) -> int:
+    """Preflight the isolated code runtime: env contract, SDK surface, DNS/TLS
+    to api.<domain>, and a live create/exec/destroy probe through the adapter."""
+    from orchestral.doctor import run_doctor
+
+    return run_doctor(probe=not args.no_probe)
+
+
 def cmd_audit(args: argparse.Namespace) -> None:
     """Static task-spec audit: can every declared check fire, and can a model pass without working?"""
     report = audit_tree(
@@ -1997,6 +2013,18 @@ def build_parser() -> argparse.ArgumentParser:
                        default=_env_flag("ORCHESTRAL_ALLOW_AGENT_EXEC"),
                        help="Opt in to executor workers at server start — never a per-request field (env ORCHESTRAL_ALLOW_AGENT_EXEC)")
     serve.set_defaults(func=cmd_serve)
+
+    doctor = sub.add_parser(
+        "doctor",
+        help="Preflight the isolated code runtime — env contract, SDK surface, "
+             "api.<domain> DNS/TLS, and a real sandbox create/exec/destroy probe",
+    )
+    doctor.add_argument(
+        "--no-probe",
+        action="store_true",
+        help="Skip the live sandbox probe (env/SDK/DNS/TLS checks only)",
+    )
+    doctor.set_defaults(func=cmd_doctor)
     return p
 
 

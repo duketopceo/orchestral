@@ -113,6 +113,11 @@ fallback. Set `ORCHESTRAL_CODE_RUNTIME=isolated` to dispatch to the
 E2B-compatible adapter (`pip install "orchestral[e2b]"`) — self-hosted
 CubeSandbox or hosted E2B, chosen by the SDK's own `E2B_DOMAIN`/`E2B_API_KEY`
 contract; `ORCHESTRAL_CUBE_TEMPLATE` selects the sandbox template.
+`scripts/cube-env.example.sh` documents the full env contract — copy it to
+`scripts/cube-env.sh` (gitignored) and fill in real values. `harness.py
+doctor` verifies the whole chain — env, SDK surface, `api.<domain>` DNS/TLS,
+and a live create/exec/destroy probe — before any paid run; `--no-probe`
+skips the sandbox boot.
 
 Self-hosting keeps the worker fileset *and* the hidden verifier source on
 owned infrastructure; hosted E2B discloses evaluation oracles to a third
@@ -136,7 +141,12 @@ handle can leave the sandbox until its configured timeout reaps it.
   (default `code-interpreter`).
 - **Auth:** on no-auth installs `E2B_API_KEY` is required-but-arbitrary — and
   the endpoint grants unauthenticated sandbox create/write/exec to any host
-  that can resolve `api.<domain>`. Bind it to trusted networks only.
+  that can reach `api.<domain>` or the API port directly (the control plane
+  typically binds `0.0.0.0`, so the proxy route is not the only path in).
+  Prefer enabling `CUBE_API_KEY` on the deployment (CubeAPI honors it as a
+  simple shared key and `E2B_API_KEY` must match), and regardless, firewall
+  the control-plane and envd ports to trusted interfaces — no-auth is only
+  acceptable when nothing untrusted can reach them.
 - **TLS:** `SSL_CERT_FILE` must *append* the local CA to the system bundle,
   not replace it — it applies process-wide (including model API calls), so
   prefer a narrowly-scoped CA.

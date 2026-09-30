@@ -2,6 +2,8 @@ __pycache__/
 *.pyc
 .venv/
 .env
+# carries a real E2B_API_KEY — only scripts/cube-env.example.sh is committed
+scripts/cube-env.sh
 runs/
 runs-v1/
 runs-pub/

@@ -197,6 +197,7 @@ def output_gate(
     task: TaskSpec,
     subtasks: list[Any],
     results: list[dict[str, Any]],
+    file_sets: list[tuple[Any, dict[str, str]]] | None = None,
     judge: ModelConfig,
     client: Provider,
 ) -> dict[str, Any]:
@@ -204,6 +205,9 @@ def output_gate(
 
     Returns ``{"record", "costs", "adequate", "weakest"}`` — ``adequate``
     False plus a valid ``weakest`` index means a rework pass is advised."""
+    # multi-file results carry metadata only; the bounded bodies live in
+    # file_sets keyed by subtask id (an "orchestrator" entry may lead)
+    files_by_id = dict(file_sets or [])
     outputs = []
     for i, (sub, res) in enumerate(zip(subtasks, results, strict=False)):
         entry = {
@@ -212,10 +216,17 @@ def output_gate(
             if isinstance(sub, dict) else str(sub)[:500],
         }
         content = res.get("content")
+        sid = sub.get("id", i) if isinstance(sub, dict) else i
+        files = files_by_id.get(sid)
         if isinstance(content, dict):
             # fileset protocol — paths + bounded member bodies
             entry["files"] = {
                 p: str(b)[:1500] for p, b in list(content.items())[:20]
+            }
+        elif files:
+            # judge sees the bounded bodies; gate logs stay metadata-only
+            entry["files"] = {
+                p: str(b)[:1500] for p, b in list(files.items())[:20]
             }
         else:
             entry["content"] = str(content or res)[:2000]

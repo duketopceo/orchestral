@@ -823,7 +823,7 @@ class Runner:
                     and (is_multi or task.type == "html")):
                 gate = output_gate(
                     logger=logger, step=2 + len(subtasks), task=task,
-                    subtasks=subtasks, results=results,
+                    subtasks=subtasks, results=results, file_sets=file_sets,
                     judge=judge, client=role_clients["judge"],
                 )
                 ledger.add_many(gate["costs"])
@@ -831,6 +831,8 @@ class Runner:
                     w = gate["weakest"]
                     try:
                         sub = subtasks[w]
+                        if not isinstance(sub, dict):
+                            sub = {"id": w, "description": str(sub)}
                         rework = dict(sub)
                         rework_note = (
                             "\n\nREWORK: a calibrated critic judged the joint "
@@ -851,6 +853,9 @@ class Runner:
                                 attempt=None,
                                 cancel_event=self.cancel_event,
                             )
+                            if not files:
+                                raise ValidationError(
+                                    "rework produced no files")
                             results[w] = out
                             sid = sub.get("id", w)
                             for j, (fsid, _) in enumerate(file_sets):
@@ -865,6 +870,9 @@ class Runner:
                                 attempt=None,
                                 cancel_event=self.cancel_event,
                             )
+                            if not out.get("content"):
+                                raise ValidationError(
+                                    "rework produced no output")
                             results[w] = out
                         ledger.add_many(rework_costs)
                         (run_dir / f"worker-{w}-rework.json").write_text(

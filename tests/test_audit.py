@@ -2266,9 +2266,9 @@ class TestDocumentedClaimsAreExecuted(TestCase):
 # rather than trusting this tuple: the hand-written version omitted
 # `expected_answer`, which two rules read.
 _METADATA_KEYS = (
-    "calls", "difficulty", "expected", "expected_answer", "fields", "holdout",
-    "module", "patch", "pattern", "reference", "reference_sql", "required",
-    "tests",
+    "calls", "difficulty", "expected", "expected_answer", "fields", "fixture",
+    "holdout", "module", "patch", "pattern", "reference", "reference_sql",
+    "required", "setup_commands", "test_files", "tests", "verify",
 )
 
 _HOSTILE_VALUES = (
@@ -2723,6 +2723,11 @@ _HOSTILE_NESTED = (
     {"expected": [5]},
     {"expected": [{"kite": 5}]},
     {"tests": 5},
+    {"fixture": {"kite": True}},
+    {"fixture": "fx", "verify": {"command": 5}},
+    {"fixture": "fx", "verify": {"command": [5]}},
+    {"fixture": "fx", "setup_commands": [5]},
+    {"fixture": "fx", "test_files": {"a": 5}},
     {"holdout": 5},
     {"difficulty": {"a": 5}},
 )

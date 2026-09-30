@@ -1191,6 +1191,57 @@ def cmd_prices(args: argparse.Namespace) -> None:
     if drifted:
         print(f"\n{len(drifted)} model(s) beyond {args.threshold:.0%} drift — update models/*.yaml or check for silent rerouting.")
 
+def cmd_fixtures(args: argparse.Namespace) -> None:
+    """Repo fixtures for v3 real-repo tasks: fetch / check / list."""
+    from orchestral.fixtures import (
+        FixtureError,
+        check_fixtures,
+        fetch_fixture,
+        load_registry,
+        tarball_path,
+    )
+
+    root = Path(args.fixtures_dir)
+    try:
+        registry = load_registry(root)
+    except FixtureError as exc:
+        print(f"registry error: {exc}")
+        sys.exit(1)
+
+    if args.fixtures_cmd == "list":
+        if not registry:
+            print(f"no fixtures registered in {root / 'registry.yaml'}")
+            return
+        for fid, spec in registry.items():
+            tb = tarball_path(fid, root)
+            state = "fetched" if tb.exists() else "pending"
+            print(f"{fid:<28} {state:<8} {spec.repo}@{spec.commit[:10]}  {spec.license}")
+        return
+
+    if args.fixtures_cmd == "fetch":
+        targets = args.ids or sorted(registry)
+        for fid in targets:
+            try:
+                res = fetch_fixture(fid, root)
+            except FixtureError as exc:
+                print(f"{fid}: {exc}")
+                sys.exit(1)
+            print(
+                f"{res.fixture_id}: {res.repo_members} repo files + "
+                f"{res.wheelhouse_members} wheels -> {res.tarball} "
+                f"(sha256 {res.sha256[:16]}…)"
+            )
+        return
+
+    if args.fixtures_cmd == "check":
+        problems = check_fixtures(root)
+        if problems:
+            for p in problems:
+                print(f"drift: {p}")
+            sys.exit(1)
+        print(f"{len(registry)} fixture(s) consistent with registry")
+
+
 def cmd_calibrate(args: argparse.Namespace) -> None:
     """Judge-vs-human agreement metrics from a labels file."""
     if args.emit:
@@ -1971,6 +2022,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Do not count a generatable holdout arm — reports no_holdout_arm whenever no spec sets metadata.holdout",
     )
     audit.set_defaults(func=cmd_audit)
+
+    fixtures = sub.add_parser(
+        "fixtures",
+        help="Repo fixtures for v3 real-repo tasks — fetch/check the gitignored tarballs pinned in fixtures/registry.yaml",
+    )
+    fixtures.add_argument("--fixtures-dir", default="fixtures", help="Fixture directory")
+    fsub = fixtures.add_subparsers(dest="fixtures_cmd", required=True)
+    fsub.add_parser("list", help="Show registry state (registered vs fetched)")
+    ff = fsub.add_parser("fetch", help="Download + pack fixture tarballs from the registry")
+    ff.add_argument("ids", nargs="*", help="Fixture ids (default: all registered)")
+    fsub.add_parser("check", help="Verify fetched tarballs match registry pins + locks")
+    fixtures.set_defaults(func=cmd_fixtures)
 
     selfcheck = sub.add_parser(
         "selfcheck",

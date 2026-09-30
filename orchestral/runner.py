@@ -1567,7 +1567,15 @@ class Runner:
         canonical variant for expected-path matching (Main.java keeps case).
         """
         module = str(task.metadata.get("module") or "solution.py")
-        declared = expected_paths(task.metadata, preserve_case=preserve_case) or [module]
+        fixture_id = str(task.metadata.get("fixture") or "")
+        if fixture_id and not task.metadata.get("expected_paths"):
+            # Repo tasks overlay only the files the worker changed — an
+            # undeclared expected_paths would fall back to `module` (the
+            # "repo" sentinel) and fail every run on a file that never
+            # exists. Authors may still pin required paths explicitly.
+            declared: list[str] = []
+        else:
+            declared = expected_paths(task.metadata, preserve_case=preserve_case) or [module]
         missing = [p for p in declared if not files.get(p)]
         errors = [f"Missing or empty expected files: {', '.join(missing)}."] if missing else []
         checks: dict[str, bool] = {"expected_paths": not missing}
@@ -1603,11 +1611,26 @@ class Runner:
             report["executed"] = False
             return compiled and checks["quality_ok"], report
 
-        suite = run_unittest_suite(
-            files,
-            str(task.metadata.get("tests") or ""),
-            timeout_seconds=float(task.metadata.get("timeout_seconds", DEFAULT_TIMEOUT_SECONDS)),
-        )
+        if fixture_id:
+            from orchestral.codeexec import run_repo_suite
+
+            verify = task.metadata.get("verify") or {}
+            suite = run_repo_suite(
+                files,
+                fixture_id=fixture_id,
+                workdir=str(task.metadata.get("workdir") or "repo"),
+                setup_commands=list(task.metadata.get("setup_commands") or []),
+                verify_command=list(verify.get("command") or []),
+                fail_to_pass=list(verify.get("fail_to_pass") or []),
+                test_files=dict(task.metadata.get("test_files") or {}),
+                timeout_seconds=float(task.metadata.get("timeout_seconds", DEFAULT_TIMEOUT_SECONDS)),
+            )
+        else:
+            suite = run_unittest_suite(
+                files,
+                str(task.metadata.get("tests") or ""),
+                timeout_seconds=float(task.metadata.get("timeout_seconds", DEFAULT_TIMEOUT_SECONDS)),
+            )
         report["execution"] = suite
         suite_passed = (
             suite.get("executed") is True

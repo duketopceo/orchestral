@@ -191,6 +191,72 @@ def run_unittest_suite(
     return _disabled_execution_report(error, timeout_seconds)
 
 
+def run_repo_suite(
+    files: dict[str, str],
+    *,
+    fixture_id: str,
+    workdir: str = "repo",
+    setup_commands: list[str] | None = None,
+    verify_command: list[str] | None = None,
+    fail_to_pass: list[str] | None = None,
+    test_files: dict[str, str] | None = None,
+    timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
+) -> dict[str, Any]:
+    """Stage a registered repo fixture in the isolated runtime and run its
+    verify command — the v3 real-repo grading path.
+
+    The fixture tarball is read host-side here (gitignored fetch, pinned by
+    ``fixtures/registry.yaml``); the guest receives bytes only.
+    """
+    runtime = _configured_code_runtime()
+    if runtime == ISOLATED_CODE_RUNTIME:
+        from orchestral.cubeexec import run_repo_suite as isolated_repo_suite
+        from orchestral.fixtures import FixtureError, tarball_path
+
+        tb = tarball_path(fixture_id)
+        if not tb.exists():
+            report = _disabled_execution_report(
+                f"fixture {fixture_id!r} not fetched — run "
+                f"`harness.py fixtures fetch {fixture_id}`",
+                timeout_seconds,
+            )
+            report["fixture_id"] = fixture_id
+            report["granularity"] = "command"
+            return report
+        try:
+            tarball = tb.read_bytes()
+        except OSError as exc:
+            report = _disabled_execution_report(
+                f"fixture {fixture_id!r} unreadable: {exc}", timeout_seconds
+            )
+            report["fixture_id"] = fixture_id
+            return report
+        try:
+            return isolated_repo_suite(
+                files,
+                fixture_tarball=tarball,
+                fixture_id=fixture_id,
+                workdir=workdir,
+                setup_commands=setup_commands,
+                verify_command=verify_command,
+                fail_to_pass=fail_to_pass,
+                test_files=test_files,
+                timeout_seconds=timeout_seconds,
+            )
+        except FixtureError as exc:
+            report = _disabled_execution_report(str(exc), timeout_seconds)
+            report["fixture_id"] = fixture_id
+            return report
+    if runtime == DISABLED_CODE_RUNTIME:
+        error = "code execution disabled: no isolated runtime is configured"
+    else:
+        error = "code execution rejected: host subprocess fallback is disabled; use an isolated runtime"
+    report = _disabled_execution_report(error, timeout_seconds)
+    report["fixture_id"] = fixture_id
+    report["granularity"] = "command"
+    return report
+
+
 def score_from_report(report: dict[str, Any]) -> float | None:
     """Fraction of tests passed; None only when the suite never executed."""
     if not report.get("executed"):

@@ -14,6 +14,7 @@ import re
 import sys
 import types
 import unittest
+from pathlib import Path
 from typing import ClassVar
 from unittest.mock import patch
 
@@ -576,6 +577,181 @@ class TestSdkCompatShapes(CubeExecBase):
         with patch.object(cubeexec.time, "monotonic", side_effect=fake_monotonic):
             self._run(timeout=30.0)
         self.assertEqual(cmds.calls[0]["timeout"], 1)
+
+
+class _RepoCommands:
+    """Commands surface for the repo-fixture path: every call succeeds
+    unless a substring in ``failures`` maps it to a nonzero exit. The repo
+    verifier has no runner-payload contract — the verdict is the verify
+    command's exit code alone."""
+
+    def __init__(
+        self,
+        failures: dict[str, int] | None = None,
+        listing: str = "5\n",
+        stdout: str = "",
+        stderr: str = "",
+        exc: Exception | None = None,
+    ) -> None:
+        self.calls: list[str] = []
+        self.kwargs: list[dict] = []
+        self._failures = failures or {}
+        self._listing = listing
+        self._stdout = stdout
+        self._stderr = stderr
+        self._exc = exc
+
+    def bind(self, written: dict[str, str]) -> None:
+        pass
+
+    def run(self, command: str, **kwargs) -> _FakeResult:
+        self.calls.append(command)
+        self.kwargs.append(kwargs)
+        if self._exc is not None:
+            raise self._exc
+        code = 0
+        for pat, rc in self._failures.items():
+            if pat in command:
+                code = rc
+        stdout = self._listing if "wc -l" in command else self._stdout
+        for chunk, cb in (
+            (stdout, kwargs.get("on_stdout")),
+            (self._stderr, kwargs.get("on_stderr")),
+        ):
+            if chunk and cb:
+                cb(chunk)
+        if code == 0:
+            return _FakeResult(0, stdout=stdout, stderr=self._stderr)
+        raise _FakeCommandExit(code, stdout=stdout, stderr=self._stderr)
+
+
+class TestRepoSuite(CubeExecBase):
+    def _repo(self, *, files=None, tarball=b"\x1f\x8bfake", install=_install_fake_e2b,
+              commands=None, **kw):
+        if commands is not None:
+            _FakeSandboxBase.next_commands = commands
+        args: dict = {
+            "fixture_tarball": tarball,
+            "fixture_id": "fx-1",
+            "workdir": "repo",
+            "setup_commands": ["pip install --no-index --find-links /home/user/wheelhouse pytest"],
+            "verify_command": ["python", "-m", "pytest", "tests/test_x.py", "-q"],
+            "fail_to_pass": ["test_a", "test_b"],
+            "test_files": {"tests/test_x.py": "def test_a():\n    pass\n"},
+            "timeout_seconds": 60.0,
+        }
+        args.update(kw)
+        with patch.dict(sys.modules, install()):
+            return cubeexec.run_repo_suite(files or {"pkg/mod.py": "X = 1\n"}, **args)
+
+    def test_happy_path_full_lifecycle(self) -> None:
+        r = self._repo(commands=_RepoCommands())
+        self.assertTrue(r["executed"])
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["returncode"], 0)
+        self.assertEqual(r["tests_run"], 2)  # len(fail_to_pass)
+        self.assertEqual(r["staged_members"], 5)
+        self.assertEqual(r["oracle_members"], 1)
+        self.assertEqual(r["fixture_id"], "fx-1")
+        self.assertEqual(_FakeSandboxBase.killed_count, 1)
+        cmds = _FakeSandboxBase.instances[0].commands.calls
+        self.assertEqual(cmds[-1], "python -m pytest tests/test_x.py -q")
+        self.assertTrue(any("tar xzf" in c for c in cmds))
+
+    def test_tarball_written_raw_not_base64(self) -> None:
+        self._repo(commands=_RepoCommands())
+        written = _FakeSandboxBase.instances[0].written
+        self.assertEqual(written["/tmp/_orch_fixture.tgz"], b"\x1f\x8bfake")
+
+    def test_worker_and_oracle_overlay_paths(self) -> None:
+        self._repo(commands=_RepoCommands())
+        written = _FakeSandboxBase.instances[0].written
+        self.assertEqual(written["/home/user/repo/pkg/mod.py"], "X = 1\n")
+        self.assertIn("/home/user/repo/tests/test_x.py", written)
+
+    def test_oracle_wins_member_collision(self) -> None:
+        # worker submits the same path the oracle owns — the oracle overlay
+        # lands after the worker fileset, so the verifier's body wins.
+        files = {"tests/test_x.py": "def test_a():\n    assert False\n"}
+        self._repo(files=files, commands=_RepoCommands())
+        written = _FakeSandboxBase.instances[0].written
+        self.assertEqual(written["/home/user/repo/tests/test_x.py"],
+                         "def test_a():\n    pass\n")
+
+    def test_setup_failure_fails_closed(self) -> None:
+        r = self._repo(commands=_RepoCommands(failures={"pip install": 2}))
+        self.assertTrue(r["executed"])
+        self.assertFalse(r["ok"])
+        self.assertIn("setup command", r["error"])
+        self.assertEqual(r["returncode"], 2)
+        self.assertTrue(r["setup_failed"])
+
+    def test_verify_nonzero_is_failure_not_error(self) -> None:
+        # "-m pytest" matches only the verify command, not the setup
+        # `pip install ... pytest`.
+        r = self._repo(commands=_RepoCommands(failures={"-m pytest": 1}))
+        self.assertTrue(r["executed"])
+        self.assertFalse(r["ok"])
+        self.assertEqual(r["returncode"], 1)
+        self.assertIsNone(r["error"])
+
+    def test_verify_timeout_marks_timed_out(self) -> None:
+        cmds = _RepoCommands()
+        orig_run = cmds.run
+
+        def run(command, **kwargs):
+            if "-m pytest" in command:  # verify only — setup also says "pytest"
+                raise _FakeTimeout()
+            return orig_run(command, **kwargs)
+
+        cmds.run = run
+        r = self._repo(commands=cmds)
+        self.assertTrue(r["executed"])
+        self.assertTrue(r["timed_out"])
+        self.assertFalse(r["ok"])
+
+    def test_empty_verify_command_is_fail_closed(self) -> None:
+        r = self._repo(commands=_RepoCommands(), verify_command=[])
+        self.assertFalse(r["executed"])
+        self.assertFalse(r["ok"])
+        self.assertIn("verify.command", r["error"])
+
+    def test_unsafe_oracle_member_rejected(self) -> None:
+        r = self._repo(commands=_RepoCommands(),
+                       test_files={"../escape.py": "x = 1\n"})
+        self.assertFalse(r["executed"])
+        self.assertIn("test_files", r["error"])
+
+    def test_disabled_runtime_dispatch(self) -> None:
+        with patch.dict("os.environ", {}, clear=False):
+            os.environ.pop(codeexec.CODE_RUNTIME_ENV, None)
+            r = codeexec.run_repo_suite({"a.py": "x = 1\n"}, fixture_id="fx-1")
+        self.assertFalse(r["executed"])
+        self.assertEqual(r["runtime"], "disabled")
+        self.assertEqual(r["fixture_id"], "fx-1")
+
+    def test_missing_tarball_fails_before_sandbox(self) -> None:
+        missing = Path("/nonexistent/fx-1.tar.gz")
+        with patch.dict("os.environ", {codeexec.CODE_RUNTIME_ENV: "isolated"}), \
+             patch("orchestral.fixtures.tarball_path", return_value=missing):
+            r = codeexec.run_repo_suite({"a.py": "x = 1\n"}, fixture_id="fx-1")
+        self.assertFalse(r["executed"])
+        self.assertIn("not fetched", r["error"])
+        self.assertEqual(len(_FakeSandboxBase.created), 0)
+
+    def test_isolated_dispatch_passes_test_files(self) -> None:
+        with patch.dict("os.environ", {codeexec.CODE_RUNTIME_ENV: "isolated"}), \
+             patch("orchestral.fixtures.tarball_path",
+                   return_value=Path(__file__)), \
+             patch.object(cubeexec, "run_repo_suite",
+                          return_value={"runtime": "e2b", "ok": True}) as spy:
+            codeexec.run_repo_suite(
+                {"a.py": "x = 1\n"},
+                fixture_id="fx-1",
+                test_files={"tests/t.py": "pass\n"},
+            )
+        self.assertEqual(spy.call_args.kwargs["test_files"],
+                         {"tests/t.py": "pass\n"})
 
 
 if __name__ == "__main__":

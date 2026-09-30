@@ -1228,6 +1228,10 @@ def _absent_contract_reason(spec: TaskSpec) -> str | None:
     if any(spec.metadata.get(key) for key in keys):
         return None
     if spec.type == "code":
+        if spec.metadata.get("fixture"):
+            # A repo-fixture task's contract is verify.command in the staged
+            # checkout — check_fixture_contract owns its validity.
+            return None
         return (
             "no metadata.tests, so grading is expected_paths + static quality regexes. "
             "Any file with a byte in the right name passes."
@@ -1246,7 +1250,11 @@ def check_absent_grading_contract(spec: TaskSpec, path: Path | None = None) -> l
     `pass` is audit-clean and always reports success.
     """
     reason = _absent_contract_reason(spec)
-    if reason is None and spec.type == "code":
+    if (
+        reason is None
+        and spec.type == "code"
+        and not spec.metadata.get("fixture")
+    ):
         reason = _suite_gate_reason(str(spec.metadata.get("tests") or ""), _declared_module(spec))
     if reason is None:
         return []
@@ -1781,6 +1789,126 @@ def check_holdout_arm(specs: list[TaskSpec], *, probe: Any = None) -> list[Findi
     ]
 
 
+def check_fixture_contract(spec: TaskSpec, path: Path | None = None) -> list[Finding]:
+    """Repo-fixture tasks (v3): the fixture must be registered + licensed, the
+    verify path must exist, and no guest command may touch the network.
+
+    Egress from isolated sandboxes is open today but slated to close — a
+    fixture task that only works while `curl`/`pip install` can reach the
+    internet is broken under the intended end state, so the check fails now.
+    """
+    fixture = (spec.metadata or {}).get("fixture")
+    if fixture in (None, ""):
+        return []
+    findings: list[Finding] = []
+    where = str(path) if path else None
+
+    if spec.type != "code":
+        findings.append(Finding(
+            rule="fixture_wrong_type", severity=ERROR, task_id=spec.id, path=where,
+            detail=(
+                f"metadata.fixture is set on a {spec.type!r} spec — fixture staging is "
+                "implemented by the code verifier; any other type silently ignores it."
+            ),
+        ))
+
+    from .fixtures import FixtureError, load_registry
+    try:
+        registry = load_registry()
+    except FixtureError as exc:
+        findings.append(Finding(
+            rule="fixture_registry_broken", severity=ERROR, task_id=spec.id, path=where,
+            detail=f"fixtures/registry.yaml could not be loaded: {exc}",
+        ))
+        registry = {}
+    if str(fixture) not in registry:
+        findings.append(Finding(
+            rule="fixture_unregistered", severity=ERROR, task_id=spec.id, path=where,
+            detail=(
+                f"fixture {fixture!r} is not in fixtures/registry.yaml — register "
+                "repo + pinned commit + license before a task may reference it."
+            ),
+        ))
+
+    verify = (spec.metadata or {}).get("verify")
+    command = verify.get("command") if isinstance(verify, dict) else None
+    command_ok = (
+        isinstance(command, list)
+        and bool(command)
+        and all(isinstance(c, str) for c in command)
+    )
+    if not command_ok:
+        findings.append(Finding(
+            rule="fixture_no_verify_command", severity=ERROR, task_id=spec.id, path=where,
+            detail=(
+                "metadata.verify.command must be a non-empty list of strings — the repo "
+                "verifier needs an explicit test command (named fail-to-pass scope beats "
+                "a flaky whole-suite discover)."
+            ),
+        ))
+
+    setup = (spec.metadata or {}).get("setup_commands") or []
+    if not isinstance(setup, list) or any(not isinstance(c, str) for c in setup):
+        findings.append(Finding(
+            rule="fixture_bad_setup_commands", severity=ERROR, task_id=spec.id, path=where,
+            detail="metadata.setup_commands must be a list of strings.",
+        ))
+        setup = []
+
+    from .fixtures import NETWORK_TOKENS
+    verify_cmd = (
+        " ".join(command)
+        if isinstance(command, list)
+        and all(isinstance(c, str) for c in command)
+        else ""
+    )
+    net_hits = [
+        cmd for cmd in [*setup, verify_cmd]
+        if NETWORK_TOKENS.search(cmd)
+    ]
+    if net_hits:
+        findings.append(Finding(
+            rule="fixture_needs_network", severity=ERROR, task_id=spec.id, path=where,
+            detail=(
+                f"guest commands that fetch ({net_hits[0][:60]}…) are not allowed — wheels "
+                "come from the staged wheelhouse (`pip install --no-index --find-links "
+                "wheelhouse`), everything else must be inside the fixture tarball."
+            ),
+        ))
+
+    test_files = (spec.metadata or {}).get("test_files")
+    if test_files is not None:
+        if not isinstance(test_files, dict) or any(
+            not isinstance(k, str) or not isinstance(v, str)
+            for k, v in test_files.items()
+        ):
+            findings.append(Finding(
+                rule="fixture_bad_test_files", severity=ERROR, task_id=spec.id, path=where,
+                detail="metadata.test_files must be a mapping of repo-relative path → file body.",
+            ))
+        else:
+            from .fixtures import screen_members
+            bad = screen_members(test_files.keys())
+            if bad:
+                findings.append(Finding(
+                    rule="fixture_bad_test_files", severity=ERROR, task_id=spec.id, path=where,
+                    detail=(
+                        f"metadata.test_files member {bad[0]!r} escapes the repo tree — "
+                        "oracle files must be repo-relative."
+                    ),
+                ))
+
+    if (spec.metadata or {}).get("tests"):
+        findings.append(Finding(
+            rule="fixture_with_hidden_tests", severity=WARN, task_id=spec.id, path=where,
+            detail=(
+                "metadata.tests is ignored on fixture tasks (the repo carries its own "
+                "suite via verify.command) — remove it to keep one grading contract."
+            ),
+        ))
+    return findings
+
+
 # ---------------------------------------------------------------------------
 # Entry points
 # ---------------------------------------------------------------------------
@@ -1798,6 +1926,7 @@ PER_SPEC_RULES = (
     check_answer_derivable,
     check_memorization_risk,
     check_unlabeled_difficulty,
+    check_fixture_contract,
 )
 
 

@@ -129,16 +129,16 @@ def _run_card(run: Any, run_dir: Path) -> str:
   {STYLE}
 </head>
 <body>
-  <a href="index.html">&larr; all runs</a>
+  <a href="index.html">&larr; All runs</a>
   <h1>Run {meta.run_id}</h1>
 
   <div class="summary">
-    <div class="card"><div class="metric">{meta.orchestrator}</div><small>orchestrator</small></div>
-    <div class="card"><div class="metric">{meta.task_id}</div><small>task</small></div>
-    <div class="card"><div class="metric">{meta.worker}</div><small>worker</small></div>
-    <div class="card"><div class="metric">{pass_label}</div><small>pass</small></div>
-    <div class="card"><div class="metric">${meta.total_cost_usd:.6f}</div><small>cost</small></div>
-    <div class="card"><div class="metric">{meta.total_input_tokens + meta.total_output_tokens}</div><small>tokens</small></div>
+    <div class="card"><div class="metric">{meta.orchestrator}</div><small>Orchestrator</small></div>
+    <div class="card"><div class="metric">{meta.task_id}</div><small>Task</small></div>
+    <div class="card"><div class="metric">{meta.worker}</div><small>Worker</small></div>
+    <div class="card"><div class="metric">{pass_label}</div><small>Pass</small></div>
+    <div class="card"><div class="metric">${meta.total_cost_usd:.6f}</div><small>Cost</small></div>
+    <div class="card"><div class="metric">{meta.total_input_tokens + meta.total_output_tokens}</div><small>Tokens</small></div>
   </div>
 
   <div class="section">
@@ -147,9 +147,9 @@ def _run_card(run: Any, run_dir: Path) -> str:
   </div>
 
   <div class="section">
-    <h2>Cost breakdown</h2>
+    <h2>Cost Breakdown</h2>
     <table>
-      <tr><th>phase</th><th>model</th><th>in tokens</th><th>out tokens</th><th>cost</th></tr>
+      <tr><th>Phase</th><th>Model</th><th>Input tokens</th><th>Output tokens</th><th>Cost</th></tr>
       {cost_rows}
     </table>
   </div>
@@ -165,8 +165,8 @@ def _run_card(run: Any, run_dir: Path) -> str:
     <h2>Events ({len(events)})</h2>
     <table>
       <tr>
-        <th>timestamp</th><th>phase</th><th>step</th><th>role</th><th>model</th><th>type</th>
-        <th>tokens</th><th>cost</th><th>reasoning</th><th>raw</th>
+        <th>Timestamp</th><th>Phase</th><th>Step</th><th>Role</th><th>Model</th><th>Type</th>
+        <th>Tokens</th><th>Cost</th><th>Reasoning</th><th>Raw</th>
       </tr>
       {events_rows}
     </table>
@@ -209,12 +209,12 @@ def _groups_table_html(runs: list[Any]) -> str:
             f"</tr>"
         )
     return f"""
-  <h2>Replicate groups</h2>
+  <h2>Replicate Groups</h2>
   <table>
     <tr>
-      <th>group</th><th>task</th><th>orchestrator</th><th>worker</th>
-      <th>n</th><th>pass%</th><th>mech &plusmn; sd</th><th>judge &plusmn; sd</th><th>cost &plusmn; sd</th>
-      <th>p50 / p95 ms</th><th>succ/$</th><th>failures</th>
+      <th>Group</th><th>Task</th><th>Orchestrator</th><th>Worker</th>
+      <th>n</th><th>Pass %</th><th>Mech. &plusmn; SD</th><th>Judge &plusmn; SD</th><th>Cost &plusmn; SD</th>
+      <th>p50 / p95 latency</th><th>Pass / $</th><th>Failures</th>
     </tr>
     {rows}
   </table>
@@ -251,17 +251,17 @@ def _index_html(runs: list[Any]) -> str:
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>orchestral runs</title>
+  <title>orchestral — Runs</title>
   {STYLE}
 </head>
 <body>
-  <h1>orchestral runs</h1>
+  <h1>Orchestral — Runs</h1>
   <p>Click a run to drill into events, plan, cost, and artifact. <a href="gallery.html">Visual gallery</a> &middot; <a href="dashboard.html">Dashboard</a></p>
   {_groups_table_html(runs)}
   <table>
     <tr>
-      <th>run_id</th><th>started</th><th>orchestrator</th><th>task</th><th>worker</th>
-      <th>group</th><th>rep</th><th>cost</th><th>mech</th><th>judge</th><th>pass</th>
+      <th>Run ID</th><th>Started</th><th>Orchestrator</th><th>Task</th><th>Worker</th>
+      <th>Group</th><th>Replicate</th><th>Cost</th><th>Mechanical</th><th>Judge</th><th>Pass</th>
     </tr>
     {rows}
   </table>
@@ -378,12 +378,12 @@ def generate_gallery(runs: list[Any], reports_dir: Path, task_id: str | None = N
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>orchestral gallery</title>
+  <title>orchestral — Gallery</title>
   {STYLE}
 </head>
 <body>
-  <h1>orchestral gallery</h1>
-  <a href="index.html">&larr; all runs</a> &middot; <a href="dashboard.html">dashboard</a>
+  <h1>Orchestral — Gallery</h1>
+  <a href="index.html">&larr; All runs</a> &middot; <a href="dashboard.html">Dashboard</a>
   {sections}
 </body>
 </html>
@@ -399,7 +399,7 @@ def _bar_html(label: str, value: float, max_value: float) -> str:
     )
 
 
-def _dashboard_html(runs: list[Any], summary: dict[str, Any]) -> str:
+def _dashboard_html(runs: list[Any], summary: dict[str, Any], *, experiment: str = "") -> str:
     total = summary["runs"]
     total_cost = summary["total_cost_usd"]
     total_tokens = summary["total_tokens"]
@@ -445,46 +445,48 @@ def _dashboard_html(runs: list[Any], summary: dict[str, Any]) -> str:
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>orchestral dashboard</title>
+  <title>orchestral — Dashboard</title>
   {STYLE}
 </head>
 <body>
-  <h1>orchestral dashboard</h1>
-  <a href="index.html">&larr; per-run drill-down</a> &middot; <a href="gallery.html">gallery</a>
+  <h1>Orchestral — Dashboard</h1>
+  <a href="index.html">&larr; Per-run drill-down</a> &middot; <a href="gallery.html">Gallery</a>
 
   <div class="summary">
-    <div class="card"><div class="metric">{total}</div><small>runs</small></div>
-    <div class="card"><div class="metric">${total_cost:.4f}</div><small>total cost</small></div>
-    <div class="card"><div class="metric">{total_tokens}</div><small>total tokens</small></div>
-    <div class="card"><div class="metric">{pass_rate:.1f}%</div><small>pass rate</small></div>
+    <div class="card"><div class="metric">{total}</div><small>Runs</small></div>
+    <div class="card"><div class="metric">${total_cost:.4f}</div><small>Total cost</small></div>
+    <div class="card"><div class="metric">{total_tokens}</div><small>Total tokens</small></div>
+    <div class="card"><div class="metric">{pass_rate:.1f}%</div><small>Pass rate</small></div>
   </div>
 
   <div class="section">
-    <h2>Cost by planner</h2>
+    <h2>Cost by Planner</h2>
     <table>{rows(by_planner)}</table>
   </div>
 
   <div class="section">
-    <h2>Cost by orchestrator</h2>
+    <h2>Cost by Orchestrator</h2>
     <table>{rows(by_orchestrator)}</table>
   </div>
 
   <div class="section">
-    <h2>Cost by worker</h2>
+    <h2>Cost by Worker</h2>
     <table>{rows(by_worker)}</table>
   </div>
 
   <div class="section">
-    <h2>Cost vs quality</h2>
+    <h2>Cost vs Quality</h2>
     {scatter}
   </div>
 
   {history_sections}
 
+  {experiment}
+
   <div class="section">
-    <h2>Recent runs</h2>
+    <h2>Recent Runs</h2>
     <table>
-      <tr><th>run_id</th><th>planner</th><th>orchestrator</th><th>worker</th><th>cost</th><th>tokens</th><th>pass</th></tr>
+      <tr><th>Run ID</th><th>Planner</th><th>Orchestrator</th><th>Worker</th><th>Cost</th><th>Tokens</th><th>Pass</th></tr>
       {recent_rows}
     </table>
   </div>
@@ -619,13 +621,22 @@ def _history_table_html(table: dict[str, dict[str, Any]], role: str) -> str:
     rows = "".join(_row(name, s) for name, s in sorted(table.items(), key=lambda kv: -kv[1]["total_cost"]))
     return (
         f"<div class='section'><h2>{_esc(role.capitalize())} history</h2>"
-        f"<table><tr><th>model</th><th>runs</th><th>pass rate</th><th>avg score</th><th>avg cost</th><th>total cost</th></tr>"
+        f"<table><tr><th>Model</th><th>Runs</th><th>Pass rate</th><th>Avg. score</th><th>Avg. cost</th><th>Total cost</th></tr>"
         f"{rows}</table></div>"
     )
 
 
-def generate_dashboard(runs_dir: str | Path = "runs", reports_dir: str | Path = "reports") -> Path:
-    """Generate a stats dashboard from all stored runs."""
+def generate_dashboard(
+    runs_dir: str | Path = "runs",
+    reports_dir: str | Path = "reports",
+    matrix_path: str | Path | None = None,
+) -> Path:
+    """Generate a stats dashboard from all stored runs.
+
+    When ``matrix_path`` (or the default ``experiments/jev-ab.yaml`` next to
+    the runs dir) exists, an experiment arm-comparison section is included —
+    mechanical pass is the primary axis; judge deltas are self-referential.
+    """
     reports = Path(reports_dir)
     reports.mkdir(parents=True, exist_ok=True)
 
@@ -633,5 +644,40 @@ def generate_dashboard(runs_dir: str | Path = "runs", reports_dir: str | Path = 
     runs = store.list_runs(limit=None)
     summary = store.summary()
 
-    (reports / "dashboard.html").write_text(_dashboard_html(runs, summary), encoding="utf-8")
+    mp = Path(matrix_path) if matrix_path else Path(runs_dir).parent / "experiments" / "jev-ab.yaml"
+    experiment = _experiment_html(store, mp) if mp.exists() else ""
+
+    (reports / "dashboard.html").write_text(
+        _dashboard_html(runs, summary, experiment=experiment), encoding="utf-8")
     return reports / "dashboard.html"
+
+
+def _experiment_html(store: Any, matrix_path: Path) -> str:
+    """Arm-comparison table for the dashboard — the same cell rows the
+    observatory's Experiment section renders from /api/experiment."""
+    from orchestral.coverage import coverage_rows
+    from orchestral.experiment import load_matrix
+
+    matrix = load_matrix(matrix_path)
+    rows = coverage_rows(store, matrix)
+    if not rows:
+        return ""
+    body = "".join(
+        f"<tr><td>{_esc(r.task_id)}<br><small>{_esc(r.orchestrator)} → {_esc(r.worker)}</small></td>"
+        f"<td>{f'{r.baseline_passes}/{r.baseline_n}' if r.baseline_n else '—'}</td>"
+        f"<td>{f'{r.jev_passes}/{r.jev_n}' if r.jev_n else '—'}</td>"
+        f"<td>{f'[{r.diff[0]:+.2f}, {r.diff[1]:+.2f}]' if r.diff else '—'}</td>"
+        f"<td>{_esc(r.verdict)}</td><td>{_esc(r.state)}</td>"
+        f"<td>{'✓' if r.posted else ''}</td></tr>"
+        for r in rows
+    )
+    return f"""<div class="section">
+    <h2>Experiment — {_esc(matrix.name)}</h2>
+    <p><small>Baseline vs jev-assist, paired replicates. Primary axis: mechanical pass.
+    Judge-score deltas are self-referential (the decisions engine assists the
+    jev arm and scores both arms).</small></p>
+    <table>
+      <tr><th>Cell</th><th>Baseline</th><th>Jev</th><th>Diff CI</th><th>Verdict</th><th>State</th><th>Posted</th></tr>
+      {body}
+    </table>
+  </div>"""

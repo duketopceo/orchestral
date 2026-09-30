@@ -1,0 +1,27 @@
+# Jev A/B experiment matrix — baseline vs --jev-assist, paired replicates.
+#
+# `harness.py experiment --matrix experiments/jev-ab.yaml --budget 12.00
+# --daily-cap 15.00 --seed 7 --jobs 2`
+#
+# Task ids resolve inside --tasks-dir only (path-shaped ids are rejected —
+# holdout materializations must never reach the decisions-engine judge).
+# code/bugfix cells require the isolated-runtime env contract (see
+# docs/runbooks/tonight-ab.md); the driver refuses them without it rather
+# than burn spend on "no runtime" verdicts.
+name: jev-ab
+
+orchestrators:
+  - deepseek/deepseek-v4-pro
+  - z-ai/glm-5.3-flash
+
+workers:
+  - z-ai/glm-5.3-flash
+  - deepseek/deepseek-v4-flash-0731
+
+tasks:
+  - landing-page-coffee
+  - needle-deploy-token
+  - code-fizzbuzz
+  - multi-file-site
+  - constraint-product-blurb
+  - v3-mi-run-length

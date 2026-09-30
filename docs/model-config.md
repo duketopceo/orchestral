@@ -67,6 +67,13 @@ which builds an ad-hoc `ModelConfig` — so `~typesafe/jev-latest` works as
 model file entry. Quote the slug in shells (`'~typesafe/jev-latest'`) to
 avoid `~` home expansion.
 
+**In A/B experiments the judge is held constant across arms.** The
+`experiment` command takes no `--judge` flag: every cell is scored by the
+decisions-engine judge so a judge change can't masquerade as an arm
+effect. Because the same engine also *assists* the jev arm, judge-score
+deltas between arms are self-referential — mechanical pass is the primary
+axis wherever the experiment surfaces results.
+
 ## Notes
 
 - **Cost accounting**: prices are per-million tokens; the runner derives

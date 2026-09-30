@@ -38,6 +38,15 @@ from orchestral.config import (
     resolve_judge,
     resolve_model,
 )
+from orchestral.coverage import coverage_rows, coverage_summary
+from orchestral.experiment import (
+    Cell,
+    cell_state,
+    load_matrix,
+    rep_target,
+    resolve_matrix_tasks,
+    run_experiment,
+)
 from orchestral.export import leaderboard_csv, run_audit_markdown, runs_csv
 from orchestral.fileset import expected_paths, required_content
 from orchestral.holdout import DEFAULT_ARM_SIZE, DEFAULT_SEED, generate_arm, materialize
@@ -54,7 +63,7 @@ from orchestral.stats import (
     contamination_gap,
     pairing_leaderboard,
 )
-from orchestral.storage import RunStore
+from orchestral.storage import RunMeta, RunStore
 from orchestral.tui import run_tui
 
 
@@ -664,6 +673,112 @@ def cmd_batch(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
+def cmd_experiment(args: argparse.Namespace) -> None:
+    """Batched A/B driver: every (task, orchestrator, worker) cell runs
+    paired baseline/jev-assist replicates with spend, error, and CI gates
+    between batches. `--dry-run` prints the priced plan and writes nothing."""
+    matrix = load_matrix(args.matrix)
+    tasks = resolve_matrix_tasks(matrix, args.tasks_dir)
+    cells = matrix.cells
+
+    if args.dry_run:
+        store = RunStore(args.runs_dir)
+        cell_budget = args.budget / len(cells) if args.budget > 0 else 0.0
+        print(f"Experiment {matrix.name!r}: {len(cells)} cell(s), "
+              f"budget ${args.budget:.2f} → ${cell_budget:.3f}/cell")
+        print(f"{'Cell':<66} {'Est/pair':>9} {'Target':>7} {'State':>9}")
+        for cell in cells:
+            target, est = rep_target(store, cell, cell_budget)
+            state = cell_state(store, matrix.name, cell, target, args.diff_eps)
+            print(f"{cell.key:<66} "
+                  f"{f'${est:.4f}' if est is not None else '(calib)':>9} "
+                  f"{target:>7} {state:>9}")
+        return
+
+    store, known, judge = _run_preamble(args)
+    models: dict[str, ModelConfig] = {}
+    for slug in matrix.orchestrators + matrix.workers:
+        models[slug] = resolve_model(slug, args.models_dir, known)
+    _check_provider_envs(
+        args,
+        *[replace(models[s], role="orchestrator") for s in matrix.orchestrators],
+        *[replace(models[s], role="worker") for s in matrix.workers],
+        judge,
+    )
+
+    def _launch(cell: Cell, arm: str, rep: int, group: str, seed: int | None) -> RunMeta:
+        orchestrator = replace(models[cell.orchestrator], role="orchestrator")
+        worker = _apply_retry_limit(replace(models[cell.worker], role="worker"), args)
+        kwargs = _runner_kwargs(
+            args, store, run_group=group, replicate=rep, seed=seed,
+            jev_assist=(arm == "jev"),
+        )
+        return Runner(**kwargs).run(tasks[cell.task_id], orchestrator, worker, judge)
+
+    result = run_experiment(
+        store, matrix,
+        budget=args.budget,
+        daily_cap=args.daily_cap,
+        batch_size=args.batch_size,
+        diff_eps=args.diff_eps,
+        seed=args.seed,
+        jobs=args.jobs,
+        tasks=tasks,
+        launch=_launch,
+    )
+    if args.json:
+        print(json.dumps(result, indent=2, default=str))
+    else:
+        print(f"\nExperiment {result['matrix']!r} — spend ${result['spend']:.4f}"
+              + (f" (stopped: {result['stopped']})" if result["stopped"] else ""))
+        for key, cell in result["cells"].items():
+            note = cell.get("reason") or cell.get("note") or ""
+            print(f"  {cell['state']:<8} {key}  {note}")
+
+
+def cmd_coverage(args: argparse.Namespace) -> None:
+    """Done/pending/posted ledger for one experiment matrix."""
+    matrix = load_matrix(args.matrix)
+    store = RunStore(args.runs_dir)
+    rows = coverage_rows(
+        store, matrix, budget=args.budget, diff_eps=args.diff_eps
+    )
+    if args.json:
+        print(json.dumps(
+            {"matrix": matrix.name,
+             "summary": coverage_summary(rows),
+             "cells": [r.to_dict() for r in rows]},
+            indent=2, default=str))
+        return
+    summ = coverage_summary(rows)
+    print(f"Coverage {matrix.name!r}: {summ['cells']} cell(s) — "
+          + ", ".join(f"{k} {v}" for k, v in sorted(summ["states"].items()))
+          + f" | posted {summ['posted']} | spend ${summ['spend']:.4f}")
+    print(f"{'Cell':<62} {'State':<9} {'Base':>7} {'Jev':>7} {'Diff CI':>17} {'Verdict':>13} {'Posted':>6}")
+    for r in rows:
+        base = f"{r.baseline_passes}/{r.baseline_n}" if r.baseline_n else "-"
+        jev = f"{r.jev_passes}/{r.jev_n}" if r.jev_n else "-"
+        ci = f"[{r.diff[0]:+.2f},{r.diff[1]:+.2f}]" if r.diff else "-"
+        print(f"{r.cell_key:<62} {r.state:<9} {base:>7} {jev:>7} {ci:>17} "
+              f"{r.verdict:>13} {'✓' if r.posted else '·':>6}")
+        if r.note:
+            print(f"    {'':>62} ↳ {r.note}")
+
+
+def cmd_publish_mark(args: argparse.Namespace) -> None:
+    """Check-off surface: 'did this cell/run get published' lives in the
+    annotations table, so coverage and the observatory read the same mark."""
+    store = RunStore(args.runs_dir)
+    note = " — ".join(p for p in (args.url, args.note) if p)
+    if args.clear:
+        store.set_annotation("post", args.target, "", note="")
+        print(f"Cleared publish mark on {args.target}")
+        return
+    store.set_annotation("post", args.target, "posted", note=note)
+    print(f"Marked {args.target} as posted"
+          + (f" → {args.url}" if args.url else ""))
+
+
 # Supported ablation knobs: name -> value caster
 SWEEP_KNOBS = {"retry_limit": int, "prompt_variant": str}
 MAX_SWEEP_VALUES = 8
@@ -816,6 +931,24 @@ def cmd_report(args: argparse.Namespace) -> None:
     store = RunStore(args.runs_dir)
     if getattr(args, "compare", None):
         _print_group_delta(store, args.compare, json_out=args.json)
+        return
+    if getattr(args, "experiment", None):
+        matrix = load_matrix(args.experiment)
+        cov_rows = coverage_rows(store, matrix, budget=args.budget, diff_eps=args.diff_eps)
+        if args.json:
+            print(json.dumps({"matrix": matrix.name,
+                              "cells": [r.to_dict() for r in cov_rows]},
+                             indent=2, default=str))
+            return
+        print(f"Experiment {matrix.name!r} — baseline vs jev-assist "
+              "(mechanical pass is primary; judge deltas are self-referential)")
+        print(f"{'Cell':<62} {'Baseline':>10} {'Jev':>10} {'Diff CI':>17} {'Verdict':>13}")
+        for row in cov_rows:
+            ci = f"[{row.diff[0]:+.2f},{row.diff[1]:+.2f}]" if row.diff else "-"
+            print(f"{row.cell_key:<62} "
+                  f"{f'{row.baseline_passes}/{row.baseline_n}' if row.baseline_n else '-':>10} "
+                  f"{f'{row.jev_passes}/{row.jev_n}' if row.jev_n else '-':>10} "
+                  f"{ci:>17} {row.verdict:>13}")
         return
     runs = store.list_runs(
         orchestrator=args.orchestrator,
@@ -1840,6 +1973,31 @@ def build_parser() -> argparse.ArgumentParser:
     _add_run_flags(batch)
     batch.set_defaults(func=cmd_batch)
 
+    experiment = sub.add_parser(
+        "experiment",
+        help="Batched A/B experiment: paired baseline/jev-assist arms per matrix cell, cost-scaled reps, spend and evidence gates",
+    )
+    experiment.add_argument("--matrix", required=True, help="Experiment matrix YAML (orchestrators × workers × tasks)")
+    experiment.add_argument("--budget", type=float, default=_env_float("ORCHESTRAL_EXPERIMENT_BUDGET", 0.0),
+                            help="Total experiment spend bound in USD — sizes per-cell rep targets and aborts on the live calls meter (0=unbounded rep sizing; the daily cap still brakes)")
+    experiment.add_argument("--batch-size", type=int, default=5, help="Replicate indexes per batch between gate checks")
+    experiment.add_argument("--diff-eps", type=float, default=0.15, help="Early-stop threshold: difference-CI half-width at which a cell counts as resolved")
+    experiment.add_argument("--jobs", type=int, default=1, help="Cells in parallel (reps stay serial inside a cell)")
+    experiment.add_argument("--planner", default="raw", choices=["raw", "ce-plan"], help="Orchestrator planning strategy")
+    experiment.add_argument("--prompt-variant", default=None, help="Orchestrator prompt variant from prompts/orchestrator-<name>.md")
+    experiment.add_argument("--retry-limit", type=int, default=None, help="Override workers' retry_limit")
+    experiment.add_argument("--seed", type=int, default=None, help="Base seed recorded on run configs (replicate i records seed+i-1; bookkeeping only — chat providers take no seed)")
+    experiment.add_argument("--no-judge-cache", action="store_true", help="Bypass judge result cache reads (still writes)")
+    experiment.add_argument("--dry-run", action="store_true", help="Print the priced plan table; write nothing, launch nothing")
+    experiment.add_argument("--json", action="store_true", help="Output the summary as JSON")
+    experiment.add_argument("--verbose", "-v", action="store_true", help="Echo events while running")
+    experiment.add_argument("--daily-cap", type=float, default=_env_float("ORCHESTRAL_DAILY_CAP", 5.0),
+                            help="Abort once today's recorded spend reaches this USD (0=off, env ORCHESTRAL_DAILY_CAP, default 5)")
+    experiment.add_argument("--allow-agent-exec", action="store_true",
+                            default=_env_flag("ORCHESTRAL_ALLOW_AGENT_EXEC"),
+                            help="Opt in to executor workers (env ORCHESTRAL_ALLOW_AGENT_EXEC)")
+    experiment.set_defaults(func=cmd_experiment)
+
     ablate = sub.add_parser("ablate", help="Sweep one knob (retry_limit, prompt_variant) for a pairing")
     ablate.add_argument("--task", required=True, help="Task id or path")
     ablate.add_argument("--orchestrator", required=True, help="OpenRouter model slug for the orchestrator")
@@ -1848,6 +2006,20 @@ def build_parser() -> argparse.ArgumentParser:
     ablate.add_argument("--jobs", type=int, default=1, help="Run sweep points in parallel with N workers")
     _add_run_flags(ablate)
     ablate.set_defaults(func=cmd_ablate)
+
+    coverage = sub.add_parser("coverage", help="Experiment coverage ledger: matrix cells vs stored runs — done/pending/aborted/posted")
+    coverage.add_argument("--matrix", required=True, help="Experiment matrix YAML the ledger is keyed to")
+    coverage.add_argument("--budget", type=float, default=0.0, help="Same semantics as experiment --budget — needed to reproduce the rep targets the driver used")
+    coverage.add_argument("--diff-eps", type=float, default=0.15, help="Difference-CI half-width at which a cell counts as resolved")
+    coverage.add_argument("--json", action="store_true", help="Emit JSON")
+    coverage.set_defaults(func=cmd_coverage)
+
+    publish = sub.add_parser("publish-mark", help="Mark a cell or run as published — the 'did we post this' check-off")
+    publish.add_argument("--target", required=True, help="Cell key (task:orchestrator:worker) or run id")
+    publish.add_argument("--url", default=None, help="Where it was published (post/thread/issue URL)")
+    publish.add_argument("--note", default="", help="Free-text note")
+    publish.add_argument("--clear", action="store_true", help="Remove the posted mark")
+    publish.set_defaults(func=cmd_publish_mark)
 
     history = sub.add_parser("history", help="Per-model aggregate history across all stored runs")
     history.add_argument("--orchestrator", help="Filter by orchestrator")
@@ -1869,6 +2041,9 @@ def build_parser() -> argparse.ArgumentParser:
     report.add_argument("--groups", action="store_true", help="Aggregate by run_group × task × pairing with variance stats")
     report.add_argument("--group", default=None, help="Only include runs from this run_group")
     report.add_argument("--compare", default=None, metavar="A,B", help="Compare two run groups cell-by-cell (pass-rate delta per task × pairing)")
+    report.add_argument("--experiment", default=None, metavar="MATRIX", help="Experiment arm table for a matrix spec (baseline vs jev-assist per cell)")
+    report.add_argument("--budget", type=float, default=0.0, help="With --experiment: the budget the driver ran under (sizes rep targets)")
+    report.add_argument("--diff-eps", type=float, default=0.15, help="With --experiment: difference-CI half-width resolution threshold")
     report.add_argument("--limit", type=int, default=None, help="Limit number of rows")
     report.add_argument("--json", action="store_true", help="Output as JSON")
     report.set_defaults(func=cmd_report)

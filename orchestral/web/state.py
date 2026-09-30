@@ -33,7 +33,7 @@ from orchestral.config import (
 )
 from orchestral.judge import DEFAULT_JUDGE
 from orchestral.runner import Runner
-from orchestral.stats import aggregate, mean, pairing_leaderboard
+from orchestral.stats import aggregate, mean, pairing_leaderboard, wilson_interval
 from orchestral.storage import RunStore
 from orchestral.tui.state import (
     Job,
@@ -743,7 +743,7 @@ def _lens_payloads(rows: list[Any]) -> list[dict[str, Any]]:
     result(
         CARD_LENSES[0], eligible,
         "{orchestrator} → {worker} leads on observed pass rate; cost breaks ties.",
-        "no pairing has three finished runs yet",
+        "No pairing has three finished runs yet",
     )
 
     high_spend = [row for row in measured if row.get("cost_total", 0) >= statistics.median(
@@ -752,7 +752,7 @@ def _lens_payloads(rows: list[Any]) -> list[dict[str, Any]]:
     result(
         CARD_LENSES[1], high_spend,
         "{orchestrator} → {worker} is strongest in the upper measured-spend half.",
-        "no metered pairing has enough finished evidence",
+        "No metered pairing has enough finished evidence",
     )
 
     low_spend = [row for row in eligible if row.get("cost_per_pass") is not None and
@@ -760,7 +760,7 @@ def _lens_payloads(rows: list[Any]) -> list[dict[str, Any]]:
     result(
         CARD_LENSES[2], low_spend,
         "{orchestrator} → {worker} is strongest in the lower measured-cost half.",
-        "no measured cost per pass is available",
+        "No measured cost per pass is available",
     )
 
     best_pass = max((float(row.get("pass_rate") or 0) for row in eligible), default=0.0)
@@ -769,7 +769,7 @@ def _lens_payloads(rows: list[Any]) -> list[dict[str, Any]]:
     result(
         CARD_LENSES[3], sweet,
         "{orchestrator} → {worker} is within 10 points of the pass leader at the lowest measured cost.",
-        "no metered pairing is within 10 points of the leading pass rate",
+        "No metered pairing is within 10 points of the leading pass rate",
         key=lambda row: (
             float(row.get("cost_per_pass") or float("inf")),
             -(float(row.get("pass_rate") or 0)),
@@ -783,7 +783,7 @@ def _lens_payloads(rows: list[Any]) -> list[dict[str, Any]]:
     result(
         CARD_LENSES[4], divergent,
         "{orchestrator} → {worker} has the largest mechanical-versus-judge gap.",
-        "no pairing has a judged semantic axis to compare",
+        "No pairing has a judged semantic axis to compare",
         key=lambda row: (
             -abs(float(row.get("pass_rate") or 0) - _lens_judge_rate(row)),
             -int(row.get("finished") or 0),
@@ -878,19 +878,15 @@ def _pairing_why(r: Any, best: Any, worst: Any, top_failure: str | None) -> str:
         bits.append(f"top failure: {top_failure}")
     if r.cost_per_pass is not None and r.cost_per_pass < 0.01:
         bits.append("cheap per pass")
-    return " · ".join(bits) or "mid-pack on every axis"
+    text = " · ".join(bits) or "mid-pack on every axis"
+    return text[0].upper() + text[1:]
 
 
 def _wilson(passes: int, n: int) -> list[float] | None:
     """Wilson 95% interval on a binomial pass rate — the honest uncertainty
     a share card owes its audience when n is small."""
-    if n <= 0:
-        return None
-    z, p = 1.96, passes / n
-    denom = 1 + z * z / n
-    center = (p + z * z / (2 * n)) / denom
-    margin = z * ((p * (1 - p) / n + z * z / (4 * n * n)) ** 0.5) / denom
-    return [round(max(0.0, center - margin), 3), round(min(1.0, center + margin), 3)]
+    ci = wilson_interval(passes, n)
+    return [round(ci[0], 3), round(ci[1], 3)] if ci else None
 
 
 def _verdict_line(mech_pass: bool | None, judge_passed: bool | None,
@@ -1175,7 +1171,7 @@ def _proof_reference(meta: Any) -> dict[str, Any]:
     execution = _mapping(report.get("execution"))
     output = str(execution.get("output_tail") or "")
     transcript_text = _bounded_text(output, max_bytes=6000, max_lines=80) if output else ""
-    transcript_label = "test transcript" if transcript_text else "event transcript"
+    transcript_label = "Test transcript" if transcript_text else "Event transcript"
     if not transcript_text:
         transcript_text = _bounded_text(_event_transcript(run_dir), max_bytes=6000, max_lines=80)
     artifact = _artifact_reference(run_dir, meta.run_id)
@@ -1310,7 +1306,7 @@ def _story_signals(
         if payload.get("passes") is not None and payload.get("judge_passed") is not None and bool(payload["passes"]) != bool(payload["judge_passed"]):
             signals.append({
                 "id": "axis_divergence",
-                "label": "axis divergence",
+                "label": "Axis divergence",
                 "tone": "info",
                 "claim": "The mechanical gate and judge disagree on this run.",
                 "evidence": {"mechanical": bool(payload.get("passes")), "judge": bool(payload.get("judge_passed"))},
@@ -1318,7 +1314,7 @@ def _story_signals(
         if payload.get("passes") and (payload.get("judge_score") or 0) >= 0.8:
             signals.append({
                 "id": "high_quality",
-                "label": "high quality",
+                "label": "High quality",
                 "tone": "pass",
                 "claim": "The run passed its mechanical gate with a strong judge score.",
                 "evidence": {"judge_score": payload.get("judge_score")},
@@ -1326,7 +1322,7 @@ def _story_signals(
         if payload.get("judge_state") == "unreadable":
             signals.append({
                 "id": "judge_axis_unknown",
-                "label": "judge axis unknown",
+                "label": "Judge axis unknown",
                 "tone": "warn",
                 "claim": ("The judge verdict could not be read, so whether the judge ran "
                           "is unknown — not absent."),
@@ -1335,7 +1331,7 @@ def _story_signals(
         elif payload.get("judge_state") != "judged":
             signals.append({
                 "id": "weak_confidence",
-                "label": "weak confidence",
+                "label": "Weak confidence",
                 "tone": "warn",
                 "claim": "Only the mechanical axis is available; no usable judge verdict is present.",
                 "evidence": {"judge_state": payload.get("judge_state")},
@@ -1347,7 +1343,7 @@ def _story_signals(
     if pr is not None and jp is not None and (float(pr) - float(jp) > 0.15 or float(jp) - float(pr) > 0.05):
         signals.append({
             "id": "axis_divergence",
-            "label": "axis divergence",
+            "label": "Axis divergence",
             "tone": "info",
             "claim": f"Checks pass {round(float(pr) * 100)}% while the judge approves {round(float(jp) * 100)}%.",
             "evidence": {"mechanical": pr, "judge": jp},
@@ -1377,7 +1373,7 @@ def _story_signals(
         if best_rate - worst_rate >= 0.20:
             signals.append({
                 "id": "task_specialist",
-                "label": "task specialist",
+                "label": "Task specialist",
                 "tone": "info",
                 "claim": f"Task types split: {round(best_rate * 100)}% on {best_type} versus {round(worst_rate * 100)}% on {worst_type}.",
                 "evidence": {"best_type": best_type, "worst_type": worst_type, "task_id": best_task_id},
@@ -1395,7 +1391,7 @@ def _story_signals(
                 and selected_cost <= statistics.median(peer_costs)):
             signals.append({
                 "id": "cost_frontier",
-                "label": "cost frontier",
+                "label": "Cost frontier",
                 "tone": "pass",
                 "claim": f"The selected setup is at ${selected_cost:.4f} per successful finish.",
                 "evidence": {"cost_per_pass": selected_cost, "pass_rate": selected_pass},
@@ -1404,7 +1400,7 @@ def _story_signals(
     if pr is not None and int(payload.get("finished") or 0) >= 3 and float(pr) >= 0.80:
         signals.append({
             "id": "high_quality",
-            "label": "high quality",
+            "label": "High quality",
             "tone": "pass",
             "claim": f"Observed mechanical pass is {round(float(pr) * 100)}% across {payload.get('finished')} finished runs.",
             "evidence": {"pass_rate": pr, "n": payload.get("finished")},
@@ -1427,7 +1423,7 @@ def _story_signals(
             reason = "no judge verdicts are available"
         signals.append({
             "id": "weak_confidence",
-            "label": "weak confidence",
+            "label": "Weak confidence",
             "tone": "warn",
             "claim": f"Treat this as directional evidence: {reason}.",
             "evidence": {"finished": payload.get("finished"), "ci": payload.get("pass_ci"),
@@ -1547,30 +1543,30 @@ def _story_metrics(payload: dict[str, Any]) -> list[dict[str, Any]]:
             else "—"
         )
         return [
-            {"id": "mechanical", "label": "mechanical", "value": verdict, "detail": payload.get("failure_reason") or "execution gate", "tone": "mech"},
-            {"id": "judge", "label": "judge axis", "value": judge_value, "detail": payload.get("judge_state") or "not judged", "tone": "judge"},
-            {"id": "cost", "label": "cost", "value": f"${float(payload.get('cost_usd') or 0):.4f}", "detail": f"{payload.get('latency_ms') or 0:.0f}ms", "tone": "cost"},
+            {"id": "mechanical", "label": "Mechanical", "value": verdict, "detail": payload.get("failure_reason") or "Execution gate", "tone": "mech"},
+            {"id": "judge", "label": "Judge", "value": judge_value, "detail": payload.get("judge_state") or "Not judged", "tone": "judge"},
+            {"id": "cost", "label": "Cost", "value": f"${float(payload.get('cost_usd') or 0):.4f}", "detail": f"{payload.get('latency_ms') or 0:.0f}ms", "tone": "cost"},
         ]
     judged = int(payload.get("judged") or 0)
     judge_value = f"{payload.get('judge_approved', 0)}/{judged}" if judged else "—"
     return [
         {
             "id": "mechanical",
-            "label": "mechanical pass",
+            "label": "Mechanical pass",
             "value": f"{payload.get('passed', 0)}/{payload.get('finished', 0)}",
             "detail": f"{round(float(payload['pass_rate']) * 100) if payload.get('pass_rate') is not None else '—'}% observed",
             "tone": "mech",
         },
         {
             "id": "judge",
-            "label": "judge approved",
+            "label": "Judge approved",
             "value": judge_value,
             "detail": f"{payload.get('judged', 0)} judged" if judged else "no judge evidence",
             "tone": "judge",
         },
         {
             "id": "cost",
-            "label": "metered spend",
+            "label": "Metered spend",
             "value": f"${float(payload.get('cost_usd') or 0):.4f}",
             "detail": "observed provider cost",
             "tone": "cost",
@@ -2095,4 +2091,82 @@ def compare_payload(store: RunStore, group_a: str, group_b: str) -> dict[str, An
         "verdicts": verdicts,
         "cost_a": sum(r["cost_a"] or 0 for r in rows),
         "cost_b": sum(r["cost_b"] or 0 for r in rows),
+    }
+
+
+def _jev_interventions(metas: list[Any]) -> dict[str, int]:
+    """Count jev plan-gate/output-gate interventions across runs — these
+    live in events.jsonl, not the index. Bounded walk, experiment scale."""
+    counts = {"replan": 0, "rework": 0}
+    for meta in metas:
+        run_dir = getattr(meta, "run_dir", "")
+        if not run_dir:
+            continue
+        events, _ = tail_events(Path(run_dir) / "events.jsonl", 0)
+        for ev in events:
+            et = ev.get("event_type") or ev.get("type") or ""
+            if et == "jev_replan":
+                counts["replan"] += 1
+            elif et == "jev_rework":
+                counts["rework"] += 1
+    return counts
+
+
+def _arm_block(runs: list[Any]) -> dict[str, Any]:
+    """Per-arm BI block for one experiment cell."""
+    from orchestral.experiment import arm_stats
+    passes, n, errors = arm_stats(runs)
+    ci = _wilson(passes, n)
+    cost = sum(r.total_cost_usd or 0.0 for r in runs)
+    return {
+        "passes": passes,
+        "n": n,
+        "rate": passes / n if n else None,
+        "ci": ci,
+        "errors": errors,
+        "cost": round(cost, 6),
+        "cost_per_pass": round(cost / passes, 6) if passes else None,
+        "delegated": sum(1 for r in runs if r.delegated),
+    }
+
+
+def experiment_payload(
+    store: RunStore, matrix_path: str | Path, *, diff_eps: float = 0.15
+) -> dict[str, Any] | None:
+    """A/B experiment payload — per-cell arm comparison, honestly framed.
+
+    Mechanical pass is the primary axis. The jev arm is both assisted and
+    scored by the same decisions engine, so judge-score deltas between
+    arms are self-referential; the payload says so wherever it reports.
+    """
+    from orchestral.coverage import coverage_rows, coverage_summary
+    from orchestral.experiment import Cell, cell_runs, load_matrix
+
+    p = Path(matrix_path)
+    if not p.exists():
+        return None
+    matrix = load_matrix(p)
+    rows = coverage_rows(store, matrix, diff_eps=diff_eps)
+    cells: list[dict[str, Any]] = []
+    for row in rows:
+        cell = Cell(task_id=row.task_id, orchestrator=row.orchestrator, worker=row.worker)
+        arms = cell_runs(store, matrix.name, cell)
+        cells.append({
+            **row.to_dict(),
+            "baseline": _arm_block(arms["baseline"]),
+            "jev": {**_arm_block(arms["jev"]),
+                    "interventions": _jev_interventions(arms["jev"])},
+        })
+    return {
+        "matrix": matrix.name,
+        "summary": coverage_summary(rows),
+        "cells": cells,
+        "primary_axis": "mechanical pass",
+        "caveats": [
+            "judge-score deltas are self-referential — the decisions engine "
+            "assists the jev arm and scores both arms",
+            "arms are unpaired statistically — no seed reaches chat "
+            "providers; pairing is spec + replicate-index + interleave",
+            "difference intervals at 95% will miss on roughly 1-in-20 cells",
+        ],
     }

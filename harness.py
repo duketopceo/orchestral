@@ -272,6 +272,7 @@ def _runner_kwargs(args: argparse.Namespace, store: RunStore, **extra: Any) -> d
         "runs_dir": args.runs_dir,
         "prompt_variant": getattr(args, "prompt_variant", None),
         "use_judge_cache": not getattr(args, "no_judge_cache", False),
+        "jev_assist": getattr(args, "jev_assist", False),
         "run_group": getattr(args, "group", None),
         "replicate": getattr(args, "replicate", None),
         "seed": getattr(args, "seed", None),
@@ -1735,6 +1736,8 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--judge", default=None, help=f"Judge model slug (default {DEFAULT_JUDGE} — the decisions engine; vision-capable slugs for image tasks)")
         sp.add_argument("--no-judge", action="store_true", help="Skip the judge pass entirely — mechanical verdict only")
         sp.add_argument("--no-judge-cache", action="store_true", help="Bypass judge result cache reads (still writes)")
+        sp.add_argument("--jev-assist", action="store_true",
+                        help="Consult the decisions-engine judge inside the run loop — plan audit before delegation, output audit before assembly (one replan / one rework max). No-op without a decisions-model judge.")
         sp.add_argument("--retry-limit", type=int, default=None, help="Override the worker's retry_limit for this invocation")
         sp.add_argument("--prompt-variant", default=None, help="Orchestrator prompt variant from prompts/orchestrator-<name>.md")
         sp.add_argument("--dry-run", action="store_true", help="Do not call OpenRouter; generate sample data for storage testing")

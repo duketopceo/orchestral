@@ -13,6 +13,7 @@ import subprocess
 import threading
 import time
 import zipfile
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -42,6 +43,7 @@ from orchestral.fileset import (
     required_content,
 )
 from orchestral.holdout import is_holdout, spec_seed
+from orchestral.jevassist import output_gate, plan_gate
 from orchestral.judge import (
     JUDGE_CHAT_ARTIFACT_CAP,
     JUDGE_DECISIONS_ARTIFACT_CAP,
@@ -145,6 +147,7 @@ class Runner:
         cancel_event: threading.Event | None = None,
         on_run_created: Any = None,
         allow_agent_exec: bool = False,
+        jev_assist: bool = False,
     ):
         self.dry_run = dry_run
         self.planner = planner
@@ -158,6 +161,8 @@ class Runner:
         # launch-context opt-in for agent-CLI workers — one leg of the
         # executor trust boundary (worker flag + task declaration + this)
         self.allow_agent_exec = allow_agent_exec
+        # decisions-engine consults inside the run loop (plan/output gates)
+        self.jev_assist = jev_assist
         # called with run_id as soon as the run dir exists — lets a caller
         # (e.g. the TUI) map a job to its in-flight run before run() returns
         self.on_run_created = on_run_created
@@ -262,6 +267,7 @@ class Runner:
         run_config = {
             "dry_run": self.dry_run,
             "planner": self.planner,
+            "jev_assist": self.jev_assist,
             "prompt_variant": self.prompt_variant,
             "sweep": self.sweep,
             "judge": judge.slug if judge else None,
@@ -393,6 +399,45 @@ class Runner:
                 planner=self.planner,
                 cost_usd=sum(float(c.get("usd", 0.0)) for c in plan_costs if isinstance(c, dict)),
             )
+
+            # Jev-in-the-loop: audit the decomposition before delegation
+            # commits spend. An unsound verdict buys ONE replan with the
+            # critic's verdict fed back as orchestrator context.
+            if (self.jev_assist and judge is not None
+                    and is_decisions_model(judge) and not self.dry_run
+                    and role_clients.get("judge") is not None):
+                gate = plan_gate(
+                    logger=logger, step=2, task=task, plan=plan,
+                    judge=judge, client=role_clients["judge"],
+                )
+                ledger.add_many(gate["costs"])
+                if gate["sound"] is False and gate["replan_note"]:
+                    replanned_task = replace(
+                        task, prompt=task.prompt + "\n\n" + gate["replan_note"])
+                    plan_fn = plan_ce if self.planner == "ce-plan" else plan_raw
+                    plan, replan_costs = plan_fn(
+                        logger=logger, task=replanned_task,
+                        orchestrator=orchestrator, step=2,
+                        client=role_clients.get("orchestrator"),
+                        dry_run=self.dry_run,
+                        prompt_variant=self.prompt_variant,
+                    )
+                    plan["jev_replan"] = True
+                    plan["task_id"] = task.id
+                    plan["orchestrator"] = orchestrator.slug
+                    plan["planner"] = self.planner
+                    ledger.add_many(replan_costs)
+                    (run_dir / "plan.json").write_text(
+                        json.dumps(plan, indent=2, default=str))
+                    logger.log(
+                        phase="plan", step=2, event_type="jev_replan",
+                        model=orchestrator.slug, role="orchestrator",
+                        input_data={"note": gate["replan_note"]},
+                        output_data={"subtasks": len(plan.get("subtasks") or [])},
+                        reasoning=(
+                            "Plan critic judged the decomposition unsound; "
+                            "orchestrator replanned with the verdict as context."),
+                    )
 
             # 2. Delegate each subtask to the worker
             is_image = task.type == "image"
@@ -767,6 +812,83 @@ class Runner:
                     media_paths.append(media_path)
                 else:
                     media_paths.append(None)
+
+            # Jev-in-the-loop: audit worker outputs jointly before assembly.
+            # An inadequate verdict buys ONE rework pass on the weakest
+            # subtask. Advisory: a rework error keeps the original outputs.
+            if (self.jev_assist and judge is not None
+                    and is_decisions_model(judge) and not self.dry_run
+                    and role_clients.get("judge") is not None
+                    and executor is None and results and subtasks
+                    and (is_multi or task.type == "html")):
+                gate = output_gate(
+                    logger=logger, step=2 + len(subtasks), task=task,
+                    subtasks=subtasks, results=results,
+                    judge=judge, client=role_clients["judge"],
+                )
+                ledger.add_many(gate["costs"])
+                if gate["adequate"] is False and gate["weakest"] is not None:
+                    w = gate["weakest"]
+                    try:
+                        sub = subtasks[w]
+                        rework = dict(sub)
+                        rework_note = (
+                            "\n\nREWORK: a calibrated critic judged the joint "
+                            "worker output inadequate and this subtask weakest. "
+                            "Correct errors and complete the brief fully."
+                        )
+                        for key in ("description", "prompt"):
+                            if rework.get(key):
+                                rework[key] = str(rework[key]) + rework_note
+                        if not any(rework.get(k) for k in ("description", "prompt")):
+                            rework["description"] = rework_note.strip()
+                        if is_multi:
+                            out, files, rework_costs = delegate_multi(
+                                logger=logger, step=2 + len(subtasks),
+                                subtask=rework, task=task, worker=worker,
+                                client=role_clients.get("worker"),
+                                dry_run=self.dry_run,
+                                attempt=None,
+                                cancel_event=self.cancel_event,
+                            )
+                            results[w] = out
+                            sid = sub.get("id", w)
+                            for j, (fsid, _) in enumerate(file_sets):
+                                if fsid == sid:
+                                    file_sets[j] = (fsid, files)
+                        else:
+                            out, rework_costs = delegate(
+                                logger=logger, step=2 + len(subtasks),
+                                subtask=rework, worker=worker,
+                                client=role_clients.get("worker"),
+                                dry_run=self.dry_run,
+                                attempt=None,
+                                cancel_event=self.cancel_event,
+                            )
+                            results[w] = out
+                        ledger.add_many(rework_costs)
+                        (run_dir / f"worker-{w}-rework.json").write_text(
+                            json.dumps(out, indent=2, default=str))
+                        logger.log(
+                            phase="delegate", step=2 + len(subtasks),
+                            event_type="jev_rework",
+                            model=worker.slug, role="worker", worker_id=w,
+                            input_data={"weakest": w, "subtask_id": sub.get("id")},
+                            output_data={"replaced": True},
+                            reasoning=(
+                                "Output critic judged the joint result "
+                                "inadequate; weakest subtask reworked once."),
+                        )
+                    except Exception as exc:
+                        logger.log(
+                            phase="delegate", step=2 + len(subtasks),
+                            event_type="jev_rework_error",
+                            model=worker.slug, role="worker", worker_id=w,
+                            input_data={"weakest": w},
+                            output_data={"replaced": False},
+                            reasoning="Rework call failed; original outputs kept.",
+                            error=scrub_text(str(exc))[:500],
+                        )
 
             # 3. Assemble final artifact
             assembly_step = 3 + len(subtasks)

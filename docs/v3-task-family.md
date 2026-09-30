@@ -3,7 +3,7 @@
 v3 tasks grade orchestrator/worker pairings against **real open-source
 repositories**, not synthetic prompts. The harness stages a pinned repo
 checkout inside an isolated CubeSandbox microVM, overlays the worker's
-files, installs dependencies from a staged wheelhouse (no guest network),
+files, installs dependencies from a staged wheelhouse (no guest network required),
 and runs a declared test command. The verdict is the command's exit code —
 never model stdout.
 

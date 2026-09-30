@@ -1364,6 +1364,13 @@ def cmd_fixtures(args: argparse.Namespace) -> None:
                 f"{res.wheelhouse_members} wheels -> {res.tarball} "
                 f"(sha256 {res.sha256[:16]}…)"
             )
+            if res.previous_sha256 and res.previous_sha256 != res.sha256:
+                print(
+                    f"  WARNING: content changed vs previous lock "
+                    f"({res.previous_sha256[:16]}… -> {res.sha256[:16]}…) — "
+                    "upstream repo bytes or resolved wheels differ; verify "
+                    "the registry pin and dep versions are what you intended."
+                )
         return
 
     if args.fixtures_cmd == "check":

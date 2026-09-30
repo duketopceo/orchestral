@@ -19,6 +19,7 @@ from orchestral.fixtures import (
     fetch_fixture,
     load_registry,
     screen_members,
+    verified_fixture_bytes,
 )
 
 _COMMIT = "a" * 40
@@ -145,6 +146,52 @@ class FetchTests(unittest.TestCase):
         res.tarball.write_bytes(b"tampered")
         problems = check_fixtures(self.root)
         self.assertTrue(any("drifted" in p for p in problems))
+
+    def _fetched(self) -> bytes:
+        payload = _repo_tarball({"a.py": b"1"})
+        with mock.patch("orchestral.fixtures._download", return_value=payload):
+            res = fetch_fixture("tool-1.0", self.root)
+        return res.tarball.read_bytes()
+
+    def test_verified_bytes_happy_path(self):
+        blob = self._fetched()
+        self.assertEqual(verified_fixture_bytes("tool-1.0", self.root), blob)
+
+    def test_verified_bytes_requires_lock(self):
+        self._fetched()
+        (self.root / "tool-1.0.lock.json").unlink()
+        with self.assertRaises(FixtureError) as ctx:
+            verified_fixture_bytes("tool-1.0", self.root)
+        self.assertIn("no lock file", str(ctx.exception))
+
+    def test_verified_bytes_rejects_tampered_tarball(self):
+        self._fetched()
+        (self.root / "tool-1.0.tar.gz").write_bytes(b"tampered")
+        with self.assertRaises(FixtureError) as ctx:
+            verified_fixture_bytes("tool-1.0", self.root)
+        self.assertIn("!=", str(ctx.exception))
+
+    def test_verified_bytes_rejects_bad_id(self):
+        with self.assertRaises(FixtureError):
+            verified_fixture_bytes("../escape", self.root)
+
+    def test_refetch_is_deterministic(self):
+        # same commit + same wheels → same sha256, so the lock detects real
+        # drift rather than gzip-header noise
+        first = self._fetched()
+        second = self._fetched()
+        self.assertEqual(first, second)
+
+    def test_refetch_reports_previous_sha(self):
+        payload = _repo_tarball({"a.py": b"1"})
+        with mock.patch("orchestral.fixtures._download", return_value=payload):
+            first_res = fetch_fixture("tool-1.0", self.root)
+        self.assertIsNone(first_res.previous_sha256)
+        payload2 = _repo_tarball({"a.py": b"2", "b.py": b"3"})
+        with mock.patch("orchestral.fixtures._download", return_value=payload2):
+            second_res = fetch_fixture("tool-1.0", self.root)
+        self.assertEqual(second_res.previous_sha256, first_res.sha256)
+        self.assertNotEqual(second_res.sha256, first_res.sha256)
 
 
 class AuditGateTests(unittest.TestCase):

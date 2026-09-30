@@ -31,6 +31,7 @@ that no longer matches its lock is a loud failure, not silent drift.
 
 from __future__ import annotations
 
+import gzip
 import hashlib
 import io
 import json
@@ -70,8 +71,25 @@ _REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 _ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 
 # Network-shaped tokens that must never appear in a fixture's guest commands —
-# egress is a deployment accident, not a contract.
-NETWORK_TOKENS = re.compile(r"\b(curl|wget|git\s+clone|pip\s+install\b(?!.*--no-index))")
+# egress is a deployment accident, not a contract. Checked per shell segment:
+# one `pip install --no-index` may not cover a different install in the same
+# command line.
+_SEGMENT_SPLIT = re.compile(r"&&|\|\||;|\||\n")
+_NETWORK_TOKEN = re.compile(
+    r"\b(curl|wget|git\s+(?:clone|fetch|pull)|pip3?\s+download|pip3?\s+install)\b"
+)
+
+
+def network_offense(command: str) -> str | None:
+    """First shell segment that assumes guest network, else None."""
+    for seg in _SEGMENT_SPLIT.split(command):
+        m = _NETWORK_TOKEN.search(seg)
+        if not m:
+            continue
+        if "install" in m.group(0) and "--no-index" in seg:
+            continue
+        return seg.strip()[:120]
+    return None
 
 
 class FixtureError(Exception):
@@ -103,6 +121,7 @@ class FetchResult:
     sha256: str
     repo_members: int
     wheelhouse_members: int
+    previous_sha256: str | None = None
 
 
 def registry_path(root: Path | str = FIXTURES_DIR) -> Path:
@@ -141,6 +160,14 @@ def _validate_entry(fixture_id: str, raw: Any) -> FixtureSpec:
     deps = raw.get("verify_deps") or []
     if not isinstance(deps, list) or any(not isinstance(d, str) for d in deps):
         raise FixtureError(f"{fixture_id}: verify_deps must be a list of requirement strings")
+    unpinned = [d for d in deps if "==" not in d]
+    if unpinned:
+        raise FixtureError(
+            f"{fixture_id}: verify_deps must pin every requirement "
+            f"(pkg==version) — unpinned: {', '.join(unpinned)}. Unpinned deps "
+            "resolve to different wheels on different days, so the lock's "
+            "sha256 stops meaning anything."
+        )
     return FixtureSpec(
         id=fixture_id,
         repo=repo,
@@ -279,7 +306,14 @@ def fetch_fixture(
             _pip_download(spec.verify_deps, wh)
         wheels = sorted(wh.iterdir())
         n_members = 0
-        with tarfile.open(out, "w:gz") as dst:
+        # Deterministic bytes: zeroed gzip+member mtimes mean the same commit +
+        # the same pinned wheels always produce the same sha256, so the lock
+        # actually detects content changes instead of recording noise.
+        with (
+            open(out, "wb") as raw_out,
+            gzip.GzipFile(filename="", mode="wb", fileobj=raw_out, mtime=0) as gz,
+            tarfile.open(fileobj=gz, mode="w") as dst,
+        ):
             for m in src.getmembers():
                 if not (m.isfile() or m.isdir()):
                     continue
@@ -292,7 +326,7 @@ def fetch_fixture(
                 if rel.name == "pax_global_header":
                     continue
                 m2 = tarfile.TarInfo(str(PurePosixPath("repo") / rel))
-                m2.mode, m2.mtime, m2.uid, m2.gid = m.mode, m.mtime, 0, 0
+                m2.mode, m2.mtime, m2.uid, m2.gid = m.mode, 0, 0, 0
                 if m.isdir():
                     m2.type = tarfile.DIRTYPE
                     dst.addfile(m2)
@@ -303,7 +337,20 @@ def fetch_fixture(
                     dst.addfile(m2, data)
                 n_members += 1
             for w in wheels:
-                dst.add(w, arcname=str(PurePosixPath("wheelhouse") / w.name))
+                wi = tarfile.TarInfo(str(PurePosixPath("wheelhouse") / w.name))
+                wi.size = w.stat().st_size
+                wi.mtime, wi.uid, wi.gid = 0, 0, 0
+                wi.type = tarfile.REGTYPE
+                with open(w, "rb") as fh:
+                    dst.addfile(wi, fh)
+
+    previous_sha256: str | None = None
+    old_lockfile = lockfile_path(fixture_id, root)
+    if old_lockfile.exists():
+        try:
+            previous_sha256 = str(json.loads(old_lockfile.read_text()).get("sha256") or "") or None
+        except (OSError, json.JSONDecodeError):
+            previous_sha256 = None
 
     digest = hashlib.sha256(out.read_bytes()).hexdigest()
     lock = {
@@ -325,7 +372,55 @@ def fetch_fixture(
         sha256=digest,
         repo_members=n_members,
         wheelhouse_members=len(wheels),
+        previous_sha256=previous_sha256,
     )
+
+
+def verified_fixture_bytes(fixture_id: str, root: Path | str = FIXTURES_DIR) -> bytes:
+    """Grading-time contract: the lock must exist and match the tarball bytes.
+
+    Raises FixtureError on a missing tarball/lock, a hash mismatch (edited or
+    stale fetch), or a tarball that fails the member screen — a replaced
+    tarball can otherwise bring links into the guest `tar xzf`.
+    """
+    if not _ID_RE.match(fixture_id):
+        raise FixtureError(f"fixture id {fixture_id!r} must match {_ID_RE.pattern}")
+    tb = tarball_path(fixture_id, root)
+    if not tb.exists():
+        raise FixtureError(
+            f"fixture {fixture_id!r} not fetched — run `harness.py fixtures fetch {fixture_id}`"
+        )
+    lock_path = lockfile_path(fixture_id, root)
+    if not lock_path.exists():
+        raise FixtureError(
+            f"fixture {fixture_id!r} has no lock file — re-run `fixtures fetch` to re-pin"
+        )
+    try:
+        tarball = tb.read_bytes()
+    except OSError as exc:
+        raise FixtureError(f"fixture {fixture_id!r} unreadable: {exc}") from exc
+    digest = hashlib.sha256(tarball).hexdigest()
+    try:
+        locked = str(json.loads(lock_path.read_text()).get("sha256") or "")
+    except (OSError, json.JSONDecodeError) as exc:
+        raise FixtureError(f"fixture {fixture_id!r} lock unreadable: {exc}") from exc
+    if not locked or locked != digest:
+        raise FixtureError(
+            f"fixture {fixture_id!r} tarball sha256 {digest[:12]}… != lock "
+            f"{locked[:12] or '(missing)'}… — edited or stale fetch; re-run "
+            "`fixtures fetch` and re-verify"
+        )
+    try:
+        with tarfile.open(fileobj=io.BytesIO(tarball), mode="r:gz") as tf:
+            bad = _screen_tar(tf)
+    except tarfile.TarError as exc:
+        raise FixtureError(f"fixture {fixture_id!r} is not a .tar.gz: {exc}") from exc
+    if bad:
+        raise FixtureError(
+            f"fixture {fixture_id!r} has {len(bad)} unsafe member(s) "
+            f"({', '.join(bad[:5])}) — refusing to stage"
+        )
+    return tarball
 
 
 def check_fixtures(root: Path | str = FIXTURES_DIR) -> list[str]:

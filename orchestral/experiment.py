@@ -288,7 +288,7 @@ def run_experiment(
     summary: dict[str, Any] = {}
 
     def _spend_blown() -> bool:
-        if budget > 0 and store.group_spend(matrix.name) >= budget:
+        if budget > 0 and store.group_spend(f"{matrix.name}:") >= budget:
             stop_reason.append(f"experiment spend ≥ ${budget:.2f} budget")
             return True
         if daily_cap > 0 and store.spend_today() >= daily_cap:
@@ -310,13 +310,15 @@ def run_experiment(
             emit(f"[refused] {cell.key}: code task, no isolated runtime")
             summary[cell.key] = {"state": "aborted", "note": "no isolated runtime"}
             return
-        state = cell_state(store, matrix.name, cell, REP_FLOOR, diff_eps)
+        # the priced target decides done-ness — REP_FLOOR alone would
+        # "complete" a 22-pair cell that was interrupted at 5
+        target, est = rep_target(store, cell, cell_budget)
+        state = cell_state(store, matrix.name, cell, target, diff_eps)
         if state in ("done", "aborted"):
             emit(f"[skip] {cell.key}: already {state}")
             summary[cell.key] = {"state": state, "note": "resumed — skipped"}
             return
 
-        target, est = rep_target(store, cell, cell_budget)
         emit(
             f"[cell] {cell.key}: target {target} pairs"
             + (f" (est ${est:.4f}/pair)" if est is not None else " (calibrating)")
@@ -407,6 +409,6 @@ def run_experiment(
     return {
         "matrix": matrix.name,
         "cells": summary,
-        "spend": store.group_spend(matrix.name),
+        "spend": store.group_spend(f"{matrix.name}:"),
         "stopped": stop_reason[0] if stop_reason else None,
     }

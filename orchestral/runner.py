@@ -834,6 +834,9 @@ class Runner:
                         if not isinstance(sub, dict):
                             sub = {"id": w, "description": str(sub)}
                         rework = dict(sub)
+                        # the first pass carried the canonical brief — the
+                        # rework worker needs it too, not just the note
+                        rework.setdefault("task_prompt", task.prompt)
                         rework_note = (
                             "\n\nREWORK: a calibrated critic judged the joint "
                             "worker output inadequate and this subtask weakest. "
@@ -853,6 +856,7 @@ class Runner:
                                 attempt=None,
                                 cancel_event=self.cancel_event,
                             )
+                            ledger.add_many(rework_costs)
                             if not files:
                                 raise ValidationError(
                                     "rework produced no files")
@@ -870,11 +874,11 @@ class Runner:
                                 attempt=None,
                                 cancel_event=self.cancel_event,
                             )
+                            ledger.add_many(rework_costs)
                             if not out.get("content"):
                                 raise ValidationError(
                                     "rework produced no output")
                             results[w] = out
-                        ledger.add_many(rework_costs)
                         (run_dir / f"worker-{w}-rework.json").write_text(
                             json.dumps(out, indent=2, default=str))
                         logger.log(

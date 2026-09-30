@@ -218,11 +218,24 @@ class TestDriver(unittest.TestCase):
         self.assertAlmostEqual(out["spend"], 0.04)
 
     def test_resume_skips_done_cells(self):
-        _seed_arm(self.store, "baseline", REP_FLOOR)
-        _seed_arm(self.store, "jev", REP_FLOOR)
+        # priced target must be reached — expensive history keeps the
+        # target at REP_FLOOR so 5/5 pairs is genuinely done
+        _seed_arm(self.store, "baseline", REP_FLOOR, cost=10.0)
+        _seed_arm(self.store, "jev", REP_FLOOR, cost=10.0)
         launch = FakeLaunch(self.store)
         out = self._run(launch, budget=100.0, daily_cap=0.0, diff_eps=0.0)
         self.assertEqual(launch.launches, [])
+        self.assertEqual(out["cells"]["t:o/m:w/m"]["state"], "done")
+
+    def test_resume_continues_interrupted_priced_cell(self):
+        # cheap history prices the cell far above the floor — an
+        # interrupted run at REP_FLOOR pairs is partial, not done
+        _seed_arm(self.store, "baseline", REP_FLOOR)
+        _seed_arm(self.store, "jev", REP_FLOOR)
+        launch = FakeLaunch(self.store)
+        out = self._run(launch, budget=100.0, daily_cap=0.0, batch_size=5,
+                        diff_eps=0.0)
+        self.assertTrue(launch.launches)
         self.assertEqual(out["cells"]["t:o/m:w/m"]["state"], "done")
 
     def test_partial_cell_fills_gap_before_advancing(self):

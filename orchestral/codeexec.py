@@ -211,25 +211,16 @@ def run_repo_suite(
     runtime = _configured_code_runtime()
     if runtime == ISOLATED_CODE_RUNTIME:
         from orchestral.cubeexec import run_repo_suite as isolated_repo_suite
-        from orchestral.fixtures import FixtureError, tarball_path
+        from orchestral.fixtures import FixtureError, verified_fixture_bytes
 
-        tb = tarball_path(fixture_id)
-        if not tb.exists():
-            report = _disabled_execution_report(
-                f"fixture {fixture_id!r} not fetched — run "
-                f"`harness.py fixtures fetch {fixture_id}`",
-                timeout_seconds,
-            )
+        try:
+            # grading must verify what it stages — lock sha256 + member screen,
+            # not just "a file exists on disk"
+            tarball = verified_fixture_bytes(fixture_id)
+        except FixtureError as exc:
+            report = _disabled_execution_report(str(exc), timeout_seconds)
             report["fixture_id"] = fixture_id
             report["granularity"] = "command"
-            return report
-        try:
-            tarball = tb.read_bytes()
-        except OSError as exc:
-            report = _disabled_execution_report(
-                f"fixture {fixture_id!r} unreadable: {exc}", timeout_seconds
-            )
-            report["fixture_id"] = fixture_id
             return report
         try:
             return isolated_repo_suite(

@@ -37,12 +37,14 @@ from __future__ import annotations
 
 import importlib
 import inspect
+import io
 import json
 import os
 import re
 import secrets
 import shlex
 import sys
+import tarfile
 import time
 from pathlib import PurePosixPath
 from typing import Any
@@ -92,6 +94,15 @@ _SECRET_ENV_KEYS = (
 # that module for the verifier runner and any suite imports (sys.path[0] is
 # the suite directory at collection time).
 _STDLIB_SHADOW = frozenset(sys.stdlib_module_names)
+
+# Repo-suite additions to the shadowing denylist: a worker-written pytest.py,
+# conftest.py, or pytest.ini would let the artifact grade itself.
+_VERIFY_TOOLCHAIN_SHADOW = frozenset({
+    "pytest", "_pytest", "pluggy", "conftest",
+})
+_VERIFY_CONFIG_FILES = frozenset({
+    "pytest.ini", "tox.ini", "setup.cfg", "pyproject.toml",
+})
 
 
 def _base_report(timeout_seconds: float, template: str) -> dict[str, Any]:
@@ -536,16 +547,66 @@ def run_repo_suite(
     except FilesetError as exc:
         report["error"] = f"artifact path rejected before sandbox write: {exc}"
         return report
-    repo_dir = f"{_WORKDIR}/{PurePosixPath(workdir).name or 'repo'}"
+
+    # Oracle paths are verifier-authored but still validated before the
+    # sandbox exists — and kept case-preserving, since the verify command
+    # names the declared paths. sanitize_path would silently lowercase them.
+    try:
+        oracle = [
+            (sanitize_path_exec(rel), body)
+            for rel, body in (test_files or {}).items()
+        ]
+    except FilesetError as exc:
+        report["error"] = f"test_files path rejected before sandbox write: {exc}"
+        return report
+
+    if PurePosixPath(workdir or "repo").name != "repo":
+        report["error"] = (
+            f"verify workdir {workdir!r} unsupported — the fixture extracts "
+            "to repo/ only; an empty directory would grade nothing"
+        )
+        return report
+    repo_dir = f"{_WORKDIR}/repo"
+
+    # Repo test files the worker may not silently rewrite: any tarball member
+    # under a test path that the oracle does not explicitly own. List members
+    # host-side — the guest untar is literal bytes, no resolution needed.
+    oracle_paths = {rel for rel, _ in oracle}
+    repo_tests: set[str] = set()
+    try:
+        with tarfile.open(fileobj=io.BytesIO(fixture_tarball), mode="r:gz") as ftf:
+            for m in ftf.getmembers():
+                if not (m.isfile() and m.name.startswith("repo/")):
+                    continue
+                rel = m.name[5:]
+                name = PurePosixPath(rel).name
+                if (
+                    "tests/" in rel
+                    or name.startswith("test_")
+                    or name.endswith("_test.py")
+                ):
+                    repo_tests.add(rel)
+    except (tarfile.TarError, EOFError, OSError):
+        # unreadable host-side → the guest untar reports its own error;
+        # the overwrite guard simply has no baseline to check against
+        repo_tests = set()
+
     # Worker members land under the staged repo, so the top-level shadowing
     # check applies to their repo-relative first segment just as it does to
-    # the flat suite fileset.
+    # the flat suite fileset. The verifier toolchain + config files join the
+    # denylist: a worker-written pytest.py, conftest.py, or pytest.ini would
+    # otherwise bypass grading.
     shadowed = shadowing_members(rel for rel, _ in members)
     shadowed += sorted(
         rel for rel, _ in members
         if (
-            rel.split("/", 1)[0] if "/" in rel else PurePosixPath(rel).stem
-        ) in _STDLIB_SHADOW
+            (
+                rel.split("/", 1)[0] if "/" in rel else PurePosixPath(rel).stem
+            ) in (_STDLIB_SHADOW | _VERIFY_TOOLCHAIN_SHADOW)
+            or PurePosixPath(rel).name in _VERIFY_CONFIG_FILES
+            or PurePosixPath(rel).name == "conftest.py"
+            or (rel in repo_tests and rel not in oracle_paths)
+        )
     )
     if shadowed:
         report["error"] = (
@@ -616,18 +677,9 @@ def run_repo_suite(
             _files_write(sandbox, target, body, request_timeout())
 
         # Oracle overlay lands after the worker fileset — a worker may not
-        # overwrite the tests it is graded by. Paths are verifier-authored
-        # but still name-screened.
-        from orchestral.fixtures import screen_members
-
-        oracle_bad = screen_members((test_files or {}).keys())
-        if oracle_bad:
-            report["error"] = (
-                "test_files member rejected before sandbox write: " + oracle_bad[0]
-            )
-            return report
-        for rel, body in (test_files or {}).items():
-            target = f"{repo_dir}/{sanitize_path(rel)}"
+        # overwrite the tests it is graded by. Validated pre-sandbox above.
+        for rel, body in oracle:
+            target = f"{repo_dir}/{rel}"
             _run_guest(
                 sandbox,
                 f"mkdir -p {shlex.quote(str(PurePosixPath(target).parent))}",
@@ -640,7 +692,7 @@ def run_repo_suite(
                 exit_exc=exit_exc,
             )
             _files_write(sandbox, target, body, request_timeout())
-        report["oracle_members"] = len(test_files or {})
+        report["oracle_members"] = len(oracle)
 
         report["executed"] = True
         for i, cmd in enumerate(setup_commands or []):

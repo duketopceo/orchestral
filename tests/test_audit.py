@@ -2268,7 +2268,7 @@ class TestDocumentedClaimsAreExecuted(TestCase):
 _METADATA_KEYS = (
     "calls", "difficulty", "expected", "expected_answer", "fields", "fixture",
     "holdout", "module", "patch", "pattern", "reference", "reference_sql",
-    "required", "setup_commands", "test_files", "tests", "verify",
+    "required", "setup_commands", "test_files", "tests", "verify", "workdir",
 )
 
 _HOSTILE_VALUES = (
@@ -2728,6 +2728,7 @@ _HOSTILE_NESTED = (
     {"fixture": "fx", "verify": {"command": [5]}},
     {"fixture": "fx", "setup_commands": [5]},
     {"fixture": "fx", "test_files": {"a": 5}},
+    {"fixture": "fx", "workdir": 5},
     {"holdout": 5},
     {"difficulty": {"a": 5}},
 )

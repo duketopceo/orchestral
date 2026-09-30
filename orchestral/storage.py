@@ -475,13 +475,17 @@ class RunStore:
         Runs meter ``total_cost_usd`` at $0 until they finish and index;
         ``calls`` rows land per call during the run, so this sees in-flight
         spend that ``spend_today`` is blind to. Dry-run rows excluded.
+        ``%``/``_`` in the prefix are escaped — a matrix named ``jev_ab``
+        must not meter ``jevxab`` groups.
         """
+        esc = group_prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         with self._connect() as conn:
             row = conn.execute(
                 "SELECT COALESCE(SUM(c.cost_usd), 0) FROM calls c "
                 "JOIN runs r ON c.run_id = r.run_id "
-                "WHERE r.run_group LIKE ? AND COALESCE(r.dry_run, 0) = 0",
-                (f"{group_prefix}%",),
+                "WHERE r.run_group LIKE ? ESCAPE '\\' "
+                "AND COALESCE(r.dry_run, 0) = 0",
+                (f"{esc}%",),
             ).fetchone()
         return float(row[0] or 0.0)
 

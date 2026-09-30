@@ -1855,7 +1855,18 @@ def check_fixture_contract(spec: TaskSpec, path: Path | None = None) -> list[Fin
         ))
         setup = []
 
-    from .fixtures import NETWORK_TOKENS
+    workdir = (spec.metadata or {}).get("workdir")
+    if workdir is not None and str(workdir) != "repo":
+        findings.append(Finding(
+            rule="fixture_bad_workdir", severity=ERROR, task_id=spec.id, path=where,
+            detail=(
+                f"metadata.workdir {workdir!r} is unsupported — the fixture "
+                "extracts to repo/ only; a different workdir would run the "
+                "verify command in an empty directory."
+            ),
+        ))
+
+    from .fixtures import network_offense
     verify_cmd = (
         " ".join(command)
         if isinstance(command, list)
@@ -1863,8 +1874,8 @@ def check_fixture_contract(spec: TaskSpec, path: Path | None = None) -> list[Fin
         else ""
     )
     net_hits = [
-        cmd for cmd in [*setup, verify_cmd]
-        if NETWORK_TOKENS.search(cmd)
+        hit for cmd in [*setup, verify_cmd]
+        if (hit := network_offense(cmd))
     ]
     if net_hits:
         findings.append(Finding(

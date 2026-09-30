@@ -8,10 +8,12 @@ the out-of-band result payload, and kill-on-every-exit teardown.
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import re
 import sys
+import tarfile
 import types
 import unittest
 from pathlib import Path
@@ -678,6 +680,67 @@ class TestRepoSuite(CubeExecBase):
         self.assertEqual(written["/home/user/repo/tests/test_x.py"],
                          "def test_a():\n    pass\n")
 
+    def test_worker_cannot_shadow_verifier_toolchain(self) -> None:
+        # a worker-written pytest.py, conftest.py, or pytest.ini would
+        # let the artifact grade itself — all rejected before staging
+        for bad in (
+            {"pytest.py": "import sys; sys.exit(0)\n"},
+            {"conftest.py": "collect_ignore = ['tests']\n"},
+            {"pkg/conftest.py": "collect_ignore = ['tests']\n"},
+            {"pytest.ini": "[pytest]\naddopts = --collect-only\n"},
+            {"tox.ini": "[tox]\n"},
+        ):
+            with self.subTest(bad=bad):
+                r = self._repo(files=bad, commands=_RepoCommands())
+                self.assertFalse(r["executed"])
+                self.assertIn("shadow", r["error"])
+                self.assertEqual(len(_FakeSandboxBase.created), 0)
+
+    def test_worker_cannot_overwrite_repo_tests(self) -> None:
+        # the tarball owns tests/test_core.py; the oracle owns only
+        # tests/test_x.py — a worker rewrite of the repo's own suite is a
+        # grading bypass, not a patch
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+            for name in ("repo/tests/test_core.py", "repo/pkg/mod.py"):
+                body = b"x = 1\n"
+                ti = tarfile.TarInfo(name)
+                ti.size = len(body)
+                tf.addfile(ti, io.BytesIO(body))
+        files = {"tests/test_core.py": "def test_core():\n    pass\n"}
+        r = self._repo(files=files, tarball=buf.getvalue(),
+                       commands=_RepoCommands())
+        self.assertFalse(r["executed"])
+        self.assertIn("shadow", r["error"])
+        self.assertEqual(len(_FakeSandboxBase.created), 0)
+
+    def test_oracle_owned_repo_test_is_worker_writable(self) -> None:
+        # the same path the oracle owns is fine — the oracle overlay wins
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+            body = b"x = 1\n"
+            ti = tarfile.TarInfo("repo/tests/test_x.py")
+            ti.size = len(body)
+            tf.addfile(ti, io.BytesIO(body))
+        files = {"tests/test_x.py": "def test_a():\n    assert False\n"}
+        r = self._repo(files=files, tarball=buf.getvalue(),
+                       commands=_RepoCommands())
+        self.assertTrue(r["executed"])
+        self.assertTrue(r["ok"])
+
+    def test_workdir_other_than_repo_rejected(self) -> None:
+        r = self._repo(workdir="pkg", commands=_RepoCommands())
+        self.assertFalse(r["executed"])
+        self.assertIn("workdir", r["error"])
+        self.assertEqual(len(_FakeSandboxBase.created), 0)
+
+    def test_oracle_path_case_preserved(self) -> None:
+        r = self._repo(test_files={"tests/Test_Chunked.py": "def test_a():\n    pass\n"},
+                       commands=_RepoCommands())
+        self.assertTrue(r["executed"])
+        written = _FakeSandboxBase.instances[0].written
+        self.assertIn("/home/user/repo/tests/Test_Chunked.py", written)
+
     def test_setup_failure_fails_closed(self) -> None:
         r = self._repo(commands=_RepoCommands(failures={"pip install": 2}))
         self.assertTrue(r["executed"])
@@ -741,8 +804,8 @@ class TestRepoSuite(CubeExecBase):
 
     def test_isolated_dispatch_passes_test_files(self) -> None:
         with patch.dict("os.environ", {codeexec.CODE_RUNTIME_ENV: "isolated"}), \
-             patch("orchestral.fixtures.tarball_path",
-                   return_value=Path(__file__)), \
+             patch("orchestral.fixtures.verified_fixture_bytes",
+                   return_value=b"tar-bytes"), \
              patch.object(cubeexec, "run_repo_suite",
                           return_value={"runtime": "e2b", "ok": True}) as spy:
             codeexec.run_repo_suite(

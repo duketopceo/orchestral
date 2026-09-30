@@ -302,19 +302,27 @@ def run_unittest_suite(
             "request_timeout": request_timeout(),
         }
         create = getattr(sandbox_cls, "create", None)
-        # SDK v2 exposes Sandbox.create(); v1 only has the constructor. An
-        # attribute that exists but rejects these kwargs is a signature quirk,
-        # not proof the ctor fails too — retry the constructor. If either
-        # raises after server-side allocation, the sandbox's own timeout
-        # (create_kwargs["timeout"]) bounds the orphan window.
-        try:
-            sandbox = (
-                create(**create_kwargs)
-                if callable(create)
-                else sandbox_cls(**create_kwargs)
-            )
-        except TypeError:
-            sandbox = sandbox_cls(**create_kwargs)
+        # SDK v2 exposes Sandbox.create(); v1 only has the constructor. Pick
+        # the entry point from create's signature up front rather than
+        # catching TypeError after the fact — a TypeError raised *inside*
+        # create could post-date a server-side allocation, and retrying with
+        # the ctor would open a double-create window. If either path raises
+        # after allocation, the sandbox's own timeout bounds the orphan.
+        entry: Any = create if callable(create) else None
+        if entry is not None:
+            try:
+                params = inspect.signature(entry).parameters
+                if not (
+                    all(k in params for k in create_kwargs)
+                    or any(
+                        p.kind is inspect.Parameter.VAR_KEYWORD
+                        for p in params.values()
+                    )
+                ):
+                    entry = None  # signature rejects our kwargs — use the ctor
+            except (TypeError, ValueError):
+                pass  # uninspectable signature — assume it accepts the kwargs
+        sandbox = entry(**create_kwargs) if entry is not None else sandbox_cls(**create_kwargs)
         for rel, body in members:
             if remaining() <= 0:
                 report["error"] = "host deadline exceeded during sandbox writes"

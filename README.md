@@ -119,7 +119,9 @@ owned infrastructure; hosted E2B discloses evaluation oracles to a third
 party — do not point `E2B_DOMAIN` at a third-party endpoint for oracle-bearing
 or holdout tasks. Sandboxes are requested with `allow_internet_access=False`
 and a fixed guest env allowlist (control-plane credentials never enter the
-guest), and are destroyed on every exit path.
+guest), and are destroyed on every exit path once the adapter holds a sandbox
+handle — a create call that allocates a VM but raises before returning a
+handle can leave the sandbox until its configured timeout reaps it.
 
 ### Self-hosted CubeSandbox endpoints
 

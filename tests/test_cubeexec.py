@@ -250,6 +250,26 @@ def _install_fake_e2b_no_timeout() -> dict[str, types.ModuleType | None]:
     return {"e2b": mod, "e2b.exceptions": None}
 
 
+class FakeSandboxCreateMismatch(_FakeSandboxBase):
+    """create() exists but accepts none of the create kwargs — signature
+    inspection must reject it before it's ever called; a post-allocation
+    TypeError retry would risk a double-create."""
+
+    @classmethod
+    def create(cls):
+        raise AssertionError("create() must not be called")
+
+
+def _install_fake_e2b_create_mismatch() -> dict[str, types.ModuleType | None]:
+    """Fake an SDK whose create() signature rejects the adapter kwargs."""
+    mod = types.ModuleType("e2b")
+    mod.Sandbox = FakeSandboxCreateMismatch  # type: ignore[attr-defined]
+    exc_mod = types.ModuleType("e2b.exceptions")
+    exc_mod.TimeoutException = _FakeTimeout  # type: ignore[attr-defined]
+    exc_mod.CommandExitException = _FakeCommandExit  # type: ignore[attr-defined]
+    return {"e2b": mod, "e2b.exceptions": exc_mod}
+
+
 class CubeExecBase(unittest.TestCase):
     def setUp(self) -> None:
         _FakeSandboxBase.reset()
@@ -514,6 +534,12 @@ class TestSdkCompatShapes(CubeExecBase):
         r = self._run(install=_install_fake_e2b_v1_no_exc_module)
         self.assertTrue(r["executed"])
         self.assertTrue(r["ok"])
+
+    def test_create_signature_mismatch_uses_ctor_without_calling_create(self) -> None:
+        r = self._run(install=_install_fake_e2b_create_mismatch)
+        self.assertTrue(r["executed"])
+        self.assertTrue(r["ok"])
+        self.assertEqual(len(_FakeSandboxBase.created), 1)
 
     def test_incompatible_surface_is_not_reported_as_missing(self) -> None:
         r = self._run(install=_install_fake_e2b_incompatible)

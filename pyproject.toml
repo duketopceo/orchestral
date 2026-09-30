@@ -33,7 +33,11 @@ dependencies = [
 # `e2b` backs the isolated code runtime (ORCHESTRAL_CODE_RUNTIME=isolated):
 # an E2B-compatible sandbox endpoint — self-hosted CubeSandbox or hosted E2B.
 e2b = [
-    "e2b>=2.1,<3",
+    # cubeexec tolerates both SDK majors: v1 exports CommandExitException at
+    # top level and uses the Sandbox constructor, v2 via e2b.exceptions and
+    # .create(). Self-hosted CubeSandbox needs `e2b<2` — CubeAPI serves only
+    # the v1 REST surface (v2 calls /v2/sandboxes, which it doesn't route).
+    "e2b>=1.11,<3",
 ]
 shots = [
     "playwright>=1.40",

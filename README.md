@@ -110,16 +110,40 @@ Shared run flags (on `run`, `grid`, `batch`, `ablate`): `--planner raw|ce-plan`,
 Live code-task verification is fail-closed: hidden suites do not run unless an
 isolated runtime is configured, and host subprocess execution is never a
 fallback. Set `ORCHESTRAL_CODE_RUNTIME=isolated` to dispatch to the
-E2B-compatible adapter (`pip install orchestral[e2b]`) — self-hosted
+E2B-compatible adapter (`pip install "orchestral[e2b]"`) — self-hosted
 CubeSandbox or hosted E2B, chosen by the SDK's own `E2B_DOMAIN`/`E2B_API_KEY`
 contract; `ORCHESTRAL_CUBE_TEMPLATE` selects the sandbox template.
 
 Self-hosting keeps the worker fileset *and* the hidden verifier source on
 owned infrastructure; hosted E2B discloses evaluation oracles to a third
 party — do not point `E2B_DOMAIN` at a third-party endpoint for oracle-bearing
-or holdout tasks. Sandboxes are created with `allow_internet_access=False`,
-a fixed guest env allowlist (control-plane credentials never enter the guest),
-and are destroyed on every exit path.
+or holdout tasks. Sandboxes are requested with `allow_internet_access=False`
+and a fixed guest env allowlist (control-plane credentials never enter the
+guest), and are destroyed on every exit path once the adapter holds a sandbox
+handle — a create call that allocates a VM but raises before returning a
+handle can leave the sandbox until its configured timeout reaps it.
+
+### Self-hosted CubeSandbox endpoints
+
+- **SDK constraint:** CubeAPI serves only the E2B v1 REST surface — install
+  with `pip install "orchestral[e2b]" "e2b<2"`. A default resolve picks v2.x,
+  whose `/v2/sandboxes` calls get a 405.
+- **Host shapes:** the SDK builds `api.<domain>` for the control plane and
+  `<port>-<sandbox-id>.<domain>` for envd. Wildcard DNS for `*.<domain>` and a
+  locally trusted CA are prerequisites.
+- **Template:** create the sandbox template alias on the node with
+  `cubemastercli tpl create-from-image`; `ORCHESTRAL_CUBE_TEMPLATE` selects it
+  (default `code-interpreter`).
+- **Auth:** on no-auth installs `E2B_API_KEY` is required-but-arbitrary — and
+  the endpoint grants unauthenticated sandbox create/write/exec to any host
+  that can resolve `api.<domain>`. Bind it to trusted networks only.
+- **TLS:** `SSL_CERT_FILE` must *append* the local CA to the system bundle,
+  not replace it — it applies process-wide (including model API calls), so
+  prefer a narrowly-scoped CA.
+- **Egress:** `allow_internet_access=False` is honored by hosted E2B but
+  ignored by CubeAPI (verified: a guest reached pypi.org). On self-hosted
+  installs egress denial must come from CubeEgress or the host firewall —
+  treat oracle-bearing tasks as needing that proven before running them.
 
 `--replicates N` runs each cell N times under one `run_group` (auto-named when
 `--group` is absent); replicate `i` records seed `S+i-1`. `report --groups`
@@ -198,9 +222,9 @@ Implemented task types: **HTML page generation**, **image generation**
 submit/poll/download; `--judge` is skipped for video runs), **multi-file
 projects** (workers return a JSON file set, merged into a reproducible
 `artifact.zip`; archives are never published by `scrub`), **code tasks**
-(same file-set contract; hidden `metadata.tests` run via `python -Es -m
-unittest` in a subprocess — score = fraction of tests passed, replicates
-give pass@k), and **constraint tasks** (workers produce text under hard
+(same file-set contract; hidden `metadata.tests` execute through the
+isolated runtime's verifier runner — score = fraction of tests passed,
+replicates give pass@k), and **constraint tasks** (workers produce text under hard
 constraints — word/char budgets, required and forbidden tokens, regex
 patterns — the orchestrator picks the best candidate, deterministic
 validators check every constraint), and **long-context needle** tasks (`metadata.document` haystack injected into each subtask; the answer must name the true token and no decoys), and **SQL analytics** (workers produce candidate queries, the orchestrator picks one, and the harness executes it read-only against a fixture SQLite database and compares to `metadata.reference_sql` — fully deterministic scoring), and **structured extraction** (workers return JSON per a declared `metadata.fields` schema, graded per-field against `metadata.expected` — deterministic, partial credit), **API integration** (workers produce a JSON request plan, replayed over real loopback HTTP against a stub server built from `metadata.stub`; scored by which expected calls actually arrived), **bugfix** (`code` with a provided broken repo in `metadata.files` — repair, not generation), and **terminal** (Terminal-Bench-flavored: workers emit a shell-command plan replayed in a virtual shell over a seeded tmpdir, graded on final filesystem state).

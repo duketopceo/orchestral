@@ -158,7 +158,7 @@ class OrchestralApp(App):
             except Exception:
                 selected_id = None
         table.clear(columns=True)
-        table.add_columns("run", "group", "rep", "task", "orchestrator", "worker", "cost", "tokens", "score", "pass", "status", "started")
+        table.add_columns("Run", "Group", "Rep", "Task", "Orchestrator", "Worker", "Cost", "Tokens", "Score", "Pass", "Status", "Started")
         for r in filter_runs(runs, self._query):
             pl, _pc = pass_label(r.passes)
             sl, _sc = status_label(r.status)

@@ -50,3 +50,11 @@ reports/shots/
 reports/*
 !reports/judge-calibration.json
 !reports/judge-calibration.md
+
+# Fetched repo fixtures (v3 real-repo tasks): third-party code + wheels are
+# downloaded on demand per fixtures/registry.yaml — never committed.
+fixtures/*.tar.gz
+fixtures/*.lock.json
+
+# machine-local cube contract — sources secrets via omaseal at runtime
+scripts/cube-env.sh

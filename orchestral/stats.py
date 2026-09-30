@@ -420,3 +420,74 @@ def contamination_gap(runs: Iterable[RunMeta]) -> list[ArmComparison]:
             row.gap = row.published_mean - row.holdout_mean
         out.append(row)
     return out
+
+
+_Z_95 = 1.96
+
+
+def wilson_interval(passes: int, n: int) -> tuple[float, float] | None:
+    """Wilson 95% score interval on a binomial pass rate.
+
+    Returns ``(lower, upper)`` unrounded — callers round at presentation
+    so the interval composes inside ``diff_ci`` without double-rounding.
+    ``None`` when n <= 0.
+    """
+    if n <= 0:
+        return None
+    p = passes / n
+    denom = 1 + _Z_95 * _Z_95 / n
+    center = (p + _Z_95 * _Z_95 / (2 * n)) / denom
+    margin = (
+        _Z_95
+        * ((p * (1 - p) / n + _Z_95 * _Z_95 / (4 * n * n)) ** 0.5)
+        / denom
+    )
+    return max(0.0, center - margin), min(1.0, center + margin)
+
+
+def diff_ci(
+    a_passes: int, a_n: int, b_passes: int, b_n: int
+) -> tuple[float, float] | None:
+    """Newcombe score interval (method 10) for ``rate_b - rate_a``.
+
+    Positive values mean arm B beats arm A. Returns ``None`` when either
+    arm has no observations. Unpaired — the correct shape here since no
+    seed reaches the chat providers.
+    """
+    a = wilson_interval(a_passes, a_n)
+    b = wilson_interval(b_passes, b_n)
+    if a is None or b is None:
+        return None
+    (a_lo, a_hi), (b_lo, b_hi) = a, b
+    p_a, p_b = a_passes / a_n, b_passes / b_n
+    d = p_b - p_a
+    lo = d - ((p_b - b_lo) ** 2 + (a_hi - p_a) ** 2) ** 0.5
+    hi = d + ((b_hi - p_b) ** 2 + (p_a - a_lo) ** 2) ** 0.5
+    return max(-1.0, lo), min(1.0, hi)
+
+
+def diff_verdict(
+    a_passes: int, a_n: int, b_passes: int, b_n: int, eps: float
+) -> str:
+    """Cell verdict from the difference interval half-width.
+
+    ``lift``/``harm`` when the interval clears zero on one side,
+    ``resolved`` when it is tighter than ``eps`` around a non-significant
+    difference, ``inconclusive`` otherwise. ``pending``/``insufficient``
+    cover the no-data and one-arm-empty cases so coverage never prints a
+    bare dash.
+    """
+    if a_n <= 0 and b_n <= 0:
+        return "pending"
+    if a_n <= 0 or b_n <= 0:
+        return "insufficient"
+    ci = diff_ci(a_passes, a_n, b_passes, b_n)
+    assert ci is not None  # both arms non-empty
+    lo, hi = ci
+    if lo > 0:
+        return "lift"
+    if hi < 0:
+        return "harm"
+    if (hi - lo) / 2 <= eps:
+        return "resolved"
+    return "inconclusive"

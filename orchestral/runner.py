@@ -13,6 +13,7 @@ import subprocess
 import threading
 import time
 import zipfile
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -42,6 +43,7 @@ from orchestral.fileset import (
     required_content,
 )
 from orchestral.holdout import is_holdout, spec_seed
+from orchestral.jevassist import output_gate, plan_gate
 from orchestral.judge import (
     JUDGE_CHAT_ARTIFACT_CAP,
     JUDGE_DECISIONS_ARTIFACT_CAP,
@@ -145,6 +147,7 @@ class Runner:
         cancel_event: threading.Event | None = None,
         on_run_created: Any = None,
         allow_agent_exec: bool = False,
+        jev_assist: bool = False,
     ):
         self.dry_run = dry_run
         self.planner = planner
@@ -158,6 +161,8 @@ class Runner:
         # launch-context opt-in for agent-CLI workers — one leg of the
         # executor trust boundary (worker flag + task declaration + this)
         self.allow_agent_exec = allow_agent_exec
+        # decisions-engine consults inside the run loop (plan/output gates)
+        self.jev_assist = jev_assist
         # called with run_id as soon as the run dir exists — lets a caller
         # (e.g. the TUI) map a job to its in-flight run before run() returns
         self.on_run_created = on_run_created
@@ -262,6 +267,7 @@ class Runner:
         run_config = {
             "dry_run": self.dry_run,
             "planner": self.planner,
+            "jev_assist": self.jev_assist,
             "prompt_variant": self.prompt_variant,
             "sweep": self.sweep,
             "judge": judge.slug if judge else None,
@@ -393,6 +399,45 @@ class Runner:
                 planner=self.planner,
                 cost_usd=sum(float(c.get("usd", 0.0)) for c in plan_costs if isinstance(c, dict)),
             )
+
+            # Jev-in-the-loop: audit the decomposition before delegation
+            # commits spend. An unsound verdict buys ONE replan with the
+            # critic's verdict fed back as orchestrator context.
+            if (self.jev_assist and judge is not None
+                    and is_decisions_model(judge) and not self.dry_run
+                    and role_clients.get("judge") is not None):
+                gate = plan_gate(
+                    logger=logger, step=2, task=task, plan=plan,
+                    judge=judge, client=role_clients["judge"],
+                )
+                ledger.add_many(gate["costs"])
+                if gate["sound"] is False and gate["replan_note"]:
+                    replanned_task = replace(
+                        task, prompt=task.prompt + "\n\n" + gate["replan_note"])
+                    plan_fn = plan_ce if self.planner == "ce-plan" else plan_raw
+                    plan, replan_costs = plan_fn(
+                        logger=logger, task=replanned_task,
+                        orchestrator=orchestrator, step=2,
+                        client=role_clients.get("orchestrator"),
+                        dry_run=self.dry_run,
+                        prompt_variant=self.prompt_variant,
+                    )
+                    plan["jev_replan"] = True
+                    plan["task_id"] = task.id
+                    plan["orchestrator"] = orchestrator.slug
+                    plan["planner"] = self.planner
+                    ledger.add_many(replan_costs)
+                    (run_dir / "plan.json").write_text(
+                        json.dumps(plan, indent=2, default=str))
+                    logger.log(
+                        phase="plan", step=2, event_type="jev_replan",
+                        model=orchestrator.slug, role="orchestrator",
+                        input_data={"note": gate["replan_note"]},
+                        output_data={"subtasks": len(plan.get("subtasks") or [])},
+                        reasoning=(
+                            "Plan critic judged the decomposition unsound; "
+                            "orchestrator replanned with the verdict as context."),
+                    )
 
             # 2. Delegate each subtask to the worker
             is_image = task.type == "image"
@@ -767,6 +812,95 @@ class Runner:
                     media_paths.append(media_path)
                 else:
                     media_paths.append(None)
+
+            # Jev-in-the-loop: audit worker outputs jointly before assembly.
+            # An inadequate verdict buys ONE rework pass on the weakest
+            # subtask. Advisory: a rework error keeps the original outputs.
+            if (self.jev_assist and judge is not None
+                    and is_decisions_model(judge) and not self.dry_run
+                    and role_clients.get("judge") is not None
+                    and executor is None and results and subtasks
+                    and (is_multi or task.type == "html")):
+                gate = output_gate(
+                    logger=logger, step=2 + len(subtasks), task=task,
+                    subtasks=subtasks, results=results, file_sets=file_sets,
+                    judge=judge, client=role_clients["judge"],
+                )
+                ledger.add_many(gate["costs"])
+                if gate["adequate"] is False and gate["weakest"] is not None:
+                    w = gate["weakest"]
+                    try:
+                        sub = subtasks[w]
+                        if not isinstance(sub, dict):
+                            sub = {"id": w, "description": str(sub)}
+                        rework = dict(sub)
+                        # the first pass carried the canonical brief — the
+                        # rework worker needs it too, not just the note
+                        rework.setdefault("task_prompt", task.prompt)
+                        rework_note = (
+                            "\n\nREWORK: a calibrated critic judged the joint "
+                            "worker output inadequate and this subtask weakest. "
+                            "Correct errors and complete the brief fully."
+                        )
+                        for key in ("description", "prompt"):
+                            if rework.get(key):
+                                rework[key] = str(rework[key]) + rework_note
+                        if not any(rework.get(k) for k in ("description", "prompt")):
+                            rework["description"] = rework_note.strip()
+                        if is_multi:
+                            out, files, rework_costs = delegate_multi(
+                                logger=logger, step=2 + len(subtasks),
+                                subtask=rework, task=task, worker=worker,
+                                client=role_clients.get("worker"),
+                                dry_run=self.dry_run,
+                                attempt=None,
+                                cancel_event=self.cancel_event,
+                            )
+                            ledger.add_many(rework_costs)
+                            if not files:
+                                raise ValidationError(
+                                    "rework produced no files")
+                            results[w] = out
+                            sid = sub.get("id", w)
+                            for j, (fsid, _) in enumerate(file_sets):
+                                if fsid == sid:
+                                    file_sets[j] = (fsid, files)
+                        else:
+                            out, rework_costs = delegate(
+                                logger=logger, step=2 + len(subtasks),
+                                subtask=rework, worker=worker,
+                                client=role_clients.get("worker"),
+                                dry_run=self.dry_run,
+                                attempt=None,
+                                cancel_event=self.cancel_event,
+                            )
+                            ledger.add_many(rework_costs)
+                            if not out.get("content"):
+                                raise ValidationError(
+                                    "rework produced no output")
+                            results[w] = out
+                        (run_dir / f"worker-{w}-rework.json").write_text(
+                            json.dumps(out, indent=2, default=str))
+                        logger.log(
+                            phase="delegate", step=2 + len(subtasks),
+                            event_type="jev_rework",
+                            model=worker.slug, role="worker", worker_id=w,
+                            input_data={"weakest": w, "subtask_id": sub.get("id")},
+                            output_data={"replaced": True},
+                            reasoning=(
+                                "Output critic judged the joint result "
+                                "inadequate; weakest subtask reworked once."),
+                        )
+                    except Exception as exc:
+                        logger.log(
+                            phase="delegate", step=2 + len(subtasks),
+                            event_type="jev_rework_error",
+                            model=worker.slug, role="worker", worker_id=w,
+                            input_data={"weakest": w},
+                            output_data={"replaced": False},
+                            reasoning="Rework call failed; original outputs kept.",
+                            error=scrub_text(str(exc))[:500],
+                        )
 
             # 3. Assemble final artifact
             assembly_step = 3 + len(subtasks)
@@ -1437,7 +1571,15 @@ class Runner:
         canonical variant for expected-path matching (Main.java keeps case).
         """
         module = str(task.metadata.get("module") or "solution.py")
-        declared = expected_paths(task.metadata, preserve_case=preserve_case) or [module]
+        fixture_id = str(task.metadata.get("fixture") or "")
+        if fixture_id and not task.metadata.get("expected_paths"):
+            # Repo tasks overlay only the files the worker changed — an
+            # undeclared expected_paths would fall back to `module` (the
+            # "repo" sentinel) and fail every run on a file that never
+            # exists. Authors may still pin required paths explicitly.
+            declared: list[str] = []
+        else:
+            declared = expected_paths(task.metadata, preserve_case=preserve_case) or [module]
         missing = [p for p in declared if not files.get(p)]
         errors = [f"Missing or empty expected files: {', '.join(missing)}."] if missing else []
         checks: dict[str, bool] = {"expected_paths": not missing}
@@ -1473,11 +1615,26 @@ class Runner:
             report["executed"] = False
             return compiled and checks["quality_ok"], report
 
-        suite = run_unittest_suite(
-            files,
-            str(task.metadata.get("tests") or ""),
-            timeout_seconds=float(task.metadata.get("timeout_seconds", DEFAULT_TIMEOUT_SECONDS)),
-        )
+        if fixture_id:
+            from orchestral.codeexec import run_repo_suite
+
+            verify = task.metadata.get("verify") or {}
+            suite = run_repo_suite(
+                files,
+                fixture_id=fixture_id,
+                workdir=str(task.metadata.get("workdir") or "repo"),
+                setup_commands=list(task.metadata.get("setup_commands") or []),
+                verify_command=list(verify.get("command") or []),
+                fail_to_pass=list(verify.get("fail_to_pass") or []),
+                test_files=dict(task.metadata.get("test_files") or {}),
+                timeout_seconds=float(task.metadata.get("timeout_seconds", DEFAULT_TIMEOUT_SECONDS)),
+            )
+        else:
+            suite = run_unittest_suite(
+                files,
+                str(task.metadata.get("tests") or ""),
+                timeout_seconds=float(task.metadata.get("timeout_seconds", DEFAULT_TIMEOUT_SECONDS)),
+            )
         report["execution"] = suite
         suite_passed = (
             suite.get("executed") is True

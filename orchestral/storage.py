@@ -447,17 +447,67 @@ class RunStore:
             ).fetchall()
         return {r[0] for r in rows}
 
+    def mean_cell_cost(
+        self, task_id: str, orchestrator: str, worker: str, *, arm: str = "baseline"
+    ) -> float | None:
+        """Mean billed cost per finished run for one experiment cell arm.
+
+        Task-scoped (``mean_run_cost`` is pairing-scoped — a task's cost
+        profile dominates a pairing's). ``arm`` selects on the run's
+        recorded ``config.jev_assist``; the baseline arm prices the pair's
+        cheap side. Returns None when no finished runs match.
+        """
+        jev = 1 if arm == "jev" else 0
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT AVG(total_cost_usd) FROM runs "
+                "WHERE task_id = ? AND orchestrator = ? AND worker = ? "
+                "AND status = 'finished' AND COALESCE(dry_run, 0) = 0 "
+                "AND COALESCE(json_extract(config, '$.jev_assist'), 0) = ?",
+                (task_id, orchestrator, worker, jev),
+            ).fetchone()
+        return float(row[0]) if row and row[0] is not None else None
+
+    def group_spend(self, group_prefix: str) -> float:
+        """Live spend meter for one experiment — sums ``calls.cost_usd``
+        joined to runs under ``group_prefix%``.
+
+        Runs meter ``total_cost_usd`` at $0 until they finish and index;
+        ``calls`` rows land per call during the run, so this sees in-flight
+        spend that ``spend_today`` is blind to. Dry-run rows excluded.
+        ``%``/``_`` in the prefix are escaped — a matrix named ``jev_ab``
+        must not meter ``jevxab`` groups.
+        """
+        esc = group_prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT COALESCE(SUM(c.cost_usd), 0) FROM calls c "
+                "JOIN runs r ON c.run_id = r.run_id "
+                "WHERE r.run_group LIKE ? ESCAPE '\\' "
+                "AND COALESCE(r.dry_run, 0) = 0",
+                (f"{esc}%",),
+            ).fetchone()
+        return float(row[0] or 0.0)
+
     def set_annotation(
         self, kind: str, target: str, flag: str, note: str = ""
     ) -> dict[str, Any]:
         """Upsert a user annotation — the observatory's stateful layer.
 
-        ``kind`` is ``run``, ``group``, or ``pairing``; ``flag`` is ``interesting``,
-        ``not``, or ``''`` (clears the flag but keeps the row for the note)."""
-        if kind not in ("run", "group", "pairing"):
-            raise ValueError(f"annotation kind must be run|group|pairing, got {kind!r}")
-        if flag not in ("interesting", "not", ""):
-            raise ValueError(f"flag must be interesting|not|'', got {flag!r}")
+        ``kind`` is ``run``, ``group``, ``pairing``, ``post`` (publication
+        marks — latest wins, PK already ``(kind, target)``), or
+        ``cell-state`` (driver-persisted experiment states such as
+        ``aborted``). ``flag`` is ``interesting``, ``not``, ``posted``,
+        ``aborted``, or ``''`` (clears the flag but keeps the note)."""
+        if kind not in ("run", "group", "pairing", "post", "cell-state"):
+            raise ValueError(
+                "annotation kind must be run|group|pairing|post|cell-state, "
+                f"got {kind!r}"
+            )
+        if flag not in ("interesting", "not", "posted", "aborted", ""):
+            raise ValueError(
+                f"flag must be interesting|not|posted|aborted|'', got {flag!r}"
+            )
         with self._connect() as conn:
             conn.execute(
                 """

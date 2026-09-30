@@ -37,11 +37,14 @@ from __future__ import annotations
 
 import importlib
 import inspect
+import io
 import json
 import os
 import re
 import secrets
+import shlex
 import sys
+import tarfile
 import time
 from pathlib import PurePosixPath
 from typing import Any
@@ -91,6 +94,15 @@ _SECRET_ENV_KEYS = (
 # that module for the verifier runner and any suite imports (sys.path[0] is
 # the suite directory at collection time).
 _STDLIB_SHADOW = frozenset(sys.stdlib_module_names)
+
+# Repo-suite additions to the shadowing denylist: a worker-written pytest.py,
+# conftest.py, or pytest.ini would let the artifact grade itself.
+_VERIFY_TOOLCHAIN_SHADOW = frozenset({
+    "pytest", "_pytest", "pluggy", "conftest",
+})
+_VERIFY_CONFIG_FILES = frozenset({
+    "pytest.ini", "tox.ini", "setup.cfg", "pyproject.toml",
+})
 
 
 def _base_report(timeout_seconds: float, template: str) -> dict[str, Any]:
@@ -194,10 +206,49 @@ def _sdk_call(
     return fn(*args, *positional_tail, timeout)
 
 
-def _files_write(sandbox: Any, path: str, body: str, timeout: float) -> None:
+def _files_write(sandbox: Any, path: str, body: str | bytes, timeout: float) -> None:
     # v1's generated write signature is (path, data, user, request_timeout).
     _sdk_call(
         sandbox.files.write, path, body, timeout=timeout, positional_tail=("user",)
+    )
+
+
+def _create_sandbox(
+    sandbox_cls: Any, timeout_seconds: float, request_timeout: float
+) -> Any:
+    """Create a sandbox on whichever SDK entry point accepts our kwargs.
+
+    SDK v2 exposes Sandbox.create(); v1 only has the constructor. Pick
+    the entry point from create's signature up front rather than
+    catching TypeError after the fact — a TypeError raised *inside*
+    create could post-date a server-side allocation, and retrying with
+    the ctor would open a double-create window. If either path raises
+    after allocation, the sandbox's own timeout bounds the orphan.
+    """
+    create_kwargs = {
+        "template": os.environ.get(E2B_TEMPLATE_ENV, DEFAULT_TEMPLATE).strip()
+        or DEFAULT_TEMPLATE,
+        "timeout": int(timeout_seconds) + int(_DEADLINE_MARGIN_SECONDS),
+        "allow_internet_access": False,
+        "request_timeout": request_timeout,
+    }
+    create = getattr(sandbox_cls, "create", None)
+    entry: Any = create if callable(create) else None
+    if entry is not None:
+        try:
+            params = inspect.signature(entry).parameters
+            if not (
+                all(k in params for k in create_kwargs)
+                or any(
+                    p.kind is inspect.Parameter.VAR_KEYWORD
+                    for p in params.values()
+                )
+            ):
+                entry = None  # signature rejects our kwargs — use the ctor
+        except (TypeError, ValueError):
+            pass  # uninspectable signature — assume it accepts the kwargs
+    return (
+        entry(**create_kwargs) if entry is not None else sandbox_cls(**create_kwargs)
     )
 
 
@@ -295,34 +346,7 @@ def run_unittest_suite(
 
     sandbox = None
     try:
-        create_kwargs = {
-            "template": template,
-            "timeout": int(timeout_seconds) + int(_DEADLINE_MARGIN_SECONDS),
-            "allow_internet_access": False,
-            "request_timeout": request_timeout(),
-        }
-        create = getattr(sandbox_cls, "create", None)
-        # SDK v2 exposes Sandbox.create(); v1 only has the constructor. Pick
-        # the entry point from create's signature up front rather than
-        # catching TypeError after the fact — a TypeError raised *inside*
-        # create could post-date a server-side allocation, and retrying with
-        # the ctor would open a double-create window. If either path raises
-        # after allocation, the sandbox's own timeout bounds the orphan.
-        entry: Any = create if callable(create) else None
-        if entry is not None:
-            try:
-                params = inspect.signature(entry).parameters
-                if not (
-                    all(k in params for k in create_kwargs)
-                    or any(
-                        p.kind is inspect.Parameter.VAR_KEYWORD
-                        for p in params.values()
-                    )
-                ):
-                    entry = None  # signature rejects our kwargs — use the ctor
-            except (TypeError, ValueError):
-                pass  # uninspectable signature — assume it accepts the kwargs
-        sandbox = entry(**create_kwargs) if entry is not None else sandbox_cls(**create_kwargs)
+        sandbox = _create_sandbox(sandbox_cls, timeout_seconds, request_timeout())
         for rel, body in members:
             if remaining() <= 0:
                 report["error"] = "host deadline exceeded during sandbox writes"
@@ -410,6 +434,321 @@ def run_unittest_suite(
         report["ok"] = bool(payload.get("ok")) and ran > 0
         if error:
             report["error"] = error
+    except Exception as exc:  # endpoint unreachable, auth, template missing…
+        report["error"] = f"sandbox runtime error: {_safe_error_message(exc)}"
+    finally:
+        if sandbox is not None:
+            _kill_sandbox(sandbox, report, request_timeout)
+    return report
+
+
+def _run_guest(
+    sandbox: Any,
+    cmd: str,
+    *,
+    cwd: str,
+    budget_seconds: float,
+    request_timeout: float,
+    stdout_tail: _Tail,
+    stderr_tail: _Tail,
+    timeout_exc: type[BaseException],
+    exit_exc: type[BaseException],
+) -> int:
+    """One commands.run with the shared tail capture + exit-code contract."""
+    try:
+        result = sandbox.commands.run(
+            cmd,
+            cwd=cwd,
+            envs=dict(_SANDBOX_ENV),
+            # SDK v1 serializes the timeout header as timeout*1000; a float
+            # lands as "30000.0" which envd's ParseInt rejects.
+            timeout=max(1, int(budget_seconds)),
+            request_timeout=request_timeout,
+            on_stdout=stdout_tail.feed,
+            on_stderr=stderr_tail.feed,
+        )
+        return int(getattr(result, "exit_code", 0) or 0)
+    except exit_exc as exc:
+        # A nonzero exit is the normal failing-command shape, not an adapter
+        # error — recover the code and any captured output.
+        for chunk, sink in (
+            (getattr(exc, "stdout", None), stdout_tail),
+            (getattr(exc, "stderr", None), stderr_tail),
+        ):
+            if chunk and not sink.text:
+                sink.feed(str(chunk))
+        return int(getattr(exc, "exit_code", None) or 1)
+
+
+def run_repo_suite(
+    files: dict[str, str],
+    *,
+    fixture_tarball: bytes,
+    fixture_id: str,
+    workdir: str = "repo",
+    setup_commands: list[str] | None = None,
+    verify_command: list[str] | None = None,
+    fail_to_pass: list[str] | None = None,
+    test_files: dict[str, str] | None = None,
+    timeout_seconds: float = 240.0,
+) -> dict[str, Any]:
+    """Stage a repo fixture in a disposable sandbox and run its test command.
+
+    Same lifecycle + fail-closed report contract as ``run_unittest_suite``,
+    plus fixture provenance (``fixture_id``, ``staged_members``,
+    ``verify_command``, ``granularity: "command"``). The verdict is the verify
+    command's exit code — guest output is diagnostic-only, never trusted.
+
+    The tarball (``repo/`` + ``wheelhouse/`` top-levels) ships as raw bytes in
+    one ``files.write`` and untars under ``_WORKDIR``; worker files overlay
+    ``_WORKDIR/<workdir>/`` so a worker may return only the files it changed.
+    ``setup_commands`` and ``verify_command`` run with the suite env — the
+    guest never needs network (wheelhouse installs use ``--no-index``).
+    """
+    template = os.environ.get(E2B_TEMPLATE_ENV, DEFAULT_TEMPLATE).strip() or DEFAULT_TEMPLATE
+    report = _base_report(timeout_seconds, template)
+    report["fixture_id"] = fixture_id
+    report["granularity"] = "command"
+    report["verify_command"] = list(verify_command or [])
+    report["fail_to_pass"] = list(fail_to_pass or [])
+    report["staged_members"] = 0
+
+    try:
+        sdk = _load_sdk()
+    except Exception as exc:
+        report["error"] = f"e2b SDK failed to load: {_safe_error_message(exc)}"
+        return report
+    if sdk is None:
+        report["error"] = (
+            "e2b SDK not installed — `pip install orchestral[e2b]` "
+            "or unset ORCHESTRAL_CODE_RUNTIME"
+        )
+        return report
+    if isinstance(sdk, str):
+        report["error"] = sdk
+        return report
+    if not verify_command:
+        report["error"] = "repo suite requires metadata.verify.command"
+        return report
+    if not fixture_tarball:
+        report["error"] = f"fixture {fixture_id!r}: empty tarball — re-run `fixtures fetch`"
+        return report
+
+    try:
+        members = []
+        for rel, body in files.items():
+            clean = sanitize_path(rel)
+            if clean != sanitize_path_exec(rel):
+                raise FilesetError(
+                    f"Path {rel!r} folds case to {clean!r}; sandboxed "
+                    "execution requires case-canonical member names"
+                )
+            members.append((clean, body))
+    except FilesetError as exc:
+        report["error"] = f"artifact path rejected before sandbox write: {exc}"
+        return report
+
+    # Oracle paths are verifier-authored but still validated before the
+    # sandbox exists — and kept case-preserving, since the verify command
+    # names the declared paths. sanitize_path would silently lowercase them.
+    try:
+        oracle = [
+            (sanitize_path_exec(rel), body)
+            for rel, body in (test_files or {}).items()
+        ]
+    except FilesetError as exc:
+        report["error"] = f"test_files path rejected before sandbox write: {exc}"
+        return report
+
+    if PurePosixPath(workdir or "repo").name != "repo":
+        report["error"] = (
+            f"verify workdir {workdir!r} unsupported — the fixture extracts "
+            "to repo/ only; an empty directory would grade nothing"
+        )
+        return report
+    repo_dir = f"{_WORKDIR}/repo"
+
+    # Repo test files the worker may not silently rewrite: any tarball member
+    # under a test path that the oracle does not explicitly own. List members
+    # host-side — the guest untar is literal bytes, no resolution needed.
+    oracle_paths = {rel for rel, _ in oracle}
+    repo_tests: set[str] = set()
+    try:
+        with tarfile.open(fileobj=io.BytesIO(fixture_tarball), mode="r:gz") as ftf:
+            for m in ftf.getmembers():
+                if not (m.isfile() and m.name.startswith("repo/")):
+                    continue
+                rel = m.name[5:]
+                name = PurePosixPath(rel).name
+                if (
+                    "tests/" in rel
+                    or name.startswith("test_")
+                    or name.endswith("_test.py")
+                ):
+                    repo_tests.add(rel)
+    except (tarfile.TarError, EOFError, OSError):
+        # unreadable host-side → the guest untar reports its own error;
+        # the overwrite guard simply has no baseline to check against
+        repo_tests = set()
+
+    # Worker members land under the staged repo, so the top-level shadowing
+    # check applies to their repo-relative first segment just as it does to
+    # the flat suite fileset. The verifier toolchain + config files join the
+    # denylist: a worker-written pytest.py, conftest.py, or pytest.ini would
+    # otherwise bypass grading.
+    shadowed = shadowing_members(rel for rel, _ in members)
+    shadowed += sorted(
+        rel for rel, _ in members
+        if (
+            (
+                rel.split("/", 1)[0] if "/" in rel else PurePosixPath(rel).stem
+            ) in (_STDLIB_SHADOW | _VERIFY_TOOLCHAIN_SHADOW)
+            or PurePosixPath(rel).name in _VERIFY_CONFIG_FILES
+            or PurePosixPath(rel).name == "conftest.py"
+            or (rel in repo_tests and rel not in oracle_paths)
+        )
+    )
+    if shadowed:
+        report["error"] = (
+            "artifact members shadow the suite runtime: " + ", ".join(shadowed[:5])
+        )
+        return report
+
+    sandbox_cls, timeout_exc, exit_exc = sdk
+    deadline = time.monotonic() + timeout_seconds + _DEADLINE_MARGIN_SECONDS
+
+    def remaining() -> float:
+        return deadline - time.monotonic()
+
+    def request_timeout() -> float:
+        return max(1.0, min(_REQUEST_TIMEOUT_CAP, remaining()))
+
+    stdout_tail = _Tail()
+    stderr_tail = _Tail()
+    sandbox = None
+    try:
+        sandbox = _create_sandbox(sandbox_cls, timeout_seconds, request_timeout())
+
+        # Stage: tarball bytes -> untar under _WORKDIR -> overlay worker files.
+        _files_write(sandbox, "/tmp/_orch_fixture.tgz", fixture_tarball, request_timeout())
+        rc = _run_guest(
+            sandbox,
+            f"mkdir -p {shlex.quote(repo_dir)} && "
+            f"tar xzf /tmp/_orch_fixture.tgz -C {_WORKDIR}",
+            cwd=_WORKDIR,
+            budget_seconds=min(60.0, remaining()),
+            request_timeout=request_timeout(),
+            stdout_tail=stdout_tail,
+            stderr_tail=stderr_tail,
+            timeout_exc=timeout_exc,
+            exit_exc=exit_exc,
+        )
+        if rc != 0:
+            report.update(executed=True, returncode=rc,
+                          error=f"fixture untar failed (exit {rc})")
+            return report
+        try:
+            listing = sandbox.commands.run(
+                f"find {shlex.quote(_WORKDIR)} -type f | wc -l",
+                envs=dict(_SANDBOX_ENV),
+                timeout=30,
+                request_timeout=request_timeout(),
+            )
+            report["staged_members"] = int((listing.stdout or "0").strip() or 0)
+        except Exception:
+            pass  # provenance nicety — never gates the verdict
+
+        for rel, body in members:
+            if remaining() <= 0:
+                report["error"] = "host deadline exceeded during sandbox writes"
+                return report
+            target = f"{repo_dir}/{rel}"
+            _run_guest(
+                sandbox,
+                f"mkdir -p {shlex.quote(str(PurePosixPath(target).parent))}",
+                cwd=_WORKDIR,
+                budget_seconds=15.0,
+                request_timeout=request_timeout(),
+                stdout_tail=stdout_tail,
+                stderr_tail=stderr_tail,
+                timeout_exc=timeout_exc,
+                exit_exc=exit_exc,
+            )
+            _files_write(sandbox, target, body, request_timeout())
+
+        # Oracle overlay lands after the worker fileset — a worker may not
+        # overwrite the tests it is graded by. Validated pre-sandbox above.
+        for rel, body in oracle:
+            target = f"{repo_dir}/{rel}"
+            _run_guest(
+                sandbox,
+                f"mkdir -p {shlex.quote(str(PurePosixPath(target).parent))}",
+                cwd=_WORKDIR,
+                budget_seconds=15.0,
+                request_timeout=request_timeout(),
+                stdout_tail=stdout_tail,
+                stderr_tail=stderr_tail,
+                timeout_exc=timeout_exc,
+                exit_exc=exit_exc,
+            )
+            _files_write(sandbox, target, body, request_timeout())
+        report["oracle_members"] = len(oracle)
+
+        report["executed"] = True
+        for i, cmd in enumerate(setup_commands or []):
+            if remaining() <= 0:
+                report["error"] = "host deadline exceeded during setup"
+                return report
+            rc = _run_guest(
+                sandbox, cmd, cwd=repo_dir,
+                budget_seconds=min(120.0, remaining()),
+                request_timeout=request_timeout(),
+                stdout_tail=stdout_tail, stderr_tail=stderr_tail,
+                timeout_exc=timeout_exc, exit_exc=exit_exc,
+            )
+            if rc != 0:
+                report.update(
+                    returncode=rc,
+                    error=f"setup command {i + 1} failed (exit {rc}): {cmd[:80]}",
+                    setup_failed=True,
+                )
+                tail = (stderr_tail.text or stdout_tail.text).strip().splitlines()
+                report["output_tail"] = "\n".join(tail[-15:])[-4000:]
+                return report
+
+        if remaining() <= 0:
+            report["error"] = "host deadline exceeded before verify"
+            return report
+        try:
+            returncode = _run_guest(
+                sandbox,
+                shlex.join(verify_command),
+                cwd=repo_dir,
+                budget_seconds=min(timeout_seconds, remaining()),
+                request_timeout=request_timeout(),
+                stdout_tail=stdout_tail,
+                stderr_tail=stderr_tail,
+                timeout_exc=timeout_exc,
+                exit_exc=exit_exc,
+            )
+        except timeout_exc:
+            report.update(
+                timed_out=True,
+                error=f"verify exceeded {timeout_seconds}s",
+            )
+            return report
+
+        report["returncode"] = returncode
+        report["ok"] = returncode == 0
+        # Command granularity can't attribute which declared tests failed —
+        # report the whole fail_to_pass batch as the outcome so a nonzero
+        # exit scores 0, not (n-1)/n fake partial credit.
+        declared = len(fail_to_pass or [])
+        report["tests_run"] = declared if declared else 1
+        report["failures"] = 0 if report["ok"] else report["tests_run"]
+        report["errors"] = 0
+        tail = (stderr_tail.text or stdout_tail.text).strip().splitlines()
+        report["output_tail"] = "\n".join(tail[-15:])[-4000:]
     except Exception as exc:  # endpoint unreachable, auth, template missing…
         report["error"] = f"sandbox runtime error: {_safe_error_message(exc)}"
     finally:

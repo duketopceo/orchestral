@@ -1,0 +1,117 @@
+id: v3-mi-run-length
+title: "more-itertools: run_length_encode"
+blurb: "Add a missing run-length encoder to a real library — graded by pytest in a sandboxed repo checkout."
+type: code
+prompt: |
+  You are contributing to the `more-itertools` library (a widely-used
+  extension of Python's itertools utilities). A maintainer has asked for a
+  **run-length encoder** in a new module.
+
+  Create `more_itertools/rle.py` exposing exactly one public function:
+
+      def run_length_encode(iterable) -> list[tuple[object, int]]
+
+  Contract:
+  - Consume any iterable of hashable or unhashable items (equality, not
+    identity, defines a run — `1` and `True` are *different* only if `!=`).
+    Items are compared with `==`.
+  - Return a list of `(item, count)` tuples, one per maximal run of equal
+    consecutive items, preserving order.
+  - `run_length_encode([])` returns `[]`; `run_length_encode("a")` returns
+    `[("a", 1)]`; `run_length_encode([1, 1, 2, 2, 2, 3])` returns
+    `[(1, 2), (2, 3), (3, 1)]`.
+  - Must work on iterators/generators consumed lazily (single pass, O(run
+    count) extra space — do not materialize the input).
+  - Module must import cleanly with no third-party dependencies (stdlib and
+    `more_itertools` internals are allowed).
+  - Match library style: a short docstring, snake_case name.
+
+  Return a JSON object `{"files": [{"path": "more_itertools/rle.py",
+  "content": "..."}]}` with the complete module. The harness overlays your
+  files onto a full repo checkout and runs the project's test suite.
+metadata:
+  fixture: more-itertools-10.8
+  workdir: repo
+  expected_paths: ["more_itertools/rle.py"]
+  setup_commands:
+    - "python -m pip install --quiet --no-index --find-links /home/user/wheelhouse pytest"
+  verify:
+    command: ["python", "-m", "pytest", "tests/test_v3_rle.py", "-x", "-q"]
+    fail_to_pass:
+      - test_empty
+      - test_singletons
+      - test_runs_merge
+      - test_order_preserved
+      - test_unhashable_items
+      - test_generator_input
+      - test_large_runs
+  timeout_seconds: 240
+  difficulty: standard
+  archetype: feature-gap
+  contamination_risk: low
+  reference:
+    more_itertools/rle.py: |
+      """Run-length encoding utilities."""
+
+
+      def run_length_encode(iterable):
+          """Return ``(item, count)`` tuples per maximal run of equal items.
+
+          Consumes the input lazily in a single pass; equality (``==``), not
+          identity, defines a run.
+          """
+          runs = []
+          it = iter(iterable)
+          try:
+              prev = next(it)
+          except StopIteration:
+              return runs
+          count = 1
+          for item in it:
+              if item == prev:
+                  count += 1
+              else:
+                  runs.append((prev, count))
+                  prev, count = item, 1
+          runs.append((prev, count))
+          return runs
+  test_files:
+    tests/test_v3_rle.py: |
+      """Verifier oracle for run_length_encode — staged after the worker
+      fileset, so a worker cannot overwrite the suite that grades it."""
+      import itertools
+
+      from more_itertools.rle import run_length_encode
+
+
+      def test_empty():
+          assert run_length_encode([]) == []
+          assert run_length_encode(iter([])) == []
+
+      def test_singletons():
+          assert run_length_encode("a") == [("a", 1)]
+          assert run_length_encode([None]) == [(None, 1)]
+
+      def test_runs_merge():
+          assert run_length_encode([1, 1, 2, 2, 2, 3]) == [(1, 2), (2, 3), (3, 1)]
+          assert run_length_encode("aaaabbbcca") == [
+              ("a", 4), ("b", 3), ("c", 2), ("a", 1)]
+
+      def test_order_preserved():
+          data = [3, 3, 1, 1, 3, 3]
+          assert run_length_encode(data) == [(3, 2), (1, 2), (3, 2)]
+
+      def test_unhashable_items():
+          assert run_length_encode([[1], [1], [2]]) == [([1], 2), ([2], 1)]
+
+      def test_generator_input():
+          gen = (c for c in "xxyyz")
+          assert run_length_encode(gen) == [("x", 2), ("y", 2), ("z", 1)]
+          # lazy consumption: an infinite iterator must not hang a finite ask
+          inf = itertools.chain([7, 7], itertools.cycle([8]))
+          out = run_length_encode(itertools.islice(inf, 5))
+          assert out == [(7, 2), (8, 3)]
+
+      def test_large_runs():
+          data = [0] * 100_000 + [1]
+          assert run_length_encode(data) == [(0, 100_000), (1, 1)]

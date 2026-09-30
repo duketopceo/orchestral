@@ -38,6 +38,15 @@ from orchestral.config import (
     resolve_judge,
     resolve_model,
 )
+from orchestral.coverage import coverage_rows, coverage_summary
+from orchestral.experiment import (
+    Cell,
+    cell_state,
+    load_matrix,
+    rep_target,
+    resolve_matrix_tasks,
+    run_experiment,
+)
 from orchestral.export import leaderboard_csv, run_audit_markdown, runs_csv
 from orchestral.fileset import expected_paths, required_content
 from orchestral.holdout import DEFAULT_ARM_SIZE, DEFAULT_SEED, generate_arm, materialize
@@ -54,7 +63,7 @@ from orchestral.stats import (
     contamination_gap,
     pairing_leaderboard,
 )
-from orchestral.storage import RunStore
+from orchestral.storage import RunMeta, RunStore
 from orchestral.tui import run_tui
 
 
@@ -272,6 +281,7 @@ def _runner_kwargs(args: argparse.Namespace, store: RunStore, **extra: Any) -> d
         "runs_dir": args.runs_dir,
         "prompt_variant": getattr(args, "prompt_variant", None),
         "use_judge_cache": not getattr(args, "no_judge_cache", False),
+        "jev_assist": getattr(args, "jev_assist", False),
         "run_group": getattr(args, "group", None),
         "replicate": getattr(args, "replicate", None),
         "seed": getattr(args, "seed", None),
@@ -542,7 +552,7 @@ def cmd_grid(args: argparse.Namespace) -> None:
 
     print("\nGrid summary")
     rep_col = f"{'rep':>4} " if n_reps > 1 else ""
-    print(f"{'orchestrator':<40} {'worker':<40} {rep_col}{'cost':>10} {'tokens':>8} {'pass':>6} {'score':>6}")
+    print(f"{'Orchestrator':<40} {'Worker':<40} {rep_col}{'Cost':>10} {'Tokens':>8} {'Pass':>6} {'Score':>6}")
     for r in results:
         score = f"{r['score']:.2f}" if r['score'] is not None else "-"
         rep = f"{r['replicate']:>4} " if n_reps > 1 else ""
@@ -641,7 +651,7 @@ def cmd_batch(args: argparse.Namespace) -> None:
 
     print(f"\nBatch summary ({len(results)} runs across {len(paths)} tasks)")
     rep_col = f"{'rep':>4} " if n_reps > 1 else ""
-    print(f"{'task_id':<30} {rep_col}{'cost':>10} {'tokens':>8} {'pass':>6} {'score':>6}")
+    print(f"{'Task':<30} {rep_col}{'Cost':>10} {'Tokens':>8} {'Pass':>6} {'Score':>6}")
     for r in results:
         score = f"{r['score']:.2f}" if r['score'] is not None else "-"
         rep = f"{r['replicate']:>4} " if n_reps > 1 else ""
@@ -661,6 +671,112 @@ def cmd_batch(args: argparse.Namespace) -> None:
         print(json.dumps(results, indent=2, default=str))
     if failures:
         sys.exit(1)
+
+
+def cmd_experiment(args: argparse.Namespace) -> None:
+    """Batched A/B driver: every (task, orchestrator, worker) cell runs
+    paired baseline/jev-assist replicates with spend, error, and CI gates
+    between batches. `--dry-run` prints the priced plan and writes nothing."""
+    matrix = load_matrix(args.matrix)
+    tasks = resolve_matrix_tasks(matrix, args.tasks_dir)
+    cells = matrix.cells
+
+    if args.dry_run:
+        store = RunStore(args.runs_dir)
+        cell_budget = args.budget / len(cells) if args.budget > 0 else 0.0
+        print(f"Experiment {matrix.name!r}: {len(cells)} cell(s), "
+              f"budget ${args.budget:.2f} → ${cell_budget:.3f}/cell")
+        print(f"{'Cell':<66} {'Est/pair':>9} {'Target':>7} {'State':>9}")
+        for cell in cells:
+            target, est = rep_target(store, cell, cell_budget)
+            state = cell_state(store, matrix.name, cell, target, args.diff_eps)
+            print(f"{cell.key:<66} "
+                  f"{f'${est:.4f}' if est is not None else '(calib)':>9} "
+                  f"{target:>7} {state:>9}")
+        return
+
+    store, known, judge = _run_preamble(args)
+    models: dict[str, ModelConfig] = {}
+    for slug in matrix.orchestrators + matrix.workers:
+        models[slug] = resolve_model(slug, args.models_dir, known)
+    _check_provider_envs(
+        args,
+        *[replace(models[s], role="orchestrator") for s in matrix.orchestrators],
+        *[replace(models[s], role="worker") for s in matrix.workers],
+        judge,
+    )
+
+    def _launch(cell: Cell, arm: str, rep: int, group: str, seed: int | None) -> RunMeta:
+        orchestrator = replace(models[cell.orchestrator], role="orchestrator")
+        worker = _apply_retry_limit(replace(models[cell.worker], role="worker"), args)
+        kwargs = _runner_kwargs(
+            args, store, run_group=group, replicate=rep, seed=seed,
+            jev_assist=(arm == "jev"),
+        )
+        return Runner(**kwargs).run(tasks[cell.task_id], orchestrator, worker, judge)
+
+    result = run_experiment(
+        store, matrix,
+        budget=args.budget,
+        daily_cap=args.daily_cap,
+        batch_size=args.batch_size,
+        diff_eps=args.diff_eps,
+        seed=args.seed,
+        jobs=args.jobs,
+        tasks=tasks,
+        launch=_launch,
+    )
+    if args.json:
+        print(json.dumps(result, indent=2, default=str))
+    else:
+        print(f"\nExperiment {result['matrix']!r} — spend ${result['spend']:.4f}"
+              + (f" (stopped: {result['stopped']})" if result["stopped"] else ""))
+        for key, cell in result["cells"].items():
+            note = cell.get("reason") or cell.get("note") or ""
+            print(f"  {cell['state']:<8} {key}  {note}")
+
+
+def cmd_coverage(args: argparse.Namespace) -> None:
+    """Done/pending/posted ledger for one experiment matrix."""
+    matrix = load_matrix(args.matrix)
+    store = RunStore(args.runs_dir)
+    rows = coverage_rows(
+        store, matrix, budget=args.budget, diff_eps=args.diff_eps
+    )
+    if args.json:
+        print(json.dumps(
+            {"matrix": matrix.name,
+             "summary": coverage_summary(rows),
+             "cells": [r.to_dict() for r in rows]},
+            indent=2, default=str))
+        return
+    summ = coverage_summary(rows)
+    print(f"Coverage {matrix.name!r}: {summ['cells']} cell(s) — "
+          + ", ".join(f"{k} {v}" for k, v in sorted(summ["states"].items()))
+          + f" | posted {summ['posted']} | spend ${summ['spend']:.4f}")
+    print(f"{'Cell':<62} {'State':<9} {'Base':>7} {'Jev':>7} {'Diff CI':>17} {'Verdict':>13} {'Posted':>6}")
+    for r in rows:
+        base = f"{r.baseline_passes}/{r.baseline_n}" if r.baseline_n else "-"
+        jev = f"{r.jev_passes}/{r.jev_n}" if r.jev_n else "-"
+        ci = f"[{r.diff[0]:+.2f},{r.diff[1]:+.2f}]" if r.diff else "-"
+        print(f"{r.cell_key:<62} {r.state:<9} {base:>7} {jev:>7} {ci:>17} "
+              f"{r.verdict:>13} {'✓' if r.posted else '·':>6}")
+        if r.note:
+            print(f"    {'':>62} ↳ {r.note}")
+
+
+def cmd_publish_mark(args: argparse.Namespace) -> None:
+    """Check-off surface: 'did this cell/run get published' lives in the
+    annotations table, so coverage and the observatory read the same mark."""
+    store = RunStore(args.runs_dir)
+    note = " — ".join(p for p in (args.url, args.note) if p)
+    if args.clear:
+        store.set_annotation("post", args.target, "", note="")
+        print(f"Cleared publish mark on {args.target}")
+        return
+    store.set_annotation("post", args.target, "posted", note=note)
+    print(f"Marked {args.target} as posted"
+          + (f" → {args.url}" if args.url else ""))
 
 
 # Supported ablation knobs: name -> value caster
@@ -747,7 +863,7 @@ def cmd_ablate(args: argparse.Namespace) -> None:
 
     print(f"\nAblation: {knob} on {task.id} ({orchestrator.slug} → {base_worker.slug})")
     rep_col = f"{'rep':>4} " if n_reps > 1 else ""
-    print(f"{knob:<16} {rep_col}{'cost':>10} {'tokens':>8} {'pass':>6} {'score':>6}")
+    print(f"{knob:<16} {rep_col}{'Cost':>10} {'Tokens':>8} {'Pass':>6} {'Score':>6}")
     for r in results:
         score = f"{r['score']:.2f}" if r['score'] is not None else "-"
         rep = f"{r['replicate']:>4} " if n_reps > 1 else ""
@@ -772,7 +888,7 @@ def cmd_history(args: argparse.Namespace) -> None:
         if not table:
             continue
         print(f"\n{role.capitalize()} history")
-        print(f"{'model':<45} {'runs':>5} {'pass%':>7} {'avg score':>9} {'avg cost':>11} {'total cost':>11}")
+        print(f"{'Model':<45} {'Runs':>5} {'Pass %':>7} {'Avg score':>9} {'Avg cost':>11} {'Total cost':>11}")
         for name, s in sorted(table.items(), key=lambda kv: -kv[1]["total_cost"]):
             pass_pct = f"{s['pass_rate'] * 100:.1f}%" if s["pass_rate"] is not None else "-"
             score = f"{s['avg_score']:.2f}" if s["avg_score"] is not None else "-"
@@ -815,6 +931,24 @@ def cmd_report(args: argparse.Namespace) -> None:
     store = RunStore(args.runs_dir)
     if getattr(args, "compare", None):
         _print_group_delta(store, args.compare, json_out=args.json)
+        return
+    if getattr(args, "experiment", None):
+        matrix = load_matrix(args.experiment)
+        cov_rows = coverage_rows(store, matrix, budget=args.budget, diff_eps=args.diff_eps)
+        if args.json:
+            print(json.dumps({"matrix": matrix.name,
+                              "cells": [r.to_dict() for r in cov_rows]},
+                             indent=2, default=str))
+            return
+        print(f"Experiment {matrix.name!r} — baseline vs jev-assist "
+              "(mechanical pass is primary; judge deltas are self-referential)")
+        print(f"{'Cell':<62} {'Baseline':>10} {'Jev':>10} {'Diff CI':>17} {'Verdict':>13}")
+        for row in cov_rows:
+            ci = f"[{row.diff[0]:+.2f},{row.diff[1]:+.2f}]" if row.diff else "-"
+            print(f"{row.cell_key:<62} "
+                  f"{f'{row.baseline_passes}/{row.baseline_n}' if row.baseline_n else '-':>10} "
+                  f"{f'{row.jev_passes}/{row.jev_n}' if row.jev_n else '-':>10} "
+                  f"{ci:>17} {row.verdict:>13}")
         return
     runs = store.list_runs(
         orchestrator=args.orchestrator,
@@ -1189,6 +1323,64 @@ def cmd_prices(args: argparse.Namespace) -> None:
     drifted = [r for r in rows if r.drifted]
     if drifted:
         print(f"\n{len(drifted)} model(s) beyond {args.threshold:.0%} drift — update models/*.yaml or check for silent rerouting.")
+
+def cmd_fixtures(args: argparse.Namespace) -> None:
+    """Repo fixtures for v3 real-repo tasks: fetch / check / list."""
+    from orchestral.fixtures import (
+        FixtureError,
+        check_fixtures,
+        fetch_fixture,
+        load_registry,
+        tarball_path,
+    )
+
+    root = Path(args.fixtures_dir)
+    try:
+        registry = load_registry(root)
+    except FixtureError as exc:
+        print(f"registry error: {exc}")
+        sys.exit(1)
+
+    if args.fixtures_cmd == "list":
+        if not registry:
+            print(f"no fixtures registered in {root / 'registry.yaml'}")
+            return
+        for fid, spec in registry.items():
+            tb = tarball_path(fid, root)
+            state = "fetched" if tb.exists() else "pending"
+            print(f"{fid:<28} {state:<8} {spec.repo}@{spec.commit[:10]}  {spec.license}")
+        return
+
+    if args.fixtures_cmd == "fetch":
+        targets = args.ids or sorted(registry)
+        for fid in targets:
+            try:
+                res = fetch_fixture(fid, root)
+            except FixtureError as exc:
+                print(f"{fid}: {exc}")
+                sys.exit(1)
+            print(
+                f"{res.fixture_id}: {res.repo_members} repo files + "
+                f"{res.wheelhouse_members} wheels -> {res.tarball} "
+                f"(sha256 {res.sha256[:16]}…)"
+            )
+            if res.previous_sha256 and res.previous_sha256 != res.sha256:
+                print(
+                    f"  WARNING: content changed vs previous lock "
+                    f"({res.previous_sha256[:16]}… -> {res.sha256[:16]}…) — "
+                    "upstream repo bytes or resolved wheels differ; verify "
+                    "the registry pin and dep versions are what you intended."
+                )
+        return
+
+    if args.fixtures_cmd == "check":
+        problems = check_fixtures(root)
+        if problems:
+            for p in problems:
+                print(f"drift: {p}")
+            sys.exit(1)
+        print(f"{len(registry)} fixture(s) consistent with registry")
+
 
 def cmd_calibrate(args: argparse.Namespace) -> None:
     """Judge-vs-human agreement metrics from a labels file."""
@@ -1735,6 +1927,8 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--judge", default=None, help=f"Judge model slug (default {DEFAULT_JUDGE} — the decisions engine; vision-capable slugs for image tasks)")
         sp.add_argument("--no-judge", action="store_true", help="Skip the judge pass entirely — mechanical verdict only")
         sp.add_argument("--no-judge-cache", action="store_true", help="Bypass judge result cache reads (still writes)")
+        sp.add_argument("--jev-assist", action="store_true",
+                        help="Consult the decisions-engine judge inside the run loop — plan audit before delegation, output audit before assembly (one replan / one rework max). No-op without a decisions-model judge.")
         sp.add_argument("--retry-limit", type=int, default=None, help="Override the worker's retry_limit for this invocation")
         sp.add_argument("--prompt-variant", default=None, help="Orchestrator prompt variant from prompts/orchestrator-<name>.md")
         sp.add_argument("--dry-run", action="store_true", help="Do not call OpenRouter; generate sample data for storage testing")
@@ -1786,6 +1980,31 @@ def build_parser() -> argparse.ArgumentParser:
     _add_run_flags(batch)
     batch.set_defaults(func=cmd_batch)
 
+    experiment = sub.add_parser(
+        "experiment",
+        help="Batched A/B experiment: paired baseline/jev-assist arms per matrix cell, cost-scaled reps, spend and evidence gates",
+    )
+    experiment.add_argument("--matrix", required=True, help="Experiment matrix YAML (orchestrators × workers × tasks)")
+    experiment.add_argument("--budget", type=float, default=_env_float("ORCHESTRAL_EXPERIMENT_BUDGET", 0.0),
+                            help="Total experiment spend bound in USD — sizes per-cell rep targets and aborts on the live calls meter (0=unbounded rep sizing; the daily cap still brakes)")
+    experiment.add_argument("--batch-size", type=int, default=5, help="Replicate indexes per batch between gate checks")
+    experiment.add_argument("--diff-eps", type=float, default=0.15, help="Early-stop threshold: difference-CI half-width at which a cell counts as resolved")
+    experiment.add_argument("--jobs", type=int, default=1, help="Cells in parallel (reps stay serial inside a cell)")
+    experiment.add_argument("--planner", default="raw", choices=["raw", "ce-plan"], help="Orchestrator planning strategy")
+    experiment.add_argument("--prompt-variant", default=None, help="Orchestrator prompt variant from prompts/orchestrator-<name>.md")
+    experiment.add_argument("--retry-limit", type=int, default=None, help="Override workers' retry_limit")
+    experiment.add_argument("--seed", type=int, default=None, help="Base seed recorded on run configs (replicate i records seed+i-1; bookkeeping only — chat providers take no seed)")
+    experiment.add_argument("--no-judge-cache", action="store_true", help="Bypass judge result cache reads (still writes)")
+    experiment.add_argument("--dry-run", action="store_true", help="Print the priced plan table; write nothing, launch nothing")
+    experiment.add_argument("--json", action="store_true", help="Output the summary as JSON")
+    experiment.add_argument("--verbose", "-v", action="store_true", help="Echo events while running")
+    experiment.add_argument("--daily-cap", type=float, default=_env_float("ORCHESTRAL_DAILY_CAP", 5.0),
+                            help="Abort once today's recorded spend reaches this USD (0=off, env ORCHESTRAL_DAILY_CAP, default 5)")
+    experiment.add_argument("--allow-agent-exec", action="store_true",
+                            default=_env_flag("ORCHESTRAL_ALLOW_AGENT_EXEC"),
+                            help="Opt in to executor workers (env ORCHESTRAL_ALLOW_AGENT_EXEC)")
+    experiment.set_defaults(func=cmd_experiment)
+
     ablate = sub.add_parser("ablate", help="Sweep one knob (retry_limit, prompt_variant) for a pairing")
     ablate.add_argument("--task", required=True, help="Task id or path")
     ablate.add_argument("--orchestrator", required=True, help="OpenRouter model slug for the orchestrator")
@@ -1794,6 +2013,20 @@ def build_parser() -> argparse.ArgumentParser:
     ablate.add_argument("--jobs", type=int, default=1, help="Run sweep points in parallel with N workers")
     _add_run_flags(ablate)
     ablate.set_defaults(func=cmd_ablate)
+
+    coverage = sub.add_parser("coverage", help="Experiment coverage ledger: matrix cells vs stored runs — done/pending/aborted/posted")
+    coverage.add_argument("--matrix", required=True, help="Experiment matrix YAML the ledger is keyed to")
+    coverage.add_argument("--budget", type=float, default=0.0, help="Same semantics as experiment --budget — needed to reproduce the rep targets the driver used")
+    coverage.add_argument("--diff-eps", type=float, default=0.15, help="Difference-CI half-width at which a cell counts as resolved")
+    coverage.add_argument("--json", action="store_true", help="Emit JSON")
+    coverage.set_defaults(func=cmd_coverage)
+
+    publish = sub.add_parser("publish-mark", help="Mark a cell or run as published — the 'did we post this' check-off")
+    publish.add_argument("--target", required=True, help="Cell key (task:orchestrator:worker) or run id")
+    publish.add_argument("--url", default=None, help="Where it was published (post/thread/issue URL)")
+    publish.add_argument("--note", default="", help="Free-text note")
+    publish.add_argument("--clear", action="store_true", help="Remove the posted mark")
+    publish.set_defaults(func=cmd_publish_mark)
 
     history = sub.add_parser("history", help="Per-model aggregate history across all stored runs")
     history.add_argument("--orchestrator", help="Filter by orchestrator")
@@ -1815,6 +2048,9 @@ def build_parser() -> argparse.ArgumentParser:
     report.add_argument("--groups", action="store_true", help="Aggregate by run_group × task × pairing with variance stats")
     report.add_argument("--group", default=None, help="Only include runs from this run_group")
     report.add_argument("--compare", default=None, metavar="A,B", help="Compare two run groups cell-by-cell (pass-rate delta per task × pairing)")
+    report.add_argument("--experiment", default=None, metavar="MATRIX", help="Experiment arm table for a matrix spec (baseline vs jev-assist per cell)")
+    report.add_argument("--budget", type=float, default=0.0, help="With --experiment: the budget the driver ran under (sizes rep targets)")
+    report.add_argument("--diff-eps", type=float, default=0.15, help="With --experiment: difference-CI half-width resolution threshold")
     report.add_argument("--limit", type=int, default=None, help="Limit number of rows")
     report.add_argument("--json", action="store_true", help="Output as JSON")
     report.set_defaults(func=cmd_report)
@@ -1968,6 +2204,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Do not count a generatable holdout arm — reports no_holdout_arm whenever no spec sets metadata.holdout",
     )
     audit.set_defaults(func=cmd_audit)
+
+    fixtures = sub.add_parser(
+        "fixtures",
+        help="Repo fixtures for v3 real-repo tasks — fetch/check the gitignored tarballs pinned in fixtures/registry.yaml",
+    )
+    fixtures.add_argument("--fixtures-dir", default="fixtures", help="Fixture directory")
+    fsub = fixtures.add_subparsers(dest="fixtures_cmd", required=True)
+    fsub.add_parser("list", help="Show registry state (registered vs fetched)")
+    ff = fsub.add_parser("fetch", help="Download + pack fixture tarballs from the registry")
+    ff.add_argument("ids", nargs="*", help="Fixture ids (default: all registered)")
+    fsub.add_parser("check", help="Verify fetched tarballs match registry pins + locks")
+    fixtures.set_defaults(func=cmd_fixtures)
 
     selfcheck = sub.add_parser(
         "selfcheck",

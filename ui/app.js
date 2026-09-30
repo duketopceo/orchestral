@@ -50,7 +50,7 @@ function calAxis(d) {
     s.calibrated ? `${esc(slug(m))} κ=${Number(s.kappa).toFixed(2)}`
                  : `${esc(slug(m))} uncalibrated (${s.verdict_pairs} pairs)`);
   const calibrated = Object.values(cal).some(s => s.calibrated);
-  const axis = calibrated ? "calibrated semantic axis" : "advisory semantic axis";
+  const axis = calibrated ? "Calibrated semantic axis" : "Advisory semantic axis";
   return bits.length ? `${bits.join(" · ")} · ${axis}` : axis;
 }
 
@@ -63,27 +63,27 @@ function poll(fn, ms) {
 }
 
 function statusChip(r) {
-  if (r.status === "running") return `<span class="chip chip-warn"><span class="dot dot-run pulse"></span>running</span>`;
-  if (r.status === "failed") return `<span class="chip chip-fail">failed</span>`;
-  if (r.status === "cancelled") return `<span class="chip chip-dim">cancelled</span>`;
-  if (r.passes === true || r.passes === 1) return `<span class="chip chip-pass">pass</span>`;
-  if (r.passes === false || r.passes === 0) return `<span class="chip chip-fail">fail</span>`;
+  if (r.status === "running") return `<span class="chip chip-warn"><span class="dot dot-run pulse"></span>Running</span>`;
+  if (r.status === "failed") return `<span class="chip chip-fail">Failed</span>`;
+  if (r.status === "cancelled") return `<span class="chip chip-dim">Cancelled</span>`;
+  if (r.passes === true || r.passes === 1) return `<span class="chip chip-pass">Pass</span>`;
+  if (r.passes === false || r.passes === 0) return `<span class="chip chip-fail">Fail</span>`;
   return `<span class="chip chip-dim">${esc(r.status)}</span>`;
 }
 
 function judgeChip(r) {
   // judge_score is the semantic axis — `score` is mechanical (don't mislabel)
   if (r.judge_score != null)
-    return `<span class="chip chip-info" title="semantic quality score from the judge model">judge ${fmtScore(r.judge_score)}</span>`;
+    return `<span class="chip chip-info" title="Semantic quality score from the judge model">Judge ${fmtScore(r.judge_score)}</span>`;
   const st = r.judge_state || "not_judged";
   const why = esc(r.judge_reason || "");
   if (st === "inconclusive")
-    return `<span class="chip chip-warn" title="${why}">judge inconclusive</span>`;
+    return `<span class="chip chip-warn" title="${why}">Judge inconclusive</span>`;
   if (st === "unreadable")
-    return `<span class="chip chip-warn" title="${why || "report.json could not be read — whether the judge ran is unknown"}">judge unknown</span>`;
+    return `<span class="chip chip-warn" title="${why || "report.json could not be read — whether the judge ran is unknown"}">Judge unknown</span>`;
   if (st === "not_judgeable")
-    return `<span class="chip chip-dim" title="${why}">not judgeable</span>`;
-  return `<span class="chip chip-dim" title="${why || "judge wasn't run for this run"}">not judged</span>`;
+    return `<span class="chip chip-dim" title="${why}">Not judgeable</span>`;
+  return `<span class="chip chip-dim" title="${why || "The judge was not run for this run"}">Not judged</span>`;
 }
 
 function runRow(r) {
@@ -101,9 +101,9 @@ function runRow(r) {
 }
 
 const RUN_HEAD = `<tr>
-  <th>verdict</th><th>task</th><th>orch → worker</th><th>judge</th>
-  <th class="t-num">cost</th><th class="t-num">tok</th><th class="t-num">time</th>
-  <th>group</th><th>started</th>
+  <th>Verdict</th><th>Task</th><th>Orchestrator → Worker</th><th>Judge</th>
+  <th class="t-num">Cost</th><th class="t-num">Tokens</th><th class="t-num">Duration</th>
+  <th>Group</th><th>Started</th>
 </tr>`;
 
 /* ---------- rail activity ---------- */
@@ -114,7 +114,7 @@ async function refreshJobs() {
     const jobs = (ov.jobs || []).filter(j => j.status === "running" || j.cancellable);
     $jobs.innerHTML = jobs.length
       ? jobs.map(j => `<div class="rail-job"><span class="dot dot-run pulse"></span><span class="jl">${esc(j.label)}</span></div>`).join("")
-      : `<div class="rail-empty">no active jobs</div>`;
+      : `<div class="rail-empty">No active jobs</div>`;
   } catch { /* rail is best-effort */ }
 }
 refreshJobs();
@@ -123,12 +123,22 @@ setInterval(refreshJobs, 5000);
 /* ---------- views ---------- */
 
 async function viewOverview() {
-  const [ov, mx] = await Promise.all([api("/api/overview"), api("/api/matrix")]);
+  const [ov, mx, exp] = await Promise.all([
+    api("/api/overview"), api("/api/matrix"),
+    api("/api/experiment").catch(() => null),
+  ]);
   await loadFlags();
   const live = (ov.jobs || []).filter(j => j.status === "running");
   const groups = ov.groups || [];
   const tax = ov.taxonomy || {};
   const taxMax = Math.max(1, ...Object.values(tax));
+  const stateChip = s => ({
+    done: "chip-pass", partial: "chip-warn", aborted: "chip-fail",
+    pending: "chip-dim", skipped: "chip-dim",
+  }[s] || "chip-dim");
+  const armCell = a => a && a.n
+    ? `${a.passes}/${a.n} <span class="dim sm">${fmtPct(a.rate)}${a.ci ? ` [${Math.round(a.ci[0]*100)}–${Math.round(a.ci[1]*100)}]` : ""}</span>`
+    : `<span class="dim">·</span>`;
 
   $view.innerHTML = `
     <h1>Overview</h1>
@@ -149,27 +159,50 @@ async function viewOverview() {
           <span class="dim">${g.runs} runs ${flagWidget("group", g.group)}</span></div>
         ${g.label ? `<div class="dim sm">${esc(g.description || g.group)}</div>` : ""}
         <div class="gc-stats">
-          <span>pass <b>${fmtPct(pass)}</b></span>
-          <span>judge <b class="judge-axis">${fmtScore(g.judge_score_median)}</b></span>
-          <span>cost <b>${fmtMoney(g.cost_usd)}</b></span>
+          <span>Pass <b>${fmtPct(pass)}</b></span>
+          <span>Judge <b class="judge-axis">${fmtScore(g.judge_score_median)}</b></span>
+          <span>Cost <b>${fmtMoney(g.cost_usd)}</b></span>
         </div>
         <div class="gc-bar">
           <i class="b-pass" style="width:${(pass ?? 0) * 100}%"></i>
           <i class="b-fail" style="width:${fail * 100 * (g.finished ? 1 : 0) / Math.max(g.finished, 1) * (g.finished / Math.max(g.runs, 1)) * 100 / 100}%"></i>
           <i class="b-rest" style="width:${(rest / Math.max(g.runs, 1)) * 100}%"></i>
         </div></a>`;
-    }).join("") || `<div class="empty">no run groups yet</div>`}</div>
+    }).join("") || `<div class="empty">No run groups yet</div>`}</div>
 
-    ${Object.keys(tax).length ? `<h2>Failure taxonomy</h2>
+    ${exp && (exp.cells || []).length ? `<h2>Experiment — ${esc(exp.matrix)}</h2>
+    <p class="page-sub">Baseline vs jev-assist, paired replicates. Primary axis: ${esc(exp.primary_axis)}.
+    ${esc((exp.caveats || [])[0] || "")}</p>
+    <div class="m">${Object.entries((exp.summary || {}).states || {}).map(([k, n]) =>
+      `<span class="chip ${stateChip(k)}">${esc(k)} ${n}</span>`).join("")}
+      <span class="chip chip-dim">Posted ${(exp.summary || {}).posted || 0}</span>
+      <span class="chip chip-dim">Spend ${fmtMoney((exp.summary || {}).spend)}</span>
+    </div>
+    <div class="panel"><table class="data"><tr>
+      <th>Cell</th><th class="t-num">Baseline</th><th class="t-num">Jev</th>
+      <th class="t-num">Diff CI</th><th>Verdict</th><th class="t-num">Target</th><th>State</th><th>Posted</th>
+    </tr><tbody>` +
+    exp.cells.map(c => `<tr>
+      <td>${esc(c.task)}<div class="dim sm">${esc(slug(c.orchestrator))} → ${esc(slug(c.worker))}${c.jev && c.jev.interventions && (c.jev.interventions.replan + c.jev.interventions.rework) ? ` · jev intervened ${c.jev.interventions.replan + c.jev.interventions.rework}×` : ""}</div></td>
+      <td class="t-num">${armCell(c.baseline)}</td>
+      <td class="t-num">${armCell(c.jev)}</td>
+      <td class="t-num">${c.diff_ci ? `[${c.diff_ci[0] >= 0 ? "+" : ""}${c.diff_ci[0].toFixed(2)}, ${c.diff_ci[1] >= 0 ? "+" : ""}${c.diff_ci[1].toFixed(2)}]` : "—"}</td>
+      <td><span class="chip ${{ lift: "chip-pass", harm: "chip-fail", resolved: "chip-pass", inconclusive: "chip-warn" }[c.verdict] || "chip-dim"}">${esc(c.verdict)}</span></td>
+      <td class="t-num">${c.target}</td>
+      <td><span class="chip ${stateChip(c.state)}">${esc(c.state)}</span></td>
+      <td>${c.posted ? `<span title="${esc(c.posted_note)}">✓</span>` : '<span class="dim">·</span>'}</td>
+    </tr>`).join("") + `</tbody></table></div>` : ""}
+
+    ${Object.keys(tax).length ? `<h2>Failure Taxonomy</h2>
     <div class="tax-list">${Object.entries(tax).map(([k, n]) => `
       <div class="tax-row"><span class="tx-name">${esc(k)}</span>
         <span class="tx-bar"><i style="width:${(n / taxMax) * 100}%"></i></span>
         <span class="tx-n">${n}</span></div>`).join("")}</div>` : ""}
 
-    ${(mx.tasks || []).length ? `<h2>Tasks × pairings</h2>
+    ${(mx.tasks || []).length ? `<h2>Tasks × Pairings</h2>
     <p class="page-sub">Mechanical pass rate per cell. Click a cell to drill into its runs — a dash means the pairing never attempted that task.</p>
     <div class="panel heat-wrap"><table class="data heat">
-      <tr><th class="heat-task">task</th>${mx.pairings.map(p =>
+      <tr><th class="heat-task">Task</th>${mx.pairings.map(p =>
         `<th class="heat-col"><div>${esc(slug(p.split(" → ")[0]))}</div><div class="dim">→ ${esc(slug(p.split(" → ")[1] || ""))}</div></th>`).join("")}</tr>
       ${mx.tasks.map(t => `<tr>
         <th class="heat-task"><a href="#/runs?task=${encodeURIComponent(t.task_id)}">${esc(t.task_title || t.task_id)}</a>
@@ -181,15 +214,15 @@ async function viewOverview() {
           const a = v == null ? 0.06 : 0.08 + 0.72 * v;
           const jm = c.judge_mean != null ? ` · judge ${fmtScore(c.judge_mean)}` : "";
           return `<td class="heat-cell${c.n < 3 ? " thin" : ""}" data-go="#/runs?task=${encodeURIComponent(t.task_id)}"
-            title="${esc(t.task_id)} · ${esc(p)} — pass ${v == null ? "—" : fmtPct(v)} over ${c.n} run${c.n === 1 ? "" : "s"}${jm}${c.n < 3 ? " · low-n" : ""}">
+            title="${esc(t.task_id)} · ${esc(p)} — pass ${v == null ? "—" : fmtPct(v)} over ${c.n} run${c.n === 1 ? "" : "s"}${jm}${c.n < 3 ? " · Low n" : ""}">
             <span class="heat-fill" style="opacity:${a.toFixed(2)}">${v == null ? "—" : fmtPct(v)}</span>
           </td>`;
         }).join("")}</tr>`).join("")}
     </table></div>` : ""}
 
-    <h2>Recent runs</h2>
+    <h2>Recent Runs</h2>
     <div class="panel"><table class="data">${RUN_HEAD}
-      <tbody>${(ov.recent || []).map(runRow).join("") || `<tr><td colspan="9" class="empty">no runs</td></tr>`}</tbody>
+      <tbody>${(ov.recent || []).map(runRow).join("") || `<tr><td colspan="9" class="empty">No runs</td></tr>`}</tbody>
     </table></div>`;
   for (const td of $view.querySelectorAll("td.heat-cell[data-go]")) {
     td.style.cursor = "pointer";
@@ -209,17 +242,17 @@ async function viewRuns(params) {
   $view.innerHTML = `
     <h1>Runs</h1>
     <div class="filters">
-      <select id="f-group"><option value="">all groups</option>
+      <select id="f-group"><option value="">All groups</option>
         ${groups.map(g => `<option ${g.group === group ? "selected" : ""}>${esc(g.group)}</option>`).join("")}</select>
-      <input type="search" id="f-q" placeholder="task / model / reason…" value="${esc(q)}">
+      <input type="search" id="f-q" placeholder="Task, model, or reason…" value="${esc(q)}">
       <select id="f-status">
         ${["", "running", "finished", "passed", "failed", "cancelled"].map(s =>
-          `<option value="${s}" ${s === status ? "selected" : ""}>${s || "any status"}</option>`).join("")}
+          `<option value="${s}" ${s === status ? "selected" : ""}>${s ? s[0].toUpperCase() + s.slice(1) : "Any status"}</option>`).join("")}
       </select>
-      <input type="search" id="f-task" placeholder="task id…" value="${esc(task)}" style="min-width:150px">
+      <input type="search" id="f-task" placeholder="Task ID…" value="${esc(task)}" style="min-width:150px">
     </div>
     <div class="panel"><table class="data">${RUN_HEAD}<tbody id="runs-body">
-      <tr><td colspan="9" class="empty">loading…</td></tr></tbody></table></div>`;
+      <tr><td colspan="9" class="empty">Loading…</td></tr></tbody></table></div>`;
 
   async function load() {
     const qs = new URLSearchParams();
@@ -235,7 +268,7 @@ async function viewRuns(params) {
     const body = document.getElementById("runs-body");
     if (body) {
       body.innerHTML =
-        rows.map(runRow).join("") || `<tr><td colspan="9" class="empty">no matching runs</td></tr>`;
+        rows.map(runRow).join("") || `<tr><td colspan="9" class="empty">No matching runs</td></tr>`;
       bindFlags(body);
     }
   }
@@ -256,7 +289,7 @@ function timelineHtml(tl, livePhase) {
     const share = Math.min(100, Math.round(100 * (n.latency_ms || 0) / totalMs));
     return `<div class="ph-seg ${cls}" title="${esc(n.phase)}: ${n.events} events, ${fmtMoney(n.cost_usd)}, ${fmtMs(n.latency_ms)}${n.errors ? `, ${n.errors} errors` : ""}">
       <div class="ph-name">${esc(n.phase)}${live ? ' <span class="dot dot-run pulse"></span>' : ""}${n.errors ? ` <span class="e">${n.errors}✕</span>` : ""}</div>
-      <div class="ph-meta">${n.events} ev · ${fmtMoney(n.cost_usd)} · ${fmtMs(n.latency_ms)}</div>
+      <div class="ph-meta">${n.events} events · ${fmtMoney(n.cost_usd)} · ${fmtMs(n.latency_ms)}</div>
       <div class="ph-share"><i style="width:${share}%"></i></div>
     </div>`;
   }).join("")}</div>`;
@@ -274,33 +307,35 @@ async function viewRun(runId, params) {
   const running = m.status === "running";
 
   const tabs = ["artifact", "events", "calls", "report", "review", "plan", "manifest"];
+  const TAB_LABELS = { artifact: "Artifact", events: "Events", calls: "Calls",
+    report: "Report", review: "Review", plan: "Plan", manifest: "Manifest" };
   $view.innerHTML = `
     <div class="run-head">
       <div class="rh-title">
         <h1>${esc(d.task_title || m.task_id)}</h1>
         ${d.task_title ? `<div class="rh-pair dim">${esc(m.task_id)}${d.task_blurb ? ` — ${esc(d.task_blurb)}` : ""}</div>` : ""}
         <div class="rh-pair">${esc(m.orchestrator)} <span class="arrow">→</span> ${esc(m.worker)}</div>
-        <div class="rh-pair dim">${esc(d.group_label || m.run_group || "")}${d.group_label ? ` <span class="dim">(${esc(m.run_group)})</span>` : ""} ${m.replicate ? `· rep ${m.replicate}` : ""} · run ${esc(runId.slice(0, 12))}</div>
+        <div class="rh-pair dim">${esc(d.group_label || m.run_group || "")}${d.group_label ? ` <span class="dim">(${esc(m.run_group)})</span>` : ""} ${m.replicate ? `· replicate ${m.replicate}` : ""} · run ${esc(runId.slice(0, 12))}</div>
       </div>
       <div class="run-stats">
         ${statusChip(m)} ${judgeChip({ ...m, judge_state: d.judge_state, judge_reason: d.judge_reason })}
         ${(() => {
           const js = (d.report && d.report.judges) || {};
           const extra = Object.entries(js).filter(([s]) => s !== (d.report.judge || {}).model);
-          return extra.length ? `<span class="chip chip-dim" title="secondary judge verdicts — the primary axis is ${esc((d.report.judge || {}).model || "unknown")}">${extra.map(([s, j]) => `${esc(slug(s))} ${j && j.score != null ? Number(j.score).toFixed(2) : "—"}`).join(" · ")}</span>` : "";
+          return extra.length ? `<span class="chip chip-dim" title="Secondary judge verdicts — the primary axis is ${esc((d.report.judge || {}).model || "unknown")}">${extra.map(([s, j]) => `${esc(slug(s))} ${j && j.score != null ? Number(j.score).toFixed(2) : "—"}`).join(" · ")}</span>` : "";
         })()}
-        ${kv("cost", fmtMoney(m.total_cost_usd))}
-        ${kv("tokens", fmtTok((m.total_input_tokens || 0) + (m.total_output_tokens || 0)))}
-        ${kv("time", fmtMs(m.latency_ms))}
-        ${m.failure_reason ? kv("failure", esc(m.failure_reason), "") : ""}
+        ${kv("Cost", fmtMoney(m.total_cost_usd))}
+        ${kv("Tokens", fmtTok((m.total_input_tokens || 0) + (m.total_output_tokens || 0)))}
+        ${kv("Duration", fmtMs(m.latency_ms))}
+        ${m.failure_reason ? kv("Failure", esc(m.failure_reason), "") : ""}
         ${flagWidget("run", runId)}
-        <a class="btn" href="#/card?kind=run&target=${esc(runId)}">card →</a>
-        ${d.cancellable ? `<button class="danger" id="cancel-btn">cancel</button>` : ""}
+        <a class="btn" href="#/card?kind=run&target=${esc(runId)}">View card</a>
+        ${d.cancellable ? `<button class="danger" id="cancel-btn">Cancel</button>` : ""}
       </div>
     </div>
     <div class="panel ph-strip" id="tl">${timelineHtml(d.timeline, running ? "running" : null)}</div>
     <div class="tabs">${tabs.map(t =>
-      `<button data-tab="${t}" class="${t === tab ? "active" : ""}">${t}</button>`).join("")}</div>
+      `<button data-tab="${t}" class="${t === tab ? "active" : ""}">${TAB_LABELS[t]}</button>`).join("")}</div>
     <div id="tab-body"></div>`;
 
   for (const b of $view.querySelectorAll(".tabs button")) {
@@ -336,13 +371,13 @@ async function renderTab(runId, tab, d, running) {
 
   if (tab === "artifact") {
     const a = d.artifact;
-    if (!a) { el.innerHTML = `<div class="empty">no artifact stored${running ? " yet" : ""}</div>`; return; }
+    if (!a) { el.innerHTML = `<div class="empty">No artifact stored${running ? " yet" : ""}</div>`; return; }
     let inner = `<div class="artifact-meta"><span>${esc(a.name)}</span><span>${a.bytes} B</span></div>`;
     if (a.ext === "zip") {
       const members = a.members || [];
       inner += `<div class="member-list">${members.map(mm =>
         `<button data-m="${esc(mm.name)}">${esc(mm.name)} <span class="dim">${mm.bytes}B</span></button>`).join("")}</div>
-        <div id="member-view"><div class="empty">pick a member to preview</div></div>`;
+        <div id="member-view"><div class="empty">Select a file to preview</div></div>`;
       el.innerHTML = inner;
       const memberBtns = [...el.querySelectorAll(".member-list button")];
       for (const b of memberBtns) {
@@ -379,7 +414,7 @@ async function renderTab(runId, tab, d, running) {
     const rows = live.rows, details = live.details;
     el.innerHTML = `<div class="ev-wrap" id="ev-wrap">` +
       rows.map((r, i) => evRow(r, details[i])).join("") +
-      `</div>` + (running ? `<div class="dim" style="padding:8px;font-size:11px">streaming…</div>` : "");
+      `</div>` + (running ? `<div class="dim" style="padding:8px;font-size:11px">Streaming…</div>` : "");
     bindEvRows(el, rows, details);
     if (running) poll(async () => {
       try {
@@ -400,8 +435,8 @@ async function renderTab(runId, tab, d, running) {
   if (tab === "calls") {
     const calls = d.calls || [];
     el.innerHTML = `<div class="panel"><table class="data"><tr>
-      <th>phase</th><th>model</th><th class="t-num">in tok</th><th class="t-num">out tok</th>
-      <th class="t-num">cost</th><th class="t-num">ms</th></tr><tbody>` +
+      <th>Phase</th><th>Model</th><th class="t-num">Input tokens</th><th class="t-num">Output tokens</th>
+      <th class="t-num">Cost</th><th class="t-num">Latency</th></tr><tbody>` +
       calls.map(c => `<tr>
         <td class="mono">${esc(c.phase || "")}</td>
         <td class="mono">${esc(c.model || "")}</td>
@@ -409,14 +444,14 @@ async function renderTab(runId, tab, d, running) {
         <td class="t-num">${fmtTok(c.output_tokens)}</td>
         <td class="t-num">${fmtMoney(c.cost_usd)}</td>
         <td class="t-num">${fmtMs(c.latency_ms)}</td>
-      </tr>`).join("") || `<tr><td colspan="6" class="empty">no calls recorded</td></tr>` +
+      </tr>`).join("") || `<tr><td colspan="6" class="empty">No calls recorded</td></tr>` +
       `</tbody></table></div>`;
     return;
   }
 
   const key = { report: "report", review: "review", manifest: "manifest", plan: "plan" }[tab];
   const val = d[key];
-  if (val == null) { el.innerHTML = `<div class="empty">no ${tab} recorded</div>`; return; }
+  if (val == null) { el.innerHTML = `<div class="empty">No ${key} recorded</div>`; return; }
   if (tab === "review" && val && typeof val === "object") {
     el.innerHTML = reviewHtml(val);
     return;
@@ -453,7 +488,7 @@ function reviewHtml(v) {
   const findings = v.findings || [];
   return `<div class="panel panel-pad">
     ${verdict ? `<p style="margin-top:0">${esc(String(verdict))}</p>` : ""}
-    ${findings.length ? `<table class="data"><tr><th>severity</th><th>finding</th><th>evidence</th></tr><tbody>` +
+    ${findings.length ? `<table class="data"><tr><th>Severity</th><th>Finding</th><th>Evidence</th></tr><tbody>` +
       findings.map(f => `<tr>
         <td><span class="chip ${/high|crit/i.test(f.severity || "") ? "chip-fail" : /med/i.test(f.severity || "") ? "chip-warn" : "chip-dim"}">${esc(f.severity || "")}</span></td>
         <td>${esc(f.title || f.finding || "")}</td>
@@ -473,12 +508,12 @@ async function viewCompare(params) {
     <h1>Compare</h1>
     <p class="page-sub">Cell-by-cell delta between two run groups — task × orchestrator × worker.</p>
     <div class="compare-controls">
-      <label class="f">baseline<select id="cmp-a">${groups.map(g =>
+      <label class="f">Baseline<select id="cmp-a">${groups.map(g =>
         `<option ${g.group === a ? "selected" : ""}>${esc(g.group)}</option>`).join("")}</select></label>
       <span class="dim" style="padding-bottom:8px">→</span>
-      <label class="f">candidate<select id="cmp-b">${groups.map(g =>
+      <label class="f">Candidate<select id="cmp-b">${groups.map(g =>
         `<option ${g.group === b ? "selected" : ""}>${esc(g.group)}</option>`).join("")}</select></label>
-      <button class="primary" id="cmp-go" style="margin-bottom:1px">compare</button>
+      <button class="primary" id="cmp-go" style="margin-bottom:1px">Compare</button>
     </div>
     <div id="cmp-out"></div>`;
 
@@ -492,21 +527,22 @@ async function viewCompare(params) {
 async function renderCompare(a, b) {
   const out = document.getElementById("cmp-out");
   if (!out) return;
-  out.innerHTML = `<div class="loading">comparing…</div>`;
+  out.innerHTML = `<div class="loading">Comparing…</div>`;
   const d = await api(`/api/compare?a=${encodeURIComponent(a)}&b=${encodeURIComponent(b)}`);
   const v = d.verdicts || {};
   const chipFor = x => ({ improved: "chip-pass", regressed: "chip-fail", stable: "chip-dim", "one-sided": "chip-warn" }[x]);
+  const verdictLabel = x => ({ improved: "Improved", regressed: "Regressed", stable: "Stable", "one-sided": "One-sided" }[x] || x);
 
   out.innerHTML = `
     <div class="m">
       ${["improved", "regressed", "stable", "one-sided"].map(k =>
-        `<span class="chip ${chipFor(k)}">${k} ${v[k] || 0}</span>`).join("")}
+        `<span class="chip ${chipFor(k)}">${verdictLabel(k)} ${v[k] || 0}</span>`).join("")}
       <span class="chip chip-dim">${esc(a)} ${fmtMoney(d.cost_a)}</span>
       <span class="chip chip-dim">${esc(b)} ${fmtMoney(d.cost_b)}</span>
     </div>
     <div class="panel"><table class="data"><tr>
-      <th>task</th><th>orch → worker</th><th class="t-num">n</th>
-      <th class="t-num">${esc(a)}</th><th class="t-num">${esc(b)}</th><th class="t-num">Δ</th><th>verdict</th>
+      <th>Task</th><th>Orchestrator → Worker</th><th class="t-num">Runs</th>
+      <th class="t-num">${esc(a)}</th><th class="t-num">${esc(b)}</th><th class="t-num">Δ</th><th>Verdict</th>
     </tr><tbody>` +
     (d.cells || []).map(c => {
       const delta = c.verdict === "one-sided" ? "—" : `${((c.pass_b - c.pass_a) * 100).toFixed(0)}pp`;
@@ -518,7 +554,7 @@ async function renderCompare(a, b) {
         <td class="t-num">${fmtPct(c.pass_a)}</td>
         <td class="t-num">${fmtPct(c.pass_b)}</td>
         <td class="t-num cell-delta">${sign}${delta}</td>
-        <td><span class="chip ${chipFor(c.verdict)}">${c.verdict}</span></td>
+        <td><span class="chip ${chipFor(c.verdict)}">${verdictLabel(c.verdict)}</span></td>
       </tr>`;
     }).join("") + `</tbody></table></div>`;
 }
@@ -527,7 +563,7 @@ async function renderCompare(a, b) {
 
 function lbScatter(rows, cardHref, selectedTarget) {
   const pts = rows.filter(r => r.cost_per_pass != null && r.pass_rate != null);
-  if (pts.length < 2) return `<div class="empty">need ≥2 metered pairings to plot cost vs outcome</div>`;
+  if (pts.length < 2) return `<div class="empty">Need at least 2 metered pairings to plot cost vs outcome</div>`;
   const W = 720, H = 260, padL = 40, padR = 14, padT = 16, padB = 30;
   const xs = pts.map(r => r.cost_per_pass);
   const lo = Math.min(...xs), hi = Math.max(...xs);
@@ -536,13 +572,13 @@ function lbScatter(rows, cardHref, selectedTarget) {
   const py = v => padT + (1 - v) * (H - padT - padB);
   const rMax = Math.max(...pts.map(r => r.finished || 1));
   return `<svg class="scatter" viewBox="0 0 ${W} ${H}" role="img"
-    aria-label="cost per pass versus pass rate, one dot per pairing">
+    aria-label="Cost per pass versus pass rate, one dot per pairing">
     <line x1="${padL}" y1="${H - padB}" x2="${W - padR}" y2="${H - padB}" class="sc-axis"/>
     <line x1="${padL}" y1="${padT}" x2="${padL}" y2="${H - padB}" class="sc-axis"/>
     ${[0, 0.5, 1].map(v => `
       <line x1="${padL}" y1="${py(v)}" x2="${W - padR}" y2="${py(v)}" class="sc-grid"/>
       <text x="${padL - 6}" y="${py(v) + 3}" class="sc-lab" text-anchor="end">${v * 100}%</text>`).join("")}
-    <text x="${(W + padL - padR) / 2}" y="${H - 6}" class="sc-lab" text-anchor="middle">cost per pass (log) →</text>
+    <text x="${(W + padL - padR) / 2}" y="${H - 6}" class="sc-lab" text-anchor="middle">Cost per pass (log scale) →</text>
     ${(() => {
       const placed = [];
       const LW = 5.7; // approx char width at 9px mono
@@ -585,7 +621,7 @@ async function viewLeaderboard(params) {
   const d = await api("/api/pairings" + (group ? `?group=${encodeURIComponent(group)}` : ""));
   const lens = d.lenses.find(item => item.id === requestedLens) || d.lenses[0] || {
     id: "overall", label: "Best overall", description: "No eligible pairing yet.",
-    selected_target: "", ranking: [], reason: "", empty_reason: "no pairing has three finished runs yet",
+    selected_target: "", ranking: [], reason: "", empty_reason: "No pairing has three finished runs yet",
   };
   const order = new Map(lens.ranking.map((target, index) => [target, index]));
   const rows = [...d.rows].sort((a, b) => {
@@ -625,21 +661,21 @@ async function viewLeaderboard(params) {
     <div class="story-controls panel">
       <div class="story-control-head">
         <div>
-          <div class="eyebrow">story scope</div>
-          <label class="f">run group
-            <select id="lb-group"><option value="">all groups</option>${groups.map(g =>
+          <div class="eyebrow">Story scope</div>
+          <label class="f">Run group
+            <select id="lb-group"><option value="">All groups</option>${groups.map(g =>
               `<option value="${esc(g.group)}" ${g.group === group ? "selected" : ""}>${esc(g.label || g.group)} · ${g.runs} runs</option>`).join("")}</select>
           </label>
         </div>
         <div class="story-control-actions">
-          <a class="btn" href="/api/shot.png?route=${encodeURIComponent(leaderboardHash().slice(1))}" download>download view</a>
-          ${group ? `<a class="btn" href="${cardHref("group", group)}">cohort card</a>` : ""}
+          <a class="btn" href="/api/shot.png?route=${encodeURIComponent(leaderboardHash().slice(1))}" download>Download view</a>
+          ${group ? `<a class="btn" href="${cardHref("group", group)}">Cohort card</a>` : ""}
         </div>
       </div>
       <div class="lens-strip" role="tablist" aria-label="Story lenses">
         ${d.lenses.map(item => `<a class="lens-tab${item.id === lens.id ? " active" : ""}${item.selected_target ? "" : " empty"}"
           href="${lensHref(item.id)}" role="tab" aria-selected="${item.id === lens.id}">
-          <span>${esc(item.label)}</span><small>${item.selected_target ? esc(item.selected_target.replace("|", " → ")) : "no eligible row"}</small>
+          <span>${esc(item.label)}</span><small>${item.selected_target ? esc(item.selected_target.replace("|", " → ")) : "No eligible row"}</small>
         </a>`).join("")}
       </div>
       <div class="story-selection">
@@ -647,13 +683,13 @@ async function viewLeaderboard(params) {
           <div class="eyebrow">${esc(lens.label)}</div>
           <p>${esc(lens.selected_target ? lens.reason : lens.empty_reason)}</p>
         </div>
-        ${selectedHref ? `<a class="btn primary" href="${selectedHref}">make selected card →</a>` : `<span class="chip chip-dim">no eligible card yet</span>`}
+        ${selectedHref ? `<a class="btn primary" href="${selectedHref}">Create card →</a>` : `<span class="chip chip-dim">No eligible card yet</span>`}
       </div>
     </div>
 
-    <h2>pairing matrix</h2>
+    <h2>Pairing Matrix</h2>
     <div class="panel panel-pad"><table class="data mx">
-      <tr><th class="dim">orch ↓ worker →</th>${mx.workers.map(w =>
+      <tr><th class="dim">Orchestrator ↓ Worker →</th>${mx.workers.map(w =>
         `<th class="mx-h">${esc(slug(w))}</th>`).join("")}</tr>
       ${mx.orchestrators.map(o => `<tr>
         <th class="mx-h">${esc(slug(o))}</th>
@@ -663,42 +699,42 @@ async function viewLeaderboard(params) {
           const a = v == null ? 0 : 0.12 + 0.7 * (v / maxPass);
           const target = `${o}|${w}`;
           return `<td class="mx-cell${c && c.low_sample ? " thin" : ""}${target === lens.selected_target ? " selected" : ""}"
-            title="${esc(o)} → ${esc(w)}${v != null ? ` · pass ${fmtPct(v)} · n=${c.runs}${c.low_sample ? " · low-n" : ""}` : ""}"
+            title="${esc(o)} → ${esc(w)}${v != null ? ` · pass ${fmtPct(v)} · n=${c.runs}${c.low_sample ? " · Low n" : ""}` : ""}"
             ${v != null ? `data-go="${cardHref("pairing", target)}"` : ""}>
             ${v != null ? `<span class="mx-fill" style="opacity:${a.toFixed(2)}">${fmtPct(v)}</span>` : `<span class="dim">·</span>`}
           </td>`;
         }).join("")}</tr>`).join("")}
     </table></div>
 
-    <h2>cost vs outcome</h2>
+    <h2>Cost vs Outcome</h2>
     <p class="page-sub">One dot per pairing — upper-left is cheap and reliable. Dot size = finished runs; faded dots are low-n. Unmetered pairings do not plot.</p>
     <div class="panel panel-pad">${lbScatter(rows, cardHref, lens.selected_target)}</div>
 
-    <h2>pairings · ${esc(lens.label)}</h2>
+    <h2>Pairings — ${esc(lens.label)}</h2>
     <div class="panel"><table class="data"><tr>
-      <th>#</th><th>pairing</th><th class="t-num">runs</th>
-      <th class="t-num">pass</th><th class="t-num">95% CI</th><th class="t-num">judge</th>
-      <th class="t-num">fail</th><th class="t-num">$/pass</th><th class="t-num">cost</th>
+      <th>#</th><th>Pairing</th><th class="t-num">Runs</th>
+      <th class="t-num">Pass</th><th class="t-num">95% CI</th><th class="t-num">Judge</th>
+      <th class="t-num">Fail</th><th class="t-num">Cost / pass</th><th class="t-num">Cost</th>
       <th class="t-num">p50</th><th class="t-num">p90</th>
-      <th>why</th><th></th>
+      <th>Rationale</th><th></th>
     </tr><tbody>` +
     rows.map(r => {
       const rowRank = !r.low_sample && order.has(r.target) ? ++rank : null;
       return `<tr class="${r.low_sample ? "row-thin" : ""}${r.target === lens.selected_target ? "story-selected" : ""}">
         <td class="dim">${rowRank == null ? "—" : `${rowRank}<span class="dim sm"> / ${ranked}</span>`}</td>
         <td class="mono">${esc(slug(r.orchestrator))} <span class="dim">→</span> ${esc(slug(r.worker))}
-          ${r.low_sample ? ' <span class="chip chip-dim">low-n</span>' : ""}${r.target === lens.selected_target ? ' <span class="chip chip-acc">selected</span>' : ""}</td>
+          ${r.low_sample ? ' <span class="chip chip-dim">Low n</span>' : ""}${r.target === lens.selected_target ? ' <span class="chip chip-acc">Selected</span>' : ""}</td>
         <td class="t-num">${r.finished ?? 0}/${r.runs ?? 0}</td>
         <td class="t-num mech-axis">${fmtPct(r.pass_rate)}</td>
         <td class="t-num dim">${r.pass_ci ? `${Math.round(r.pass_ci[0] * 100)}–${Math.round(r.pass_ci[1] * 100)}%` : "—"}</td>
-        <td class="t-num judge-axis" title="${r.judged ? `${r.judged} judged run${r.judged === 1 ? "" : "s"}` : "no judged runs"}">${fmtScore(r.judge_score_median)}${r.judged ? `<span class="dim sm">·${r.judged}</span>` : ""}</td>
+        <td class="t-num judge-axis" title="${r.judged ? `${r.judged} judged run${r.judged === 1 ? "" : "s"}` : "No judged runs"}">${fmtScore(r.judge_score_median)}${r.judged ? `<span class="dim sm">·${r.judged}</span>` : ""}</td>
         <td class="t-num${(r.failure_rate ?? 0) > 0.15 ? ' e' : ''}">${r.failure_rate != null ? fmtPct(r.failure_rate) : "—"}</td>
         <td class="t-num">${r.cost_per_pass != null ? fmtMoney(r.cost_per_pass) : "—"}</td>
         <td class="t-num">${fmtMoney(r.cost_total)}</td>
         <td class="t-num">${fmtMs(r.duration_median_ms)}</td>
         <td class="t-num">${fmtMs(r.duration_p90_ms)}</td>
         <td class="dim why-cell">${esc(r.why || "—")}</td>
-        <td><a class="btn" href="${cardHref("pairing", r.target)}">card</a>
+        <td><a class="btn" href="${cardHref("pairing", r.target)}">Card</a>
           ${flagWidget("pairing", r.target)}</td>
       </tr>`;
     }).join("") + `</tbody></table></div>`;
@@ -724,18 +760,18 @@ async function viewNew() {
     api("/api/models?role=worker"), api("/api/models"),
   ]);
   $view.innerHTML = `
-    <h1>New run</h1>
+    <h1>New Run</h1>
     <p class="page-sub">Launch an evaluation. Replicates &gt; 1 creates a run group.</p>
     <div class="panel panel-pad"><form id="launch" class="form-grid">
-      <label class="f">task<select name="task" required>${tasks.map(t => `<option>${esc(t)}</option>`).join("")}</select></label>
-      <label class="f">orchestrator<select name="orchestrator" required>${orchs.map(m => `<option value="${esc(m.slug)}">${esc(m.slug)}</option>`).join("")}</select></label>
-      <label class="f">worker<select name="worker" required>${workers.map(m => `<option value="${esc(m.slug)}">${esc(m.slug)}${m.executor ? " · executor" : ""}</option>`).join("")}</select></label>
-      <label class="f">judge (optional)<select name="judge"><option value="">none</option>${models.map(m => `<option value="${esc(m.slug)}"${m.default ? " selected" : ""}>${esc(m.slug)}</option>`).join("")}</select></label>
-      <label class="f">replicates<input type="number" name="replicates" value="1" min="1" max="50"></label>
-      <label class="f">seed (optional)<input type="number" name="seed" placeholder="auto"></label>
-      <label class="f wide check-line"><input type="checkbox" name="dry_run" value="1"> dry run — stub models, no API spend</label>
+      <label class="f">Task<select name="task" required>${tasks.map(t => `<option>${esc(t)}</option>`).join("")}</select></label>
+      <label class="f">Orchestrator<select name="orchestrator" required>${orchs.map(m => `<option value="${esc(m.slug)}">${esc(m.slug)}</option>`).join("")}</select></label>
+      <label class="f">Worker<select name="worker" required>${workers.map(m => `<option value="${esc(m.slug)}">${esc(m.slug)}${m.executor ? " · executor" : ""}</option>`).join("")}</select></label>
+      <label class="f">Judge (optional)<select name="judge"><option value="">None</option>${models.map(m => `<option value="${esc(m.slug)}"${m.default ? " selected" : ""}>${esc(m.slug)}</option>`).join("")}</select></label>
+      <label class="f">Replicates<input type="number" name="replicates" value="1" min="1" max="50"></label>
+      <label class="f">Seed (optional)<input type="number" name="seed" placeholder="auto"></label>
+      <label class="f wide check-line"><input type="checkbox" name="dry_run" value="1"> Dry run — stub models, no API spend</label>
       <div class="wide form-actions">
-        <button type="submit" class="primary">launch</button>
+        <button type="submit" class="primary">Launch</button>
         <span class="form-error" id="launch-err"></span>
       </div>
     </form></div>`;
@@ -771,8 +807,8 @@ function flagOf(kind, target) { return FLAGS[`${kind}:${target}`]?.flag || ""; }
 function flagWidget(kind, target) {
   const cur = flagOf(kind, target);
   return `<span class="flag-pair" data-kind="${esc(kind)}" data-target="${esc(target)}">
-    <button class="flag-btn ${cur === "interesting" ? "f-interesting" : ""}" data-f="interesting" title="flag interesting">★</button>
-    <button class="flag-btn ${cur === "not" ? "f-not" : ""}" data-f="not" title="flag not interesting">∅</button>
+    <button class="flag-btn ${cur === "interesting" ? "f-interesting" : ""}" data-f="interesting" title="Flag as interesting">★</button>
+    <button class="flag-btn ${cur === "not" ? "f-not" : ""}" data-f="not" title="Flag as not interesting">∅</button>
   </span>`;
 }
 
@@ -820,17 +856,17 @@ function galleryCard(card, lens, group) {
       : `${card.task_id || "run"} · ${card.run_group || "ungrouped"}`;
   const metrics = (story.metrics || []).slice(0, 3);
   const flags = card.flag
-    ? `<span class="chip ${card.flag === "interesting" ? "chip-acc" : "chip-fail"}">${card.flag === "not" ? "not interesting" : "flagged"}</span>`
+    ? `<span class="chip ${card.flag === "interesting" ? "chip-acc" : "chip-fail"}">${card.flag === "not" ? "Not interesting" : "Flagged"}</span>`
     : "";
-  const proofLabel = proof.status === "available" ? "proof ready" : proof.status === "partial" ? "partial proof" : "no stored proof";
+  const proofLabel = proof.status === "available" ? "Proof ready" : proof.status === "partial" ? "Partial proof" : "No stored proof";
   return `<article class="gallery-card panel${card.flag === "interesting" ? " story-selected" : ""}">
-    <div class="gallery-card-top"><span class="chip chip-dim">${esc(card.kind)}</span><span class="gallery-card-flags">${flags}${flagWidget(card.kind, card.target)}</span></div>
+    <div class="gallery-card-top"><span class="chip chip-dim">${esc(card.kind[0].toUpperCase() + card.kind.slice(1))}</span><span class="gallery-card-flags">${flags}${flagWidget(card.kind, card.target)}</span></div>
     <a class="gallery-card-title" href="${href}">${esc(title)}</a>
     <div class="gallery-card-context">${esc(context)}</div>
     <p class="gallery-card-claim">${esc(story.claim || card.verdict_line || "Evidence is still incomplete.")}</p>
     <div class="gallery-card-metrics">${metrics.map(metric => `<span><b>${esc(metric.value)}</b><small>${esc(metric.label)}</small></span>`).join("")}</div>
     <div class="gallery-card-foot"><span class="proof-status ${proof.status || "unavailable"}">${esc(proofLabel)}</span>
-      <span class="gallery-card-actions"><a class="btn" href="${href}">open</a><a class="btn" href="/api/shot.png?route=${encodeURIComponent(href.slice(1))}" download>png</a></span>
+      <span class="gallery-card-actions"><a class="btn" href="${href}">Open</a><a class="btn" href="/api/shot.png?route=${encodeURIComponent(href.slice(1))}" download>PNG</a></span>
     </div>
   </article>`;
 }
@@ -867,20 +903,20 @@ async function viewCards(params) {
     Cards are local exports; nothing is posted automatically.</p>
     <div class="gallery-controls panel">
       <div class="gallery-control-row">
-        <label class="f">run group<select id="cards-group"><option value="">all groups</option>${groups.map(g =>
+        <label class="f">Run group<select id="cards-group"><option value="">All groups</option>${groups.map(g =>
           `<option value="${esc(g.group)}" ${g.group === group ? "selected" : ""}>${esc(g.label || g.group)} · ${g.runs} runs</option>`).join("")}</select></label>
-        <label class="f">scope<select id="cards-scope">${(catalog.scopes || []).map(item =>
+        <label class="f">Scope<select id="cards-scope">${(catalog.scopes || []).map(item =>
           `<option value="${esc(item.id)}" ${item.id === scope ? "selected" : ""}>${esc(item.label)}</option>`).join("")}</select></label>
-        <label class="f">lens<select id="cards-lens">${lenses.map(item =>
+        <label class="f">Lens<select id="cards-lens">${lenses.map(item =>
           `<option value="${esc(item.id)}" ${item.id === activeLens.id ? "selected" : ""}>${esc(item.label)}</option>`).join("")}</select></label>
-        <label class="check-line gallery-flag-filter"><input id="cards-flagged" type="checkbox" ${flagged ? "checked" : ""}> flagged only</label>
+        <label class="check-line gallery-flag-filter"><input id="cards-flagged" type="checkbox" ${flagged ? "checked" : ""}> Flagged only</label>
       </div>
       <div class="gallery-current"><span class="eyebrow">${esc(activeLens.label)}</span>
-        <span>${cards.length} card${cards.length === 1 ? "" : "s"}${group ? ` · ${esc(group)}` : " · all groups"}</span>
-        <a class="btn" href="#/leaderboard?${new URLSearchParams({ group, lens: activeLens.id }).toString()}">open leaderboard →</a></div>
+        <span>${cards.length} card${cards.length === 1 ? "" : "s"}${group ? ` · ${esc(group)}` : " · All groups"}</span>
+        <a class="btn" href="#/leaderboard?${new URLSearchParams({ group, lens: activeLens.id }).toString()}">Open leaderboard →</a></div>
     </div>
     <div class="gallery-grid">${cards.map(card => galleryCard(card, activeLens.id, group)).join("") ||
-      `<div class="empty gallery-empty">no cards match this view.<br><a href="${cardHash()}">clear filters</a></div>`}</div>`;
+      `<div class="empty gallery-empty">No cards match this view.<br><a href="${cardHash()}">Clear filters</a></div>`}</div>`;
   for (const [id, key] of [["cards-group", "group"], ["cards-scope", "scope"], ["cards-lens", "lens"]]) {
     document.getElementById(id).addEventListener("change", e => {
       const next = new URLSearchParams({ scope, lens: activeLens.id });
@@ -936,14 +972,14 @@ function cardProof(proof, evidence) {
   }
   return `<div class="xc-proof-grid">
     <section class="xc-proof-panel">
-      <div class="xc-proof-head"><span>terminal / tests</span><span class="proof-status ${proofStatus}">${transcriptText ? "stored" : "unavailable"}</span></div>
+      <div class="xc-proof-head"><span>Terminal / Tests</span><span class="proof-status ${proofStatus}">${transcriptText ? "Stored" : "Unavailable"}</span></div>
       ${left}
     </section>
     <section class="xc-proof-panel">
-      <div class="xc-proof-head"><span>code / artifact</span><span class="proof-status ${hasArtifact ? "stored" : "unavailable"}">${hasArtifact ? esc(artifact.name) : "unavailable"}</span></div>
+      <div class="xc-proof-head"><span>Code / Artifact</span><span class="proof-status ${hasArtifact ? "stored" : "unavailable"}">${hasArtifact ? esc(artifact.name) : "Unavailable"}</span></div>
       ${right}
     </section>
-  </div>${runId ? `<div class="xc-proof-foot">representative evidence · <a href="#/run/${esc(runId)}">inspect run ${esc(runId.slice(0, 12))}</a></div>` : ""}`;
+  </div>${runId ? `<div class="xc-proof-foot">Representative evidence — <a href="#/run/${esc(runId)}">inspect run ${esc(runId.slice(0, 12))}</a></div>` : ""}`;
 }
 
 function cardTitle(d, kind) {
@@ -1001,15 +1037,15 @@ async function viewCard(params) {
     caveats: [],
   };
   const metrics = story.metrics?.length ? story.metrics : [
-    { id: "mechanical", label: "mechanical", value: d.passes == null ? "—" : d.passes ? "PASS" : "FAIL", detail: "execution gate", tone: "mech" },
-    { id: "judge", label: "judge axis", value: fmtScore(d.judge_score), detail: d.judge_state || "not judged", tone: "judge" },
-    { id: "cost", label: "cost", value: fmtMoney(d.cost_usd), detail: "observed spend", tone: "cost" },
+    { id: "mechanical", label: "Mechanical", value: d.passes == null ? "—" : d.passes ? "PASS" : "FAIL", detail: "Execution gate", tone: "mech" },
+    { id: "judge", label: "Judge", value: fmtScore(d.judge_score), detail: d.judge_state || "not judged", tone: "judge" },
+    { id: "cost", label: "Cost", value: fmtMoney(d.cost_usd), detail: "Observed spend", tone: "cost" },
   ];
   const signals = story.signals || [];
   const flag = flagOf(kind, target);
   const signalHtml = signals.length
     ? `<div class="xc-signal-row">${signals.map(signal => `<span class="xc-signal ${esc(signal.tone || "info")}">${esc(signal.label)}</span>`).join("")}</div>`
-    : `<div class="xc-signal-row"><span class="xc-signal neutral">no escalation signal</span></div>`;
+    : `<div class="xc-signal-row"><span class="xc-signal neutral">No escalation signal</span></div>`;
   const caveats = (story.caveats || []).slice(0, 2).join(" · ");
   const inspectHref = kind === "group"
     ? `#/runs?group=${encodeURIComponent(target)}`
@@ -1020,22 +1056,22 @@ async function viewCard(params) {
   $view.innerHTML = `<div class="card-stage">
     <div class="card-toolbar">
       ${flagWidget(kind, target)}
-      <a class="btn" href="#/cards">all cards</a>
-      <a class="btn" href="${inspectHref}">inspect →</a>
-      <a class="btn" href="/api/shot.png?route=${encodeURIComponent(location.hash.slice(1))}" download>download png</a>
-      <button class="btn" id="copy-context">copy context</button>
-      <input id="thread-model" class="thread-model" placeholder="writer model (blank = template)" value="moonshotai/kimi-k2">
-      <button class="btn primary" id="btn-thread">write follow-up</button>
-      <span class="hint">1200×675 PNG · ${flag === "interesting" ? "flagged story" : "local export"}</span>
+      <a class="btn" href="#/cards">All cards</a>
+      <a class="btn" href="${inspectHref}">Inspect →</a>
+      <a class="btn" href="/api/shot.png?route=${encodeURIComponent(location.hash.slice(1))}" download>Download PNG</a>
+      <button class="btn" id="copy-context">Copy context</button>
+      <input id="thread-model" class="thread-model" placeholder="Writer model (blank = template)" value="moonshotai/kimi-k2">
+      <button class="btn primary" id="btn-thread">Write follow-up</button>
+      <span class="hint">1200×675 PNG · ${flag === "interesting" ? "Flagged story" : "Local export"}</span>
     </div>
     <div class="xcard" data-card-scope="${esc(kind)}" data-card-lens="${esc(story.lens?.id || lens)}">
       <div class="xc-top">
         <div class="xc-brand"><span class="mark">◆</span><span class="word">orchestral</span><span class="sub">observatory</span></div>
-        <div class="xc-suite">${esc(kind)} card · suite ${esc(d.suite || "—")}</div>
+        <div class="xc-suite">${esc(kind[0].toUpperCase() + kind.slice(1))} card · suite ${esc(d.suite || "—")}</div>
       </div>
       <div class="xc-story-head">
         <div class="xc-story-title">
-          <div class="xc-scope">${esc(kind === "group" ? "run group" : kind === "pairing" ? "orchestrator → worker" : "individual run")}</div>
+          <div class="xc-scope">${esc(kind === "group" ? "Run group" : kind === "pairing" ? "Orchestrator → Worker" : "Individual run")}</div>
           <div class="xc-title">${cardTitle(d, kind)}</div>
           <div class="xc-sub">${cardContext(d, kind, story.cohort)}</div>
         </div>
@@ -1046,7 +1082,7 @@ async function viewCard(params) {
       <div class="xc-metrics">${metrics.map(cardMetric).join("")}</div>
       ${cardProof(proof, evidence)}
       <div class="xc-footer">
-        <span>${esc(caveats || "mechanical and judge axes remain separate")}</span>
+        <span>${esc(caveats || "Mechanical and judge axes remain separate")}</span>
         <span>${esc(d.suite || "suite —")} · ${esc((story.provenance?.source || "orchestral observatory"))}</span>
       </div>
     </div>
@@ -1056,33 +1092,33 @@ async function viewCard(params) {
   document.getElementById("copy-context").addEventListener("click", async e => {
     const button = e.currentTarget;
     const text = story.caption || d.description || story.claim;
-    try { await navigator.clipboard?.writeText(text); button.textContent = "copied"; }
-    catch { button.textContent = "copy failed"; }
+    try { await navigator.clipboard?.writeText(text); button.textContent = "Copied"; }
+    catch { button.textContent = "Copy failed"; }
   });
   document.getElementById("btn-thread").addEventListener("click", async e => {
     const btn = e.currentTarget;
     btn.disabled = true;
-    btn.textContent = "writing…";
+    btn.textContent = "Writing…";
     try {
       const body = new URLSearchParams({ kind, target, lens, model: document.getElementById("thread-model").value.trim() });
       if (scopedGroup) body.set("group", scopedGroup);
       const out = await api("/api/thread", { method: "POST", body });
       document.getElementById("thread-panel").innerHTML = `<div class="panel panel-pad thread">
-        <h3>follow-up thread ${out.templated ? '<span class="chip chip-dim">template</span>' : `<span class="chip">by ${esc(slug(out.model))}</span>`}</h3>
-        ${out.posts.map((p, i) => `<div class="tpost"><span class="tnum">${i + 2}/${out.posts.length + 1}</span><p>${esc(p)}</p><button class="btn copy" data-p="${esc(p)}">copy</button></div>`).join("")}
-        ${out.error ? `<div class="dim">writer fell back to template: ${esc(out.error)}</div>` : ""}
+        <h3>Follow-up thread ${out.templated ? '<span class="chip chip-dim">Template</span>' : `<span class="chip">By ${esc(slug(out.model))}</span>`}</h3>
+        ${out.posts.map((p, i) => `<div class="tpost"><span class="tnum">${i + 2}/${out.posts.length + 1}</span><p>${esc(p)}</p><button class="btn copy" data-p="${esc(p)}">Copy</button></div>`).join("")}
+        ${out.error ? `<div class="dim">Writer fell back to template: ${esc(out.error)}</div>` : ""}
       </div>`;
       for (const b of $view.querySelectorAll("button.copy")) {
         b.addEventListener("click", async () => {
-          try { await navigator.clipboard?.writeText(b.dataset.p); b.textContent = "copied"; }
-          catch { b.textContent = "copy failed"; }
+          try { await navigator.clipboard?.writeText(b.dataset.p); b.textContent = "Copied"; }
+          catch { b.textContent = "Copy failed"; }
         });
       }
     } catch (ex) {
-      document.getElementById("thread-panel").innerHTML = `<div class="panel panel-pad dim">thread failed: ${esc(ex.message)}</div>`;
+      document.getElementById("thread-panel").innerHTML = `<div class="panel panel-pad dim">Thread failed: ${esc(ex.message)}</div>`;
     }
     btn.disabled = false;
-    btn.textContent = "write follow-up";
+    btn.textContent = "Write follow-up";
   });
   bindFlags($view);
   await waitForCardAssets();
@@ -1098,14 +1134,14 @@ async function viewAbout() {
     executes — then grades the result twice, on two independent axes.</p>
 
     <div class="panel panel-pad">
-      <h2>The two axes</h2>
+      <h2>The Two Axes</h2>
       <table class="data">
-        <tr><th>axis</th><th>what it means</th><th>how it's graded</th></tr>
-        <tr><td><b>mechanical</b></td>
+        <tr><th>Axis</th><th>What it means</th><th>How it's graded</th></tr>
+        <tr><td><b>Mechanical</b></td>
             <td>Did it work? Binary, deterministic, no opinions.</td>
             <td>Code runs its own tests · SQL output is diffed against a
             reference · pages are checked for required elements.</td></tr>
-        <tr><td><b>judge</b></td>
+        <tr><td><b>Judge</b></td>
             <td>Is it good? A separate model scores quality 0–1.</td>
             <td>A judge model reads the actual artifact (code, HTML, SQL)
             and scores it. <span class="dim">Score ≥ the configured bar
@@ -1117,20 +1153,20 @@ async function viewAbout() {
     </div>
 
     <div class="panel panel-pad">
-      <h2>Judge states</h2>
+      <h2>Judge States</h2>
       <table class="data">
-        <tr><th>state</th><th>meaning</th></tr>
-        <tr><td><span class="chip chip-info">judge 0.83</span></td>
+        <tr><th>State</th><th>Meaning</th></tr>
+        <tr><td><span class="chip chip-info">Judge 0.83</span></td>
             <td>Scored — the number is the judge's verdict.</td></tr>
-        <tr><td><span class="chip chip-dim">not judged</span></td>
+        <tr><td><span class="chip chip-dim">Not judged</span></td>
             <td>No judge was run for this run (older batches predate the
             judge axis, or it wasn't configured).</td></tr>
-        <tr><td><span class="chip chip-warn">judge inconclusive</span></td>
+        <tr><td><span class="chip chip-warn">Judge inconclusive</span></td>
             <td>A verdict was attempted but couldn't be parsed — retryable,
             never counts as a rejection.</td></tr>
-        <tr><td><span class="chip chip-dim">not judgeable</span></td>
+        <tr><td><span class="chip chip-dim">Not judgeable</span></td>
             <td>No artifact survives to score — nothing to show the judge.</td></tr>
-        <tr><td><span class="chip chip-warn">judge unknown</span></td>
+        <tr><td><span class="chip chip-warn">Judge unknown</span></td>
             <td>report.json could not be read, so whether the judge ran is
             unknown. The verdict may have been lost, not never produced.</td></tr>
       </table>
@@ -1139,7 +1175,7 @@ async function viewAbout() {
     <div class="panel panel-pad">
       <h2>Naming</h2>
       <table class="data">
-        <tr><th>you see</th><th>it's</th></tr>
+        <tr><th>You see</th><th>What it is</th></tr>
         <tr><td class="mono">code-expr-parser</td>
             <td>A task: <code>&lt;type&gt;-&lt;slug&gt;</code>. The type says
             what's being graded (code, sql, html…), the slug names the
@@ -1156,12 +1192,12 @@ async function viewAbout() {
     </div>
 
     <div class="panel panel-pad">
-      <h2>Reading the numbers</h2>
-      <p><b>pass %</b> is the mechanical pass rate. <b>judge</b> is the mean
+      <h2>Reading the Numbers</h2>
+      <p><b>Pass %</b> is the mechanical pass rate. <b>Judge</b> is the mean
       judge score or the count approved. <b>CI</b> is the Wilson 95%
       interval — wide on small samples, by design. Rows under the minimum
       sample size are dimmed and sorted below full-evidence rows.
-      <b>cost</b> is metered provider spend for that cell.</p>
+      <b>Cost</b> is metered provider spend for that cell.</p>
     </div>`;
 }
 
@@ -1190,7 +1226,7 @@ async function route() {
     else if (path === "/card") await viewCard(params);
     else if (path === "/new") await viewNew();
     else if (path === "/about") await viewAbout();
-    else $view.innerHTML = `<div class="empty">unknown view ${esc(path)}</div>`;
+    else $view.innerHTML = `<div class="empty">Unknown view: ${esc(path)}</div>`;
   } catch (e) {
     $view.innerHTML = `<div class="empty">${esc(e.message)}</div>`;
   }

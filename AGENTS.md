@@ -147,3 +147,13 @@ Whether `main` *should* require an approving review is an open board decision,
 not a repository fact. It is tracked in DUK-227 (card `852b1cdb`, `human_only`);
 DUK-210 is closed. Do not assume either answer, and do not act on the
 `REVIEW_REQUIRED` story this section used to tell.
+
+## Code graph index (optional accelerator)
+
+This repo may be indexed by `codebase-memory-mcp` (CBM) on an agent's local
+machine — `.codebase-memory/` is gitignored and the index lives outside the
+repo's build/test paths. If your harness exposes CBM tools (`search_graph`,
+`trace_path`, `get_architecture`), prefer them for structural questions —
+"who calls X", "how does a run reach the worker" — instead of grep/read
+loops. The repo does not depend on it: no CBM installed means grep works the
+same as always.

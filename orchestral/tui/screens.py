@@ -135,7 +135,7 @@ class RunDetailScreen(Screen):
             log.write(f"{ts} [{phase}] {etype} {detail}")
 
         table = self.query_one("#detail-calls", DataTable)
-        table.add_columns("phase", "role", "model", "in", "out", "cost", "api cost", "pricing", "ms", "attempt", "err")
+        table.add_columns("Phase", "Role", "Model", "In", "Out", "Cost", "API cost", "Pricing", "ms", "Attempt", "Err")
         for c in data["calls"]:
             table.add_row(
                 c.get("phase") or "-", c.get("role") or "-", c.get("model") or "-",
@@ -184,7 +184,7 @@ class GroupsScreen(Screen):
 
     def on_mount(self) -> None:
         table = self.query_one("#groups-table", DataTable)
-        table.add_columns("group", "task", "orchestrator", "worker", "n", "pass%", "score±sd", "cost±sd", "p50", "p95", "succ/$", "failures")
+        table.add_columns("Group", "Task", "Orchestrator", "Worker", "n", "Pass %", "Score ± SD", "Cost ± SD", "p50", "p95", "Pass / $", "Failures")
         for c in aggregate(self._store.list_runs(limit=None)):
             score = f"{c.score_mean:.2f}±{c.score_sd:.2f}" if c.score_mean is not None else "-"
             cost = f"{c.cost_mean:.4f}±{c.cost_sd:.4f}"
@@ -244,7 +244,7 @@ class LiveRunScreen(Screen):
         yield Footer()
 
     def on_mount(self) -> None:
-        self.query_one("#live-events", DataTable).add_columns("time", "event", "worker", "detail")
+        self.query_one("#live-events", DataTable).add_columns("Time", "Event", "Worker", "Detail")
         self.query_one("#live-events", DataTable).focus()
         self._poll()
         self._timer = self.set_interval(0.75, self._poll)
@@ -394,8 +394,8 @@ class LeaderboardScreen(Screen):
     def on_mount(self) -> None:
         table = self.query_one("#lb-table", DataTable)
         table.add_columns(
-            "orchestrator", "worker", "n", "tasks", "pass%", "judge",
-            "med cost", "med dur", "fail%", "$/pass", "conf",
+            "Orchestrator", "Worker", "n", "Tasks", "Pass %", "Judge",
+            "Med. cost", "Med. duration", "Fail %", "$ / pass", "Confidence",
         )
         self.app.run_worker(self._load, thread=True, name="leaderboard")
 

@@ -209,6 +209,17 @@ def make_handler(obs: Observatory) -> type[BaseHTTPRequestHandler]:
                 if not a or not b:
                     return self._json({"error": "compare needs ?a=<group>&b=<group>"}, 400)
                 self._json(state.compare_payload(obs.store, a, b))
+            elif path == "/api/experiment":
+                # ?matrix=<name> resolves to experiments/<name>.yaml —
+                # id-shaped names only, so the param can't wander the fs
+                name = self._q1(qs, "matrix", "jev-ab") or "jev-ab"
+                if not re.fullmatch(r"[A-Za-z0-9._-]+", name) or ".." in name:
+                    return self._json({"error": "matrix must be a spec name under experiments/"}, 400)
+                payload = state.experiment_payload(
+                    obs.store, obs.tasks_dir.parent / "experiments" / f"{name}.yaml")
+                if payload is None:
+                    return self._json({"error": f"no experiment matrix '{name}'"}, 404)
+                self._json(payload)
             elif path == "/api/flags":
                 self._json(obs.store.annotations())
             elif path == "/api/cards":

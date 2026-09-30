@@ -85,6 +85,10 @@ orchestral dashboard               # reports/dashboard.html
 | `grid` | Every orchestrator × worker pairing on one task (`--orchestrators`, `--workers`, `--jobs`) |
 | `batch` | One pairing across many tasks (`--batch-dir` or `--batch-tasks`, `--jobs`) |
 | `ablate` | Sweep one knob for a pairing (`--sweep retry_limit=0,1,2` or `prompt_variant=terse,detailed`) |
+| `experiment` | Batched A/B driver — paired baseline/jev-assist arms per matrix cell, cost-scaled reps, spend + evidence gates (`--matrix`, `--budget`, `--batch-size`, `--jobs`) |
+| `coverage` | Experiment ledger — matrix cells vs stored runs: done/pending/aborted + posted marks (`--matrix`, `--json`) |
+| `publish-mark` | Check a cell or run off as published (`--target`, `--url`, `--clear`) |
+| `fixtures` | Pinned-repo fixture registry for v3 tasks (`list`, `fetch`, `check`) — see [docs/v3-task-family.md](docs/v3-task-family.md) |
 | `history` | Per-model aggregates across all stored runs |
 | `report` | List/compare runs (`--pairings`, `--leaderboard`, `--groups`, `--compare A,B`, `--html`, `--sort`, `--json`) |
 | `export` | CSV run/leaderboard export, Markdown run audit, JSONL trace (`--format`, `--run`, `--out`) |
@@ -106,6 +110,28 @@ Shared run flags (on `run`, `grid`, `batch`, `ablate`): `--planner raw|ce-plan`,
 `--judge <slug>`, `--no-judge-cache`, `--retry-limit N`, `--prompt-variant NAME`,
 `--replicates N`, `--group NAME`, `--replicate I`, `--seed S`, `--verbose`,
 `--dry-run`, `--json`.
+
+### A/B experiments
+
+`harness.py experiment --matrix experiments/jev-ab.yaml --budget 12.00
+--daily-cap 15.00 --seed 7 --jobs 2` runs every `(task, orchestrator,
+worker)` cell on two arms — `baseline` and `jev` (`--jev-assist`) — with
+paired replicate indexes and interleaved arm order. Rep count is
+cost-scaled: `ceil(cell_budget / estimated pair cost)` clamped to [5, 100],
+priced from each cell's own billing history. Batches of `--batch-size`
+replicates run between gates: live `calls`-table spend vs `--budget` and
+`--daily-cap`, batch infra-error rate (>50% aborts the cell, persisted),
+and the arm-difference 95% CI (half-width ≤ `--diff-eps` → early stop).
+Interrupt and re-run to resume — `done`/`aborted` cells are skipped.
+`--dry-run` prints the priced plan and writes nothing.
+
+`harness.py coverage --matrix …` renders the ledger (state, per-arm
+pass counts, difference CI, verdict, posted mark); `publish-mark` checks a
+cell off once its result ships. The observatory's overview shows the same
+table. Judge is constant across arms (the decisions engine) — judge-score
+deltas are self-referential and labeled as such; mechanical pass is the
+declared primary axis. Matrices are committed under `experiments/` — see
+[experiments/README.md](experiments/README.md).
 
 Live code-task verification is fail-closed: hidden suites do not run unless an
 isolated runtime is configured, and host subprocess execution is never a

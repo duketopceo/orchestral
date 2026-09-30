@@ -1,0 +1,51 @@
+# Repo-fixture registry — the committed contract for v3 real-repo tasks.
+#
+# Each entry pins a public repository at an immutable commit. `harness.py
+# fixtures fetch` downloads the codeload tarball, stages wheels for
+# `verify_deps` into `wheelhouse/`, and writes a sha256 lock. Fetched blobs
+# (`*.tar.gz`, `*.lock.json`) are gitignored — third-party code is never
+# vendored into this repository.
+#
+# Gates enforced at load time (see orchestral/fixtures.py):
+#   - repo: GitHub "org/name" (codeload fetch, no credentials)
+#   - commit: full 40-hex sha — tags and branches are mutable, not allowed
+#   - license: must be in the redistribution allowlist
+#     (mit, bsd-2-clause, bsd-3-clause, apache-2.0, isc, psf-2.0, python-2.0)
+#   - license_url: public https URL a reviewer can check
+#   - verify_deps: every requirement pinned (pkg==version) — unpinned deps
+#     resolve to different wheels on different days and the lock stops
+#     meaning anything
+#
+# Contamination honesty: small/obscure repos and recent commits reduce — but
+# do not eliminate — pretraining recall. Record the risk on each task's
+# metadata.contamination_risk, not here.
+fixtures:
+  more-itertools-10.8:
+    repo: more-itertools/more-itertools
+    commit: 1ea82a711c69f590054987b5cb194157f8ce8ac4
+    license: MIT
+    license_url: https://github.com/more-itertools/more-itertools/blob/master/LICENSE
+    verify_deps:
+      - pytest==9.1.1
+      - iniconfig==2.3.0
+      - packaging==26.3
+      - pluggy==1.6.0
+      - pygments==2.21.0
+    notes: >
+      Pure-python iteration utilities; self-contained test suite, no
+      third-party runtime deps. Moderate GitHub visibility (~3.5k stars) —
+      contamination risk medium-low.
+  boltons-25.1:
+    repo: mahmoud/boltons
+    commit: 4e5faa3d7e4008d89e0d8bf1ea87b6d9a061a16d
+    license: BSD-3-Clause
+    license_url: https://github.com/mahmoud/boltons/blob/master/LICENSE
+    verify_deps:
+      - pytest==9.1.1
+      - iniconfig==2.3.0
+      - packaging==26.3
+      - pluggy==1.6.0
+      - pygments==2.21.0
+    notes: >
+      Broad stdlib-adjacent utility library; large function surface makes it
+      good for feature-gap tasks. Moderate visibility (~7k stars).

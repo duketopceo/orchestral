@@ -543,7 +543,7 @@ def cmd_grid(args: argparse.Namespace) -> None:
 
     print("\nGrid summary")
     rep_col = f"{'rep':>4} " if n_reps > 1 else ""
-    print(f"{'orchestrator':<40} {'worker':<40} {rep_col}{'cost':>10} {'tokens':>8} {'pass':>6} {'score':>6}")
+    print(f"{'Orchestrator':<40} {'Worker':<40} {rep_col}{'Cost':>10} {'Tokens':>8} {'Pass':>6} {'Score':>6}")
     for r in results:
         score = f"{r['score']:.2f}" if r['score'] is not None else "-"
         rep = f"{r['replicate']:>4} " if n_reps > 1 else ""
@@ -642,7 +642,7 @@ def cmd_batch(args: argparse.Namespace) -> None:
 
     print(f"\nBatch summary ({len(results)} runs across {len(paths)} tasks)")
     rep_col = f"{'rep':>4} " if n_reps > 1 else ""
-    print(f"{'task_id':<30} {rep_col}{'cost':>10} {'tokens':>8} {'pass':>6} {'score':>6}")
+    print(f"{'Task':<30} {rep_col}{'Cost':>10} {'Tokens':>8} {'Pass':>6} {'Score':>6}")
     for r in results:
         score = f"{r['score']:.2f}" if r['score'] is not None else "-"
         rep = f"{r['replicate']:>4} " if n_reps > 1 else ""
@@ -748,7 +748,7 @@ def cmd_ablate(args: argparse.Namespace) -> None:
 
     print(f"\nAblation: {knob} on {task.id} ({orchestrator.slug} → {base_worker.slug})")
     rep_col = f"{'rep':>4} " if n_reps > 1 else ""
-    print(f"{knob:<16} {rep_col}{'cost':>10} {'tokens':>8} {'pass':>6} {'score':>6}")
+    print(f"{knob:<16} {rep_col}{'Cost':>10} {'Tokens':>8} {'Pass':>6} {'Score':>6}")
     for r in results:
         score = f"{r['score']:.2f}" if r['score'] is not None else "-"
         rep = f"{r['replicate']:>4} " if n_reps > 1 else ""
@@ -773,7 +773,7 @@ def cmd_history(args: argparse.Namespace) -> None:
         if not table:
             continue
         print(f"\n{role.capitalize()} history")
-        print(f"{'model':<45} {'runs':>5} {'pass%':>7} {'avg score':>9} {'avg cost':>11} {'total cost':>11}")
+        print(f"{'Model':<45} {'Runs':>5} {'Pass %':>7} {'Avg score':>9} {'Avg cost':>11} {'Total cost':>11}")
         for name, s in sorted(table.items(), key=lambda kv: -kv[1]["total_cost"]):
             pass_pct = f"{s['pass_rate'] * 100:.1f}%" if s["pass_rate"] is not None else "-"
             score = f"{s['avg_score']:.2f}" if s["avg_score"] is not None else "-"

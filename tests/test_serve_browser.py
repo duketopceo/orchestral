@@ -60,7 +60,7 @@ class TestBrowserSmoke(unittest.TestCase):
                 self.assertIn("t-task", pg.inner_text("body"))
                 pg.goto(f"http://127.0.0.1:{self.port}/#/new")
                 pg.wait_for_selector("button.primary")
-                self.assertIn("launch", pg.inner_text("body"))
+                self.assertIn("Launch", pg.inner_text("body"))
             finally:
                 browser.close()
 

@@ -51,7 +51,7 @@ class TestDashboardScatter(unittest.TestCase):
         ]
         summary = {"runs": 2, "total_cost_usd": 0.03, "total_tokens": 60}
         page = _dashboard_html(runs, summary)
-        self.assertIn("Cost vs quality", page)
+        self.assertIn("Cost vs Quality", page)
         self.assertIn("<svg", page)
         self.assertIn("<circle", page)
         self.assertIn("Orchestrator history", page)

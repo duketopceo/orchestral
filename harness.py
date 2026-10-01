@@ -1332,6 +1332,31 @@ def cmd_prices(args: argparse.Namespace) -> None:
     if drifted:
         print(f"\n{len(drifted)} model(s) beyond {args.threshold:.0%} drift — update models/*.yaml or check for silent rerouting.")
 
+def cmd_models(args: argparse.Namespace) -> None:
+    """Provider model catalog — sync the remote list for the observatory."""
+    from orchestral import remotecatalog
+
+    if args.models_cmd == "sync":
+        url = args.url or remotecatalog.DEFAULT_MODELS_URL
+        try:
+            catalog = remotecatalog.fetch_remote_catalog(url)
+        except Exception as exc:
+            print(f"catalog sync failed: {exc}")
+            sys.exit(1)
+        out = remotecatalog.write_catalog(args.models_dir, catalog)
+        free = sum(1 for m in catalog["models"] if m["free"])
+        expiring = sum(1 for m in catalog["models"] if m["expires"])
+        print(
+            f"synced {len(catalog['models'])} models from {url} → {out} "
+            f"({free} free, {expiring} with expiry dates)"
+        )
+        print(
+            "note: the provider list says what exists, not what your account "
+            "can reach — provider blocks show up as call errors, not here."
+        )
+        return
+
+
 def cmd_fixtures(args: argparse.Namespace) -> None:
     """Repo fixtures for v3 real-repo tasks: fetch / check / list."""
     from orchestral.fixtures import (
@@ -1805,12 +1830,17 @@ def cmd_serve(args: argparse.Namespace) -> None:
 def cmd_cards(args: argparse.Namespace) -> None:
     """Batch-export X-ready PNGs: overview, leaderboard, and every
     group/pairing card — the SPA's own markup, rendered headless."""
-    import re as _re
+    import hashlib
     import threading
     from http.server import ThreadingHTTPServer
     from urllib.parse import quote
 
-    from orchestral.shots import ScreenshotUnavailable, browser_session, capture_page
+    from orchestral.shots import (
+        ScreenshotUnavailable,
+        browser_session,
+        capture_page,
+        shot_name,
+    )
     from orchestral.web import state as wstate
     from orchestral.web.server import Observatory, make_handler
 
@@ -1822,16 +1852,12 @@ def cmd_cards(args: argparse.Namespace) -> None:
     out_dir = Path(args.reports_dir) / "cards"
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    def _fname(s: str) -> str:
-        return _re.sub(r"[^a-z0-9]+", "-", s.lower()).strip("-") or "card"
-
-    targets: list[tuple[str, str, str | None]] = [("/", "overview", None), ("/leaderboard", "leaderboard", None)]
+    targets: list[tuple[str, str | None]] = [("/", None), ("/leaderboard", None)]
     groups = [g["group"] for g in wstate.groups_payload(store)]
     if args.group:
         groups = [g for g in groups if g == args.group]
     for g in groups:
-        targets.append((f"/card?kind=group&target={quote(g, safe='')}",
-                        f"group-{_fname(g)}", ".xcard"))
+        targets.append((f"/card?kind=group&target={quote(g, safe='')}", ".xcard"))
     if args.group:
         # leaderboard_rows carries no group field — take the pairings the
         # group card itself aggregates, and scope each pairing card to it.
@@ -1845,17 +1871,17 @@ def cmd_cards(args: argparse.Namespace) -> None:
                 seen.add(t)
                 targets.append((
                     f"/card?kind=pairing&target={quote(t, safe='')}&group={quote(g, safe='')}",
-                    f"pairing-{_fname(t)}", ".xcard"))
+                    ".xcard"))
     else:
         for r in wstate.leaderboard_rows(store):
             t = f"{r['orchestrator']}|{r['worker']}"
-            targets.append((f"/card?kind=pairing&target={quote(t, safe='')}",
-                            f"pairing-{_fname(t)}", ".xcard"))
+            targets.append((f"/card?kind=pairing&target={quote(t, safe='')}", ".xcard"))
 
     written = failed = 0
+    used: set[str] = set()
     try:
         with browser_session() as browser:
-            for route, name, element in targets:
+            for route, element in targets:
                 try:
                     png = capture_page(f"{base}/#{route}", element=element, browser=browser)
                 except ScreenshotUnavailable as exc:
@@ -1863,7 +1889,22 @@ def cmd_cards(args: argparse.Namespace) -> None:
                     if failed == 1:
                         print(f"capture failed: {exc}")
                     continue
-                (out_dir / f"{name}.png").write_bytes(png)
+                name = shot_name(route)
+                stem, stamp = name.rsplit("-", 1)
+                if name in used:
+                    # distinct routes that slug-collide must not overwrite —
+                    # resolve the digest name BEFORE cleanup so a colliding
+                    # route can't delete the file its rival just wrote
+                    digest = hashlib.sha1(route.encode()).hexdigest()[:6]
+                    stem = f"{stem}-{digest}"
+                    name = f"{stem}-{stamp}"
+                used.add(name)
+                # a re-export replaces the same view's earlier-stamped file;
+                # the digit pattern scopes cleanup to this stem only, so a
+                # colliding route's digest-stem files are never swept
+                for stale in out_dir.glob(stem + "-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9].png"):
+                    stale.unlink()
+                (out_dir / name).write_bytes(png)
                 written += 1
     except ScreenshotUnavailable as exc:
         print(f"Screenshot unavailable: {exc}")
@@ -2232,6 +2273,24 @@ def build_parser() -> argparse.ArgumentParser:
     ff.add_argument("ids", nargs="*", help="Fixture ids (default: all registered)")
     fsub.add_parser("check", help="Verify fetched tarballs match registry pins + locks")
     fixtures.set_defaults(func=cmd_fixtures)
+
+    models = sub.add_parser(
+        "models",
+        help="Model catalog — sync the provider's full model list for the observatory catalog view",
+    )
+    msub = models.add_subparsers(dest="models_cmd", required=True)
+    msync = msub.add_parser(
+        "sync",
+        help="Fetch the provider model list (OpenRouter GET /models, no key) "
+             "into models/provider-catalog.json",
+    )
+    msync.add_argument("--url", default=None,
+                       help="Catalog endpoint (default: OpenRouter /api/v1/models)")
+    # leaf needs its own copy — argparse hands post-`sync` args to msync,
+    # so `models sync --models-dir X` would otherwise be unrecognized
+    _add_global_dir_flag(msync, "--models-dir", "Model config directory")
+    _add_global_dir_flag(models, "--models-dir", "Model config directory")
+    models.set_defaults(func=cmd_models)
 
     selfcheck = sub.add_parser(
         "selfcheck",

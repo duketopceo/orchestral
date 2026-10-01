@@ -452,6 +452,55 @@ class RunStore:
             out.append(d)
         return out
 
+    def model_role_usage(self) -> dict[str, dict[str, dict[str, Any]]]:
+        """Per-(model, role) usage: call count, distinct runs, spend.
+
+        Two sources, unioned on run_id: the ``calls`` ledger, which is the
+        only place judge calls appear but which only exists once a call is
+        recorded, and the ``runs`` row's orchestrator/worker columns, which
+        cover runs that died before their first call. Cost comes from calls
+        alone — the runs table has no per-role split. Dry runs are excluded:
+        a stubbed call is not evidence the model ran.
+        """
+        usage: dict[str, dict[str, dict[str, Any]]] = {}
+
+        def entry(model: Any, role: Any) -> dict[str, Any]:
+            return usage.setdefault(str(model), {}).setdefault(
+                str(role or "unknown"),
+                {"calls": 0, "runs": 0, "cost_usd": 0.0, "errors": 0},
+            )
+
+        with self._connect() as conn:
+            for model, role, n_calls, n_err, cost in conn.execute(
+                "SELECT model, role, COUNT(*), "
+                "SUM(CASE WHEN error IS NOT NULL AND error != '' THEN 1 "
+                "ELSE 0 END), COALESCE(SUM(cost_usd), 0) "
+                "FROM calls WHERE COALESCE(dry_run, 0) = 0 "
+                "AND model IS NOT NULL AND model != '' "
+                "GROUP BY model, role"
+            ):
+                e = entry(model, role)
+                e["calls"] += n_calls
+                e["errors"] += int(n_err or 0)
+                e["cost_usd"] += float(cost or 0.0)
+            # UNION dedups run_ids across the calls ledger and the
+            # run-level orch/worker columns in one pass.
+            for model, role, n_runs in conn.execute(
+                "SELECT model, role, COUNT(DISTINCT run_id) FROM ("
+                "  SELECT model, role, run_id FROM calls"
+                "  WHERE COALESCE(dry_run, 0) = 0"
+                "  AND model IS NOT NULL AND model != ''"
+                "  UNION"
+                "  SELECT orchestrator, 'orchestrator', run_id FROM runs"
+                "  WHERE COALESCE(dry_run, 0) = 0 AND orchestrator IS NOT NULL"
+                "  UNION"
+                "  SELECT worker, 'worker', run_id FROM runs"
+                "  WHERE COALESCE(dry_run, 0) = 0 AND worker IS NOT NULL"
+                ") GROUP BY model, role"
+            ):
+                entry(model, role)["runs"] = n_runs
+        return usage
+
     def backfill_calls(self, meta: RunMeta) -> int:
         """Rebuild a run's `calls` rows from its events.jsonl, payloads and all.
 

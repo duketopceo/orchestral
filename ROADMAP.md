@@ -39,6 +39,15 @@ Last updated: 2026-09-30.
 3. Write up the baseline findings (100+ commits of harness, zero published
    conclusions — the writeup is the product).
 4. Publish the harness + findings as the artifact.
+5. **Gemini 4 Argon eval slot** (watchlist, logged 2026-09-30) — announced
+   today, gated to Fairwind trusted testers; not on OpenRouter yet.
+   Approved spend when it lists — prefer `:batch` (~50% off) if offered;
+   list price $2/$10 per Mtok. Entry parked as `~google/gemini-4-argon` in
+   `models/default.yaml`; `harness.py models sync` + the Models catalog
+   will show it the moment the provider lists it. Candidate run: Argon as
+   orchestrator (full model, not a Flash tier) × best-known worker or
+   `openai/gpt-5.6-luna`, against the v3 real-repo family — measure where
+   a frontier orchestrator lands on the pairing board.
 
 ## Cut
 

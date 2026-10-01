@@ -24,7 +24,7 @@ from typing import Any, ClassVar, cast
 from urllib.parse import parse_qs, unquote, urlparse
 
 from orchestral.storage import RunStore
-from orchestral.web import render, state
+from orchestral.web import catalog, render, state
 
 # Static SPA assets live in <repo>/ui — server.py is orchestral/web/server.py.
 UI_DIR = Path(__file__).resolve().parents[2] / "ui"
@@ -258,6 +258,8 @@ def make_handler(obs: Observatory) -> type[BaseHTTPRequestHandler]:
                 self._json(state.task_choices(obs.tasks_dir))
             elif path == "/api/models":
                 self._json(state.model_choices(obs.models_dir, self._q1(qs, "role")))
+            elif path == "/api/models-catalog":
+                self._json(catalog.models_catalog_payload(obs.store, obs.models_dir))
             elif path.startswith("/api/run/"):
                 self._api_run(path, qs)
             else:
@@ -272,7 +274,7 @@ def make_handler(obs: Observatory) -> type[BaseHTTPRequestHandler]:
             if not route.startswith("/") or route.startswith("//"):
                 return self._json({"error": "route must be an app path like /card?kind=..."}, 400)
             try:
-                from orchestral.shots import ScreenshotUnavailable, capture_page
+                from orchestral.shots import ScreenshotUnavailable, capture_page, shot_name
                 element = ".xcard" if route.startswith("/card") else None
                 png = capture_page(
                     f"http://127.0.0.1:{cast(ThreadingHTTPServer, self.server).server_port}/#{route}",
@@ -280,7 +282,7 @@ def make_handler(obs: Observatory) -> type[BaseHTTPRequestHandler]:
                 )
             except ScreenshotUnavailable as exc:
                 return self._json({"error": str(exc)}, 503)
-            name = "orchestral-" + re.sub(r"[^a-z0-9]+", "-", route.lower()).strip("-") + ".png"
+            name = shot_name(route)
             self.send_response(200)
             self.send_header("Content-Type", "image/png")
             self.send_header("Content-Disposition", f'attachment; filename="{name}"')
@@ -468,6 +470,11 @@ def make_handler(obs: Observatory) -> type[BaseHTTPRequestHandler]:
                 n = max(1, min(4, int(form.get("n", "3"))))
             except ValueError:
                 n = 3
+            card["thread"] = state.thread_context(
+                obs.store, kind, target,
+                group=form.get("group") or None,
+                lens=form.get("lens") or "overall",
+            )
             writer = form.get("model") or ""
             client = model = None
             if writer and _provider_ready(writer):

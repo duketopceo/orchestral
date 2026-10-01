@@ -369,6 +369,7 @@ class TestSignalAwareThread(unittest.TestCase):
             _seed_lens_cohort(store)
             card = state.card_payload(store, "group", "g1", lens="divergence")
             assert card is not None
+            card["thread"] = state.thread_context(store, "group", "g1")
 
             fallback = draft_thread(card=card, client=None, model=None, n=3)
             writer = _Writer()
@@ -382,17 +383,193 @@ class TestSignalAwareThread(unittest.TestCase):
             generated = draft_thread(card=card, client=writer, model=model, n=3)
 
             self.assertTrue(fallback["templated"])
-            self.assertIn(card["story"]["claim"], fallback["posts"][1])
+            # slot contract: position → economics → method
+            self.assertIn("cohort", fallback["posts"][0])
+            self.assertIn("Economics: $", fallback["posts"][1])
+            self.assertIn("95% CI", fallback["posts"][2])
             self.assertTrue(all(len(post) <= 270 for post in fallback["posts"]))
-            run_fallback = draft_thread(card=state.card_payload(
-                store, "run", store.list_runs(limit=1)[0].run_id,
-            ), client=None, model=None, n=2)
-            self.assertIn("Cost $", run_fallback["posts"][1])
+            run_card = state.card_payload(
+                store, "run", store.list_runs(limit=1)[0].run_id)
+            assert run_card is not None
+            run_card["thread"] = state.thread_context(
+                store, "run", run_card["target"])
+            run_fallback = draft_thread(card=run_card, client=None, model=None, n=2)
+            self.assertIn("Cost $", run_fallback["posts"][0])
             self.assertFalse(generated["templated"])
             prompt = writer.messages[0]["messages"][0]["content"]
             self.assertIn("story.signals", prompt)
+            self.assertIn("thread.rank", prompt)
             self.assertIn("axis_divergence", prompt)
             self.assertNotIn("transcript\": {\"text", prompt)
+
+    def test_thread_context_ranks_pairing_and_finds_neighbors(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = RunStore(tmp)
+            _seed_lens_cohort(store)
+            ctx = state.thread_context(
+                store, "pairing", "o/reliable|w/frontier")
+            # the board ranks only eligible rows — finished and not
+            # low-sample — so the posted rank/denominator matches the '#'
+            # column a reader sees; w/thin's single run stays unranked
+            self.assertEqual(ctx["rank"], 2)
+            self.assertEqual(ctx["board_size"], 3)
+            self.assertEqual(ctx["above"]["worker"], "w/cheap")
+            self.assertEqual(ctx["below"]["worker"], "w/semantic")
+            self.assertEqual(ctx["cost_rank"], 2)
+            self.assertEqual(ctx["cost_of"], 3)
+            self.assertEqual(ctx["cheapest_pass"]["worker"], "w/cheap")
+            self.assertAlmostEqual(ctx["cost_total"], 0.09)
+            self.assertEqual(ctx["runs"], 3)
+            cheap = state.thread_context(
+                store, "pairing", "o/reliable|w/cheap")
+            self.assertEqual(cheap["rank"], 1)
+            self.assertEqual(cheap["cost_rank"], 1)
+            self.assertNotIn("above", cheap)
+            # a thin pairing gets honesty markers, not a fabricated rank
+            thin = state.thread_context(
+                store, "pairing", "o/thin|w/thin")
+            self.assertNotIn("rank", thin)
+            self.assertTrue(thin["low_sample"])
+
+    def test_thread_context_ranks_within_the_requested_lens(self):
+        # a card opened under a non-overall lens must post that lens's
+        # ranking — the divergence board orders by judge/mechanical gap,
+        # which reverses the overall order for this cohort
+        with tempfile.TemporaryDirectory() as tmp:
+            store = RunStore(tmp)
+            _seed_lens_cohort(store)
+            ctx = state.thread_context(
+                store, "pairing", "o/reliable|w/cheap", lens="divergence")
+            self.assertEqual(ctx["rank"], 3)
+            self.assertEqual(ctx["board_size"], 3)
+            self.assertEqual(ctx["lens_label"], "Interesting divergence")
+            self.assertEqual(ctx["above"]["worker"], "w/frontier")
+            self.assertNotIn("below", ctx)
+            # the same pairing leads the overall board — no contradiction
+            overall = state.thread_context(store, "pairing", "o/reliable|w/cheap")
+            self.assertEqual(overall["rank"], 1)
+            # a non-overall rank must name its board, not claim a
+            # mechanical-pass ordering the lens doesn't sort by
+            card = state.card_payload(store, "pairing", "o/reliable|w/cheap",
+                                      lens="divergence")
+            assert card is not None
+            card["thread"] = ctx
+            out = draft_thread(card=card, client=None, model=None, n=4)
+            self.assertIn("Interesting divergence board", out["posts"][0])
+            self.assertNotIn("by mechanical pass", out["posts"][0])
+
+    def test_economics_qualifies_unmetered_pairing_spend(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = RunStore(tmp)
+            _seed_lens_cohort(store)
+            rid = _add_run(store, orchestrator="o/local",
+                           worker="w/cli", passes=True, judge_score=0.9,
+                           judge_passed=True, cost_usd=0.0)
+            _add_run(store, orchestrator="o/local", worker="w/cli",
+                     passes=True, judge_score=0.9, judge_passed=True,
+                     cost_usd=0.0)
+            _add_run(store, orchestrator="o/local", worker="w/cli",
+                     passes=True, judge_score=0.9, judge_passed=True,
+                     cost_usd=0.0)
+            store.record_call(
+                run_id=rid, phase="work", step=1, role="worker",
+                model="w/cli", cost_usd=0.0, pricing_source="unmetered")
+            ctx = state.thread_context(store, "pairing", "o/local|w/cli")
+            self.assertTrue(ctx["unmetered"])
+            card = state.card_payload(store, "pairing", "o/local|w/cli")
+            assert card is not None
+            card["thread"] = ctx
+            out = draft_thread(card=card, client=None, model=None, n=4)
+            econ = next(p for p in out["posts"] if p.startswith("Economics"))
+            # "$0.0000 across 3 runs" would read as free — the post must
+            # qualify the figure instead
+            self.assertIn("unmetered", econ)
+            self.assertNotIn("$0.0000 across", econ)
+            # an unmetered pairing is excluded from cost lenses outright
+            cost_lens = state.thread_context(
+                store, "pairing", "o/local|w/cli", lens="low_cost")
+            self.assertTrue(cost_lens.get("unranked"))
+
+    def test_thread_template_four_post_shape_and_char_limit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = RunStore(tmp)
+            _seed_lens_cohort(store)
+            card = state.card_payload(
+                store, "pairing", "o/reliable|w/frontier")
+            assert card is not None
+            card["thread"] = state.thread_context(
+                store, "pairing", "o/reliable|w/frontier")
+            out = draft_thread(card=card, client=None, model=None, n=4)
+            self.assertEqual(len(out["posts"]), 4)
+            self.assertIn("2/3", out["posts"][0])  # rank 2 of 3 ranked pairings
+            self.assertIn("just behind", out["posts"][0])
+            self.assertIn("Economics", out["posts"][1])
+            self.assertIn("doesn't prove", out["posts"][3])
+            self.assertTrue(all(len(p) <= 270 for p in out["posts"]))
+
+    def test_thread_template_folds_caveat_into_last_post_for_n3(self):
+        # the slot contract says merge, not drop — the caveat survives
+        # inside the last post when n < 4
+        with tempfile.TemporaryDirectory() as tmp:
+            store = RunStore(tmp)
+            _seed_lens_cohort(store)
+            card = state.card_payload(
+                store, "pairing", "o/reliable|w/frontier")
+            assert card is not None
+            card["thread"] = state.thread_context(
+                store, "pairing", "o/reliable|w/frontier")
+            out = draft_thread(card=card, client=None, model=None, n=3)
+            self.assertEqual(len(out["posts"]), 3)
+            self.assertIn("95% CI", out["posts"][2])
+            self.assertIn("doesn't prove", out["posts"][2])
+
+    def test_economics_counts_failed_run_spend_and_self_cheapest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = RunStore(tmp)
+            _seed_lens_cohort(store)
+            # a failed run still spent money — 'across N runs' must count it
+            rid = _add_run(store, orchestrator="o/reliable",
+                           worker="w/frontier", cost_usd=0.05)
+            meta = store.get_run(rid)
+            assert meta is not None
+            meta.status = "failed"
+            meta.failure_reason = "provider_error"
+            store.index_meta(meta)
+            card = state.card_payload(
+                store, "pairing", "o/reliable|w/frontier")
+            assert card is not None
+            card["thread"] = state.thread_context(
+                store, "pairing", "o/reliable|w/frontier")
+            out = draft_thread(card=card, client=None, model=None, n=4)
+            econ = next(p for p in out["posts"] if p.startswith("Economics"))
+            # 3 finished @0.03 + 1 failed @0.05 = $0.14 across 4 runs —
+            # not "$0.0900 across 3 runs" which hides the failed spend
+            self.assertIn("$0.1400 across 4 runs", econ)
+            # the cheapest pairing says so itself, not a peer name
+            cheap_card = state.card_payload(
+                store, "pairing", "o/reliable|w/cheap")
+            assert cheap_card is not None
+            cheap_card["thread"] = state.thread_context(
+                store, "pairing", "o/reliable|w/cheap")
+            cheap_out = draft_thread(card=cheap_card, client=None,
+                                     model=None, n=4)
+            cheap_econ = next(p for p in cheap_out["posts"]
+                              if p.startswith("Economics"))
+            self.assertIn("the cheapest per pass on the board", cheap_econ)
+
+    def test_shot_filename_names_card_downloads(self):
+        from orchestral.shots import shot_name
+        name = shot_name(
+            "/card?kind=pairing&target=x-ai%2Fgrok-4-7%7Cz-ai%2Fglm-5-3-flash")
+        self.assertTrue(name.startswith(
+            "orchestral-pairing-x-ai-grok-4-7-z-ai-glm-5-3-flash-"))
+        self.assertTrue(name.endswith(".png"))
+        self.assertTrue(shot_name("/leaderboard").startswith(
+            "orchestral-leaderboard-"))
+        self.assertTrue(shot_name("/").startswith("orchestral-overview-"))
+        # group-scoped pairing cards carry the cohort in the name too
+        scoped = shot_name("/card?kind=pairing&target=o%2Fone%7Cw%2Fone&group=g1")
+        self.assertIn("-g1-", scoped)
 
 
 if __name__ == "__main__":

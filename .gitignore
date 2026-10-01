@@ -2,13 +2,65 @@ __pycache__/
 *.pyc
 .venv/
 .env
+# carries a real E2B_API_KEY — only scripts/cube-env.example.sh is committed
+scripts/cube-env.sh
 runs/
+runs-v1/
 runs-pub/
+# default `harness.py holdout --out`; holdout task text must never be committed
+runs-holdout/
 reports/
 *.db
+.codebase-memory/
 .DS_Store
 data/
 *.egg-info/
 build/
 dist/
 reports/shots/
+
+# --- DUK-115: shared-checkout hygiene ---
+# Nested worktrees created inside the shared checkout. 149M and growing; a
+# `git add -A` in that tree would otherwise try to stage every one of them.
+# Registered worktrees live in .git/worktrees; these are on-disk copies.
+/.worktrees/
+/wt-*/
+
+# Control-plane API payloads that runs write into the repo root as scratch.
+# These are operational metadata, not source. Not a credential store - scanned
+# for Bearer/sk-/ghp_/*_API_KEY/apiKey/password and PAPERCLIP_* values, no hits -
+# but a `git add -A` in the shared checkout would still commit them.
+/c.json
+/i.json
+/p.json
+/st.json
+/mon.json
+/mon2.json
+/monresp.json
+/monresp2.json
+/co*.json
+/iss-*.json
+/wp*.json
+/comment-resp.json
+/uv.lock
+
+# The judge calibration baseline is a committed, durable artifact, not run output.
+# reports/ is otherwise ignored as ephemeral pipeline output (orchestral.yml writes
+# reports/summary.txt into it and uploads the whole directory). Track these two
+# deliberately; see reports/judge-calibration.md for the reproducibility ceiling.
+!reports/
+reports/*
+!reports/judge-calibration.json
+!reports/judge-calibration.md
+
+# Fetched repo fixtures (v3 real-repo tasks): third-party code + wheels are
+# downloaded on demand per fixtures/registry.yaml — never committed.
+fixtures/*.tar.gz
+fixtures/*.lock.json
+
+# machine-local cube contract — sources secrets via omaseal at runtime
+scripts/cube-env.sh
+
+# Provider model-catalog snapshot (harness.py models sync) — fetched data,
+# not config
+models/provider-catalog.json

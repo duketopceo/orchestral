@@ -1,0 +1,260 @@
+# roster.yaml — canonical registry of every model orchestral has used or
+# plans to use. Checked against the live OpenRouter model list on the date
+# below; re-verify slugs before spending (stealth models rotate, providers
+# come and go).
+#
+# status:  configured — in models/default.yaml, priced, ready to run
+#          planned    — intended for an upcoming wave, config not yet written
+#          pending    — listed on OpenRouter but not serving yet (retry later)
+#          unroutable — valid ID, no provider this account can use
+#          retired    — was live, now gone or unmasked
+# tier:    free | budget (<~$0.30/Mtok in) | midrange (~$0.30–1.50) | frontier (>$1.50)
+checked: "2026-09-23"
+models:
+  # ── Orchestrators (planning/delegation role) ──────────────────────
+  - slug: x-ai/grok-4.7
+    name: Grok 4.7
+    role: orchestrator
+    tier: frontier
+    status: configured
+    notes: Anchor orchestrator for mainstream-sweep + wave A.
+  - slug: deepseek/deepseek-v4-pro
+    name: DeepSeek V4 Pro
+    role: orchestrator
+    tier: midrange
+    status: configured
+    notes: Anchor-deepseek groups. Live price ~$0.95/$1.90.
+  - slug: z-ai/glm-5.3
+    name: GLM 5.3
+    role: orchestrator
+    tier: midrange
+    status: configured
+    notes: Full-size GLM for wave A. ~$0.84/$2.64.
+  - slug: moonshotai/kimi-k2.6
+    name: Kimi K2.6
+    role: orchestrator
+    tier: midrange
+    status: configured
+    notes: ~$0.95/$4.00. k3 exists but is pricey ($3/$15).
+  - slug: qwen/qwen3-max
+    name: Qwen 3 Max
+    role: orchestrator
+    tier: midrange
+    status: configured
+  - slug: mistralai/mistral-large-2512
+    name: Mistral Large
+    role: orchestrator
+    tier: midrange
+    status: configured
+  - slug: google/gemini-3.8-flash
+    name: Gemini 3.8 Flash
+    role: orchestrator
+    tier: midrange
+    status: configured
+  - slug: x-ai/grok-4.6
+    name: Grok 4.6
+    role: orchestrator
+    tier: frontier
+    status: configured
+
+  # ── Workers (execution role) ──────────────────────────────────────
+  - slug: z-ai/glm-5.3-flash
+    name: GLM 5.3 Flash
+    role: worker
+    tier: budget
+    status: configured
+    notes: Revealed identity of stealth/ox-alpha.
+  - slug: xiaomi/mimo-v2.6-flash
+    name: MiMo V2.6 Flash
+    role: worker
+    tier: budget
+    status: configured
+  - slug: minimax/minimax-m3
+    name: MiniMax M3
+    role: worker
+    tier: midrange
+    status: configured
+    notes: ~$0.30/$1.20. M2.7 was the sweep's #1 worker.
+  - slug: minimax/minimax-m2.7
+    name: MiniMax M2.7
+    role: worker
+    tier: midrange
+    status: configured
+    notes: Mainstream-sweep top scorer (100% pass, jev 0.86).
+  - slug: openai/gpt-5.6-luna
+    name: GPT 5.6 Luna
+    role: worker
+    tier: budget
+    status: configured
+  - slug: deepseek/deepseek-v4.1-flash
+    name: DeepSeek V4.1 Flash
+    role: worker
+    tier: budget
+    status: configured
+  - slug: tencent/hy3
+    name: Tencent HY3
+    role: worker
+    tier: budget
+    status: configured
+    notes: ~$0.083/$0.33 — cheapest paid worker. HY4-preview unroutable.
+  - slug: moonshotai/kimi-k2.7-code
+    name: Kimi K2.7 Code
+    role: worker
+    tier: midrange
+    status: configured
+  - slug: google/gemini-3.1-flash-lite
+    name: Gemini 3.1 Flash Lite
+    role: worker
+    tier: budget
+    status: configured
+  - slug: deepseek/deepseek-v4-flash-0731
+    name: DeepSeek V4 Flash
+    role: worker
+    tier: budget
+    status: configured
+  - slug: google/gemma-4-31b-it
+    name: Gemma 4 31B
+    role: worker
+    tier: budget
+    status: configured
+  - slug: mistralai/mistral-small-3.2-24b-instruct
+    name: Mistral Small
+    role: worker
+    tier: budget
+    status: configured
+  - slug: qwen/qwen3-coder-flash
+    name: Qwen 3 Coder Flash
+    role: worker
+    tier: budget
+    status: configured
+  - slug: meta-llama/llama-4-scout
+    name: Llama 4 Scout
+    role: worker
+    tier: budget
+    status: configured
+  - slug: mistralai/devstral-2512
+    name: Devstral
+    role: worker
+    tier: midrange
+    status: configured
+  - slug: openai/gpt-5.4-mini
+    name: GPT 5.4 Mini
+    role: worker
+    tier: budget
+    status: configured
+  - slug: anthropic/claude-haiku-4.5
+    name: Claude Haiku 4.5
+    role: worker
+    tier: frontier
+    status: configured
+  - slug: nvidia/nemotron-3-ultra-550b-a55b
+    name: Nemotron 3 Ultra
+    role: worker
+    tier: midrange
+    status: configured
+
+  # ── Free tier (zero cost; rate limits apply) ──────────────────────
+  - slug: openrouter/free
+    name: Free Models Router
+    role: worker
+    tier: free
+    status: configured
+    notes: Router picks a random free model per request — not a stable
+      pairing target, but useful as a zero-cost smoke lane.
+  - slug: z-ai/glm-5.2:free
+    name: GLM 5.2 (free)
+    role: worker
+    tier: free
+    status: configured
+  - slug: qwen/qwen3.8-27b:free
+    name: Qwen 3.8 27B (free)
+    role: worker
+    tier: free
+    status: configured
+    notes: The routable Qwen — qwen3.8-flash is alibaba-only.
+  - slug: nvidia/nemotron-3-ultra-550b-a55b:free
+    name: Nemotron 3 Ultra (free)
+    role: worker
+    tier: free
+    status: configured
+  - slug: nvidia/nemotron-3-super-120b-a12b:free
+    name: Nemotron 3 Super (free)
+    role: worker
+    tier: free
+    status: configured
+  - slug: google/gemma-4-31b-it:free
+    name: Gemma 4 31B (free)
+    role: worker
+    tier: free
+    status: configured
+
+  # ── Stealth (rotating, unmasked after test windows) ───────────────
+  - slug: stealth/space-bunny-alpha
+    name: Space Bunny Alpha
+    role: worker
+    tier: free
+    status: pending
+    notes: Released 2026-09-23. Anonymous large model, 1M ctx, multimodal
+      in, adjustable reasoning, free. Listed but "No endpoints found" as of
+      checked date — re-probe before scheduling.
+  - slug: stealth/ox-alpha
+    name: Ox Alpha
+    role: worker
+    tier: free
+    status: retired
+    notes: Revealed 2026-08-26 as ZAI GLM-5.3-Flash — already rostered.
+  - slug: stealth/union-alpha
+    name: Union Alpha
+    role: worker
+    tier: free
+    status: retired
+    notes: Test window ended; revealed as Unbiased's Pareto.
+
+  # ── Unroutable / excluded (keep as evidence, don't reschedule) ────
+  - slug: qwen/qwen3.8-flash
+    name: Qwen 3.8 Flash
+    role: worker
+    tier: budget
+    status: unroutable
+    notes: Only provider is alibaba — outside account allowlist.
+  - slug: tencent/hy4-preview
+    name: Tencent HY4 Preview
+    role: worker
+    tier: midrange
+    status: unroutable
+    notes: Providers outside account allowlist (probed, provider_error).
+  - slug: tencent/hy3-preview
+    name: Tencent HY3 Preview
+    role: worker
+    tier: budget
+    status: configured
+    notes: ~$0.18/$0.60 — alternative if hy3 throttles.
+
+  # ── Judges / reference ────────────────────────────────────────────
+  - slug: "~typesafe/jev-latest"
+    name: JEV (decisions engine)
+    role: judge
+    tier: budget
+    status: configured
+    notes: Primary semantic judge via /api/alpha/decisions. Text-only.
+  - slug: openai/gpt-5.6-sol
+    name: GPT 5.6 Sol
+    role: judge
+    tier: frontier
+    status: configured
+    notes: Secondary judge — agreement axis vs jev. :batch halves price.
+  - slug: anthropic/claude-fable-5.1
+    name: Claude Fable 5.1
+    role: reference
+    tier: frontier
+    status: configured
+  - slug: x-ai/grok-4.3
+    name: Grok 4.3
+    role: reference
+    tier: frontier
+    status: configured
+  - slug: moonshotai/kimi-k2
+    name: Kimi K2
+    role: reference
+    tier: midrange
+    status: configured

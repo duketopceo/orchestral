@@ -10,7 +10,7 @@ import zipfile
 from pathlib import Path
 
 from orchestral.config import ModelConfig, TaskSpec
-from orchestral.fileset import FilesetError
+from orchestral.fileset import FilesetError, required_content
 from orchestral.runner import Runner
 
 
@@ -186,7 +186,10 @@ class TestMultiFileLivePath(unittest.TestCase):
                 ).run(_task(), _model("org/x", "orchestrator"), _model("wrk/text", "worker"))
             self.assertIn("escape.txt", str(ctx.exception))
 
-    def test_judge_prompt_carries_listing_not_contents(self):
+    def test_judge_prompt_carries_bounded_member_bodies(self):
+        """The judge reads real member content — a name-only listing let
+        verdicts be computed blind. report.json and worker records stay
+        paths-only; the judge prompt is the single place bodies surface."""
         with tempfile.TemporaryDirectory() as tmp:
             client = _FakeClient(file_sets=[
                 {"files": [{"path": "index.html", "content": "UNIQUE_BODY_MARKER"}]},
@@ -199,8 +202,6 @@ class TestMultiFileLivePath(unittest.TestCase):
 
             run_dir = Path(meta.run_dir)
             events = (run_dir / "events.jsonl").read_text()
-            # the judge prompt is logged with the messages — assert on its content
-            self.assertNotIn("UNIQUE_BODY_MARKER", events)
             judge_events = [
                 json.loads(line) for line in events.splitlines()
                 if json.loads(line).get("phase") == "judge"
@@ -208,10 +209,12 @@ class TestMultiFileLivePath(unittest.TestCase):
             self.assertTrue(judge_events, "no judge event recorded")
             prompts = json.dumps(judge_events)
             self.assertIn("index.html", prompts)
-            self.assertNotIn("UNIQUE_BODY_MARKER", prompts)
+            self.assertIn("UNIQUE_BODY_MARKER", prompts)
             self.assertNotIn("```html", prompts)
+            # scrub boundary holds: bodies never reach report or worker records
             report = json.loads((run_dir / "report.json").read_text())
             self.assertNotIn("UNIQUE_BODY_MARKER", json.dumps(report))
+            self.assertNotIn("UNIQUE_BODY_MARKER", (run_dir / "worker-0.json").read_text())
 
 
 class TestMultiFileValidation(unittest.TestCase):
@@ -265,6 +268,190 @@ class TestMultiFileValidation(unittest.TestCase):
         )
         self.assertFalse(passes)
         self.assertTrue(report["checks"]["zip_signature"])
+
+    def test_has_content_passes_when_tokens_present(self):
+        passes, report = self._check(
+            ["non_empty", "zip_signature", "has_content"],
+            self._zip({"index.html": "<h1>Coffee Plans</h1>", "style.css": ".pricing{}"}),
+            {"required_content": {"index.html": ["coffee"], "style.css": ["pricing"]}},
+        )
+        self.assertTrue(passes)
+        self.assertTrue(report["checks"]["has_content"])
+
+    def test_has_content_fails_on_missing_token(self):
+        passes, report = self._check(
+            ["non_empty", "zip_signature", "has_content"],
+            self._zip({"index.html": "<h1>SaaS</h1>"}),
+            {"required_content": {"index.html": ["coffee"]}},
+        )
+        self.assertFalse(passes)
+        self.assertFalse(report["checks"]["has_content"])
+        self.assertTrue(any("coffee" in e for e in report["errors"]))
+
+    def test_has_content_fails_on_absent_member(self):
+        passes, report = self._check(
+            ["non_empty", "zip_signature", "has_content"],
+            self._zip({"index.html": "coffee"}),
+            {"required_content": {"index.html": ["coffee"], "style.css": ["pricing"]}},
+        )
+        self.assertFalse(passes)
+        self.assertTrue(any("style.css" in e for e in report["errors"]))
+
+    def test_has_content_fails_without_metadata(self):
+        passes, report = self._check(
+            ["non_empty", "zip_signature", "has_content"],
+            self._zip({"index.html": "x"}),
+            {},
+        )
+        self.assertFalse(passes)
+        self.assertTrue(any("has_content" in e for e in report["errors"]))
+
+    def test_has_content_fails_on_binary_member(self):
+        passes, _ = self._check(
+            ["non_empty", "zip_signature", "has_content"],
+            self._zip({"logo.bin": "\xff\xfe\x00\x01"}),
+            {"required_content": {"logo.bin": ["x"]}},
+        )
+        self.assertFalse(passes)
+
+    def test_has_content_fails_on_non_zip_without_zip_signature(self):
+        # a spec asking only for has_content must still fail closed on a
+        # non-zip artifact — the check may not pass silently
+        passes, report = self._check(
+            ["non_empty", "has_content"],
+            b"not-a-zip",
+            {"required_content": {"index.html": ["x"]}},
+        )
+        self.assertFalse(passes)
+        self.assertFalse(report["checks"]["has_content"])
+
+    def test_has_content_bare_string_is_one_token(self):
+        # {"index.html": "coffee"} must mean one token, not per-character
+        passes, _ = self._check(
+            ["non_empty", "zip_signature", "has_content"],
+            self._zip({"index.html": "<h1>hello</h1>"}),
+            {"required_content": {"index.html": "coffee"}},
+        )
+        self.assertFalse(passes)
+
+    def test_has_content_member_names_are_sanitized(self):
+        # "./Index.HTML" canonicalizes like expected_paths does
+        passes, _ = self._check(
+            ["non_empty", "zip_signature", "has_content"],
+            self._zip({"index.html": "coffee"}),
+            {"required_content": {"./index.html": ["coffee"]}},
+        )
+        self.assertTrue(passes)
+
+
+class TestMultiFileContentCheck(unittest.TestCase):
+    """`has_content` reads file bodies; `has_paths` never did.
+
+    `has_paths` accepts a one-byte file per declared name, so a spec could
+    request a stylesheet and a landing page and get two placeholder bytes
+    graded as a site. `metadata.required_content` maps a path to the tokens
+    that path must contain.
+    """
+
+    def _runner(self) -> Runner:
+        return Runner(runs_dir=tempfile.mkdtemp(), dry_run=True)
+
+    @staticmethod
+    def _zip(files: dict[str, str]) -> bytes:
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as archive:
+            for path, body in files.items():
+                archive.writestr(path, body)
+        return buffer.getvalue()
+
+    def _task(self, content=None, **kwargs) -> TaskSpec:
+        metadata = {"expected_paths": ["index.html", "style.css"]}
+        if content is not None:
+            metadata["required_content"] = content
+        return _task(metadata=metadata, **kwargs)
+
+    def test_body_tokens_per_declared_path_pass(self):
+        task = self._task(
+            validation=["non_empty", "zip_signature", "has_paths", "has_content"],
+            content={"index.html": ["pricing"], "style.css": ["pricing"]},
+        )
+        passes, report = self._runner()._validate_multi(
+            task, self._zip({"index.html": "<h2>pricing</h2>", "style.css": ".pricing{}"})
+        )
+        self.assertTrue(passes, report["errors"])
+        self.assertTrue(report["checks"]["has_content"])
+
+    def test_one_byte_file_per_name_fails(self):
+        """The exact artifact that passed before `has_content` existed."""
+        task = self._task(
+            validation=["non_empty", "zip_signature", "has_paths", "has_content"],
+            content={"index.html": ["pricing"], "style.css": ["pricing"]},
+        )
+        passes, report = self._runner()._validate_multi(
+            task, self._zip({"index.html": "x", "style.css": "x"})
+        )
+        self.assertTrue(report["checks"]["has_paths"])
+        self.assertFalse(passes)
+        self.assertFalse(report["checks"]["has_content"])
+
+    def test_token_in_the_wrong_file_does_not_satisfy_the_right_file(self):
+        """Tokens are scoped to their path, so one file cannot vouch for another."""
+        task = self._task(
+            validation=["non_empty", "zip_signature", "has_paths", "has_content"],
+            content={"index.html": ["pricing"], "style.css": ["pricing"]},
+        )
+        passes, report = self._runner()._validate_multi(
+            task, self._zip({"index.html": "pricing pricing", "style.css": ".a{}"})
+        )
+        self.assertFalse(passes)
+        self.assertIn("style.css:pricing", " ".join(report["errors"]))
+
+    def test_missing_declared_path_has_no_body_to_read(self):
+        task = self._task(
+            validation=["non_empty", "zip_signature", "has_paths", "has_content"],
+            content={"index.html": ["pricing"], "style.css": ["pricing"]},
+        )
+        passes, report = self._runner()._validate_multi(task, self._zip({"index.html": "pricing"}))
+        self.assertFalse(passes)
+        self.assertIn("No file body to read for: style.css", " ".join(report["errors"]))
+
+    def test_requested_without_required_content_fails_closed(self):
+        """A gate the spec asked for but did not configure must not pass open."""
+        task = _task(validation=["non_empty", "zip_signature", "has_content"])
+        passes, report = self._runner()._validate_multi(task, self._zip({"index.html": "x"}))
+        self.assertFalse(passes)
+        self.assertIn("metadata.required_content is empty", " ".join(report["errors"]))
+
+    def test_malformed_required_content_is_treated_as_absent(self):
+        task = self._task(
+            validation=["non_empty", "zip_signature", "has_content"], content="not-a-mapping"
+        )
+        passes, report = self._runner()._validate_multi(task, self._zip({"index.html": "x"}))
+        self.assertFalse(passes)
+        self.assertIn("metadata.required_content is empty", " ".join(report["errors"]))
+
+    def test_unreadable_zip_fails_the_content_check_too(self):
+        task = self._task(
+            validation=["non_empty", "zip_signature", "has_paths", "has_content"],
+            content={"index.html": ["pricing"]},
+        )
+        passes, report = self._runner()._validate_multi(task, b"not-a-zip")
+        self.assertFalse(passes)
+        self.assertFalse(report["checks"]["has_content"])
+
+    def test_declared_path_cannot_escape_the_archive(self):
+        """`required_content` keys go through the same sanitiser as the paths.
+
+        A traversing key is a spec bug, and it raises the same way
+        `metadata.expected_paths` does rather than being quietly dropped — a
+        silently dropped key would turn the content check into a no-op.
+        """
+        task = self._task(
+            validation=["non_empty", "zip_signature", "has_paths", "has_content"],
+            content={"../../etc/passwd": ["root"]},
+        )
+        with self.assertRaises(FilesetError):
+            required_content(task.metadata)
 
 
 if __name__ == "__main__":

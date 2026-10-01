@@ -1,4 +1,6 @@
 id: constraint-product-blurb
+title: "Constrained ad copy"
+blurb: "Marketing blurb for a budget standing desk — every hard constraint is machine-checked."
 type: constraint
 prompt: |
   Write a marketing blurb for a budget standing desk called "UpRight Basic".

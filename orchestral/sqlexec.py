@@ -4,6 +4,8 @@ A sql task ships a fixture (`metadata.schema`, `metadata.seed`) and a
 reference query (`metadata.reference_sql`). The worker's candidate query is
 executed read-only against a fresh fixture copy and compared to the
 reference's result — multiset by default, ordered when `metadata.ordered`.
+The reference must return at least one row: an empty result is a broken spec,
+not an empty answer for a candidate to match.
 
 The connection is `mode=ro` and a progress-handler step cap bounds runaway
 queries. This is deterministic and cheap, not a sandbox — sqlite has no
@@ -46,10 +48,19 @@ def _script(value: Any) -> str:
     return str(value or "")
 
 
+def _fixture_authorizer(action: int, _a: Any, _b: Any, _db: Any, _src: Any) -> int:
+    """Fixture scripts may create and fill tables — never attach or detach
+    databases, which would let spec SQL read/write outside the tmpdir."""
+    if action in (sqlite3.SQLITE_ATTACH, sqlite3.SQLITE_DETACH):
+        return sqlite3.SQLITE_DENY
+    return sqlite3.SQLITE_OK
+
+
 def build_fixture(dest: Path, schema_sql: str, seed_sql: str) -> Path:
     """Create the task's sqlite database under `dest`; return its path."""
     db = dest / "fixture.db"
     conn = sqlite3.connect(db)
+    conn.set_authorizer(_fixture_authorizer)
     try:
         if schema_sql:
             conn.executescript(schema_sql)
@@ -132,6 +143,14 @@ def run_sql_check(
         if ref_err is not None:
             report["error"] = f"reference_sql failed (task spec is broken): {ref_err}"
             return report
+        if not expected:
+            # An empty reference is a broken spec, never a free pass: the
+            # candidate would be graded against nothing, so any query returning
+
+            # zero rows (including a nonsense one) would score 1.0. See DUK-90.
+
+            report["error"] = "reference_sql returned no rows (task spec is broken)"
+            return report
         got, cand_err = run_readonly_query(db, candidate_sql, max_steps=max_steps)
         if cand_err is not None:
             report["executed"] = True
@@ -145,6 +164,9 @@ def run_sql_check(
     report["match"] = rows_match(expected or [], got or [], ordered=report["ordered"])
     report["score"] = 1.0 if report["match"] else 0.0
     if not report["match"]:
-        report["expected_preview"] = repr((expected or [])[:5])[:_PREVIEW]
+        # `got_preview` is the candidate's own rows, already public in the
+        # artifact. The reference rows are the answer key: `rows_expected`
+        # already reports how many rows a correct answer returns, which is the
+        # shape of the answer without being the answer.
         report["got_preview"] = repr((got or [])[:5])[:_PREVIEW]
     return report

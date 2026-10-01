@@ -7,14 +7,56 @@ ScreenshotUnavailable, which callers are expected to degrade on.
 
 from __future__ import annotations
 
+import hashlib
+import re
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs
 
 
 class ScreenshotUnavailable(Exception):
     """Raised when Playwright or its browser binaries are not installed."""
+
+
+def shot_name(route: str, *, stamp: str | None = None) -> str:
+    """Deterministic download filename for a captured app route —
+    ``orchestral-pairing-x-ai-grok-4-7-z-ai-glm-5-3-flash-20260930.png``.
+    Shared by the server's Content-Disposition header and the ``cards``
+    batch export so the same view downloads under the same name either way."""
+    path, _, raw_q = route.partition("?")
+    params = parse_qs(raw_q)
+    kind = params.get("kind", [""])[0]
+    target = params.get("target", [""])[0]
+    grp = params.get("group", [""])[0]
+
+    def slug(s: str) -> str:
+        return re.sub(r"[^a-z0-9]+", "-", s.lower()).strip("-")
+
+    if path == "/card" and kind and target:
+        base = f"{slug(kind)}-{slug(target)}"
+        if grp:
+            base += f"-{slug(grp)}"
+        lens = params.get("lens", [""])[0]
+        if lens and lens != "overall":
+            base += f"-lens-{slug(lens)}"
+    else:
+        base = slug(path) or "overview"
+        # every distinguishing param belongs in the name — two different
+        # views (lens, group, sort…) must not download as the same file
+        extra = sorted(
+            f"{slug(k)}-{slug(vs[0])}" for k, vs in params.items() if vs[0]
+        )
+        if extra:
+            base += "-" + "-".join(extra)
+    # stay under the 255-byte filename ceiling for long model ids —
+    # digest-suffixed so two truncated routes can never collide
+    if len(base) > 200:
+        digest = hashlib.sha1(route.encode()).hexdigest()[:6]
+        base = base[:192].rstrip("-") + f"-{digest}"
+    return f"orchestral-{base}-{stamp or time.strftime('%Y%m%d')}.png"
 
 
 def _import_playwright():
@@ -82,6 +124,46 @@ def capture_html(
     except Exception as exc:
         raise ScreenshotUnavailable(f"screenshot capture failed: {exc}") from exc
     return out_png
+
+
+def capture_page(
+    url: str,
+    *,
+    wait_for: str = "#view[data-ready]",
+    element: str | None = None,
+    width: int = 1280,
+    height: int = 800,
+    browser: Any = None,
+    timeout_ms: int = 20000,
+) -> bytes:
+    """Load a live page, wait for it to settle, return PNG bytes.
+
+    ``wait_for`` is the readiness selector (the SPA sets
+    ``#view[data-ready]`` after each render). ``element`` narrows the
+    shot to one node — e.g. ``.xcard`` for just the share card.
+    """
+
+    def _grab(b: Any) -> bytes:
+        page = b.new_page(viewport={"width": width, "height": height})
+        try:
+            page.goto(url)
+            page.wait_for_selector(wait_for, state="visible", timeout=timeout_ms)
+            if element:
+                page.wait_for_selector(element, state="visible", timeout=timeout_ms)
+                return page.locator(element).first.screenshot(type="png")
+            return page.locator(wait_for.split("[")[0]).first.screenshot(type="png")
+        finally:
+            page.close()
+
+    try:
+        if browser is not None:
+            return _grab(browser)
+        with browser_session() as shared:
+            return _grab(shared)
+    except ScreenshotUnavailable:
+        raise
+    except Exception as exc:
+        raise ScreenshotUnavailable(f"page capture failed: {exc}") from exc
 
 
 def capture_run(run_dir: str | Path, *, force: bool = False, browser: Any = None) -> tuple[Path | None, str]:

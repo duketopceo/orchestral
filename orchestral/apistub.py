@@ -159,7 +159,7 @@ def check_api(metadata: dict[str, Any], plan_text: str) -> dict[str, Any]:
         "calls_expected": None,
         "calls_made": None,
         "matched": 0,
-        "missing": [],
+        "missing": 0,
         "unexpected": [],
         "errors": [],
         "score": None,
@@ -188,6 +188,7 @@ def check_api(metadata: dict[str, Any], plan_text: str) -> dict[str, Any]:
     report["calls_made"] = len(hits)
 
     remaining = list(hits)
+    missed: list[str] = []
     for want in expected:
         if not isinstance(want, dict):
             continue
@@ -195,14 +196,18 @@ def check_api(metadata: dict[str, Any], plan_text: str) -> dict[str, Any]:
             (i for i, hit in enumerate(remaining) if _call_matches(want, hit)), None
         )
         if index is None:
-            report["missing"].append(_route_key(str(want.get("method", "GET")), str(want.get("path", "/"))))
+            missed.append(_route_key(str(want.get("method", "GET")), str(want.get("path", "/"))))
         else:
             report["matched"] += 1
             remaining.pop(index)
     report["unexpected"] = [f"{h['method']} {h['path']}" for h in remaining]
+    # `metadata.calls` is the expected request plan, so naming the routes that
+    # were missed republishes the answer. The report carries how many were
+    # missed, which is the grade; `unexpected` is the candidate's own traffic.
+    report["missing"] = len(missed)
     report["score"] = report["matched"] / len(expected)
     strict = bool(metadata.get("strict", True))
-    report["passes"] = not report["missing"] and (not strict or not report["unexpected"])
-    if report["missing"] or report["unexpected"]:
+    report["passes"] = not missed and (not strict or not report["unexpected"])
+    if missed or report["unexpected"]:
         report["hits_preview"] = json.dumps(hits)[:_PREVIEW]
     return report

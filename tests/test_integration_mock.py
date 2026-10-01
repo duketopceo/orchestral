@@ -59,7 +59,9 @@ class TestEndToEndMockedProviders(unittest.TestCase):
 
             self.assertEqual(meta.status, "finished")
             self.assertTrue(meta.passes)
-            self.assertEqual(meta.score, 9)
+            self.assertIsNone(meta.score)        # html has no mechanical score
+            self.assertEqual(meta.judge_score, 9)
+            self.assertTrue(meta.judge_passed)
             self.assertGreater(meta.total_input_tokens + meta.total_output_tokens, 0)
             self.assertGreater(meta.total_cost_usd, 0)
 
@@ -68,6 +70,7 @@ class TestEndToEndMockedProviders(unittest.TestCase):
             self.assertTrue((run_dir / "run.json").exists())
             report = json.loads((run_dir / "report.json").read_text())
             self.assertEqual(report["judge"]["score"], 9)
+            self.assertTrue(report["judge"]["passed"])
 
             # per-role routing: each mock got calls; judge saw the artifact
             self.assertEqual(orch.chat.call_count, 2)   # plan + assemble
@@ -75,6 +78,42 @@ class TestEndToEndMockedProviders(unittest.TestCase):
             self.assertEqual(judge.chat.call_count, 1)
             judge_msgs = judge.chat.call_args.kwargs["messages"]
             self.assertIn("expert judge", judge_msgs[0]["content"])
+
+    def test_judge_rejection_does_not_fail_the_run(self):
+        """A judge that says "fail" is recorded on the judge axis only.
+
+        KTD14: the judge never mutates the mechanical verdict — `passes`
+        stays what validation decided; the rejection lands on
+        `judge_passed`/`report.judge` for a reader to weigh.
+        """
+        orch = _chat_client("")
+        orch.chat.side_effect = [
+            {"content": json.dumps({"subtasks": [{"id": 0, "description": "s"}]}),
+             "usage": {"prompt_tokens": 10, "completion_tokens": 5}, "latency_ms": 1, "id": "p"},
+            {"content": "<html><head><title>T</title></head><body>ok</body></html>",
+             "usage": {"prompt_tokens": 10, "completion_tokens": 5}, "latency_ms": 1, "id": "a"},
+        ]
+        worker = _chat_client("<section>s</section>")
+        judge = _chat_client(json.dumps({"score": 1, "passed": False, "reasoning": "weak"}))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            runner = Runner(
+                runs_dir=tmp, store=RunStore(tmp),
+                clients={"orchestrator": orch, "worker": worker, "judge": judge},
+            )
+            meta = runner.run(
+                TaskSpec(id="t3", type="html", prompt="build a page"),
+                _model("o/m", "orchestrator"),
+                _model("w/m", "worker"),
+                _model("j/m", "judge"),
+            )
+
+            report = json.loads((Path(meta.run_dir) / "report.json").read_text())
+            self.assertTrue(meta.passes)
+            self.assertFalse(report["judge"]["passed"])
+            self.assertFalse(meta.judge_passed)
+            self.assertEqual(meta.judge_score, 1)
+            self.assertIsNone(meta.score)
 
     def test_injected_clients_not_closed_by_runner(self):
         """Caller-owned injected clients outlive the run (a grid reuses them)."""

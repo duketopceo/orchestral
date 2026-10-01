@@ -30,6 +30,38 @@ from typing import Any
 RUNS_DIR = Path("runs")
 DB_NAME = "index.db"
 
+# Judge-cache payload version — bump when the result shape or the input
+# contract changes so stale records go cold on read instead of being
+# trusted. v1 was the bare result dict (pre-inconclusive rule).
+JUDGE_CACHE_SCHEMA = 2
+
+# Byte cap on a call's prompt/completion body when a caller wants a *preview*
+# (the web observatory) rather than the ledger (dataset export, the TUI).
+# `input_json` holds the whole `{"messages": [...]}` prompt, so an unbounded
+# read hands every prompt ever sent to whoever can open the endpoint. The cap
+# is applied in SQL by `call_previews`, not to the response afterwards, so the
+# bytes never leave SQLite in the first place.
+CALL_PREVIEW_MAX_BYTES = 2000
+
+
+def _bounded_body(raw: Any, total: Any) -> tuple[str, int, bool]:
+    """Decode a `substr(CAST(col AS BLOB), 1, cap)` slice, marked if it was cut.
+
+    `raw` is the leading bytes SQLite already capped, `total` the true byte
+    count. Returns `(text, total, truncated)`; a body at or under the cap comes
+    back unchanged, so a healthy prompt is never mangled by the cap. The
+    truncated flag has to come from the length comparison — the caller cannot
+    infer it from `raw`, which is a string either way.
+    """
+    if raw is None:
+        return "", int(total or 0), False
+    text = (raw.decode("utf-8", errors="ignore")
+            if isinstance(raw, bytes) else str(raw))
+    size = int(total or 0)
+    if size <= len(raw):
+        return text, size, False
+    return f"{text}…[truncated {size - len(raw)} of {size} bytes]", size, True
+
 
 @dataclass
 class RunMeta:
@@ -52,9 +84,26 @@ class RunMeta:
     env: dict[str, Any] = field(default_factory=dict)
     run_group: str | None = None
     replicate: int | None = None
+    dry_run: bool = False
+    judge_score: float | None = None
+    judge_passed: bool | None = None
+    delegated: bool | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+    def to_public_dict(self) -> dict[str, Any]:
+        """`to_dict()` minus `run_dir`.
+
+        `run_dir` is the store's own filesystem path, so it is an absolute
+        host path on any store created from an absolute root. It is an
+        implementation detail the web observatory has no use for, and
+        publishing it hands out local filesystem layout. `to_dict()` stays
+        for the on-disk `run.json`, where the real path must survive.
+        """
+        d = asdict(self)
+        d.pop("run_dir", None)
+        return d
 
 
 class RunStore:
@@ -99,7 +148,8 @@ class RunStore:
                     failure_reason TEXT,
                     env TEXT,
                     run_group TEXT,
-                    replicate INTEGER
+                    replicate INTEGER,
+                    dry_run INTEGER
                 )
                 """
             )
@@ -142,7 +192,7 @@ class RunStore:
             # calls v2: worker_id + sequence so live views can order calls and
             # group them per worker without re-parsing events.jsonl
             call_cols = {r[1] for r in conn.execute("PRAGMA table_info(calls)")}
-            for name, decl in _CALL_COLUMNS_V2:
+            for name, decl in _CALL_COLUMNS_V2 + _CALL_COLUMNS_V3:
                 if name not in call_cols:
                     try:
                         conn.execute(f"ALTER TABLE calls ADD COLUMN {name} {decl}")
@@ -162,6 +212,18 @@ class RunStore:
                     result_json TEXT NOT NULL,
                     created_at TEXT NOT NULL,
                     PRIMARY KEY (task_id, judge_slug, artifact_sha256)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS annotations (
+                    kind TEXT NOT NULL,
+                    target TEXT NOT NULL,
+                    flag TEXT NOT NULL DEFAULT '',
+                    note TEXT NOT NULL DEFAULT '',
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (kind, target)
                 )
                 """
             )
@@ -201,6 +263,9 @@ class RunStore:
             run_group=run_group,
             replicate=replicate,
             env=env or {},
+            # indexed so spend meters can exclude dry runs without parsing
+            # the config blob on every query
+            dry_run=bool((config or {}).get("dry_run")),
         )
         self._write_meta_file(run_dir, meta)
         self.index_meta(meta)
@@ -218,9 +283,10 @@ class RunStore:
                     started_at, finished_at, total_cost_usd,
                     total_input_tokens, total_output_tokens, score, passes,
                     run_dir, config, latency_ms, failure_reason, env,
-                    run_group, replicate
+                    run_group, replicate, dry_run, judge_score, judge_passed,
+                    delegated
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     meta.run_id,
@@ -242,6 +308,10 @@ class RunStore:
                     json.dumps(meta.env, default=str),
                     meta.run_group,
                     meta.replicate,
+                    int(meta.dry_run),
+                    meta.judge_score,
+                    int(meta.judge_passed) if meta.judge_passed is not None else None,
+                    int(meta.delegated) if meta.delegated is not None else None,
                 ),
             )
 
@@ -265,6 +335,9 @@ class RunStore:
         dry_run: bool = False,
         worker_id: str | None = None,
         sequence: int | None = None,
+        input_json: str | None = None,
+        output_json: str | None = None,
+        finish_reason: str | None = None,
     ) -> None:
         """Index one call-level event (llm_call or worker_error)."""
         with self._connect() as conn:
@@ -288,6 +361,15 @@ class RunStore:
             if "sequence" in cols:
                 names.append("sequence")
                 values.append(sequence)
+            if "input_json" in cols:
+                names.append("input_json")
+                values.append(input_json)
+            if "output_json" in cols:
+                names.append("output_json")
+                values.append(output_json)
+            if "finish_reason" in cols:
+                names.append("finish_reason")
+                values.append(finish_reason)
             conn.execute(
                 f"INSERT INTO calls ({', '.join(names)}) "
                 f"VALUES ({', '.join('?' for _ in names)})",
@@ -295,12 +377,194 @@ class RunStore:
             )
 
     def calls_for_run(self, run_id: str) -> list[dict[str, Any]]:
+        """The full ledger, prompt and completion bodies included.
+
+        Deliberately unbounded: `dataset.py` exports these bodies and the TUI
+        shows them. Anything serving a caller that is not the local operator
+        wants `call_previews` instead.
+        """
         with self._connect() as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 "SELECT * FROM calls WHERE run_id = ? ORDER BY call_id", (run_id,)
             ).fetchall()
         return [dict(r) for r in rows]
+
+    def call_previews(
+        self, run_id: str, *, max_bytes: int = CALL_PREVIEW_MAX_BYTES
+    ) -> list[dict[str, Any]]:
+        """`calls_for_run` with each body cut to `max_bytes` of leading bytes,
+        plus a truncation marker, for callers that render a run rather than
+        export it.
+
+        Two differences from `calls_for_run`, both load-bearing:
+
+        - Explicit column list. `SELECT *` silently widens the payload when a
+          migration appends a column, which is how a prompt column shipped
+          once already.
+        - The cut happens in SQL, on the byte-cast blob, so the body never
+          crosses the process boundary whole. Capping the returned value
+          instead would leave the disclosure intact for the next caller and
+          make the guarantee a claim rather than a bound. `substr` on the BLOB
+          cast is also a byte bound: `length()` on TEXT counts characters, so
+          a CJK prompt would slip through at three times the budget.
+
+        Adds `input_bytes`/`output_bytes` (true size) and
+        `input_truncated`/`output_truncated` so a reader can tell a short
+        prompt from a cut one, and a marker carrying both numbers. A body at
+        or under the cap is returned byte-for-byte.
+
+        `error` rides through uncapped here because it is already bounded at
+        the write — `record_call` and `backfill_calls` both store
+        `(error or "")[:500]`, under the cap. If that write-side bound is ever
+        lifted, this projection needs one too.
+
+        The cut keeps the *leading* bytes, so this bounds size, it does not
+        redact: whatever sits in the first `max_bytes` of a body still ships.
+        Callers that need redaction have to omit the body, not shrink the cap.
+        """
+        with self._connect() as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                """
+                SELECT call_id, run_id, phase, step, role, model,
+                       input_tokens, output_tokens, cost_usd, api_cost_usd,
+                       pricing_source, latency_ms, attempt, error_category,
+                       error, dry_run, created_at, worker_id, sequence,
+                       finish_reason,
+                       substr(CAST(input_json AS BLOB), 1, ?) AS input_json,
+                       length(CAST(input_json AS BLOB)) AS input_bytes,
+                       substr(CAST(output_json AS BLOB), 1, ?) AS output_json,
+                       length(CAST(output_json AS BLOB)) AS output_bytes
+                FROM calls WHERE run_id = ? ORDER BY call_id
+                """,
+                (max_bytes, max_bytes, run_id),
+            ).fetchall()
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            d = dict(row)
+            for body, total in (("input_json", "input_bytes"),
+                                ("output_json", "output_bytes")):
+                text, size, truncated = _bounded_body(d.get(body), d[total])
+                d[body] = text
+                d[f"{body.rsplit('_', 1)[0]}_truncated"] = truncated
+                d[total] = size
+            out.append(d)
+        return out
+
+    def model_role_usage(self) -> dict[str, dict[str, dict[str, Any]]]:
+        """Per-(model, role) usage: call count, distinct runs, spend.
+
+        Two sources, unioned on run_id: the ``calls`` ledger, which is the
+        only place judge calls appear but which only exists once a call is
+        recorded, and the ``runs`` row's orchestrator/worker columns, which
+        cover runs that died before their first call. Cost comes from calls
+        alone — the runs table has no per-role split. Dry runs are excluded:
+        a stubbed call is not evidence the model ran.
+        """
+        usage: dict[str, dict[str, dict[str, Any]]] = {}
+
+        def entry(model: Any, role: Any) -> dict[str, Any]:
+            return usage.setdefault(str(model), {}).setdefault(
+                str(role or "unknown"),
+                {"calls": 0, "runs": 0, "cost_usd": 0.0, "errors": 0},
+            )
+
+        with self._connect() as conn:
+            for model, role, n_calls, n_err, cost in conn.execute(
+                "SELECT model, role, COUNT(*), "
+                "SUM(CASE WHEN error IS NOT NULL AND error != '' THEN 1 "
+                "ELSE 0 END), COALESCE(SUM(cost_usd), 0) "
+                "FROM calls WHERE COALESCE(dry_run, 0) = 0 "
+                "AND model IS NOT NULL AND model != '' "
+                "GROUP BY model, role"
+            ):
+                e = entry(model, role)
+                e["calls"] += n_calls
+                e["errors"] += int(n_err or 0)
+                e["cost_usd"] += float(cost or 0.0)
+            # UNION dedups run_ids across the calls ledger and the
+            # run-level orch/worker columns in one pass.
+            for model, role, n_runs in conn.execute(
+                "SELECT model, role, COUNT(DISTINCT run_id) FROM ("
+                "  SELECT model, role, run_id FROM calls"
+                "  WHERE COALESCE(dry_run, 0) = 0"
+                "  AND model IS NOT NULL AND model != ''"
+                "  UNION"
+                "  SELECT orchestrator, 'orchestrator', run_id FROM runs"
+                "  WHERE COALESCE(dry_run, 0) = 0 AND orchestrator IS NOT NULL"
+                "  UNION"
+                "  SELECT worker, 'worker', run_id FROM runs"
+                "  WHERE COALESCE(dry_run, 0) = 0 AND worker IS NOT NULL"
+                ") GROUP BY model, role"
+            ):
+                entry(model, role)["runs"] = n_runs
+        return usage
+
+    def backfill_calls(self, meta: RunMeta) -> int:
+        """Rebuild a run's `calls` rows from its events.jsonl, payloads and all.
+
+        Call rows written before the payload columns existed (or runs indexed
+        before the calls table existed at all) carry no prompt/completion —
+        events.jsonl is authoritative, so this replays it. Rows for the run
+        are deleted and reinserted in event order; safe to re-run. Returns the
+        number of call events indexed.
+        """
+        events_path = Path(meta.run_dir) / "events.jsonl"
+        if not events_path.exists():
+            # archived corpus (e.g. runs/ moved to runs-v1/): rebase the
+            # recorded orch/task/worker/run_id tail under this store's root
+            tail = Path(meta.run_dir).parts[-4:]
+            rebased = self.root.joinpath(*tail) / "events.jsonl"
+            if not rebased.exists():
+                return 0
+            events_path = rebased
+        call_types = {"llm_call", "worker_error"}
+        events: list[dict[str, Any]] = []
+        with events_path.open() as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    ev = json.loads(line)
+                except json.JSONDecodeError:
+                    continue  # truncated tail of a killed run — skip, not fatal
+                if ev.get("type") in call_types:
+                    events.append(ev)
+        rows = []
+        for ev in events:
+            cost = ev.get("cost") or {}
+            out = ev.get("output") or {}
+            rows.append((
+                meta.run_id, ev.get("phase"), ev.get("step"), ev.get("role"),
+                ev.get("model"), cost.get("input_tokens") or 0,
+                cost.get("output_tokens") or 0, cost.get("usd") or 0.0,
+                cost.get("api_cost_usd"), cost.get("pricing_source"),
+                ev.get("latency_ms") or 0.0, out.get("attempt"),
+                (ev.get("metadata") or {}).get("error_category"),
+                (ev.get("error") or "")[:500] or None, int(meta.dry_run),
+                datetime.now(UTC).isoformat(), ev.get("worker_id"),
+                ev.get("sequence"),
+                json.dumps(ev.get("input") or {}, default=str),
+                json.dumps(out, default=str),
+                out.get("finish_reason"),
+            ))
+        with self._connect() as conn:
+            conn.execute("DELETE FROM calls WHERE run_id = ?", (meta.run_id,))
+            conn.executemany(
+                """
+                INSERT INTO calls (
+                    run_id, phase, step, role, model, input_tokens,
+                    output_tokens, cost_usd, api_cost_usd, pricing_source,
+                    latency_ms, attempt, error_category, error, dry_run,
+                    created_at, worker_id, sequence, input_json, output_json,
+                    finish_reason
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                rows,
+            )
+        return len(rows)
 
     def calls_pricing_summary(self) -> list[dict[str, Any]]:
         """Per-(model, pricing_source) aggregates for pricing-drift analysis.
@@ -323,6 +587,103 @@ class RunStore:
                 GROUP BY model, pricing_source
                 ORDER BY model
                 """
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def unmetered_workers(self) -> set[str]:
+        """Model slugs whose calls are declared `pricing_source="unmetered"`.
+
+        Leaderboards must not read a $0 total as a free `cost_per_pass` —
+        unmetered is detected here, never inferred from `cost_total == 0`
+        (a legitimately cheap run is not unmetered). Dry-run rows excluded.
+        """
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT model FROM calls "
+                "WHERE pricing_source = 'unmetered' AND dry_run = 0 AND model IS NOT NULL"
+            ).fetchall()
+        return {r[0] for r in rows}
+
+    def mean_cell_cost(
+        self, task_id: str, orchestrator: str, worker: str, *, arm: str = "baseline"
+    ) -> float | None:
+        """Mean billed cost per finished run for one experiment cell arm.
+
+        Task-scoped (``mean_run_cost`` is pairing-scoped — a task's cost
+        profile dominates a pairing's). ``arm`` selects on the run's
+        recorded ``config.jev_assist``; the baseline arm prices the pair's
+        cheap side. Returns None when no finished runs match.
+        """
+        jev = 1 if arm == "jev" else 0
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT AVG(total_cost_usd) FROM runs "
+                "WHERE task_id = ? AND orchestrator = ? AND worker = ? "
+                "AND status = 'finished' AND COALESCE(dry_run, 0) = 0 "
+                "AND COALESCE(json_extract(config, '$.jev_assist'), 0) = ?",
+                (task_id, orchestrator, worker, jev),
+            ).fetchone()
+        return float(row[0]) if row and row[0] is not None else None
+
+    def group_spend(self, group_prefix: str) -> float:
+        """Live spend meter for one experiment — sums ``calls.cost_usd``
+        joined to runs under ``group_prefix%``.
+
+        Runs meter ``total_cost_usd`` at $0 until they finish and index;
+        ``calls`` rows land per call during the run, so this sees in-flight
+        spend that ``spend_today`` is blind to. Dry-run rows excluded.
+        ``%``/``_`` in the prefix are escaped — a matrix named ``jev_ab``
+        must not meter ``jevxab`` groups.
+        """
+        esc = group_prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT COALESCE(SUM(c.cost_usd), 0) FROM calls c "
+                "JOIN runs r ON c.run_id = r.run_id "
+                "WHERE r.run_group LIKE ? ESCAPE '\\' "
+                "AND COALESCE(r.dry_run, 0) = 0",
+                (f"{esc}%",),
+            ).fetchone()
+        return float(row[0] or 0.0)
+
+    def set_annotation(
+        self, kind: str, target: str, flag: str, note: str = ""
+    ) -> dict[str, Any]:
+        """Upsert a user annotation — the observatory's stateful layer.
+
+        ``kind`` is ``run``, ``group``, ``pairing``, ``post`` (publication
+        marks — latest wins, PK already ``(kind, target)``), or
+        ``cell-state`` (driver-persisted experiment states such as
+        ``aborted``). ``flag`` is ``interesting``, ``not``, ``posted``,
+        ``aborted``, or ``''`` (clears the flag but keeps the note)."""
+        if kind not in ("run", "group", "pairing", "post", "cell-state"):
+            raise ValueError(
+                "annotation kind must be run|group|pairing|post|cell-state, "
+                f"got {kind!r}"
+            )
+        if flag not in ("interesting", "not", "posted", "aborted", ""):
+            raise ValueError(
+                f"flag must be interesting|not|posted|aborted|'', got {flag!r}"
+            )
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO annotations (kind, target, flag, note, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT (kind, target) DO UPDATE SET
+                    flag = excluded.flag,
+                    note = excluded.note,
+                    updated_at = excluded.updated_at
+                """,
+                (kind, target, flag, note, datetime.now(UTC).isoformat()),
+            )
+        return {"kind": kind, "target": target, "flag": flag, "note": note}
+
+    def annotations(self) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT kind, target, flag, note, updated_at FROM annotations"
             ).fetchall()
         return [dict(r) for r in rows]
 
@@ -396,13 +757,39 @@ class RunStore:
                 "SELECT result_json FROM judge_cache WHERE task_id = ? AND judge_slug = ? AND artifact_sha256 = ?",
                 (task_id, judge_slug, artifact_sha256),
             ).fetchone()
-        return json.loads(row[0]) if row else None
+        if not row:
+            return None
+        try:
+            data = json.loads(row[0])
+        except json.JSONDecodeError:
+            return None
+        # pre-schema rows carry a bare result dict — a rubric/format change
+        # must replay the call, not trust the old payload (e.g. records
+        # written when parse failures were coerced into passed=false)
+        if not isinstance(data, dict) or data.get("schema") != JUDGE_CACHE_SCHEMA:
+            return None
+        result = data.get("result")
+        return result if isinstance(result, dict) else None
+
+    def judge_slugs(self, task_ids: set[str]) -> list[str]:
+        """Distinct judge models seen in the cache for these tasks — provenance
+        fallback for runs judged before report.json recorded judge.model."""
+        if not task_ids:
+            return []
+        marks = ",".join("?" for _ in task_ids)
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"SELECT DISTINCT judge_slug FROM judge_cache WHERE task_id IN ({marks})",
+                sorted(task_ids),
+            ).fetchall()
+        return [r[0] for r in rows]
 
     def put_judge_result(self, task_id: str, judge_slug: str, artifact_sha256: str, result: dict[str, Any]) -> None:
+        payload = {"schema": JUDGE_CACHE_SCHEMA, "result": result}
         with self._connect() as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO judge_cache VALUES (?, ?, ?, ?, ?)",
-                (task_id, judge_slug, artifact_sha256, json.dumps(result, default=str), datetime.now(UTC).isoformat()),
+                (task_id, judge_slug, artifact_sha256, json.dumps(payload, default=str), datetime.now(UTC).isoformat()),
             )
 
     def summary(self) -> dict[str, Any]:
@@ -420,6 +807,38 @@ class RunStore:
             "worker_counts": dict(workers),
         }
 
+    def spend_today(self) -> float:
+        """Recorded cost of all runs started today (UTC) — the spend-guard meter."""
+        today = datetime.now(UTC).date().isoformat()
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT COALESCE(SUM(total_cost_usd), 0) FROM runs "
+                "WHERE started_at >= ? AND COALESCE(dry_run, 0) = 0",
+                (today,),
+            ).fetchone()
+        return float(row[0] or 0.0)
+
+    def mean_run_cost(self, *, orchestrator: str | None = None,
+                      worker: str | None = None) -> float | None:
+        """Mean cost per finished run, optionally scoped to a pairing.
+
+        Used to estimate grid cost before launching. Returns None when no
+        finished runs match (caller falls back to the global mean or a
+        conservative default)."""
+        where = "status = 'finished' AND COALESCE(dry_run, 0) = 0"
+        params: list[Any] = []
+        if orchestrator:
+            where += " AND orchestrator = ?"
+            params.append(orchestrator)
+        if worker:
+            where += " AND worker = ?"
+            params.append(worker)
+        with self._connect() as conn:
+            row = conn.execute(
+                f"SELECT AVG(total_cost_usd) FROM runs WHERE {where}", params,
+            ).fetchone()
+        return float(row[0]) if row and row[0] is not None else None
+
 
 _SORTABLE_COLUMNS = {"run_id", "started_at", "finished_at", "status", "orchestrator", "worker", "task_id", "total_cost_usd", "score", "latency_ms", "failure_reason", "run_group", "replicate"}
 
@@ -431,11 +850,23 @@ _RUN_COLUMNS_V2 = (
     ("env", "TEXT"),
     ("run_group", "TEXT"),
     ("replicate", "INTEGER"),
+    ("dry_run", "INTEGER"),
+    ("judge_score", "REAL"),
+    ("judge_passed", "INTEGER"),
+    ("delegated", "INTEGER"),
 )
 
 _CALL_COLUMNS_V2 = (
     ("worker_id", "TEXT"),
     ("sequence", "INTEGER"),
+)
+
+# calls v3: full step payloads so the index is a self-contained RL/telemetry
+# store — prompt messages, raw completion, and provider finish_reason per call
+_CALL_COLUMNS_V3 = (
+    ("input_json", "TEXT"),
+    ("output_json", "TEXT"),
+    ("finish_reason", "TEXT"),
 )
 
 
@@ -471,4 +902,8 @@ def _row_to_meta(row: sqlite3.Row) -> RunMeta:
         env=env,
         run_group=row[17] if len(row) > 17 else None,
         replicate=row[18] if len(row) > 18 else None,
+        dry_run=bool(row[19]) if len(row) > 19 else False,
+        judge_score=row[20] if len(row) > 20 else None,
+        judge_passed=bool(row[21]) if len(row) > 21 and row[21] is not None else None,
+        delegated=bool(row[22]) if len(row) > 22 and row[22] is not None else None,
     )

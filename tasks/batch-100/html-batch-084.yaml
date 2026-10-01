@@ -6,3 +6,11 @@ prompt: Create a landing page for a open-source fonts library targeted at remote
   inline CSS.
 validation:
 - html
+- has_required
+- matches_pattern
+metadata:
+  difficulty: easy
+  required:
+  - fonts
+  pattern: remote[ -]?first|distributed|async|remote team|work from anywhere|hybrid|global
+    team|timezone|time zone|hire anywhere

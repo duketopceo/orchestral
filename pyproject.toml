@@ -30,6 +30,15 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# `e2b` backs the isolated code runtime (ORCHESTRAL_CODE_RUNTIME=isolated):
+# an E2B-compatible sandbox endpoint — self-hosted CubeSandbox or hosted E2B.
+e2b = [
+    # cubeexec tolerates both SDK majors: v1 exports CommandExitException at
+    # top level and uses the Sandbox constructor, v2 via e2b.exceptions and
+    # .create(). Self-hosted CubeSandbox needs `e2b<2` — CubeAPI serves only
+    # the v1 REST surface (v2 calls /v2/sandboxes, which it doesn't route).
+    "e2b>=1.11,<3",
+]
 shots = [
     "playwright>=1.40",
 ]
@@ -41,6 +50,11 @@ tui = [
 dev = [
     "ruff>=0.6",
     "mypy>=1.11",
+    # `dev` is the environment all four CI gates run in, so it carries the
+    # [tui] extra too. Without this, the documented `pip install -e .[dev]`
+    # yields a venv where `unittest discover` reports OK with the whole
+    # Textual suite skipped. Keep the bound in step with `tui` above.
+    "textual>=1.0,<9",
 ]
 
 [project.urls]

@@ -19,11 +19,55 @@ metadata: {}                  # optional free-form map (video tasks read generat
 | Field | Type | Default | Notes |
 |---|---|---|---|
 | `id` | str | required | Unique across `tasks/`; becomes a path component (`runs/{orch}/{task}/{worker}/{run_id}/`) |
-| `type` | str | required | `html`, `image`, `video`, `multi-file`, `code`, `constraint`, `needle`, `sql`, `extract`, `api` — all implemented; see per-type sections below |
+| `type` | str | required | `html`, `image`, `video`, `multi-file`, `code`, `bugfix`, `terminal`, `swe-patch`, `pipeline`, `constraint`, `needle`, `sql`, `extract`, `api` — all implemented; see per-type sections below |
 | `prompt` | str | required | Full task brief; the orchestrator decomposes it into subtasks |
+| `title` | str | `""` | Human label shown in the observatory (e.g. `Expression parser`); `validate` warns when absent |
+| `blurb` | str | `""` | One-line "what this task asks" for cards and tables; `validate` warns when absent |
 | `validation` | list[str] | `[]` | Check names; empty means the type's default set |
 | `assets` | list[str] | `[]` | Reserved; not consumed by the runner yet |
-| `metadata` | map | `{}` | Free-form; carried into run records. `video` tasks read `duration`, `resolution`, `aspect_ratio`, `generate_audio`, `seed`; `multi-file` tasks read `expected_paths`; `code` tasks read `module`, `tests`, `timeout_seconds`, `expected_paths`, plus quality bounds `max_code_lines`, `max_functions`, `max_complexity_lite`, `no_unsafe`, `no_external_deps`, `forbidden_patterns` |
+| `metadata` | map | `{}` | Free-form; carried into run records. `video` tasks read `duration`, `resolution`, `aspect_ratio`, `generate_audio`, `seed`; `multi-file` tasks read `expected_paths` and `required_content`; `code` tasks read `module`, `tests`, `timeout_seconds`, `expected_paths`, plus quality bounds `max_code_lines`, `max_functions`, `max_complexity_lite`, `no_unsafe`, `no_external_deps`, `forbidden_patterns`; every type reads `version` to label a spec revision (recorded as `task_version`) |
+| `metadata.holdout` | bool | `false` | Marks the spec as part of the unpublished holdout arm. See below. |
+
+## The holdout arm
+
+`metadata.holdout: true` marks a spec as belonging to the **unpublished** arm —
+the problems used to estimate whether a score is inflated by having seen the
+published ones. It is honoured in three places:
+
+- **Leaderboard** (`report --leaderboard`) — holdout runs are left out of every
+  rate, median, and cost figure, and the count of excluded runs is printed. A
+  pairing with only holdout runs is listed separately as unranked rather than
+  dropped, so a measured pairing is never mistaken for an unmeasured one.
+- **Publication** (`scrub`) — a holdout run is withheld whole and recorded in
+  the published manifest under `withheld`. Nothing is copied, because there is no
+  safe subset: the plan carries the prompt and a `needle` artifact *is* the
+  answer. `scrub_run` raises `HoldoutRunError` rather than write a partial dir.
+- **Audit** (`audit`) — the presence of a holdout arm clears `no_holdout_arm`.
+
+Do not commit holdout specs. A spec in git is a published problem wearing a
+holdout label, which is the exact thing the arm exists to avoid. Generate the arm
+into a run-scoped directory instead:
+
+```bash
+python harness.py holdout --out runs-holdout --count 8 --seed 4242
+```
+
+Generated specs span several question shapes rather than one template — an arm
+built from a single shape is one problem counted many times, which is what
+`near_duplicate_family` reports for the shipped `html-batch-*` specs. The task id
+is a slot name and is the same across seeds; the prompt is not, so two seeds give
+two different problems under one id.
+
+Read the result with `python harness.py report --contamination`, which prints
+mean score per arm per task type plus the gap, and the `n` behind each mean.
+
+
+Editing a spec changes its `task_hash` (sha256 of the spec content, recorded
+in the manifest). Runs recorded under the old hash stay valid artifacts but no
+longer pair with runs of the edited spec, so set `metadata.version` (recorded
+as `task_version`) to label the revision and note in the spec why it changed.
+That applies to a bug fix in the expected answer too: a corrected spec is a
+new hash.
 
 ## Task types
 
@@ -62,14 +106,30 @@ metadata: {}                  # optional free-form map (video tasks read generat
   paths, sizes, and hashes only. Declare the files the task must produce in
   `metadata.expected_paths` for the `has_paths` check.
 - **`code`** — same file-set contract as `multi-file` (workers return
-  `{"files": [...]}`, merged into `artifact.zip`). In this release, live
-  validation is disabled by default and cannot fall back to a host subprocess.
-  `metadata.module` names the required file (default `solution.py`; also the
-  `expected_paths` default). A live validation report returns `executed: false`,
-  `runtime: disabled`, and a non-passing result because no isolated runtime is
-  configured. Dry runs skip execution and compile-check `.py` files instead
-  (`executed: false`). `metadata.timeout_seconds` remains part of the task
-  contract and is recorded for a future isolated runtime.
+  `{"files": [...]}`, merged into `artifact.zip`), but validation executes
+  hidden tests: the file set plus the task's `metadata.tests` (a unittest
+  source string, never sent to workers) are passed to the configured execution
+  runtime. Execution is fail-closed by default — with no isolated runtime
+  configured the suite never runs and the report records
+  `runtime: "disabled"`. `ORCHESTRAL_CODE_RUNTIME=isolated` dispatches to the
+  E2B-compatible adapter (`orchestral/cubeexec.py`, `pip install
+  "orchestral[e2b]"`; self-hosted CubeSandbox additionally needs `"e2b<2"` —
+  see the README's self-hosted section): the fileset plus `task_tests.py`
+  are written into a disposable microVM and a verifier-authored runner
+  executes the suite there, deriving the verdict from the unittest result
+  object via a nonce-named payload file rather than forgeable stdout.
+  Sandboxes run with an env allowlist; egress denial is guaranteed by hosted
+  E2B but must be configured deployment-side on CubeSandbox (the adapter's
+  `allow_internet_access=False` request is ignored there). `metadata.module` names
+  the required file (default `solution.py`; also the `expected_paths`
+  default). `metadata.timeout_seconds` caps execution (default 30). `passes`
+  requires every expected file present *and* the suite green; `score` is the
+  fraction of tests passed (0.0 when the suite crashes, errors on import, or
+  times out — `None` only when the suite never ran). Replicates give pass@k.
+  The executor/agent-CLI path remains a separate
+  host-containment path and is not made safe by the code verifier sandbox. Dry
+  runs skip execution and compile-check `.py` files instead
+  (`executed: false`).
 
 #### Code execution threat model and configuration boundary
 
@@ -82,19 +142,19 @@ The process-level setting `ORCHESTRAL_CODE_RUNTIME` is fail closed:
 
 - The default is `disabled`.
 - `host` and unknown values are rejected; they never select a subprocess.
-- `isolated` is an explicit request, but is rejected until a real isolated
-  runtime adapter is wired in. The setting alone does not enable execution.
+- `isolated` selects the E2B-compatible adapter and is the only value that
+  enables execution. The setting is process-owned; task metadata and
+  `no_unsafe` cannot turn it on.
 
-A future adapter must be outside the host process and enforce all of these
-properties before the setting can enable execution: no host filesystem mounts,
-an empty environment with no inherited credentials, denied network, and CPU,
-memory, process-count, and wall-time limits. Task metadata may request a lower
-timeout but cannot raise the adapter's hard resource ceilings.
-The adapter must own materialization, execution, and output truncation. It must
-not accept a host command, environment passthrough, or fallback from a failed
-isolation check. This configuration is process-owned; task metadata and
-`no_unsafe` cannot turn it on.
-
+The adapter must remain outside the host process and enforce all of these
+properties: no host filesystem mounts, an empty environment with no inherited
+credentials, denied network, and CPU, memory, process-count, and wall-time
+limits. Task metadata may request a lower timeout but cannot raise the
+adapter's hard resource ceilings. The adapter owns materialization,
+execution, and output truncation; it must not accept a host command,
+environment passthrough, or fallback from a failed isolation check. On
+self-hosted CubeSandbox, egress denial is a deployment-side responsibility —
+the adapter's `allow_internet_access=False` request is ignored there.
 - **`constraint`** — workers produce candidate text per subtask; the
   orchestrator picks the best (same selection flow as `image`/`video`); the
   chosen text is stored as `artifact.txt` and checked against hard
@@ -107,12 +167,65 @@ isolation check. This configuration is process-owned; task metadata and
 - **`needle`** — long-context retrieval: `metadata.document` (the haystack)
   rides inside each subtask payload, workers return candidate answers, the
   orchestrator picks one, and `artifact.txt` is checked with the constraint
-  checks — `has_required` for `metadata.required` (the true needle) and
-  `no_forbidden` for `metadata.forbidden` (decoys). An answer that names the
-  right token but also mentions a decoy fails — the checks measure whether
-  the model actually found it, not whether it can recite the options.
-  `metadata.expected_answer` feeds the dry-run path. See
-  `tasks/needle-deploy-token.yaml`.
+  checks — `has_required` for `metadata.required` (the true needle),
+  `no_forbidden` for `metadata.forbidden` (decoys), and `exact_answer` for
+  `metadata.expected_answer` when the prompt demands the answer and nothing
+  else (a `{"result": "FALCON-4417"}` wrapper is not "only the token"). An
+  answer that names the right token but also mentions a decoy fails — the
+  checks measure whether the model actually found it, not whether it can
+  recite the options. `metadata.expected_answer` also feeds the dry-run
+  path. See `tasks/needle-deploy-token.yaml`.
+- **`bugfix`** — `code`'s repair sibling: same file-set contract, same hidden
+  `metadata.tests` execution, but `metadata.files` ships the *broken* repo —
+  injected into every worker subtask as `broken_files` so the worker repairs
+  instead of generating from scratch. The task prompt describes the defect;
+  workers return the complete corrected file set. `metadata.module`,
+  `expected_paths`, quality bounds, and the isolated-runtime notes all
+  carry over from `code`. See `tasks/bugfix-lru-evict.yaml`.
+- **`terminal`** — Terminal-Bench-flavored shell plans: workers produce a
+  JSON command plan (`[{"run": "sed -i 's/a/b/' f"}, ...]`); the orchestrator
+  picks the best (same candidate flow as `api`); the harness seeds a tmpdir
+  from `metadata.fs`, replays the plan in a **virtual shell** (no real
+  subprocess — `cat ls pwd cd grep mkdir touch cp mv rm echo> echo>>
+  sed -i s/x/y/`), and grades the resulting filesystem against
+  `metadata.expect.files`:
+
+  ```yaml
+  metadata:
+    fs:                       # seed files: {path: content}
+      app.ini: "debug = true\n"
+    commands:                 # reference plan — feeds the dry-run path
+      - run: "sed -i 's/true/false/' app.ini"
+    expect:
+      files:
+        app.ini: {contains: "debug = false"}   # contains | equals | matches | absent
+      max_commands: 8                          # optional efficiency gate
+  ```
+
+  Paths are confined to the tmpdir — absolute paths are remapped inside the
+  sandbox and `..` escapes are command errors. Score is the fraction of
+  `expect.files` rules satisfied; `passes` requires all of them, zero command
+  errors, and `commands <= max_commands` when declared. See
+  `tasks/terminal-config-fix.yaml`.
+- **`swe-patch`** — SWE-bench-style diff repair: `metadata.files` ships the
+  repo fixture (`repo_files` in worker subtasks); workers return
+  `{"patch": "<unified diff>"}`; the harness extracts the diff, applies it
+  with a pure-Python applier (no `patch` binary), runs code-quality checks,
+  then the hidden `metadata.tests` suite against the patched tree. Each gate
+  is reported separately (`extracted`, `applies`, `quality_ok`,
+  `tests_pass`) so patch-format failures are scored before correctness —
+  a model that can't emit a clean diff fails at `applies`, not at tests.
+  `metadata.patch` is the reference diff for dry runs. Artifact:
+  `artifact.diff`. See `tasks/swe-patch-rename-key.yaml`.
+- **`pipeline`** — sequential subtask chains: each worker subtask receives
+  `prior_outputs` — the `{"subtask_id", "content"}` outputs of every earlier
+  subtask — so information must propagate through the chain rather than
+  fanning out in parallel. The *last* subtask's output is the artifact (no
+  orchestrator synthesis call; orchestration value is in the plan).
+  Validation is the generic check list — `has_required`/`max_words`/
+  `forbidden`/`matches` metadata composes as usual. `metadata.reference_text`
+  is the compliant example for dry runs. See
+  `tasks/pipeline-sales-summary.yaml`.
 - **`sql`** — workers produce candidate SQL queries; the orchestrator picks
   one (same candidate-selection flow as `image`/`video`); the harness executes
   the chosen query **read-only** against a fixture SQLite database built from
@@ -138,6 +251,43 @@ isolation check. This configuration is process-owned; task metadata and
   can still burn CPU until the step cap trips). `validation:` entries are
   unused — the check set is fixed (`executed`, `matches_reference`). See
   `tasks/sql-monthly-revenue.yaml`.
+
+  The reference defines truth, so it must return at least one row. An empty
+  reference result is a broken spec (error, null score), not an empty answer
+  to match against — otherwise any candidate returning zero rows, including a
+  nonsense one, scores `1.0`. That is a liveness check only: a reference that
+  is wrong but non-empty still grades, so pin a spec's expected answer in a
+  test. Three rules keep a reference from answering nothing by accident, and
+  from answering more than the prompt asked for:
+
+  - **Round both sides of a comparison, or neither.** `ROUND(SUM(x), 2)`
+    compared against a bare `MAX(SUM(x)) OVER (...)` matches only while the
+    winning total already equals its own 2-decimal rounding, and stops matching
+    the moment it does not — `3 x 12.34` is `37.019999999999996`, which rounds
+    to `37.02`, so that month loses its only row. The condition is that rounding
+    gap, not binary representability: `0.1` is no more exactly representable
+    than `37.019999999999996`, but `ROUND(0.1, 2) = 0.1`, so its month still
+    answers. The reference therefore silently drops every month with a rounding
+    gap and keeps answering normally for the months without one. That partial
+    answer is harder to notice than a total failure, and a non-empty reference
+    passes the check above. Aggregate the rounded value:
+    `MAX(ROUND(SUM(x), 2)) OVER (...)`.
+
+  - **Seed values that exercise the comparison.** Prices like `30.0` and
+    `12.5` are exact binary fractions, so they hide the case above. Use prices
+    with a fractional cent (`12.34`) and quantities that are not powers of two.
+  - **Break ties, or say how to break them.** A comparison against the month's
+    maximum — `WHERE revenue = best` — matches *every* row tied at that
+    maximum, so a reference can return more rows than a prompt promising "one
+    row per month" ever asked for, and a candidate that resolves the tie is
+    graded wrong. Pick one: state the tie-break in the prompt and implement it
+    in the reference (`ROW_NUMBER() OVER (PARTITION BY month ORDER BY revenue
+    DESC, product ASC) = 1`), or state in the prompt that every tied product
+    gets a row. When `metadata.ordered` is true, the reference's `ORDER BY` must
+    fully determine row order either way, because the compare is positional.
+    `tasks/sql-monthly-revenue.yaml` is the worked example: its prompt names the
+    alphabetical tie-break and its `reference_sql` picks the same row.
+
 - **`extract`** — workers extract a JSON object per subtask; the orchestrator
   picks the best candidate (same selection flow as `image`/`video`); the
   chosen extraction is stored as `artifact.json` and graded deterministically.
@@ -150,7 +300,8 @@ isolation check. This configuration is process-owned; task metadata and
       tier: {type: str, enum: [gold, silver, bronze]}
     expected:             # deep-equality graded keys — defines truth
       name: "Ada"
-    pass_threshold: 1.0   # min score to pass; required+type checks always apply
+      tier: "gold"
+    pass_threshold: 1.0   # score floor in (0, 1]; required+type checks always apply
   ```
 
   Score is the fraction of `expected` keys that match (partial credit);
@@ -158,6 +309,25 @@ isolation check. This configuration is process-owned; task metadata and
   requires every `required` field present, all type/enum checks green, and
   `score >= pass_threshold`. Unparseable artifacts score null. See
   `tasks/extract-invoice.yaml`.
+
+  **`pass_threshold` is a score floor, not a dial to loosen.** A score is a
+  fraction, so a floor of `0` declares no floor at all: a wrong artifact scores
+  0.0, clears the gate, and passes with its value mismatches still reported. The
+  floor is therefore `(0, 1]`, and `bool` is refused rather than coerced —
+  `pass_threshold: no` reads as `float(False) == 0.0`. A value outside the range
+  or a non-number is recorded in the report's `errors` and fails the run closed
+  rather than being clamped. Leaving `pass_threshold:` blank means "not declared"
+  and takes the 1.0 default.
+
+  **Every declared field must be graded.** A field is graded when it is
+  `required: true` or named in `expected`. A field that is neither is
+  decorative — absent, it is skipped; present, only its type is read — so an
+  absent field and any fabricated value score the same. The grader reports
+  `contract_anchored: false` and fails closed rather than scoring 1.0 on a
+  fabrication. A contract with no `required` field and no `expected` is
+  rejected the same way. The grader is the only line of defence here: a
+  hand-written spec that bypasses the task-spec audit still reaches it, so the
+  runtime check holds on its own.
 - **`api`** — workers produce a JSON *request plan* per subtask (a list of
   `{method, path, json?, params?}` calls); the orchestrator picks the best;
   the harness starts a real loopback `http.server` stubbed from
@@ -254,6 +424,7 @@ isolation check. This configuration is process-owned; task metadata and
 | `non_empty` | the artifact has bytes |
 | `zip_signature` | the archive opens as a zip |
 | `has_paths` | every path in `metadata.expected_paths` is present as a non-empty regular file |
+| `has_content` | every token in `metadata.required_content[path]` appears in that file's body (case-insensitive); scoped per path, so one file cannot vouch for another |
 
 `code` tasks ignore `validation:` — the check is the isolated-runtime gate:
 
@@ -272,11 +443,18 @@ Each fails closed when requested but its metadata key is missing:
 | `within_budget` | every declared bound holds | `min_chars`, `max_chars`, `min_words`, `max_words` |
 | `has_required` | every token appears (case-insensitive) | `required: [...]` |
 | `no_forbidden` | no token appears (case-insensitive) | `forbidden: [...]` |
+| `exact_answer` | the artifact is exactly the expected answer (whitespace-trimmed) | `expected_answer` |
 | `matches_pattern` | the regex matches | `pattern` |
 | `no_pattern` | the regex does not match | `forbidden_pattern` |
 
 Unknown check names fail the run — including in a list that also contains known
-checks.
+checks. This holds for `html`, `constraint`, `needle`, `image`, `video`, and
+`multi-file`. The `code`, `sql`, `extract`, and `api` types never read
+`validation:` at all: they compute a fixed check set from `metadata`, so
+anything declared there is a phantom gate and the run still reports a pass.
+`python harness.py audit --strict` is the gate for that case and for the first —
+it fails CI on a spec that asks for a check which cannot run. See
+[docs/task-audit.md](task-audit.md).
 
 ## Example
 
@@ -290,14 +468,19 @@ validation: [html, has_cta, has_form, has_viewport, no_placeholder]
 ```
 
 A multi-file task declares the files it expects, so `has_paths` can check the
-archive against the brief:
+archive against the brief. `has_paths` alone accepts a one-byte file per name,
+so a spec that wants the artifact graded on content adds `has_content` and maps
+each path to the tokens that file must contain:
 
 ```yaml
 id: multi-file-site
 type: multi-file
 prompt: |
   Build a small static site: a landing page and the stylesheet it depends on.
-validation: [non_empty, zip_signature, has_paths]
+validation: [non_empty, zip_signature, has_paths, has_content]
 metadata:
   expected_paths: [index.html, style.css]
+  required_content:
+    index.html: [hero, pricing, email]
+    style.css: [pricing, form]
 ```

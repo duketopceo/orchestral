@@ -1,4 +1,6 @@
 id: code-fizzbuzz
+title: "FizzBuzz module"
+blurb: "Implement fizzbuzz(n) — the classic screening task."
 type: code
 prompt: |
   Implement a Python module `fizzbuzz.py` with a single function
@@ -16,6 +18,17 @@ metadata:
   module: fizzbuzz.py
   expected_paths: [fizzbuzz.py]
   timeout_seconds: 30
+  difficulty: easy
+  reference:
+    fizzbuzz.py: |
+      def fizzbuzz(n: int) -> str | int:
+          if n % 15 == 0:
+              return "FizzBuzz"
+          if n % 3 == 0:
+              return "Fizz"
+          if n % 5 == 0:
+              return "Buzz"
+          return n
   tests: |
     import unittest
     from fizzbuzz import fizzbuzz

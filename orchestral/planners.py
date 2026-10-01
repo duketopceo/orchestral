@@ -5,25 +5,40 @@ from __future__ import annotations
 import ast
 import base64
 import contextlib
+import hashlib
 import html
 import json
+import random
 import re
+import subprocess
+import threading
+import time
 from functools import cache
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
+from orchestral import agentexec
+from orchestral.agentexec import AgentAdapter
 from orchestral.apistub import parse_plan
 from orchestral.config import ModelConfig, TaskSpec
-from orchestral.costs import compute_cost, compute_image_cost, compute_video_cost, token_usage_from_raw
+from orchestral.costs import (
+    compute_cost,
+    compute_image_cost,
+    compute_video_cost,
+    pricing_source_for,
+    token_usage_from_raw,
+)
 from orchestral.fileset import (
     FilesetError,
     check_response_size,
     expected_paths,
     parse_fileset,
+    required_content,
     summarize_fileset,
 )
 from orchestral.logger import EventLogger
 from orchestral.openrouter import OpenRouterClient
+from orchestral.privacy import scrub_text
 from orchestral.sqlexec import extract_sql
 
 # 1x1 transparent PNG used as the deterministic dry-run image artifact
@@ -39,6 +54,10 @@ _VIDEO_OPTION_KEYS = ("duration", "resolution", "aspect_ratio", "generate_audio"
 
 PROMPTS_DIR = Path(__file__).resolve().parent.parent / "prompts"
 ORCHESTRATOR_DEFAULT_PROMPT = "You are an orchestrator. Produce a plan and subtasks for a worker to execute."
+
+
+class PlanError(ValueError):
+    """Orchestrator returned a non-object plan — malformed model output."""
 
 
 def available_prompt_variants(prompts_dir: Path | str = PROMPTS_DIR) -> list[str]:
@@ -142,11 +161,15 @@ def _llm_call(
     client: OpenRouterClient | None,
     dry_run: bool,
     expect_json: bool = True,
-    max_tokens: int = 4096,
+    max_tokens: int | None = None,
     temperature: float = 0.4,
     system_override: str | None = None,
     attempt: int | None = None,
 ) -> tuple[str, dict[str, Any]]:
+    if max_tokens is None:
+        # honor the model's configured output ceiling — a hardcoded 4096
+        # truncates file-set worker payloads (finish_reason=length mid-JSON)
+        max_tokens = int(getattr(model_cfg, "max_tokens", None) or 4096)
     if dry_run:
         # deterministic fake output so the harness still exercises the path
         fake_output = _fake_output(input_data, phase)
@@ -179,7 +202,9 @@ def _llm_call(
     usage = token_usage_from_raw(completion["usage"])
     cost_usd, _ = compute_cost(usage, model_cfg)
     content = completion["content"]
-    api_cost = completion.get("api_cost_usd")
+    api_cost_usd = completion.get("api_cost_usd")
+    api_cost_usd = api_cost_usd if isinstance(api_cost_usd, (int, float)) else None
+    pricing_source = pricing_source_for(api_cost_usd)
 
     logger.log_llm_call(
         phase=phase,
@@ -198,8 +223,8 @@ def _llm_call(
         output_tokens=usage.completion_tokens,
         cost_usd=cost_usd,
         latency_ms=completion["latency_ms"],
-        pricing_source="configured",
-        api_cost_usd=api_cost if isinstance(api_cost, (int, float)) else None,
+        pricing_source=pricing_source,
+        api_cost_usd=api_cost_usd,
         attempt=attempt,
     )
 
@@ -209,14 +234,93 @@ def _llm_call(
         "input_tokens": usage.prompt_tokens,
         "output_tokens": usage.completion_tokens,
         "cost_usd": cost_usd,
-        "pricing_source": "configured",
-        "api_cost_usd": api_cost if isinstance(api_cost, (int, float)) else None,
+        "pricing_source": pricing_source,
+        "api_cost_usd": api_cost_usd,
         "usage": usage.to_dict(),
     }
 
 
+# A parse failure must name the failure without republishing the model's text.
+# Run output belongs inside the run directory, and an exception string travels
+# to CI logs and issue comments, so a fingerprint may carry delimiters and
+# punctuation only — never words.
+_SKELETON_CHARS = frozenset('{}[]()",:\\')
+_SKELETON_EDGE_CHARS = 200
+_DIGEST_CHARS = 12
+
+# The three ways a model response can fail to become JSON. A truncation is a
+# transport fault and re-running may fix it; the other two are the model
+# breaking the output contract, and re-running just costs the same call twice.
+PlanParseFaultKind = Literal["no_json", "unbalanced", "balanced_invalid"]
+
+
+class PlanParseFault(ValueError):
+    """A model response `_extract_json` could not turn into JSON, and which fault.
+
+    `kind` is what a caller branches on. The message names the same fault in
+    prose, and matching on that prose is exactly the coupling that made a
+    transport fault look like a harness regression in DUK-159.
+
+    It subclasses `ValueError` because every existing caller of `_extract_json`
+    already catches `ValueError` or `Exception` (`delegate`, `delegate_multi`,
+    `assemble_media`, `assemble_ce`, `judge_artifact`), so naming the fault
+    changes no existing handler's behavior.
+    """
+
+    kind: PlanParseFaultKind
+
+    def __init__(self, message: str, kind: PlanParseFaultKind) -> None:
+        super().__init__(message)
+        self.kind = kind
+
+
+def _skeleton(text: str) -> str:
+    """A response's delimiters and punctuation, with none of its content."""
+    return "".join(ch for ch in text if ch in _SKELETON_CHARS)
+
+
+def _response_digest(text: str) -> tuple[int, str]:
+    """A response's `(length, short sha256)` — enough to identify it, no text.
+
+    The one place a response is fingerprinted. Both the fault message and the
+    `orchestrator.plan_parse_fault` event read the same digest, so a fault in a
+    log line and a fault in the event stream name the same response.
+    """
+    digest = hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()[:_DIGEST_CHARS]
+    return len(text), digest
+
+
+def _response_fingerprint(text: str) -> str:
+    """Identify a model response without carrying any of its text.
+
+    Length and a short digest say *which* response failed. The head and tail
+    skeletons say whether it stopped mid-object or mid-string, which is what
+    separates a truncated response from a well-formed response that breaks the
+    plan contract.
+
+    A response that fits in both edge windows is reported once as `whole`.
+    Printing the same skeleton twice under two labels is indistinguishable from
+    a reporter that is misbehaving, and an ambiguous log is the thing this
+    message exists to prevent.
+    """
+    chars, digest = _response_digest(text)
+    if chars <= 2 * _SKELETON_EDGE_CHARS:
+        return f"{chars} chars sha256:{digest} whole={_skeleton(text)!r}"
+    return (
+        f"{chars} chars sha256:{digest} "
+        f"head={_skeleton(text[:_SKELETON_EDGE_CHARS])!r} "
+        f"tail={_skeleton(text[-_SKELETON_EDGE_CHARS:])!r}"
+    )
+
+
 def _extract_json(content: str) -> Any:
-    """Parse JSON from a model response, tolerating code fences and extra text."""
+    """Parse JSON from a model response, tolerating code fences and extra text.
+
+    The three failure branches name three different faults, because a
+    transient provider response and a model that broke the output contract
+    need different responses from whoever reads the log: the first is a
+    transport fault to re-run, the second is a contract fault to escalate.
+    """
     text = content.strip()
     if text.startswith("```"):
         text = text.split("```")[1]
@@ -229,7 +333,10 @@ def _extract_json(content: str) -> Any:
             start = i
             break
     if start is None:
-        raise ValueError(f"No JSON found in model response: {content[:200]}")
+        # no delimiter anywhere: the model never produced JSON at all
+        raise PlanParseFault(
+            f"No JSON found in model response: {_response_fingerprint(text)}", "no_json"
+        )
     # naive brace matching
     depth = 0
     in_string = False
@@ -254,8 +361,50 @@ def _extract_json(content: str) -> Any:
         elif ch in "}]":
             depth -= 1
             if depth == 0:
-                return json.loads(text[start : i + 1])
-    raise ValueError(f"Could not extract JSON from model response: {content[:200]}")
+                block = text[start : i + 1]
+                try:
+                    return json.loads(block)
+                except json.JSONDecodeError as exc:
+                    # delimiters balanced, so the response is whole; the model
+                    # emitted something that is not valid JSON
+                    raise PlanParseFault(
+                        f"Balanced JSON in model response did not parse: {exc.msg} at position "
+                        f"{exc.pos} of the block at offset {start}: {_response_fingerprint(block)}",
+                        "balanced_invalid",
+                    ) from exc
+    # a delimiter was found but never closed: the response was cut off, or a
+    # brace inside a string escaped the matcher
+    raise PlanParseFault(
+        f"Unbalanced JSON in model response: candidate at offset {start} never closed, so the "
+        f"response was truncated or a brace inside a string escaped the matcher: "
+        f"{_response_fingerprint(text)}",
+        "unbalanced",
+    )
+
+
+def _parse_plan(*, logger: EventLogger, content: str, step: int) -> Any:
+    """Parse a plan response, recording the fault class if it cannot be parsed.
+
+    The plan phase has no retry, so "does it need one?" can only be answered
+    from a measured rate, and a rate needs a countable event. One
+    `orchestrator.plan_parse_fault` per fault, carrying the fault class and the
+    response digest and nothing else, is that count. The exception still
+    propagates: measuring a fault must not change the response to it.
+    """
+    try:
+        return _extract_json(content)
+    except PlanParseFault as exc:
+        chars, digest = _response_digest(content)
+        logger.lifecycle(
+            "orchestrator.plan_parse_fault",
+            phase="plan",
+            role="orchestrator",
+            step=step,
+            fault=exc.kind,
+            chars=chars,
+            sha256=digest,
+        )
+        raise
 
 
 def _fake_output(input_data: dict[str, Any], phase: str) -> Any:
@@ -311,9 +460,11 @@ def plan_raw(
         expect_json=True,
         system_override=load_prompt_variant(prompt_variant) if prompt_variant else None,
     )
-    plan = _extract_json(content)
+    plan = _parse_plan(logger=logger, content=content, step=step)
     if not isinstance(plan, dict):
-        raise ValueError("orchestrator plan must be a JSON object")
+        # e.g. the model answered the task directly with a JSON list —
+        # malformed orchestrator output, not an infra error
+        raise PlanError(f"orchestrator plan must be a JSON object, got {type(plan).__name__}")
     plan["task_id"] = task.id
     plan["orchestrator"] = orchestrator.slug
     plan["planner"] = "raw"
@@ -355,6 +506,7 @@ def delegate(
     client: OpenRouterClient | None,
     dry_run: bool,
     attempt: int | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     content, cost = _llm_call(
         logger=logger,
@@ -376,6 +528,16 @@ def delegate(
     except Exception:
         output = {"content": content}
     output.setdefault("subtask_id", subtask.get("id"))
+    if "content" not in output:
+        # workers answer with descriptive keys — {"release_token": ...},
+        # {"blurb": ...} — which would otherwise surface as an empty artifact
+        payload = {
+            k: v for k, v in output.items() if k not in ("subtask_id", "prompt")
+        }
+        if len(payload) == 1 and isinstance(next(iter(payload.values())), str):
+            output["content"] = next(iter(payload.values()))
+        elif payload:
+            output["content"] = json.dumps(payload, ensure_ascii=False)
     return output, [cost]
 
 
@@ -388,6 +550,7 @@ def delegate_image(
     client: OpenRouterClient | None,
     dry_run: bool,
     attempt: int | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> tuple[dict[str, Any], bytes, list[dict[str, Any]]]:
     """Generate one image for a subtask brief via the Images API."""
     prompt = subtask.get("prompt") or subtask.get("description") or str(subtask)
@@ -425,7 +588,9 @@ def delegate_image(
     image_bytes = completion["image_bytes"]
     usage = token_usage_from_raw(completion["usage"])
     cost_usd = compute_image_cost(worker, usage, 1)
-    api_cost = completion.get("api_cost_usd")
+    api_cost_usd = completion.get("api_cost_usd")
+    api_cost_usd = api_cost_usd if isinstance(api_cost_usd, (int, float)) else None
+    pricing_source = pricing_source_for(api_cost_usd)
 
     logger.log_llm_call(
         phase="delegate",
@@ -443,8 +608,8 @@ def delegate_image(
         output_tokens=usage.completion_tokens,
         cost_usd=cost_usd,
         latency_ms=completion["latency_ms"],
-        pricing_source="configured",
-        api_cost_usd=api_cost if isinstance(api_cost, (int, float)) else None,
+        pricing_source=pricing_source,
+        api_cost_usd=api_cost_usd,
         attempt=attempt,
     )
     return {"subtask_id": subtask.get("id"), "prompt": prompt}, image_bytes, [{
@@ -453,8 +618,8 @@ def delegate_image(
         "input_tokens": usage.prompt_tokens,
         "output_tokens": usage.completion_tokens,
         "cost_usd": cost_usd,
-        "pricing_source": "configured",
-        "api_cost_usd": api_cost if isinstance(api_cost, (int, float)) else None,
+        "pricing_source": pricing_source,
+        "api_cost_usd": api_cost_usd,
         "usage": usage.to_dict(),
     }]
 
@@ -470,6 +635,7 @@ def delegate_video(
     dry_run: bool,
     attempt: int | None = None,
     seed: int | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> tuple[dict[str, Any], bytes, list[dict[str, Any]]]:
     """Generate one video for a subtask brief via the async Videos API.
 
@@ -534,7 +700,8 @@ def delegate_video(
     )
     # the async API reports an authoritative usage.cost on the completed job;
     # anything else is a configured rate-card estimate
-    pricing_source = "api_reported" if isinstance(api_cost, (int, float)) else "configured_estimate"
+    api_cost_usd = api_cost if isinstance(api_cost, (int, float)) else None
+    pricing_source = pricing_source_for(api_cost_usd)
 
     logger.log_llm_call(
         phase="delegate",
@@ -553,7 +720,7 @@ def delegate_video(
         cost_usd=cost_usd,
         latency_ms=completion["latency_ms"],
         pricing_source=pricing_source,
-        api_cost_usd=api_cost if isinstance(api_cost, (int, float)) else None,
+        api_cost_usd=api_cost_usd,
         attempt=attempt,
     )
     return {"subtask_id": subtask.get("id"), "prompt": prompt}, video_bytes, [{
@@ -563,7 +730,7 @@ def delegate_video(
         "output_tokens": 0,
         "cost_usd": cost_usd,
         "pricing_source": pricing_source,
-        "api_cost_usd": api_cost if isinstance(api_cost, (int, float)) else None,
+        "api_cost_usd": api_cost_usd,
         "usage": usage,
     }]
 
@@ -578,6 +745,7 @@ def delegate_multi(
     client: OpenRouterClient | None,
     dry_run: bool,
     attempt: int | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> tuple[dict[str, Any], dict[str, str], list[dict[str, Any]]]:
     """Produce one file set for a subtask brief.
 
@@ -588,10 +756,13 @@ def delegate_multi(
     prompt = subtask.get("prompt") or subtask.get("description") or str(subtask)
     declared = expected_paths(task.metadata)
     if not declared:
-        # code tasks default to the declared module; multi-file to a site
-        declared = [str(task.metadata.get("module") or "solution.py")] if task.type == "code" else ["index.html", "style.css"]
+        # code/bugfix tasks default to the declared module; multi-file to a site
+        declared = [str(task.metadata.get("module") or "solution.py")] if task.type in ("code", "bugfix") else ["index.html", "style.css"]
     if dry_run:
         files = {path: _fake_file_body(path) for path in declared}
+        for member, tokens in required_content(task.metadata).items():
+            if member in files:
+                files[member] += "\n".join(tokens) + "\n"
         cost = _fake_cost(worker, {"subtask": subtask}, {"paths": sorted(files)})
         cost["phase"] = "delegate"
         summary = summarize_fileset(files)
@@ -623,19 +794,27 @@ def delegate_multi(
     if client is None:
         raise ValueError("OpenRouterClient is required for live runs")
 
+    # bugfix subtasks carry the broken repo in metadata.files so the worker
+    # repairs instead of generating from scratch
+    if task.type == "bugfix":
+        subtask = {**subtask, "broken_files": task.metadata.get("files") or {}}
     messages = _build_messages(
         "worker",
         {
             "subtask": subtask,
             "task_type": task.type,
             "instructions": (
+                "Repair the files in broken_files. Return a JSON object "
+                "{\"files\": [{\"path\": ..., \"content\": ...}]} with the complete corrected file set."
+                if task.type == "bugfix" else
                 "Return a JSON object {\"files\": [{\"path\": ..., \"content\": ...}]} "
                 "containing every file this subtask must produce."
             ),
         },
         expect_json=True,
     )
-    completion = client.chat(model=worker.slug, messages=messages)
+    completion = client.chat(model=worker.slug, messages=messages,
+                             max_tokens=int(getattr(worker, "max_tokens", None) or 8192))
     content = completion["content"]
     check_response_size(content)
     try:
@@ -648,7 +827,9 @@ def delegate_multi(
 
     usage = token_usage_from_raw(completion["usage"])
     cost_usd, _ = compute_cost(usage, worker)
-    api_cost = completion.get("api_cost_usd")
+    api_cost_usd = completion.get("api_cost_usd")
+    api_cost_usd = api_cost_usd if isinstance(api_cost_usd, (int, float)) else None
+    pricing_source = pricing_source_for(api_cost_usd)
     summary = summarize_fileset(files)
     logger.log_llm_call(
         phase="delegate",
@@ -669,8 +850,8 @@ def delegate_multi(
         output_tokens=usage.completion_tokens,
         cost_usd=cost_usd,
         latency_ms=completion["latency_ms"],
-        pricing_source="configured",
-        api_cost_usd=api_cost if isinstance(api_cost, (int, float)) else None,
+        pricing_source=pricing_source,
+        api_cost_usd=api_cost_usd,
         attempt=attempt,
     )
     notes = data.get("notes") if isinstance(data, dict) else None
@@ -684,8 +865,8 @@ def delegate_multi(
         "input_tokens": usage.prompt_tokens,
         "output_tokens": usage.completion_tokens,
         "cost_usd": cost_usd,
-        "pricing_source": "configured",
-        "api_cost_usd": api_cost if isinstance(api_cost, (int, float)) else None,
+        "pricing_source": pricing_source,
+        "api_cost_usd": api_cost_usd,
         "usage": usage.to_dict(),
     }]
 
@@ -710,7 +891,13 @@ def assemble_media(
         input_data={
             "prompt": task.prompt,
             "candidates": [
-                {"subtask_id": r.get("subtask_id"), "prompt": r.get("prompt"), "query": r.get("query")}
+                {
+                    "subtask_id": r.get("subtask_id"),
+                    "prompt": r.get("prompt"),
+                    "query": r.get("query"),
+                    # bounded preview — without it the orchestrator picks blind
+                    "content": str(r.get("content") or "")[:500],
+                }
                 for r in results
             ],
             "task_type": task.type,
@@ -720,15 +907,71 @@ def assemble_media(
         dry_run=dry_run,
         expect_json=True,
     )
-    try:
-        selection = _extract_json(content)
-        idx = int(selection.get("subtask_id", selection.get("index", 0)))
-    except Exception:
-        idx = 0
-    # resolve subtask_id to a position in results, clamped to range
-    position = next((i for i, r in enumerate(results) if r.get("subtask_id") == idx), 0)
-    position = max(0, min(position, len(results) - 1))
+    position, resolved = _resolve_pick(content, results)
+    if not resolved:
+        # the pick is part of what is being measured — log it loudly rather
+        # than silently degrading to candidate 0
+        logger.log(
+            phase="assemble",
+            step=step,
+            event_type="pick_unresolved",
+            model=orchestrator.slug,
+            role="orchestrator",
+            input_data={"task": task.id},
+            output_data={"raw": content[:400]},
+            reasoning="Orchestrator selection carried no resolvable subtask_id/index; falling back to the first candidate.",
+        )
     return position, [cost]
+
+
+def _iter_json_objects(text: str):
+    """Yield every top-level JSON object/array decodable from `text`, in order."""
+    decoder = json.JSONDecoder()
+    pos = 0
+    while pos < len(text):
+        m = re.search(r"[\[{]", text[pos:])
+        if not m:
+            return
+        start = pos + m.start()
+        try:
+            obj, end = decoder.raw_decode(text, start)
+        except json.JSONDecodeError:
+            pos = start + 1
+            continue
+        yield obj
+        pos = start + end
+
+
+def _resolve_pick(content: str, results: list[dict[str, Any]]) -> tuple[int, bool]:
+    """Map an orchestrator selection response to a results position.
+
+    Models commonly wrap the answer — `{"plan": "..."}` reasoning first, then
+    `{"subtask_id": 3}`. Taking only the first JSON object resolves nothing and
+    silently picks candidate 0, which is how correct worker outputs got dropped
+    in favor of an earlier partial. `subtask_id` is resolved as an id lookup;
+    `index` is treated as a 0-based position.
+    """
+    for obj in _iter_json_objects(content):
+        if not isinstance(obj, dict):
+            continue
+        for key in ("subtask_id", "index"):
+            value = obj.get(key)
+            if isinstance(value, bool) or not isinstance(value, int):
+                continue
+            if key == "subtask_id":
+                pos = next(
+                    (i for i, r in enumerate(results) if r.get("subtask_id") == value),
+                    None,
+                )
+                if pos is None:
+                    # the model may have meant "position" under the wrong key —
+                    # accept it if it lands in range rather than failing
+                    pos = value if 0 <= value < len(results) else None
+            else:
+                pos = value if 0 <= value < len(results) else None
+            if pos is not None:
+                return pos, True
+    return 0, False
 
 
 def delegate_constraint(
@@ -741,6 +984,7 @@ def delegate_constraint(
     client: OpenRouterClient | None,
     dry_run: bool,
     attempt: int | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Produce one candidate constrained text for a subtask.
 
@@ -793,6 +1037,7 @@ def delegate_needle(
     client: OpenRouterClient | None,
     dry_run: bool,
     attempt: int | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Produce one candidate answer for a needle-in-haystack subtask.
 
@@ -850,6 +1095,7 @@ def delegate_sql(
     client: OpenRouterClient | None,
     dry_run: bool,
     attempt: int | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Produce one candidate SQL query for a subtask.
 
@@ -908,6 +1154,7 @@ def delegate_extract(
     client: OpenRouterClient | None,
     dry_run: bool,
     attempt: int | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Produce one candidate extraction for a subtask.
 
@@ -969,6 +1216,7 @@ def delegate_api(
     client: OpenRouterClient | None,
     dry_run: bool,
     attempt: int | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Produce one candidate request plan for a subtask.
 
@@ -1022,6 +1270,426 @@ def delegate_api(
     return out, costs
 
 
+def delegate_terminal(
+    *,
+    logger: EventLogger,
+    step: int,
+    subtask: dict[str, Any],
+    task: TaskSpec,
+    worker: ModelConfig,
+    client: OpenRouterClient | None,
+    dry_run: bool,
+    attempt: int | None = None,
+    cancel_event: threading.Event | None = None,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Produce one candidate shell-command plan for a subtask.
+
+    `content` is a JSON list of {"run": "..."} commands replayed in the
+    virtual shell at validation. Dry runs return `metadata.commands` so the
+    task spec's reference plan proves itself against `metadata.expect`.
+    """
+    if dry_run:
+        reference = json.dumps(task.metadata.get("commands") or [])
+        cost = _fake_cost(worker, {"subtask": subtask}, {"json_chars": len(reference)})
+        cost["phase"] = "delegate"
+        logger.log_llm_call(
+            phase="delegate",
+            step=step,
+            model=worker.slug,
+            role="worker",
+            messages=[{"role": "user", "content": str(subtask.get("description", ""))}],
+            completion={"json_chars": len(reference)},
+            reasoning=f"Write a shell command plan for subtask {subtask.get('id')} with {worker.slug}.",
+            input_tokens=cost["input_tokens"],
+            output_tokens=cost["output_tokens"],
+            cost_usd=cost["cost_usd"],
+            latency_ms=random.uniform(80, 1200),
+            pricing_source="none",
+            attempt=attempt,
+        )
+        return {
+            "subtask_id": subtask.get("id"),
+            "prompt": subtask.get("prompt") or subtask.get("description"),
+            "content": reference,
+        }, [cost]
+
+    out, costs = delegate(
+        logger=logger,
+        step=step,
+        subtask=subtask,
+        worker=worker,
+        client=client,
+        dry_run=dry_run,
+        attempt=attempt,
+    )
+    if "content" not in out:
+        plan = {k: v for k, v in out.items() if k not in ("subtask_id", "prompt")}
+        out["content"] = json.dumps(plan.get("commands", list(plan.values()) if len(plan) == 1 else plan))
+    elif parse_plan(str(out["content"])) is None:
+        with contextlib.suppress(ValueError, SyntaxError):
+            out["content"] = json.dumps(ast.literal_eval(str(out["content"])))
+    return out, costs
+
+
+def delegate_patch(
+    *,
+    logger: EventLogger,
+    step: int,
+    subtask: dict[str, Any],
+    task: TaskSpec,
+    worker: ModelConfig,
+    client: OpenRouterClient | None,
+    dry_run: bool,
+    attempt: int | None = None,
+    cancel_event: threading.Event | None = None,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Produce one candidate unified diff for a subtask.
+
+    The worker sees `repo_files` (metadata.files) and must return a patch —
+    {"patch": "<unified diff>"} or raw diff text. Dry runs return
+    `metadata.patch` so the spec's reference diff proves itself against the
+    hidden tests.
+    """
+    if dry_run:
+        reference = str(task.metadata.get("patch") or "")
+        cost = _fake_cost(worker, {"subtask": subtask}, {"patch_chars": len(reference)})
+        cost["phase"] = "delegate"
+        logger.log_llm_call(
+            phase="delegate",
+            step=step,
+            model=worker.slug,
+            role="worker",
+            messages=[{"role": "user", "content": str(subtask.get("description", ""))}],
+            completion={"patch_chars": len(reference)},
+            reasoning=f"Write a unified diff for subtask {subtask.get('id')} with {worker.slug}.",
+            input_tokens=cost["input_tokens"],
+            output_tokens=cost["output_tokens"],
+            cost_usd=cost["cost_usd"],
+            latency_ms=random.uniform(80, 1200),
+            pricing_source="none",
+            attempt=attempt,
+        )
+        return {
+            "subtask_id": subtask.get("id"),
+            "prompt": subtask.get("prompt") or subtask.get("description"),
+            "content": reference,
+        }, [cost]
+
+    enriched = {**subtask, "repo_files": task.metadata.get("files") or {},
+                "output_contract": "Return a JSON object {\"patch\": \"<unified diff>\"} — "
+                                   "the diff must apply cleanly to repo_files."}
+    out, costs = delegate(
+        logger=logger,
+        step=step,
+        subtask=enriched,
+        worker=worker,
+        client=client,
+        dry_run=dry_run,
+        attempt=attempt,
+    )
+    if "content" not in out:
+        # {"patch": "..."} JSON output, or a bare dict holding the diff
+        out["content"] = str(out.get("patch") or json.dumps(
+            {k: v for k, v in out.items() if k not in ("subtask_id", "prompt")}
+        ))
+    return out, costs
+
+
+# conservative per-attempt guess when a CLI reports no usage — the ledger
+# must cover executor runs so `spend_today` can't be bypassed by silence
+EXECUTOR_FLAT_ESTIMATE_USD = 0.25
+
+# added diff-lines shaped like instructions to the judge — the judge reads
+# agent-controlled text, so these are flagged as evidence, not hidden
+_INJECTION_HINT = re.compile(
+    r"^\+\s*[^\n]*(?:ignore\s+(?:all\s+)?(?:previous|prior)\s+instructions"
+    r"|verdict\s*[:=]\s*(?:pass|true)|score\s*[:=]\s*(?:1\.0|10)"
+    r"|note\s+to\s+(?:the\s+)?judge|dear\s+judge)",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def _repo_status(root: Path) -> set[str]:
+    """`git status --porcelain` baseline for the repo-mutation tripwire.
+
+    Empty on any failure — a non-git cwd simply disables the check rather
+    than blocking the attempt.
+    """
+    try:
+        out = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=root, capture_output=True, text=True, timeout=10,
+        )
+        return set(out.stdout.splitlines())
+    except Exception:
+        return set()
+
+
+def _oracle_probe_needles(
+    transcript_text: str,
+    repo_root: Path | None,
+    task: TaskSpec,
+) -> list[str]:
+    """Scan the captured transcript for oracle-adjacent references.
+
+    The filesystem is open to the agent — containment is environmental, so
+    reads of task oracles are *detected*, not prevented. A mention is not
+    proof of a read, which is why this is a warning milestone.
+
+    Takes the transcript as text, not a path. The agent shares write access
+    to the workspace, so re-reading the path here would scan whatever the
+    agent left there instead of what the harness captured — and would hang
+    outright on a FIFO. It also never returns `[]` for an absent transcript:
+    `[]` means "checked, clean", and a missing or empty capture is
+    *unchecked*, which is the condition a tripwire exists to surface. So an
+    empty capture is reported under its own needle rather than passing
+    silently.
+
+    The scan runs on the *scrubbed* transcript, so each needle is matched in
+    its scrubbed form as well as its raw form. Without that, routing the
+    transcript through `scrub_text` silently disabled this tripwire: a repo
+    under `/Users/` is rewritten to `[REDACTED_mac_path]`, the raw path never
+    appears, and the `repo_root` needle could not fire at all. Scrubbing is
+    the stronger control and is not going to be undone for this one, so the
+    match has to follow the text.
+
+    The cost of that is over-triggering: `[REDACTED_mac_path]` is a shared
+    marker, so any mac path in the transcript attributes `repo_root`. This
+    is a warning milestone and a mention is not proof of a read, so a false
+    positive costs a warning while the false negative cost a tripwire that
+    never fires.
+    """
+    if not transcript_text.strip():
+        return ["empty_transcript"]
+    needles: list[str] = []
+    if repo_root is not None and any(
+        form in transcript_text
+        for form in {str(repo_root), scrub_text(str(repo_root))}
+    ):
+        needles.append("repo_root")
+    if re.search(r"tasks/[^\s'\"]+\.ya?ml", transcript_text):
+        needles.append("task_spec")
+    if (
+        "metadata.tests" in transcript_text
+        or "metadata.reference" in transcript_text
+        or "hidden test" in transcript_text.lower()
+    ):
+        needles.append("oracle")
+    return needles
+
+
+def delegate_agentic(
+    *,
+    logger: EventLogger,
+    step: int,
+    subtask: dict[str, Any],
+    task: TaskSpec,
+    worker: ModelConfig,
+    adapter: AgentAdapter,
+    dry_run: bool,
+    attempt: int | None = None,
+    cancel_event: threading.Event | None = None,
+    evidence_dir: Path | None = None,
+    repo_root: Path | None = None,
+) -> tuple[dict[str, Any], dict[str, str], str, list[dict[str, Any]]]:
+    """Run one agent-CLI attempt for a subtask.
+
+    Returns (out, files, diff, costs): `files` is the harvested workspace
+    fileset for multi-type tasks, `diff` is the unified diff that becomes
+    the artifact for patch-shaped tasks (and the judge's input). `out` is
+    content-free for fileset tasks — worker-*.json carries paths/sizes/
+    hashes, never agent file bodies; the diff only lands in `content` where
+    the artifact contract already publishes it (swe-patch), mirroring
+    delegate_patch.
+
+    The `llm_call` event's completion carries usage and milestones —
+    transcript text and file bodies never enter it. Raw evidence lives
+    under `evidence_dir` (the run's raw/ dir), omitted from scrubbed output.
+    """
+    prompt = str(subtask.get("task_prompt") or task.prompt)
+    desc = str(subtask.get("description") or "").strip()
+    if desc and desc != task.prompt:
+        prompt = f"{prompt}\n\n## Subtask {subtask.get('id')}\n{desc}"
+    is_fileset = task.type in ("multi-file", "code", "bugfix")
+
+    if dry_run:
+        # never spawn — return the spec's declared reference oracle so the
+        # pipeline still proves itself end-to-end
+        if is_fileset:
+            # `reference` is canonical (selfcheck replays it); `files` is the
+            # broken fixture for bugfix specs — only a last resort.
+            ref_key = next(
+                (k for k in ("reference", "reference_files", "files")
+                 if task.metadata.get(k)),
+                "files",
+            )
+            files = {
+                str(k): str(v)
+                for k, v in (task.metadata.get(ref_key) or {}).items()
+            }
+            reference_diff = ""
+        else:
+            ref_key = "patch"
+            files = {}
+            reference_diff = str(task.metadata.get("patch") or "")
+        completion = {
+            "executor": adapter.name,
+            "dry_run": True,
+            "reference": f"metadata.{ref_key}",
+        }
+        cost = _fake_cost(worker, {"subtask": subtask.get("id")}, completion)
+        cost["phase"] = "delegate"
+        logger.log_llm_call(
+            phase="delegate",
+            step=step,
+            model=worker.slug,
+            role="worker",
+            messages=[{"role": "user", "content": prompt}],
+            completion=completion,
+            reasoning=f"Agent-executor dry run for subtask {subtask.get('id')} ({adapter.name}); returning the reference oracle.",
+            input_tokens=cost["input_tokens"],
+            output_tokens=cost["output_tokens"],
+            cost_usd=cost["cost_usd"],
+            latency_ms=random.uniform(80, 1200),
+            pricing_source="none",
+            attempt=attempt,
+        )
+        out: dict[str, Any] = {
+            "subtask_id": subtask.get("id"),
+            "prompt": subtask.get("prompt") or subtask.get("description"),
+        }
+        if is_fileset:
+            out.update(summarize_fileset(files))
+        else:
+            out["content"] = reference_diff
+        return out, files, reference_diff, [cost]
+
+    baseline = _repo_status(repo_root) if repo_root is not None else None
+    t0 = time.perf_counter()
+    result = agentexec.run_attempt(
+        adapter,
+        prompt=prompt,
+        files={str(k): str(v) for k, v in (task.metadata.get("files") or {}).items()},
+        timeout=float(task.metadata.get("timeout_seconds") or agentexec.DEFAULT_TIMEOUT_SECONDS),
+        cancel_event=cancel_event,
+        allow_hidden=bool(task.metadata.get("allow_hidden")),
+        evidence_dir=evidence_dir,
+    )
+    latency_ms = (time.perf_counter() - t0) * 1000
+
+    # usage -> pricing source: CLI-reported usage, a flat estimate when the
+    # CLI is silent, or a declared-unmetered worker (never a $0 free pass)
+    usage = result.usage or {}
+    unmetered = adapter.unmetered or bool((worker.metadata or {}).get("executor_unmetered"))
+    if unmetered:
+        pricing_source, cost_usd, in_tok, out_tok = "unmetered", 0.0, 0, 0
+    elif result.usage:
+        pricing_source = "cli_reported"
+        in_tok = int(usage.get("input_tokens") or 0)
+        out_tok = int(usage.get("output_tokens") or usage.get("tokens") or 0)
+        cost_usd = float(
+            usage.get("usd")
+            or (in_tok * worker.input_price + out_tok * worker.output_price)
+        )
+    else:
+        pricing_source, cost_usd, in_tok, out_tok = (
+            "flat_estimate", EXECUTOR_FLAT_ESTIMATE_USD, 0, 0,
+        )
+
+    # tripwire 1: the repo tree changed during the attempt — the agent wrote
+    # outside its workspace (or a stray process did)
+    if baseline is not None and repo_root is not None:
+        touched = sorted(_repo_status(repo_root) - baseline)
+        if touched:
+            logger.log(
+                phase="delegate",
+                step=step,
+                event_type="executor.repo_mutation",
+                model=worker.slug,
+                role="harness",
+                input_data={"subtask": subtask.get("id")},
+                output_data={"paths": touched[:20]},
+                reasoning="Repo tree changed during the agent attempt — the agent (or a stray process) wrote outside its workspace.",
+            )
+
+    # tripwire 2: transcript references the repo or task oracles — reads are
+    # detected, not prevented (open filesystem is the documented boundary)
+    needles = _oracle_probe_needles(result.transcript_text, repo_root, task)
+    if needles:
+        logger.log(
+            phase="delegate",
+            step=step,
+            event_type="executor.oracle_probe",
+            model=worker.slug,
+            role="harness",
+            input_data={"subtask": subtask.get("id")},
+            output_data={"needles": needles},
+            reasoning="Agent transcript references repo paths or task oracles — possible oracle probing.",
+        )
+
+    # the judge will read this diff — added lines shaped like instructions
+    # to it are recorded as a milestone, not removed
+    injection_hits = len(_INJECTION_HINT.findall(result.diff))
+    if injection_hits:
+        logger.log(
+            phase="delegate",
+            step=step,
+            event_type="executor.judge_injection",
+            model=worker.slug,
+            role="harness",
+            input_data={"subtask": subtask.get("id")},
+            output_data={"hits": injection_hits},
+            reasoning="Harvested diff contains lines shaped like instructions to the judge — flagged, not stripped.",
+        )
+
+    logger.log_llm_call(
+        phase="delegate",
+        step=step,
+        model=worker.slug,
+        role="worker",
+        messages=[{"role": "user", "content": prompt}],
+        completion={
+            "executor": adapter.name,
+            "changed_paths": result.changed_paths,
+            "deleted_paths": result.deleted_paths,
+            "hidden_paths": result.hidden_paths,
+            "file_count": len(result.files),
+            "exit_code": result.exit_code,
+            "usage": usage or None,
+            "transcript_sha256": result.transcript_sha256,
+            "transcript_bytes": result.transcript_bytes,
+            "redactions": result.redactions,
+            "group_survivors": result.group_survivors,
+            "diff_bytes": len(result.diff.encode("utf-8")),
+        },
+        reasoning=f"Agent CLI {adapter.name} executed subtask {subtask.get('id')} in a contained workspace.",
+        input_tokens=in_tok,
+        output_tokens=out_tok,
+        cost_usd=cost_usd,
+        latency_ms=latency_ms,
+        pricing_source=pricing_source,
+        attempt=attempt,
+    )
+    cost = {
+        "phase": "delegate",
+        "model": worker.slug,
+        "input_tokens": in_tok,
+        "output_tokens": out_tok,
+        "cost_usd": cost_usd,
+        "pricing_source": pricing_source,
+        "usage": usage or None,
+    }
+    out = {
+        "subtask_id": subtask.get("id"),
+        "prompt": subtask.get("prompt") or subtask.get("description"),
+    }
+    if is_fileset:
+        out.update(summarize_fileset(result.files))
+    else:
+        out["content"] = result.diff
+    return out, result.files, result.diff, [cost]
+
+
 def plan_ce(
     *,
     logger: EventLogger,
@@ -1045,9 +1713,9 @@ def plan_ce(
         expect_json=True,
         system_override=load_prompt_variant(prompt_variant) if prompt_variant else None,
     )
-    plan = _extract_json(content)
+    plan = _parse_plan(logger=logger, content=content, step=step)
     if not isinstance(plan, dict):
-        raise ValueError("orchestrator plan must be a JSON object")
+        raise PlanError(f"orchestrator plan must be a JSON object, got {type(plan).__name__}")
     plan["task_id"] = task.id
     plan["orchestrator"] = orchestrator.slug
     plan["planner"] = "ce-plan"
@@ -1130,12 +1798,22 @@ def assemble_ce(
         expect_json=True,
     )
     verification = None
-    # Unparseable verification is recorded below, never silently dropped.
+    # An unparseable verification is recorded below, never silently dropped.
     with contextlib.suppress(ValueError):
         verification = _extract_json(final_content)
     if isinstance(verification, dict) and verification.get("passed") is False:
-        reason = str(verification.get("reasoning") or verification.get("reason") or "unspecified")[:200]
-        raise ValueError(f"final verification failed: {reason}")
+        # This message is not private. `runner.py` copies `str(exc)` into the
+        # `run.failed` event twice, the TUI renders that field, and
+        # `harness._fail_line` prints it to stderr — which is the CI log. The
+        # model's own `reasoning`/`reason` is not quoted here for the same
+        # reason the judge parse reason is not: the message identifies the
+        # response, and the full text stays in the event log from the
+        # `_llm_call` above. `tests/test_planner_verification_failure.py`
+        # plants a canary on every field and holds the message, the
+        # `run.failed` event, and the stderr line.
+        reported = verification.get("reasoning") or verification.get("reason")
+        why = "reason logged" if reported else "no reason given"
+        raise ValueError(f"final verification failed ({why}): {_response_fingerprint(final_content)}")
 
     return artifact, [cost, final_cost]
 

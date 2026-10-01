@@ -1,0 +1,121 @@
+id: v3-boltons-deep-merge
+title: "boltons: deep_merge"
+blurb: "Recursive dict merge with a declared conflict policy — a new util for a real stdlib-extension library, graded by pytest in a sandboxed checkout."
+type: code
+prompt: |
+  You are contributing to `boltons` (a library of Python stdlib extensions).
+  A maintainer wants a **recursive dict merge** in a new module.
+
+  Create `boltons/mergeutils.py` exposing exactly one public function:
+
+      def deep_merge(base, override) -> dict
+
+  Contract:
+  - Return a NEW dict — neither argument is mutated.
+  - For keys present in both: if both values are mappings, merge them
+    recursively; otherwise `override`'s value wins.
+  - Keys present in only one side pass through.
+  - `deep_merge({}, {})` returns `{}`; `deep_merge({"a": 1}, {"a": 2})`
+    returns `{"a": 2}`; nested:
+    `deep_merge({"x": {"a": 1, "b": 2}}, {"x": {"b": 9}})` returns
+    `{"x": {"a": 1, "b": 9}}`.
+  - Non-dict values pass through unchanged (lists are *replaced*, not
+    concatenated); a mapping under `override` does not merge into a
+    non-mapping under `base` — it replaces it.
+  - Accept any `Mapping` subtype (e.g. `collections.OrderedDict`); result
+    is a plain `dict`.
+  - Stdlib only. Short docstring.
+
+  Return `{"files": [{"path": "boltons/mergeutils.py", "content": "..."}]}`.
+  The harness overlays your files onto a full repo checkout and runs the
+  project's test suite.
+metadata:
+  fixture: boltons-25.1
+  workdir: repo
+  expected_paths: ["boltons/mergeutils.py"]
+  setup_commands:
+    - "python -m pip install --quiet --no-index --find-links /home/user/wheelhouse pytest"
+  verify:
+    command: ["python", "-m", "pytest", "tests/test_v3_deep_merge.py", "-x", "-q"]
+    fail_to_pass:
+      - test_empty
+      - test_flat_override
+      - test_nested_merge
+      - test_neither_side_mutated
+      - test_list_replaced_not_concatenated
+      - test_mapping_over_nonmapping_replaces
+      - test_mapping_subtypes_accepted
+      - test_deep_nesting
+  timeout_seconds: 240
+  difficulty: hard
+  archetype: feature-gap
+  contamination_risk: medium
+  reference:
+    boltons/mergeutils.py: |
+      """Recursive mapping merge utilities."""
+
+      from collections.abc import Mapping
+
+
+      def deep_merge(base, override):
+          """Recursively merge ``override`` into ``base`` and return a new dict.
+
+          When both sides map a key to a Mapping, the values merge
+          recursively; otherwise ``override`` wins. Neither argument is
+          mutated and non-mapping values pass through (lists are replaced,
+          never concatenated).
+          """
+          merged = dict(base)
+          for key, value in override.items():
+              existing = merged.get(key)
+              if isinstance(existing, Mapping) and isinstance(value, Mapping):
+                  merged[key] = deep_merge(existing, value)
+              else:
+                  merged[key] = value
+          return merged
+  test_files:
+    tests/test_v3_deep_merge.py: |
+      """Verifier oracle for deep_merge — staged after the worker fileset."""
+      from collections import OrderedDict
+
+      from boltons.mergeutils import deep_merge
+
+
+      def test_empty():
+          assert deep_merge({}, {}) == {}
+          assert deep_merge({"a": 1}, {}) == {"a": 1}
+          assert deep_merge({}, {"a": 1}) == {"a": 1}
+
+      def test_flat_override():
+          assert deep_merge({"a": 1}, {"a": 2}) == {"a": 2}
+          assert deep_merge({"a": 1, "b": 1}, {"b": 2}) == {"a": 1, "b": 2}
+
+      def test_nested_merge():
+          out = deep_merge({"x": {"a": 1, "b": 2}}, {"x": {"b": 9}})
+          assert out == {"x": {"a": 1, "b": 9}}
+
+      def test_neither_side_mutated():
+          base = {"x": {"a": 1}}
+          over = {"x": {"b": 2}}
+          deep_merge(base, over)
+          assert base == {"x": {"a": 1}}
+          assert over == {"x": {"b": 2}}
+
+      def test_list_replaced_not_concatenated():
+          assert deep_merge({"l": [1, 2]}, {"l": [3]}) == {"l": [3]}
+
+      def test_mapping_over_nonmapping_replaces():
+          assert deep_merge({"x": 5}, {"x": {"a": 1}}) == {"x": {"a": 1}}
+          assert deep_merge({"x": {"a": 1}}, {"x": 5}) == {"x": 5}
+
+      def test_mapping_subtypes_accepted():
+          out = deep_merge(OrderedDict(a=OrderedDict(b=1)),
+                           OrderedDict(a=OrderedDict(c=2)))
+          assert out == {"a": {"b": 1, "c": 2}}
+          assert type(out) is dict
+
+      def test_deep_nesting():
+          base = {"l1": {"l2": {"l3": {"keep": 1}}}}
+          over = {"l1": {"l2": {"l3": {"add": 2}}}}
+          assert deep_merge(base, over) == {
+              "l1": {"l2": {"l3": {"keep": 1, "add": 2}}}}

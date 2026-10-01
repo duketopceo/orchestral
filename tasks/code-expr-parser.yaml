@@ -1,4 +1,6 @@
 id: code-expr-parser
+title: "Expression parser"
+blurb: "Write a real math-expression parser (+-*/, parens, unary minus) — eval() is banned."
 type: code
 prompt: |
   Implement a Python module `calc.py` with `evaluate(expr: str) -> float`.
@@ -23,6 +25,89 @@ metadata:
   forbidden_patterns:
     - "\\beval\\s*\\("
     - "\\bexec\\s*\\("
+  difficulty: medium
+  reference:
+    calc.py: |
+      """Recursive-descent evaluator: + - * /, parens, unary minus."""
+
+
+      def evaluate(expr: str) -> float:
+          tokens = _tokenize(expr)
+          pos = 0
+
+          def peek():
+              return tokens[pos] if pos < len(tokens) else None
+
+          def take():
+              nonlocal pos
+              tok = tokens[pos]
+              pos += 1
+              return tok
+
+          def parse_factor():
+              tok = peek()
+              if tok in ("-", "+"):
+                  take()
+                  value = parse_factor()
+                  return -value if tok == "-" else value
+              if tok == "(":
+                  take()
+                  value = parse_expr()
+                  if peek() != ")":
+                      raise ValueError("unbalanced parens")
+                  take()
+                  return value
+              if tok is None or not isinstance(tok, str) or tok in "+-*/)":
+                  raise ValueError(f"unexpected token: {tok!r}")
+              take()
+              try:
+                  return float(tok)
+              except ValueError as exc:
+                  raise ValueError(f"bad number: {tok!r}") from exc
+
+          def parse_term():
+              value = parse_factor()
+              while peek() in ("*", "/"):
+                  op = take()
+                  rhs = parse_factor()
+                  value = value * rhs if op == "*" else value / rhs
+              return value
+
+          def parse_expr():
+              value = parse_term()
+              while peek() in ("+", "-"):
+                  op = take()
+                  rhs = parse_term()
+                  value = value + rhs if op == "+" else value - rhs
+              return value
+
+          if not tokens:
+              raise ValueError("empty expression")
+          result = parse_expr()
+          if pos != len(tokens):
+              raise ValueError(f"trailing input at token {pos}")
+          return result
+
+
+      def _tokenize(expr: str) -> list:
+          tokens = []
+          i = 0
+          while i < len(expr):
+              ch = expr[i]
+              if ch.isspace():
+                  i += 1
+              elif ch in "+-*/()":
+                  tokens.append(ch)
+                  i += 1
+              elif ch.isdigit() or ch == ".":
+                  j = i
+                  while j < len(expr) and (expr[j].isdigit() or expr[j] == "."):
+                      j += 1
+                  tokens.append(expr[i:j])
+                  i = j
+              else:
+                  raise ValueError(f"unexpected character: {ch!r}")
+          return tokens
   tests: |
     import unittest
     from calc import evaluate

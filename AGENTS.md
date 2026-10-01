@@ -35,7 +35,7 @@ python3 harness.py scrub
 - Do not load or reference the user's LifeOS, TELOS, skills, or private rules.
 - Do not add unrelated dependencies. Keep the stack: Python 3.11+,
   `pyyaml`, `httpx`, `rich`. Optional extras only: `textual` ([tui]),
-  `playwright` ([shots]).
+  `playwright` ([shots]), `e2b` ([e2b]).
 - Do not commit eval artifacts or API keys.
 
 ## Storage model
@@ -47,11 +47,113 @@ for per-action logging.
 
 ## Verification
 
-Before committing, run:
+Before committing, run all four CI gates in a throwaway venv built by
+`scripts/bootstrap-venv.sh <dir>` — the same `.[dev,tui]` environment CI
+installs. A shared `.venv` is mutated by every concurrent run, and a local run
+that reports green is only meaningful if the `[tui]` extra was present.
 
 ```bash
-python3 -m compileall orchestral harness.py
-python3 harness.py init
-python3 harness.py run --task landing-page-coffee --orchestrator deepseek/deepseek-v4-flash-0731 --worker z-ai/glm-5.3-flash --dry-run
-python3 harness.py report --html
+scripts/bootstrap-venv.sh /tmp/gate-venv
+/tmp/gate-venv/bin/python -m unittest discover -s tests
+/tmp/gate-venv/bin/python -m ruff check .
+/tmp/gate-venv/bin/python -m mypy orchestral harness.py
 ```
+
+When `tasks/` specs or grading behavior change, also run the spec-integrity
+gates — CI runs both:
+
+```bash
+/tmp/gate-venv/bin/python harness.py audit --strict
+/tmp/gate-venv/bin/python harness.py selfcheck --execute
+```
+
+`python -m compileall` is not verification, and a skipped test is not a
+passing test. To exercise a run end to end:
+
+```bash
+/tmp/gate-venv/bin/python harness.py init
+/tmp/gate-venv/bin/python harness.py run --task landing-page-coffee --orchestrator deepseek/deepseek-v4-flash-0731 --worker z-ai/glm-5.3-flash --dry-run
+/tmp/gate-venv/bin/python harness.py report --html
+```
+
+## Merge gate
+
+The company reviews a merge by **green CI plus an independent second agent's
+check report**. Your own green checks do not close it; one agent does not review
+itself. That is the practice, and it is not yet what the repository enforces —
+see below. A GitHub approving review is not obtainable here, because every agent
+authenticates as the single `duketopceo` login and GitHub reads an agent review
+of another agent's PR as a self-review:
+
+```console
+$ gh pr review <pr> --approve
+failed to create review: GraphQL: Review Can not approve your own pull request
+```
+
+**Correction, measured 2026-09-27 (DUK-227).** An earlier version of this
+section said an approving-review condition was still set on `main` and that
+`REVIEW_REQUIRED`/`BLOCKED` on a green PR was that condition. **That was wrong,
+and it was never verified.** It is replaced here with what the rules actually
+are.
+
+`main` has two active rulesets and no approving-review rule. Every rule that
+applies to the branch, from `GET /repos/duketopceo/orchestral/rules/branches/main`:
+
+| Rule | Setting |
+|---|---|
+| block deletion | ruleset `main-1` |
+| block non-fast-forward | ruleset `main-1` |
+| require status check | context `test`, from `github-actions`; `strict`; not enforced on PR creation |
+
+Note that endpoint enumerates ruleset rules. It is readable where
+`branches/main/protection` is not (403 from an integration-class token), and it
+was missed for days because the unreadable endpoint was assumed to be the only
+way in.
+
+So a green PR reporting `BLOCKED` is **not** waiting on a reviewer. It was
+waiting on a status check the workflow could not produce: the suite job is a
+four-way matrix, GitHub reports matrix jobs as `test (3.11)` through
+`test (3.14)`, and the required context is the bare name `test`, which a matrix
+job never emits. PR #68 merged that matrix at 2026-09-26T21:02:17Z, four hours
+after the rule was created, and `main` was wedged from that commit.
+
+That is repaired in CI, not in the rule: the suite job is `test-matrix`, and a
+non-matrix aggregate named `test` reports the three gates. The existing ruleset
+requirement is now satisfied with no protection change. If you rename a gate, add
+one, or change a matrix, you change what protection must require — see
+`.github/required-checks.json` and `tests/test_required_check_contract.py`.
+
+```console
+$ gh pr view <pr> --json reviewDecision,mergeStateStatus,mergeable
+{"reviewDecision":"","mergeStateStatus":"BLOCKED","mergeable":"MERGEABLE"}
+```
+
+Empty `reviewDecision` on a PR with no reviews is the tell. GitHub reports
+`REVIEW_REQUIRED` when a required review is unmet; an empty value means no rule
+is asking for one. 40+ PRs have merged into `main` with zero reviews.
+
+Two things follow, and both still hold:
+
+- **Do not route around a block.** No `--admin`, no force-push, no weakening a
+  check to get past it. Report the block and name who can clear it. That
+  practice is unchanged and is not what caused this.
+- **A branch-protection rule must be checked against what CI emits.** A required
+  context no job can produce wedges the branch silently.
+  `tests/test_required_check_contract.py` now fails if the two drift, and
+  `.github/required-checks.json` records the contexts protection requires.
+  Update that file in the same change that alters the rule.
+
+Whether `main` *should* require an approving review is an open board decision,
+not a repository fact. It is tracked in DUK-227 (card `852b1cdb`, `human_only`);
+DUK-210 is closed. Do not assume either answer, and do not act on the
+`REVIEW_REQUIRED` story this section used to tell.
+
+## Code graph index (optional accelerator)
+
+This repo may be indexed by `codebase-memory-mcp` (CBM) on an agent's local
+machine — `.codebase-memory/` is gitignored and the index lives outside the
+repo's build/test paths. If your harness exposes CBM tools (`search_graph`,
+`trace_path`, `get_architecture`), prefer them for structural questions —
+"who calls X", "how does a run reach the worker" — instead of grep/read
+loops. The repo does not depend on it: no CBM installed means grep works the
+same as always.

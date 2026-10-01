@@ -1,0 +1,47 @@
+id: v2-multisource-incident
+title: "Synthesize: incident root cause"
+blurb: "Root cause is split across a log, an email, and a changelog — no single source has the answer."
+type: needle
+prompt: 'The subtask payload contains `document`: three concatenated
+  sources — an application log excerpt, an ops-team email thread, and a
+  changelog — describing an outage. Identify the root-cause change: the
+  exact config key AND its wrong value. Neither is stated in one place;
+  the log shows the symptom, the email names the deployed change, the
+  changelog records the key that was edited. Answer exactly in the form
+  `key=value` (the wrong value as deployed), nothing else.'
+validation:
+- non_empty
+- has_required
+- no_forbidden
+- exact_answer
+assets: []
+metadata:
+  difficulty: hard
+  document: '===== app.log (excerpt) =====
+    2025-07-14T03:12:44Z ERROR worker-pool: task backlog 41,209 —
+    concurrency saturated, all slots busy
+    2025-07-14T03:12:45Z WARN  worker-pool: heartbeat lag 38s
+    2025-07-14T03:13:02Z ERROR api: upstream timeout on /jobs/submit
+    (pool exhausted; expected capacity ~200 concurrent)
+    2025-07-14T03:14:11Z INFO  oncall paged: pool starvation, latency p99
+    41s
+
+    ===== ops email thread =====
+    > Priya: alerts firing since ~03:10 — pool can''t keep up, but traffic
+    > is normal for a Monday. did anything ship last night?
+    > Marcus: yeah, config-bundle 2025-07-13 rolled out at 02:58. "routine
+    > tuning" per the ticket — I skimmed the diff, looked like comment
+    > changes only.
+    > Priya: check the changelog — if the diff touched worker sizing that''s
+    > your suspect. the pool should hold ~200 and it''s choking way below that.
+
+    ===== changelog (config-bundle 2025-07-13, deployed 02:58 UTC) =====
+    * doc: clarify retry semantics in comments
+    * cfg: WORKER_POOL_MAX adjusted 200 -> 4 (typo during routine tuning)
+    * doc: fix typo in §3.2
+    * unrelated: bump lib-version pin 1.9.1 -> 1.9.2'
+  required:
+  - "WORKER_POOL_MAX=4"
+  forbidden:
+  - "WORKER_POOL_MAX=200"
+  expected_answer: "WORKER_POOL_MAX=4"

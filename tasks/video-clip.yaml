@@ -1,4 +1,6 @@
 id: video-clip
+title: "Promo video clip"
+blurb: "Generate a short pour-over promo clip for the landing page."
 type: video
 prompt: |
   Generate a short promotional video clip for a premium coffee subscription

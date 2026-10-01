@@ -195,16 +195,31 @@ class TestEventDerivation(unittest.TestCase):
 class TestLeaderboardSort(unittest.TestCase):
     def test_sort_leaderboard(self):
         rows = [
-            {"orchestrator": "a", "worker": "x", "cost_per_pass": 0.01, "pass_rate": 0.5, "score_median": None},
-            {"orchestrator": "b", "worker": "y", "cost_per_pass": None, "pass_rate": 0.9, "score_median": 0.8},
-            {"orchestrator": "c", "worker": "z", "cost_per_pass": 0.005, "pass_rate": 0.7, "score_median": 0.5},
+            {"orchestrator": "a", "worker": "x", "cost_per_pass": 0.01, "pass_rate": 0.5, "judge_score_median": None},
+            {"orchestrator": "b", "worker": "y", "cost_per_pass": None, "pass_rate": 0.9, "judge_score_median": 0.8},
+            {"orchestrator": "c", "worker": "z", "cost_per_pass": 0.005, "pass_rate": 0.7, "judge_score_median": 0.5},
         ]
         by_cost = [r["orchestrator"] for r in sort_leaderboard(rows, "cost_per_pass")]
         self.assertEqual(by_cost, ["c", "a", "b"])  # None (never passed) last
         by_pass = [r["orchestrator"] for r in sort_leaderboard(rows, "pass_rate")]
         self.assertEqual(by_pass, ["b", "c", "a"])
-        by_score = [r["orchestrator"] for r in sort_leaderboard(rows, "score_median")]
+        by_score = [r["orchestrator"] for r in sort_leaderboard(rows, "judge_score_median")]
         self.assertEqual(by_score, ["b", "c", "a"])
+
+    def test_sort_leaderboard_partitions_low_sample(self):
+        """A thin row tails every ordering — even when its metric wins."""
+        rows = [
+            {"orchestrator": "a", "worker": "x", "cost_per_pass": 0.50,
+             "pass_rate": 0.2, "judge_score_median": 0.1, "cost_median": 0.5,
+             "duration_median_ms": 9000, "low_sample": False},
+            {"orchestrator": "b", "worker": "y", "cost_per_pass": 0.001,
+             "pass_rate": 1.0, "judge_score_median": 1.0, "cost_median": 0.001,
+             "duration_median_ms": 1, "low_sample": True},
+        ]
+        for key in ("cost_per_pass", "pass_rate", "judge_score_median",
+                    "cost_median", "duration_median_ms"):
+            order = [r["orchestrator"] for r in sort_leaderboard(rows, key)]
+            self.assertEqual(order, ["a", "b"], key)
 
 
 class TestOnRunCreated(unittest.TestCase):
@@ -227,6 +242,89 @@ try:
     HAS_TEXTUAL = True
 except ImportError:
     HAS_TEXTUAL = False
+
+
+class TestGateEnvironment(unittest.TestCase):
+    """A missing [tui] extra is a broken gate environment, not a skipped test.
+
+    `textual` is part of the environment every gate runs in (CI installs
+    `.[dev,tui]`), so a run that cannot import it is not a green run with fewer
+    tests — it is a run that measured less than it reported. Skipping quietly
+    made `unittest discover` print OK while the pilot suite never executed, and
+    the same blind spot hid the `StatusBar._message` defect from mypy (without
+    `textual` the base class resolves to `Any`).
+    """
+
+    def test_textual_extra_is_importable(self):
+        if not HAS_TEXTUAL:
+            self.fail(
+                "the [tui] extra is missing, so every Textual test in this file was "
+                "skipped and the run under-reports. CI installs '.[dev,tui]'; match it "
+                "with scripts/bootstrap-venv.sh <dir> (or pip install -e '.[dev,tui]'). "
+                "Do not re-add a skipUnless guard: silence here is a false green."
+            )
+
+
+@unittest.skipUnless(HAS_TEXTUAL, "textual not installed (pip install 'orchestral[tui]')")
+class TestStatusBar(unittest.TestCase):
+    """`_render_text` must never read an attribute the class does not assign.
+
+    17f6c543 removed the `set_message` writer and its `self._message = ""`
+    initialiser but left the reader behind, so every status-strip refresh
+    raised `AttributeError` and reddened main for six days. These assert on
+    rendered text so a reader-without-a-writer cannot reach main again. The
+    `note` and `jobs` cases pin the segment order of `_render_text` as well.
+    """
+
+    def _bar(self, runs=0, cost=0.0, jobs=None, note=""):
+        from orchestral.tui.widgets import StatusBar
+
+        bar = StatusBar()
+        bar.set_counts(runs, cost)
+        bar.set_jobs(jobs or [])
+        if note:
+            bar.set_note(note)
+        return bar
+
+    def _text(self, bar):
+        return str(bar.visual)
+
+    def test_counts_render_without_a_note(self):
+        self.assertEqual(self._text(self._bar(runs=3, cost=0.1234)), "3 runs  ·  $0.1234")
+
+    def test_note_renders_after_counts(self):
+        bar = self._bar(runs=1, cost=0.5, note="2 queued")
+        self.assertEqual(self._text(bar), "1 runs  ·  $0.5000  ·  2 queued")
+
+    def test_note_renders_after_jobs(self):
+        # test_note_renders_after_counts builds a bar with no jobs, so it pins the
+        # note against the counts and nothing else. Hoisting the note append above
+        # the jobs block leaves that test green, so pin the two-segment order
+        # explicitly: note last, jobs present and before it.
+        running = Job(label="o/m·t")
+        running.transition(JobStatus.RUNNING)
+        text = self._text(self._bar(runs=1, cost=0.5, jobs=[running], note="2 queued"))
+        self.assertTrue(text.endswith("2 queued"), text)
+        self.assertLess(text.index("jobs:"), text.index("2 queued"))
+
+    def test_active_jobs_are_listed_and_terminal_ones_are_not(self):
+        running = Job(label="o/m·t")
+        running.transition(JobStatus.RUNNING)
+        done = Job(label="old")
+        done.transition(JobStatus.RUNNING)
+        done.transition(JobStatus.SUCCEEDED)
+        bar = self._bar(jobs=[running, done])
+        self.assertEqual(self._text(bar), "0 runs  ·  $0.0000  ·  jobs: o/m·t (running)")
+
+    def test_active_jobs_are_capped_at_three_with_a_count(self):
+        jobs = []
+        for i in range(5):
+            job = Job(label=f"j{i}")
+            job.transition(JobStatus.RUNNING)
+            jobs.append(job)
+        text = self._text(self._bar(jobs=jobs))
+        self.assertIn("jobs: j0 (running), j1 (running), j2 (running) +2 more", text)
+        self.assertNotIn("j3", text)
 
 
 @unittest.skipUnless(HAS_TEXTUAL, "textual not installed (pip install 'orchestral[tui]')")

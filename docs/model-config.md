@@ -49,6 +49,30 @@ models:
 | `modalities` | list[str] | `text`, `image`, `video` — `grid` filters workers by task type |
 | `video_pricing` | map | Per-second fallback rates keyed `"<resolution>:<audio\|silent>"`, `"*"` allowed for either half (e.g. `"*:audio"`); unmatched combinations use `price_per_video_second` |
 | `vision` | bool | Marks a judge as able to score image artifacts |
+| `executor` | str | Agent-CLI adapter name (`opencode`) — routes this worker through `orchestral.agentexec` instead of a chat provider |
+| `capabilities` | list[str] | Task types an executor worker may produce (e.g. `code`, `swe-patch`); required for `requires_executor` task pairing |
+| `requires_executor` | — | (task spec key, not model) — see [task-spec.md](task-spec.md) |
+
+## The `~` prefix — two meanings
+
+A leading `~` on a slug **disables a model entry** — `load_models()` skips
+it, so it never appears in grids, launch forms, or `/api/models` role lists.
+
+Separately, `~typesafe/<name>` is the **decisions-engine judge slug**
+(e.g. `~typesafe/jev-latest`, the default judge). These slugs are also
+skipped by `load_models()`, but every launch surface resolves them through
+the shared `resolve_model`/`resolve_judge` fallback (`orchestral.config`),
+which builds an ad-hoc `ModelConfig` — so `~typesafe/jev-latest` works as
+`--judge`, in the web launch form, and in the TUI judge dropdown without a
+model file entry. Quote the slug in shells (`'~typesafe/jev-latest'`) to
+avoid `~` home expansion.
+
+**In A/B experiments the judge is held constant across arms.** The
+`experiment` command takes no `--judge` flag: every cell is scored by the
+decisions-engine judge so a judge change can't masquerade as an arm
+effect. Because the same engine also *assists* the jev arm, judge-score
+deltas between arms are self-referential — mechanical pass is the primary
+axis wherever the experiment surfaces results.
 
 ## Notes
 

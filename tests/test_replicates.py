@@ -53,7 +53,9 @@ class TestAggregate(unittest.TestCase):
         self.assertEqual(c.runs, 3)
         self.assertEqual(c.finished, 2)
         self.assertEqual(c.passed, 1)
-        self.assertAlmostEqual(c.pass_rate, 1 / 3)  # failures count against
+        # pass rate is over finished runs: b's mechanical fail counts
+        # against, c's infra crash is noise (visible via runs/failures)
+        self.assertAlmostEqual(c.pass_rate, 0.5)
         self.assertAlmostEqual(c.score_mean, 0.6)   # over scored runs only
         self.assertAlmostEqual(c.cost_total, 0.045)
         self.assertAlmostEqual(c.cost_mean, 0.015)
@@ -198,6 +200,62 @@ class TestReplicateRuns(unittest.TestCase):
             runs = RunStore(tmp).list_runs(run_group="keep")
             self.assertEqual(len(runs), 2)
             self.assertEqual(RunStore(tmp).list_runs(run_group="nope"), [])
+
+
+class TestFailureLineStatesTheBudget(unittest.TestCase):
+    """The old line read `[fail] rep 1: ...`, which looks exactly like a retry
+    counter and never said what the phase actually allowed. A truncated provider
+    response and a broken plan contract must not look identical in the log."""
+
+    def test_budget_names_attempts_per_phase(self):
+        from orchestral.config import ModelConfig
+
+        worker = ModelConfig(
+            slug="w/m", name="w", role="worker",
+            input_price_per_mtok=0.0, output_price_per_mtok=0.0, retry_limit=5,
+        )
+        self.assertEqual(
+            harness._attempt_budget(worker),
+            "orchestrator 1 per call, worker 6 (retry_limit=5)",
+        )
+
+    def test_budget_tracks_the_configured_worker(self):
+        worker = harness._model_from_arg("z-ai/glm-5.3-flash", "models")
+        budget = harness._attempt_budget(worker)
+        self.assertIn("orchestrator 1 per call", budget)
+        self.assertIn(f"worker {worker.retry_limit + 1} (retry_limit={worker.retry_limit})", budget)
+
+    def test_fail_line_names_the_replicate_and_the_type(self):
+        budget = "orchestrator 1 per call, worker 3 (retry_limit=2)"
+        line = harness._fail_line("run", 2, 3, budget, ValueError("Unbalanced JSON"))
+        self.assertIn("replicate 2/3", line)
+        self.assertIn(f"attempts: {budget}", line)
+        self.assertIn("ValueError: Unbalanced JSON", line)
+
+    def test_failed_run_reports_replicate_and_budget(self):
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            real_runner = harness.Runner
+
+            class FlakyRunner(real_runner):
+                def run(self, *a, **kw):
+                    if self.replicate == 2:
+                        raise ValueError("Unbalanced JSON in model response")
+                    return super().run(*a, **kw)
+
+            args = _args(replicates=3, group="budget", runs_dir=tmp)
+            err = io.StringIO()
+            with patch.object(harness, "Runner", FlakyRunner), \
+                    redirect_stdout(io.StringIO()), redirect_stderr(err), \
+                    self.assertRaises(SystemExit):
+                harness.cmd_run(args)
+            lines = [ln for ln in err.getvalue().splitlines() if ln.startswith("[fail]")]
+            self.assertEqual(len(lines), 1)
+            line = lines[0]
+            self.assertIn("replicate 2/3", line)
+            self.assertIn("attempts: orchestrator 1 per call, worker 3 (retry_limit=2)", line)
+            self.assertIn("Unbalanced JSON in model response", line)
 
 
 if __name__ == "__main__":

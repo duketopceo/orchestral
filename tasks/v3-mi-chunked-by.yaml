@@ -1,0 +1,117 @@
+id: v3-mi-chunked-by
+title: "more-itertools: chunked_by"
+blurb: "Group consecutive items by a key function — a new utility for a real itertools library, graded by pytest in a sandboxed checkout."
+type: code
+prompt: |
+  You are contributing to the `more-itertools` library. A maintainer wants a
+  **consecutive-run grouper** in a new module.
+
+  Create `more_itertools/run_groups.py` exposing exactly one public function:
+
+      def chunked_by(iterable, key) -> list[list]
+
+  Contract:
+  - `key` is a callable applied to each item; consecutive items whose keys
+    are equal (`==`) go in one chunk. A new chunk starts when the key value
+    changes.
+  - Return a list of lists — the *items*, not the keys.
+  - `chunked_by([], key)` returns `[]`.
+  - Example: `chunked_by("aabbbaac", key=lambda c: c)` returns
+    `[['a','a'], ['b','b','b'], ['a','a'], ['c']]`.
+  - Key values may be unhashable (e.g. dicts) — compare with `==` only.
+  - Single pass over the input; do not materialize more than the result.
+  - Stdlib only (`itertools` internals allowed). Short docstring.
+
+  Return `{"files": [{"path": "more_itertools/run_groups.py",
+  "content": "..."}]}`. The harness overlays your files onto a full repo
+  checkout and runs the project's test suite.
+metadata:
+  fixture: more-itertools-10.8
+  workdir: repo
+  expected_paths: ["more_itertools/run_groups.py"]
+  setup_commands:
+    - "python -m pip install --quiet --no-index --find-links /home/user/wheelhouse pytest"
+  verify:
+    command: ["python", "-m", "pytest", "tests/test_v3_chunked_by.py", "-x", "-q"]
+    fail_to_pass:
+      - test_empty
+      - test_single_chunk
+      - test_runs_split_on_key_change
+      - test_equal_keys_not_identity
+      - test_unhashable_keys
+      - test_generator_input
+      - test_items_preserved_not_keys
+  timeout_seconds: 240
+  difficulty: standard
+  archetype: feature-gap
+  contamination_risk: low
+  reference:
+    more_itertools/run_groups.py: |
+      """Consecutive-run grouping utilities."""
+
+
+      def chunked_by(iterable, key):
+          """Group consecutive items with equal ``key(item)`` into chunks.
+
+          Returns a list of lists of the *items*; a new chunk starts whenever
+          the key value changes (``==`` equality, so unhashable keys work).
+          """
+          chunks = []
+          it = iter(iterable)
+          try:
+              first = next(it)
+          except StopIteration:
+              return chunks
+          prev_key = key(first)
+          chunk = [first]
+          for item in it:
+              k = key(item)
+              if k == prev_key:
+                  chunk.append(item)
+              else:
+                  chunks.append(chunk)
+                  chunk = [item]
+                  prev_key = k
+          chunks.append(chunk)
+          return chunks
+  test_files:
+    tests/test_v3_chunked_by.py: |
+      """Verifier oracle for chunked_by — staged after the worker fileset."""
+      import itertools
+
+      from more_itertools.run_groups import chunked_by
+
+
+      def test_empty():
+          assert chunked_by([], key=lambda x: x) == []
+          assert chunked_by(iter([]), key=str) == []
+
+      def test_single_chunk():
+          assert chunked_by([1, 1, 1], key=lambda x: 0) == [[1, 1, 1]]
+
+      def test_runs_split_on_key_change():
+          assert chunked_by("aabbbaac", key=lambda c: c) == [
+              ["a", "a"], ["b", "b", "b"], ["a", "a"], ["c"]]
+          assert chunked_by([1, 2, 3, 1, 2], key=lambda x: x % 2) == [
+              [1], [2], [3, 1], [2]]
+
+      def test_equal_keys_not_identity():
+          # equal-but-distinct objects must share a chunk
+          k = lambda x: x[0]
+          assert chunked_by([["a"], ["a"], ["b"]], key=k) == [[["a"], ["a"]], [["b"]]]
+
+      def test_unhashable_keys():
+          items = [{"n": 1}, {"n": 1}, {"n": 2}]
+          out = chunked_by(items, key=lambda d: d)
+          assert out == [[{"n": 1}, {"n": 1}], [{"n": 2}]]
+
+      def test_generator_input():
+          gen = (x for x in [1, 1, 2])
+          assert chunked_by(gen, key=lambda x: x) == [[1, 1], [2]]
+
+      def test_items_preserved_not_keys():
+          # result contains the items themselves, in order
+          data = [10, 11, 20, 30]
+          out = chunked_by(data, key=lambda x: x // 10)
+          assert out == [[10, 11], [20], [30]]
+          assert list(itertools.chain.from_iterable(out)) == data

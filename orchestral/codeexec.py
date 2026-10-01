@@ -1,27 +1,28 @@
-"""Execution validator for `code` tasks — run hidden tests against a fileset.
+"""Execution validator for `code` tasks.
 
-A code task's workers return a file set (same contract as multi-file). The
-harness materializes it into a temp dir, writes the task's test source, and
-runs `python -Es -m unittest` in a subprocess. Workers never see the tests —
-they are evaluation evidence, not part of the spec.
+A code task's workers return a file set (same contract as multi-file). Live
+execution is disabled in this release because no isolated runtime exists yet.
+The dry-run path still performs a compile-only check through the runner.
 
-Honesty note: `-Es` + a fresh temp dir + a timeout + a stripped environment
-is *containment*, not a security sandbox — the code still runs with the
-user's OS privileges. Only use this task type with models you would let
-write code you execute locally.
+The ``ORCHESTRAL_CODE_RUNTIME`` setting is a configuration boundary, not a
+sandbox switch. Only an explicit isolated runtime adapter may replace the
+current disabled result; host subprocess execution is not a supported fallback.
 """
 
 from __future__ import annotations
 
 import ast
+import contextlib
+import os
 import re
-import subprocess
 import sys
-import tempfile
 from pathlib import Path
 from typing import Any
 
 DEFAULT_TIMEOUT_SECONDS = 30
+CODE_RUNTIME_ENV = "ORCHESTRAL_CODE_RUNTIME"
+DISABLED_CODE_RUNTIME = "disabled"
+ISOLATED_CODE_RUNTIME = "isolated"
 
 # Patterns that flag unsafe generated code — always scanned into the report's
 # quality section; gating happens only when the task declares `no_unsafe`.
@@ -41,11 +42,28 @@ UNSAFE_PATTERNS: dict[str, str] = {
 }
 _COMPILED_UNSAFE = {name: re.compile(p) for name, p in UNSAFE_PATTERNS.items()}
 _BRANCH_TOKENS = {"if", "elif", "else", "for", "while", "except", "and", "or", "assert", "with"}
-# unittest's summary lines, e.g. "FAILED (failures=2, errors=1, skipped=1)"
-_RAN_RE = re.compile(r"Ran (\d+) tests? in [\d.]+s")
-_FAILED_RE = re.compile(r"FAILED \(([^)]*)\)")
-_COUNT_RE = re.compile(r"(\w+)=(\d+)")
-_TAIL_BYTES = 2000
+
+
+def _configured_code_runtime() -> str:
+    value = os.environ.get(CODE_RUNTIME_ENV, DISABLED_CODE_RUNTIME).strip().lower()
+    return value or DISABLED_CODE_RUNTIME
+
+
+def _disabled_execution_report(error: str, timeout_seconds: float) -> dict[str, Any]:
+    return {
+        "executed": False,
+        "tests_run": 0,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0,
+        "ok": False,
+        "timed_out": False,
+        "returncode": None,
+        "output_tail": "",
+        "runtime": DISABLED_CODE_RUNTIME,
+        "requested_timeout_seconds": timeout_seconds,
+        "error": error,
+    }
 
 
 def materialize(files: dict[str, str], dest: Path) -> None:
@@ -56,71 +74,177 @@ def materialize(files: dict[str, str], dest: Path) -> None:
         path.write_text(body, encoding="utf-8")
 
 
+# Top-level members a fileset must not ship into a suite process's cwd: they
+# would shadow the invoked module, the test module, or interpreter-startup
+# imports (sys.path[0] for `python -m`). Applies to references and model
+# artifacts alike — the hazard lives wherever the suite runs.
+SUITE_SHADOW_DENYLIST = frozenset({
+    "unittest", "test_submitted", "task_tests", "site", "sitecustomize",
+    "usercustomize", "builtins", "__main__",
+})
+
+
+def shadowing_members(paths: Any) -> list[str]:
+    """Sorted fileset members whose top-level name would shadow the suite."""
+    return sorted(
+        p for p in paths
+        if p.split("/", 1)[0] in SUITE_SHADOW_DENYLIST
+        or Path(p).stem in SUITE_SHADOW_DENYLIST
+    )
+
+
+# Verifier-side runner: unittest's stdout tail is forgeable by graded code
+# (an imported module can register atexit handlers or print its own "Ran N
+# tests" line), so the verdict is derived from the unittest result object and
+# written to a file read back out-of-band. `os._exit` skips atexit/shutdown
+# handlers — nothing imported under test gets a chance to rewrite the file.
+# The result path carries a per-run nonce so forging it requires recovering
+# the path from the runner source and racing the verifier, not one print.
+_SUITE_RUNNER = """\
+import json
+import os
+import sys
+import unittest
+
+suite = unittest.TestLoader().discover({start_dir!r}, pattern={pattern!r})
+result = unittest.TextTestRunner(verbosity=2).run(suite)
+with open({result_path!r}, "w", encoding="utf-8") as fh:
+    json.dump({{
+        "collected": suite.countTestCases(),
+        "tests_run": result.testsRun,
+        "failures": len(result.failures),
+        "errors": len(result.errors),
+        "skipped": len(result.skipped),
+        "ok": result.wasSuccessful(),
+    }}, fh)
+sys.stdout.flush()
+sys.stderr.flush()
+os._exit(0 if result.wasSuccessful() else 1)
+"""
+
+
+def suite_runner_source(start_dir: str, pattern: str, result_path: str) -> str:
+    """Verifier-authored runner program for a hidden unittest suite."""
+    return _SUITE_RUNNER.format(
+        start_dir=start_dir, pattern=pattern, result_path=result_path
+    )
+
+
+def suite_result_report(
+    payload: dict[str, Any], returncode: int | None
+) -> tuple[int, str | None]:
+    """Derive (tests_run, error) from the runner's JSON result payload."""
+    ran = int(payload.get("tests_run") or 0)
+    if ran == 0:
+        return 0, "suite ran zero tests"
+    if not payload.get("ok"):
+        return ran, f"unittest exited {returncode}"
+    return ran, None
+
+
+def summarize_unittest_output(tail: str, returncode: int) -> tuple[int, str | None]:
+    """Extract (tests_run, error) from unittest's summary tail.
+
+    unittest exits nonzero iff anything failed or errored; parsing the summary
+    line for counts double-counts "expected failures=". 3.14+ exits 5 with
+    "NO TESTS RAN" and prints no "Ran N" line; older versions print
+    "Ran 0 tests" and exit 0. Both are the same defect: a suite that ran
+    nothing verifies nothing.
+    """
+    ran = 0
+    for line in tail.strip().splitlines():
+        if line.startswith("Ran "):
+            with contextlib.suppress(IndexError, ValueError):
+                ran = int(line.split()[1])
+    if ran == 0:
+        return ran, "suite ran zero tests"
+    if returncode != 0:
+        return ran, f"unittest exited {returncode}"
+    return ran, None
+
+
 def run_unittest_suite(
     files: dict[str, str],
     tests_source: str,
     *,
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
 ) -> dict[str, Any]:
-    """Run the task's unittest source against `files`; return a report.
+    """Run the hidden suite, or return a fail-closed report.
 
-    The report carries counts and a truncated output tail — never full file
-    contents. `executed=False` means the subprocess never ran (e.g. no test
-    source), distinct from a suite that ran and failed.
+    ``ORCHESTRAL_CODE_RUNTIME=isolated`` dispatches to the E2B-compatible
+    adapter in ``orchestral.cubeexec`` (self-hosted CubeSandbox or hosted
+    E2B — see that module's docstring for the endpoint contract). Host
+    subprocess execution is not a supported fallback.
     """
-    report: dict[str, Any] = {
-        "executed": False,
-        "tests_run": 0,
-        "failures": 0,
-        "errors": 0,
-        "skipped": 0,
-        "ok": False,
-        "timed_out": False,
-        "returncode": None,
-        "output_tail": "",
-    }
-    if not tests_source.strip():
-        report["error"] = "code task has no metadata.tests"
-        return report
+    runtime = _configured_code_runtime()
+    if runtime == ISOLATED_CODE_RUNTIME:
+        # Lazy import: the e2b SDK is an optional `[e2b]` extra.
+        from orchestral.cubeexec import run_unittest_suite as isolated_suite
 
-    with tempfile.TemporaryDirectory(prefix="orchestral-code-") as tmp:
-        dest = Path(tmp)
-        materialize(files, dest)
-        test_path = dest / "task_tests.py"
-        test_path.write_text(tests_source, encoding="utf-8")
+        return isolated_suite(
+            files, tests_source, timeout_seconds=timeout_seconds
+        )
+    if runtime == DISABLED_CODE_RUNTIME:
+        error = "code execution disabled: no isolated runtime is configured"
+    else:
+        error = "code execution rejected: host subprocess fallback is disabled; use an isolated runtime"
+    return _disabled_execution_report(error, timeout_seconds)
+
+
+def run_repo_suite(
+    files: dict[str, str],
+    *,
+    fixture_id: str,
+    workdir: str = "repo",
+    setup_commands: list[str] | None = None,
+    verify_command: list[str] | None = None,
+    fail_to_pass: list[str] | None = None,
+    test_files: dict[str, str] | None = None,
+    timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
+) -> dict[str, Any]:
+    """Stage a registered repo fixture in the isolated runtime and run its
+    verify command — the v3 real-repo grading path.
+
+    The fixture tarball is read host-side here (gitignored fetch, pinned by
+    ``fixtures/registry.yaml``); the guest receives bytes only.
+    """
+    runtime = _configured_code_runtime()
+    if runtime == ISOLATED_CODE_RUNTIME:
+        from orchestral.cubeexec import run_repo_suite as isolated_repo_suite
+        from orchestral.fixtures import FixtureError, verified_fixture_bytes
+
         try:
-            proc = subprocess.run(
-                # -Es: ignore PYTHON* env vars and user site-packages, but
-                # keep cwd importable (unlike -I, which would hide task_tests)
-                [sys.executable, "-Es", "-m", "unittest", "-v", "task_tests"],
-                cwd=dest,
-                capture_output=True,
-                timeout=timeout_seconds,
-                # no env passthrough — no secrets in the child's environment
-                env={"PATH": "/usr/bin:/bin"},
-            )
-        except subprocess.TimeoutExpired:
-            report["timed_out"] = True
-            report["executed"] = True
-            report["output_tail"] = f"tests exceeded {timeout_seconds}s"
+            # grading must verify what it stages — lock sha256 + member screen,
+            # not just "a file exists on disk"
+            tarball = verified_fixture_bytes(fixture_id)
+        except FixtureError as exc:
+            report = _disabled_execution_report(str(exc), timeout_seconds)
+            report["fixture_id"] = fixture_id
+            report["granularity"] = "command"
             return report
-
-    report["executed"] = True
-    report["returncode"] = proc.returncode
-    out = (proc.stdout + proc.stderr).decode("utf-8", errors="replace")
-    report["output_tail"] = out[-_TAIL_BYTES:]
-
-    ran = _RAN_RE.search(out)
-    if ran:
-        report["tests_run"] = int(ran.group(1))
-    failed = _FAILED_RE.search(out)
-    if failed:
-        for name, count in _COUNT_RE.findall(failed.group(1)):
-            if name in ("failures", "errors", "skipped", "expected_failures", "unexpected_successes"):
-                report[name if name in report else "errors"] = int(count)
-    # a suite that ran zero tests is not a pass — import/collection failures
-    # exit nonzero with no "Ran N tests" line at all
-    report["ok"] = proc.returncode == 0 and ran is not None and report["tests_run"] > 0 and "OK" in out
+        try:
+            return isolated_repo_suite(
+                files,
+                fixture_tarball=tarball,
+                fixture_id=fixture_id,
+                workdir=workdir,
+                setup_commands=setup_commands,
+                verify_command=verify_command,
+                fail_to_pass=fail_to_pass,
+                test_files=test_files,
+                timeout_seconds=timeout_seconds,
+            )
+        except FixtureError as exc:
+            report = _disabled_execution_report(str(exc), timeout_seconds)
+            report["fixture_id"] = fixture_id
+            return report
+    if runtime == DISABLED_CODE_RUNTIME:
+        error = "code execution disabled: no isolated runtime is configured"
+    else:
+        error = "code execution rejected: host subprocess fallback is disabled; use an isolated runtime"
+    report = _disabled_execution_report(error, timeout_seconds)
+    report["fixture_id"] = fixture_id
+    report["granularity"] = "command"
     return report
 
 
@@ -231,6 +355,13 @@ def check_code_quality(
             for name, rx in patterns.items():
                 if rx.search(line):
                     totals["unsafe_hits"].append({"file": rel, "line": lineno, "pattern": name})
+
+    # imports that resolve to a sibling module in the file set are local,
+    # not external — a multi-module submission isn't pulling a dependency
+    local_modules = {
+        Path(rel).stem for rel in files if rel.endswith(".py")
+    } | {rel.split("/")[0] for rel in files if "/" in rel}
+    all_external -= local_modules
 
     totals["imports"] = sorted(all_imports)
     totals["external_imports"] = sorted(all_external)

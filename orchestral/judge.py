@@ -659,8 +659,11 @@ def _position_post(card: dict[str, Any], t: dict[str, Any]) -> str:
     if card.get("kind") == "group":
         top = t.get("top")
         if top and size:
-            return (f"Inside this cohort, {_pair_label(top)} leads at "
-                    f"{round((top.get('pass_rate') or 0) * 100)}% mechanical pass "
+            label = t.get("lens_label")
+            board = f" on the {label} board" if label and label != "Best overall" else ""
+            return (f"Inside this cohort, {_pair_label(top)} leads{board}; "
+                    f"its mechanical pass is "
+                    f"{round((top.get('pass_rate') or 0) * 100)}% "
                     f"across {size} pairing{'s' if size != 1 else ''}.")
     if t.get("low_sample") and not rank:
         # the board shows thin pairings unranked — a thread cannot claim
@@ -675,10 +678,17 @@ def _position_post(card: dict[str, Any], t: dict[str, Any]) -> str:
         return f"Outside the {t.get('lens_label') or 'selected'} lens's ranking."
     if rank and size:
         label = t.get("lens_label")
-        lens_note = f" on the {label} board" if label and label != "Best overall" else ""
-        s = f"Where it lands: {rank}/{size} pairings by mechanical pass{lens_note}"
-        if pr is not None:
-            s += f" ({round(pr * 100)}%)"
+        # only the overall board orders by mechanical pass — other lenses
+        # order by cost or divergence, so the rank line names the board
+        # and attaches the pass rate as its own fact
+        if label and label != "Best overall":
+            s = f"Where it lands: {rank}/{size} pairings on the {label} board"
+            if pr is not None:
+                s += f" ({round(pr * 100)}% mechanical pass)"
+        else:
+            s = f"Where it lands: {rank}/{size} pairings by mechanical pass"
+            if pr is not None:
+                s += f" ({round(pr * 100)}%)"
         return s + "."
     if pr is not None:
         return f"Mechanical pass {round(pr * 100)}% on {card.get('finished', '?')} finished runs."
@@ -690,13 +700,19 @@ def _neighbor_post(t: dict[str, Any]) -> str:
     above, below = t.get("above"), t.get("below")
     if not above and not below:
         return ""
+    label = t.get("lens_label")
+    # neighbor pass rates are mechanical-pass facts; on a lens ordered by
+    # something else, name the board and label the % so the adjacency
+    # isn't misread as a mechanical-pass ordering
+    board = f" on the {label} board" if label and label != "Best overall" else ""
+    unit = " mech" if board else ""
     s = ""
     if above:
-        s = f"just behind {_pair_label(above)} ({round((above.get('pass_rate') or 0) * 100)}%)"
+        s = f"just behind {_pair_label(above)} ({round((above.get('pass_rate') or 0) * 100)}%{unit})"
     if below:
         s += ("; " if s else "") + \
-            f"ahead of {_pair_label(below)} ({round((below.get('pass_rate') or 0) * 100)}%)"
-    return f"Neighbors: {s}."
+            f"ahead of {_pair_label(below)} ({round((below.get('pass_rate') or 0) * 100)}%{unit})"
+    return f"Neighbors{board}: {s}."
 
 
 def _economics_post(card: dict[str, Any], t: dict[str, Any]) -> str:

@@ -448,6 +448,15 @@ class TestSignalAwareThread(unittest.TestCase):
             # the same pairing leads the overall board — no contradiction
             overall = state.thread_context(store, "pairing", "o/reliable|w/cheap")
             self.assertEqual(overall["rank"], 1)
+            # a non-overall rank must name its board, not claim a
+            # mechanical-pass ordering the lens doesn't sort by
+            card = state.card_payload(store, "pairing", "o/reliable|w/cheap",
+                                      lens="divergence")
+            assert card is not None
+            card["thread"] = ctx
+            out = draft_thread(card=card, client=None, model=None, n=4)
+            self.assertIn("Interesting divergence board", out["posts"][0])
+            self.assertNotIn("by mechanical pass", out["posts"][0])
 
     def test_economics_qualifies_unmetered_pairing_spend(self):
         with tempfile.TemporaryDirectory() as tmp:

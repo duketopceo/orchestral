@@ -229,6 +229,29 @@ class TestModelsCatalog(unittest.TestCase):
         self.assertNotIn("ce-work", brain["qualified"])
         self.assertAlmostEqual(brain["usage"]["ce-work"]["cost_usd"], 0.02)
 
+    def test_malformed_provider_rows_are_skipped_not_fatal(self):
+        # a hand-edited or corrupted snapshot must degrade row-by-row,
+        # never 500 the endpoint
+        from orchestral.remotecatalog import write_catalog
+        write_catalog(self.models_dir, {
+            "source": "s",
+            "fetched_at": "2026-10-01",
+            "models": [
+                "not-a-dict",
+                {"slug": ["unhashable"]},
+                {"slug": "ok/model", "output_modalities": "text",
+                 "structured": True},
+                {"slug": "ok/other", "output_modalities": ["text"]},
+            ],
+        })
+        d = models_catalog_payload(self.store, self.models_dir)
+        ok = self._by_slug(d, "ok/model")
+        # a scalar modality is not a list — no substring false-positive
+        self.assertNotIn("worker", ok["qualified"])
+        self.assertIn("orchestrator", ok["qualified"])
+        other = self._by_slug(d, "ok/other")
+        self.assertIn("worker", other["qualified"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -62,7 +62,7 @@ def fetch_remote_catalog(
         raise ValueError(f"refusing redirected catalog fetch from {parsed.scheme}://{host}")
     resp.raise_for_status()
     body = resp.json()
-    data = body.get("data")
+    data = body.get("data") if isinstance(body, dict) else None
     if not isinstance(data, list):
         raise ValueError(f"model catalog {url}: expected a 'data' list")
 
@@ -70,21 +70,31 @@ def fetch_remote_catalog(
     for item in data:
         if not isinstance(item, dict) or not item.get("id"):
             continue
-        arch = item.get("architecture") or {}
-        pricing = item.get("pricing") or {}
-        params = set(item.get("supported_parameters") or [])
-        out_modalities = sorted(arch.get("output_modalities") or [])
-        prompt_price = float(pricing.get("prompt") or 0.0)
-        completion_price = float(pricing.get("completion") or 0.0)
+        try:
+            arch = item.get("architecture")
+            arch = arch if isinstance(arch, dict) else {}
+            pricing = item.get("pricing")
+            pricing = pricing if isinstance(pricing, dict) else {}
+            params = item.get("supported_parameters") or []
+            params = set(params if isinstance(params, (list, tuple, set)) else [])
+            out_modalities = arch.get("output_modalities") or []
+            in_modalities = arch.get("input_modalities") or []
+            out_modalities = sorted(out_modalities if isinstance(out_modalities, list) else [])
+            in_modalities = in_modalities if isinstance(in_modalities, list) else []
+            prompt_price = float(pricing.get("prompt") or 0.0)
+            completion_price = float(pricing.get("completion") or 0.0)
+        except (AttributeError, TypeError, ValueError):
+            # one malformed provider row must not abort the whole sync
+            continue
         models.append({
             "slug": str(item["id"]),
             "name": str(item.get("name") or item["id"]),
             "context": int(item.get("context_length") or 0),
             "input_price_per_mtok": prompt_price * 1_000_000,
             "output_price_per_mtok": completion_price * 1_000_000,
-            "input_modalities": sorted(arch.get("input_modalities") or []),
+            "input_modalities": sorted(in_modalities),
             "output_modalities": out_modalities,
-            "vision": "image" in (arch.get("input_modalities") or []),
+            "vision": "image" in in_modalities,
             "structured": bool(params & _STRUCTURED_PARAMS),
             "free": prompt_price == 0.0 and completion_price == 0.0,
             "expires": item.get("expiration_date"),

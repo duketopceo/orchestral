@@ -757,7 +757,11 @@ def _caveat_post(card: dict[str, Any]) -> str:
     uncal = [m for m, c in cal.items()
              if isinstance(c, dict) and not c.get("calibrated")]
     if uncal:
-        s += f"; judge {_short_slug(uncal[0])} not yet calibrated"
+        # cap the slug so the "not yet calibrated" suffix — the part that
+        # carries the caveat — always survives the 270-char budget
+        suffix = " not yet calibrated"
+        slug_budget = max(0, 269 - len(s) - len("; judge ") - len(suffix))
+        s += f"; judge {_short_slug(uncal[0])[:slug_budget]}{suffix}"
     elif card.get("judged"):
         s += "; judge axis calibrated"
     return s + "."
@@ -796,17 +800,24 @@ def _thread_template(card: dict[str, Any], n: int = 3) -> list[str]:
     method = _method_post(card)
     caveat = _caveat_post(card)
 
-    def fold(*parts: str) -> str:
-        return _trim270(" ".join(p for p in parts if p))
+    def fold(*parts: str, tail: str = "") -> str:
+        # ``tail`` is trimmed last, not trimmed away — reserve its budget
+        # up front so a long method can never eat the caveat clause
+        body = " ".join(p for p in parts if p)
+        if tail:
+            body = _trim270(body[:max(0, 268 - len(tail))].rstrip())
+            return f"{body} {tail}".strip() if body else tail
+        return _trim270(body)
 
     merged = fold(position, neighbors)
     if n >= 4:
         return [p for p in (merged, _trim270(economics), _trim270(method),
                           _trim270(caveat)) if p][:n]
     if n == 3:
-        return [p for p in (merged, _trim270(economics), fold(method, caveat)) if p][:3]
+        return [p for p in (merged, _trim270(economics),
+                          fold(method, tail=caveat)) if p][:3]
     if n == 2:
-        return [p for p in (merged, fold(economics, method, caveat)) if p]
+        return [p for p in (merged, fold(economics, method, tail=caveat)) if p]
     return [merged] if merged else []
 
 

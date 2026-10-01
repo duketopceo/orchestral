@@ -101,6 +101,15 @@ class TestLoadCatalog(unittest.TestCase):
                 encoding="utf-8")
             again = remotecatalog.load_catalog(td)
             self.assertEqual(again["models"], [{"slug": "x"}])
+            # equal serialized length, different content — the cache must
+            # still notice via mtime, since size alone is ambiguous
+            initial = {"source": "s", "models": [{"slug": "y"}]}
+            updated = {"source": "s", "models": [{"slug": "x"}]}
+            remotecatalog.write_catalog(td, initial)
+            self.assertEqual(remotecatalog.load_catalog(td), initial)
+            Path(remotecatalog.catalog_path(td)).write_text(
+                json.dumps(updated, indent=2) + "\n", encoding="utf-8")
+            self.assertEqual(remotecatalog.load_catalog(td), updated)
 
 
 if __name__ == "__main__":

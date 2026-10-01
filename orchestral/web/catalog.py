@@ -125,22 +125,28 @@ def models_catalog_payload(store: RunStore, models_dir: Path) -> dict[str, Any]:
     remote = remotecatalog.load_catalog(models_dir)
     remote_models = remote.get("models") if remote else []
     for rm in remote_models or []:
-        slug = rm.get("slug")
-        if not slug or slug in seen:
+        # a hand-edited or corrupted snapshot must not 500 the endpoint —
+        # validate each persisted row, not just the top-level list
+        if not isinstance(rm, dict):
             continue
-        seen.add(slug)
-        u = usage.get(slug, {})
+        mslug = rm.get("slug")
+        if not isinstance(mslug, str) or not mslug or mslug in seen:
+            continue
+        seen.add(mslug)
+        u = usage.get(mslug, {})
+        modalities = rm.get("output_modalities")
+        modalities = modalities if isinstance(modalities, list) else []
         qualified = _demonstrated(u)
-        if "text" in (rm.get("output_modalities") or []):
+        if "text" in modalities:
             qualified |= {"worker", "judge"}
         if rm.get("structured"):
             qualified.add("orchestrator")
         rows.append(_row(
-            slug, "provider", u,
-            name=rm.get("name") or slug,
+            mslug, "provider", u,
+            name=rm.get("name") or mslug,
             qualified=sorted(qualified),
             vision=bool(rm.get("vision")),
-            modalities=rm.get("output_modalities") or [],
+            modalities=modalities,
             structured=bool(rm.get("structured")),
             free=bool(rm.get("free")),
             expires=rm.get("expires"),

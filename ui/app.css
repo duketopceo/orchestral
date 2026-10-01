@@ -190,6 +190,12 @@ table.data tbody tr:hover { background: var(--bg-hover); }
 table.data tbody tr:last-child td { border-bottom: none; }
 table.data .num, table.data td.t-num { font-family: var(--mono); font-variant-numeric: tabular-nums; text-align: right; }
 table.data th.t-num { text-align: right; }
+table.data td.warn { color: var(--warn); }
+tr.cat-group th {
+  text-align: left; font: 600 10px var(--mono); letter-spacing: .08em;
+  text-transform: uppercase; color: var(--text-2);
+  background: var(--bg-hover); border-bottom: 1px solid var(--line);
+}
 
 /* ---------- filter bar / forms ---------- */
 
@@ -544,6 +550,10 @@ tr.story-selected td { background: rgba(34, 211, 238, .045); }
 .thread-model {
   background: var(--bg-inset); border: 1px solid var(--line); border-radius: 6px;
   color: var(--text); font: 12px var(--mono); padding: 6px 10px; width: 280px;
+}
+.thread-n {
+  background: var(--bg-inset); border: 1px solid var(--line); border-radius: 6px;
+  color: var(--text); font: 12px var(--mono); padding: 6px 8px;
 }
 .thread h3 { margin: 0 0 14px; font: 600 13px var(--sans); color: var(--text-2); }
 .tpost { display: flex; align-items: flex-start; gap: 14px; padding: 12px 0; border-top: 1px solid var(--line); }

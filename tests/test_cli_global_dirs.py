@@ -101,6 +101,17 @@ class TestTopLevelDirFlagsReachSubcommands(unittest.TestCase):
         self.assertEqual(args.tasks_dir, "T")
         self.assertEqual(args.models_dir, "M")
 
+    def test_nested_subcommand_dir_flags_in_either_position(self):
+        # `models sync` is a leaf under the `models` parent — argparse hands
+        # post-`sync` args to the leaf, so the flag must live on both levels
+        p = harness.build_parser()
+        self.assertEqual(
+            p.parse_args(["models", "sync", "--models-dir", "M"]).models_dir, "M")
+        self.assertEqual(
+            p.parse_args(["models", "--models-dir", "M", "sync"]).models_dir, "M")
+        self.assertEqual(
+            p.parse_args(["--models-dir", "T", "models", "sync"]).models_dir, "T")
+
 
 def _write_run(runs_dir: Path, name: str) -> None:
     run_dir = runs_dir / "2026" / "01" / name

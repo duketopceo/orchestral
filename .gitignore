@@ -60,3 +60,7 @@ fixtures/*.lock.json
 
 # machine-local cube contract — sources secrets via omaseal at runtime
 scripts/cube-env.sh
+
+# Provider model-catalog snapshot (harness.py models sync) — fetched data,
+# not config
+models/provider-catalog.json

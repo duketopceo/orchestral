@@ -143,9 +143,11 @@ class TestCardsCLI(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             self._run_cards(tmp)
             names = {p.name for p in (Path(tmp) / "reports" / "cards").glob("*.png")}
-            self.assertIn("overview.png", names)
-            self.assertIn("leaderboard.png", names)
-            self.assertTrue(any(n.startswith("pairing-") for n in names))
+            # shot_name() owns the convention — same names the download
+            # button's Content-Disposition produces
+            self.assertTrue(any(n.startswith("orchestral-overview-") for n in names))
+            self.assertTrue(any(n.startswith("orchestral-leaderboard-") for n in names))
+            self.assertTrue(any(n.startswith("orchestral-pairing-") for n in names))
 
     def test_individual_failure_continues_batch(self):
         calls = []
@@ -160,9 +162,9 @@ class TestCardsCLI(unittest.TestCase):
             self._run_cards(tmp, capture=_flaky)
             names = {p.name for p in
                      (Path(tmp) / "reports" / "cards").glob("*.png")}
-            self.assertIn("overview.png", names)
-            self.assertNotIn("leaderboard.png", names)  # failed, not fatal
-            self.assertTrue(any(n.startswith("pairing-") for n in names))
+            self.assertTrue(any(n.startswith("orchestral-overview-") for n in names))
+            self.assertFalse(any("leaderboard" in n for n in names))  # failed, not fatal
+            self.assertTrue(any(n.startswith("orchestral-pairing-") for n in names))
             self.assertGreater(len(calls), 2)  # kept going past the failure
 
 

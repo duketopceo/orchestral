@@ -7,14 +7,56 @@ ScreenshotUnavailable, which callers are expected to degrade on.
 
 from __future__ import annotations
 
+import hashlib
+import re
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs
 
 
 class ScreenshotUnavailable(Exception):
     """Raised when Playwright or its browser binaries are not installed."""
+
+
+def shot_name(route: str, *, stamp: str | None = None) -> str:
+    """Deterministic download filename for a captured app route —
+    ``orchestral-pairing-x-ai-grok-4-7-z-ai-glm-5-3-flash-20260930.png``.
+    Shared by the server's Content-Disposition header and the ``cards``
+    batch export so the same view downloads under the same name either way."""
+    path, _, raw_q = route.partition("?")
+    params = parse_qs(raw_q)
+    kind = params.get("kind", [""])[0]
+    target = params.get("target", [""])[0]
+    grp = params.get("group", [""])[0]
+
+    def slug(s: str) -> str:
+        return re.sub(r"[^a-z0-9]+", "-", s.lower()).strip("-")
+
+    if path == "/card" and kind and target:
+        base = f"{slug(kind)}-{slug(target)}"
+        if grp:
+            base += f"-{slug(grp)}"
+        lens = params.get("lens", [""])[0]
+        if lens and lens != "overall":
+            base += f"-lens-{slug(lens)}"
+    else:
+        base = slug(path) or "overview"
+        # every distinguishing param belongs in the name — two different
+        # views (lens, group, sort…) must not download as the same file
+        extra = sorted(
+            f"{slug(k)}-{slug(vs[0])}" for k, vs in params.items() if vs[0]
+        )
+        if extra:
+            base += "-" + "-".join(extra)
+    # stay under the 255-byte filename ceiling for long model ids —
+    # digest-suffixed so two truncated routes can never collide
+    if len(base) > 200:
+        digest = hashlib.sha1(route.encode()).hexdigest()[:6]
+        base = base[:192].rstrip("-") + f"-{digest}"
+    return f"orchestral-{base}-{stamp or time.strftime('%Y%m%d')}.png"
 
 
 def _import_playwright():

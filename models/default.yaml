@@ -8,6 +8,19 @@
 # price_per_video_second bills video tasks when the API reports no usage.cost.
 # Non-OpenRouter providers are chat-only; image and video tasks require OpenRouter.
 models:
+  # WATCHLIST — announced 2026-09-30, gated to Fairwind trusted testers;
+  # not on OpenRouter yet (harness.py models sync will surface it when it
+  # lists). We intend to spend on this — prefer the :batch variant if
+  # offered (~50% off). List price $2/$10 per Mtok; cached input 95% off.
+  - slug: "~google/gemini-4-argon"
+    name: "Gemini 4 Argon (gated — watchlist)"
+    role: orchestrator
+    input_price_per_mtok: 2.00
+    output_price_per_mtok: 10.00
+    context: 0
+    max_tokens: 0
+    retry_limit: 2
+
   - slug: "~deepseek/deepseek-v4-flash-latest"
     name: "DeepSeek V4 Flash Latest"
     role: worker

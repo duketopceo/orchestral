@@ -17,7 +17,7 @@ import uuid
 import zipfile
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from urllib.parse import quote
 
 from orchestral.agentexec import ExecutorPreflightError, launch_gate
@@ -327,6 +327,75 @@ def _runs_for_group(store: RunStore, group: str | None) -> list[Any]:
     if group == "(ungrouped)":
         return [r for r in store.list_runs(limit=None) if not r.run_group]
     return store.list_runs(run_group=group)
+
+
+def _pair_brief(p: Any) -> dict[str, Any]:
+    return {"orchestrator": p.orchestrator, "worker": p.worker,
+            "pass_rate": p.pass_rate, "cost_per_pass": p.cost_per_pass,
+            "runs": p.runs}
+
+
+def thread_context(store: RunStore, kind: str, target: str,
+                   group: str | None = None) -> dict[str, Any]:
+    """Leaderboard framing for a publish thread: where the card's subject
+    sits among its peers — rank, immediate neighbors, and cost standing.
+
+    Ranks over exactly what the leaderboard view numbers — finished,
+    non-low-sample rows ordered by ``_pairing_quality_key`` — so a posted
+    ``rank/board_size`` is the same ``N / M`` a reader sees on the board,
+    and a thin pairing reports ``low_sample`` instead of a rank the board
+    withholds. Scoped to ``group`` when set; group cards always scope to
+    their own target cohort (same as ``card_payload``) and run cards to
+    their run's group.
+    """
+    scope = group
+    orch = worker = None
+    if kind == "pairing" and "|" in target:
+        orch, worker = target.split("|", 1)
+    elif kind == "group":
+        scope = target
+    elif kind == "run":
+        meta = store.get_run(target)
+        if meta is not None:
+            orch, worker = meta.orchestrator, meta.worker
+            scope = scope or meta.run_group
+    metas = _runs_for_group(store, scope)
+    board = [p for p in pairing_leaderboard(
+        metas, unmetered_workers=store.unmetered_workers()) if not p.holdout_only]
+    eligible = sorted(
+        (p for p in board if not p.low_sample and p.finished),
+        key=lambda p: _pairing_quality_key(p.to_dict()),
+    )
+    ctx: dict[str, Any] = {"board_size": len(eligible)}
+
+    if orch and worker:
+        subject = next((p for p in board
+                        if p.orchestrator == orch and p.worker == worker), None)
+        if subject is not None:
+            ctx["cost_total"] = subject.cost_total
+            ctx["runs"] = subject.runs
+            if subject.low_sample or not subject.finished:
+                ctx["low_sample"] = True
+        idx = next((i for i, p in enumerate(eligible)
+                    if p.orchestrator == orch and p.worker == worker), None)
+        if idx is not None:
+            ctx["rank"] = idx + 1
+            ctx["cost_per_pass"] = eligible[idx].cost_per_pass
+            if idx:
+                ctx["above"] = _pair_brief(eligible[idx - 1])
+            if idx + 1 < len(eligible):
+                ctx["below"] = _pair_brief(eligible[idx + 1])
+        metered = sorted((p for p in eligible if p.cost_per_pass is not None),
+                         key=lambda p: cast(float, p.cost_per_pass))
+        ci = next((i for i, p in enumerate(metered)
+                   if p.orchestrator == orch and p.worker == worker), None)
+        if ci is not None:
+            ctx["cost_rank"] = ci + 1
+            ctx["cost_of"] = len(metered)
+            ctx["cheapest_pass"] = _pair_brief(metered[0])
+    elif kind == "group" and eligible:
+        ctx["top"] = _pair_brief(eligible[0])
+    return ctx
 
 
 def overview_payload(
@@ -915,7 +984,7 @@ def _verdict_line(mech_pass: bool | None, judge_passed: bool | None,
 
 def _explainer(kind: str, card: dict[str, Any]) -> str:
     """What the card measures, for a mild-AI-knowledge audience — one
-    sentence, no jargon. Mirrors the thread drafter's wording."""
+    sentence, no jargon."""
     if kind == "group":
         return (
             "Each run: a planner AI breaks a real task into steps, worker AIs "

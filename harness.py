@@ -1891,14 +1891,19 @@ def cmd_cards(args: argparse.Namespace) -> None:
                     continue
                 name = shot_name(route)
                 stem, stamp = name.rsplit("-", 1)
-                # a re-export replaces the same view's earlier-stamped file
-                for stale in out_dir.glob(stem + "-*.png"):
-                    stale.unlink()
                 if name in used:
-                    # distinct routes that slug-collide must not overwrite
+                    # distinct routes that slug-collide must not overwrite —
+                    # resolve the digest name BEFORE cleanup so a colliding
+                    # route can't delete the file its rival just wrote
                     digest = hashlib.sha1(route.encode()).hexdigest()[:6]
-                    name = f"{stem}-{digest}-{stamp}"
+                    stem = f"{stem}-{digest}"
+                    name = f"{stem}-{stamp}"
                 used.add(name)
+                # a re-export replaces the same view's earlier-stamped file;
+                # the digit pattern scopes cleanup to this stem only, so a
+                # colliding route's digest-stem files are never swept
+                for stale in out_dir.glob(stem + "-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9].png"):
+                    stale.unlink()
                 (out_dir / name).write_bytes(png)
                 written += 1
     except ScreenshotUnavailable as exc:

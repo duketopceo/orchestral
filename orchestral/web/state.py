@@ -336,17 +336,19 @@ def _pair_brief(p: Any) -> dict[str, Any]:
 
 
 def thread_context(store: RunStore, kind: str, target: str,
-                   group: str | None = None) -> dict[str, Any]:
+                   group: str | None = None, lens: str = "overall") -> dict[str, Any]:
     """Leaderboard framing for a publish thread: where the card's subject
     sits among its peers — rank, immediate neighbors, and cost standing.
 
-    Ranks over exactly what the leaderboard view numbers — finished,
-    non-low-sample rows ordered by ``_pairing_quality_key`` — so a posted
-    ``rank/board_size`` is the same ``N / M`` a reader sees on the board,
-    and a thin pairing reports ``low_sample`` instead of a rank the board
-    withholds. Scoped to ``group`` when set; group cards always scope to
-    their own target cohort (same as ``card_payload``) and run cards to
-    their run's group.
+    Ranks inside the requested lens's own ``ranking`` — the same ordering
+    and denominator the leaderboard view prints for that lens — so a posted
+    ``rank/board_size`` is the same ``N / M`` a reader sees on the board.
+    A thin pairing reports ``low_sample``; a pairing the lens legitimately
+    excludes (unmetered rows leave cost lenses, unjudged rows leave the
+    divergence lens) reports ``unranked`` with the lens label, not a
+    board-invisible number. Scoped to ``group`` when set; group cards
+    always scope to their own target cohort (same as ``card_payload``)
+    and run cards to their run's group.
     """
     scope = group
     orch = worker = None
@@ -360,31 +362,44 @@ def thread_context(store: RunStore, kind: str, target: str,
             orch, worker = meta.orchestrator, meta.worker
             scope = scope or meta.run_group
     metas = _runs_for_group(store, scope)
-    board = [p for p in pairing_leaderboard(
-        metas, unmetered_workers=store.unmetered_workers()) if not p.holdout_only]
-    eligible = sorted(
-        (p for p in board if not p.low_sample and p.finished),
-        key=lambda p: _pairing_quality_key(p.to_dict()),
-    )
-    ctx: dict[str, Any] = {"board_size": len(eligible)}
+    unmetered = store.unmetered_workers()
+    board = [p for p in pairing_leaderboard(metas, unmetered_workers=unmetered)
+             if not p.holdout_only]
+    lens_rows = _lens_payloads(board)
+    requested = lens if lens in CARD_LENS_IDS else "overall"
+    lens_info = next((item for item in lens_rows if item["id"] == requested),
+                     lens_rows[0])
+    ranking = lens_info.get("ranking") or []
+    by_target = {f"{p.orchestrator}|{p.worker}": p for p in board}
+    ctx: dict[str, Any] = {"board_size": len(ranking),
+                           "lens_label": lens_info.get("label") or requested}
 
     if orch and worker:
-        subject = next((p for p in board
-                        if p.orchestrator == orch and p.worker == worker), None)
+        subject_target = f"{orch}|{worker}"
+        subject = by_target.get(subject_target)
         if subject is not None:
             ctx["cost_total"] = subject.cost_total
             ctx["runs"] = subject.runs
             if subject.low_sample or not subject.finished:
                 ctx["low_sample"] = True
-        idx = next((i for i, p in enumerate(eligible)
-                    if p.orchestrator == orch and p.worker == worker), None)
+            if orch in unmetered or worker in unmetered:
+                ctx["unmetered"] = True
+        idx = ranking.index(subject_target) if subject_target in ranking else None
         if idx is not None:
             ctx["rank"] = idx + 1
-            ctx["cost_per_pass"] = eligible[idx].cost_per_pass
+            row = by_target.get(ranking[idx])
+            if row is not None:
+                ctx["cost_per_pass"] = row.cost_per_pass
             if idx:
-                ctx["above"] = _pair_brief(eligible[idx - 1])
-            if idx + 1 < len(eligible):
-                ctx["below"] = _pair_brief(eligible[idx + 1])
+                ctx["above"] = _pair_brief(by_target[ranking[idx - 1]])
+            if idx + 1 < len(ranking):
+                ctx["below"] = _pair_brief(by_target[ranking[idx + 1]])
+        elif subject is not None and not ctx.get("low_sample"):
+            ctx["unranked"] = True
+        eligible = sorted(
+            (p for p in board if not p.low_sample and p.finished),
+            key=lambda p: _pairing_quality_key(p.to_dict()),
+        )
         metered = sorted((p for p in eligible if p.cost_per_pass is not None),
                          key=lambda p: cast(float, p.cost_per_pass))
         ci = next((i for i, p in enumerate(metered)
@@ -393,8 +408,10 @@ def thread_context(store: RunStore, kind: str, target: str,
             ctx["cost_rank"] = ci + 1
             ctx["cost_of"] = len(metered)
             ctx["cheapest_pass"] = _pair_brief(metered[0])
-    elif kind == "group" and eligible:
-        ctx["top"] = _pair_brief(eligible[0])
+    elif kind == "group" and ranking:
+        top = by_target.get(ranking[0])
+        if top is not None:
+            ctx["top"] = _pair_brief(top)
     return ctx
 
 

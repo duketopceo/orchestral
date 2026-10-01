@@ -669,8 +669,14 @@ def _position_post(card: dict[str, Any], t: dict[str, Any]) -> str:
         if pr is not None:
             s += f" ({round(pr * 100)}% mechanical pass is anecdote, not a placement)"
         return s + "."
+    if t.get("unranked") and not rank:
+        # the lens excludes this pairing outright (e.g. an unmetered row in
+        # a cost lens) — honest absence, not thin evidence.
+        return f"Outside the {t.get('lens_label') or 'selected'} lens's ranking."
     if rank and size:
-        s = f"Where it lands: {rank}/{size} pairings by mechanical pass"
+        label = t.get("lens_label")
+        lens_note = f" on the {label} board" if label and label != "Best overall" else ""
+        s = f"Where it lands: {rank}/{size} pairings by mechanical pass{lens_note}"
         if pr is not None:
             s += f" ({round(pr * 100)}%)"
         return s + "."
@@ -699,10 +705,17 @@ def _economics_post(card: dict[str, Any], t: dict[str, Any]) -> str:
     ``thread.cost_total``/``thread.runs`` cover ALL the subject's runs
     including failures — the dollars and the count must share one basis,
     because card ``cost_usd`` sums finished runs only and a crashed run
-    still spent money."""
+    still spent money. An unmetered side (pricing_source="unmetered",
+    e.g. a local CLI) means the dollars are a partial metered figure,
+    never an authoritative spend claim."""
     total, runs = t.get("cost_total"), t.get("runs")
     cost = card.get("cost_usd")
-    if total is not None:
+    unmetered = t.get("unmetered")
+    if unmetered and total is not None:
+        s = f"Economics: ${total:.4f} metered across {runs or '?'} runs — part of this pairing is unmetered, true spend is higher"
+    elif unmetered:
+        s = "Economics: unmetered — cost can't be compared on this pairing"
+    elif total is not None:
         s = f"Economics: ${total:.4f} across {runs or '?'} runs"
     elif cost is not None:
         s = f"Economics: ${cost:.4f} across {card.get('finished') or '?'} finished runs"

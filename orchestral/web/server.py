@@ -473,6 +473,7 @@ def make_handler(obs: Observatory) -> type[BaseHTTPRequestHandler]:
             card["thread"] = state.thread_context(
                 obs.store, kind, target,
                 group=form.get("group") or None,
+                lens=form.get("lens") or "overall",
             )
             writer = form.get("model") or ""
             client = model = None

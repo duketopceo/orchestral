@@ -431,6 +431,56 @@ class TestSignalAwareThread(unittest.TestCase):
             self.assertNotIn("rank", thin)
             self.assertTrue(thin["low_sample"])
 
+    def test_thread_context_ranks_within_the_requested_lens(self):
+        # a card opened under a non-overall lens must post that lens's
+        # ranking — the divergence board orders by judge/mechanical gap,
+        # which reverses the overall order for this cohort
+        with tempfile.TemporaryDirectory() as tmp:
+            store = RunStore(tmp)
+            _seed_lens_cohort(store)
+            ctx = state.thread_context(
+                store, "pairing", "o/reliable|w/cheap", lens="divergence")
+            self.assertEqual(ctx["rank"], 3)
+            self.assertEqual(ctx["board_size"], 3)
+            self.assertEqual(ctx["lens_label"], "Interesting divergence")
+            self.assertEqual(ctx["above"]["worker"], "w/frontier")
+            self.assertNotIn("below", ctx)
+            # the same pairing leads the overall board — no contradiction
+            overall = state.thread_context(store, "pairing", "o/reliable|w/cheap")
+            self.assertEqual(overall["rank"], 1)
+
+    def test_economics_qualifies_unmetered_pairing_spend(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = RunStore(tmp)
+            _seed_lens_cohort(store)
+            rid = _add_run(store, orchestrator="o/local",
+                           worker="w/cli", passes=True, judge_score=0.9,
+                           judge_passed=True, cost_usd=0.0)
+            _add_run(store, orchestrator="o/local", worker="w/cli",
+                     passes=True, judge_score=0.9, judge_passed=True,
+                     cost_usd=0.0)
+            _add_run(store, orchestrator="o/local", worker="w/cli",
+                     passes=True, judge_score=0.9, judge_passed=True,
+                     cost_usd=0.0)
+            store.record_call(
+                run_id=rid, phase="work", step=1, role="worker",
+                model="w/cli", cost_usd=0.0, pricing_source="unmetered")
+            ctx = state.thread_context(store, "pairing", "o/local|w/cli")
+            self.assertTrue(ctx["unmetered"])
+            card = state.card_payload(store, "pairing", "o/local|w/cli")
+            assert card is not None
+            card["thread"] = ctx
+            out = draft_thread(card=card, client=None, model=None, n=4)
+            econ = next(p for p in out["posts"] if p.startswith("Economics"))
+            # "$0.0000 across 3 runs" would read as free — the post must
+            # qualify the figure instead
+            self.assertIn("unmetered", econ)
+            self.assertNotIn("$0.0000 across", econ)
+            # an unmetered pairing is excluded from cost lenses outright
+            cost_lens = state.thread_context(
+                store, "pairing", "o/local|w/cli", lens="low_cost")
+            self.assertTrue(cost_lens.get("unranked"))
+
     def test_thread_template_four_post_shape_and_char_limit(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = RunStore(tmp)

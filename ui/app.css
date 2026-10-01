@@ -83,6 +83,30 @@ code, .mono { font-family: var(--mono); }
 }
 #nav a:hover { background: var(--bg-hover); color: var(--text); text-decoration: none; }
 #nav a.active { background: var(--accent-dim); color: var(--accent); }
+.nav-sec {
+  font-size: 10px;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  padding: 12px 10px 4px;
+}
+.nav-sec:first-child { padding-top: 4px; }
+#nav a.nav-cta {
+  margin-top: 10px;
+  border: 1px solid var(--accent-dim);
+  color: var(--accent);
+  font-weight: 600;
+  text-align: center;
+}
+#nav a.nav-cta:hover { background: var(--accent-dim); color: var(--accent); }
+#nav a.nav-cta.active { background: var(--accent); color: var(--bg); }
+.crumb {
+  display: inline-block;
+  color: var(--text-3);
+  font-size: 12px;
+  margin-bottom: 6px;
+}
+.crumb:hover { color: var(--text); text-decoration: none; }
 
 #rail-live {
   margin-top: auto;
@@ -691,9 +715,10 @@ tr.story-selected td { background: rgba(34, 211, 238, .045); }
 
 @media (max-width: 860px) {
   #rail { width: 54px; flex: 0 0 54px; }
-  #rail .brand-word, #rail .brand-sub, #nav a span.lbl, .rail-live-head, #rail-jobs { display: none; }
+  #rail .brand-word, #rail .brand-sub, #nav a span.lbl, .rail-live-head, #rail-jobs, .nav-sec { display: none; }
   #nav a { font-size: 0; }
   #nav a::first-letter { font-size: 13px; }
+  #nav a.nav-cta { margin-top: 4px; padding: 6px 0; }
   .phases { flex-wrap: wrap; }
   .ph-seg { flex: 1 1 45%; border-bottom: 1px solid var(--line); }
   #main { padding: 14px; }

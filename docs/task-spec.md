@@ -130,6 +130,31 @@ new hash.
   host-containment path and is not made safe by the code verifier sandbox. Dry
   runs skip execution and compile-check `.py` files instead
   (`executed: false`).
+
+#### Code execution threat model and configuration boundary
+
+Generated worker output is untrusted. A host subprocess would expose the
+harness account, host filesystem, network, process table, and other tenants'
+data. A temporary directory, a short timeout, a stripped environment, and the
+`no_unsafe` regex heuristic are not a security boundary.
+
+The process-level setting `ORCHESTRAL_CODE_RUNTIME` is fail closed:
+
+- The default is `disabled`.
+- `host` and unknown values are rejected; they never select a subprocess.
+- `isolated` selects the E2B-compatible adapter and is the only value that
+  enables execution. The setting is process-owned; task metadata and
+  `no_unsafe` cannot turn it on.
+
+The adapter must remain outside the host process and enforce all of these
+properties: no host filesystem mounts, an empty environment with no inherited
+credentials, denied network, and CPU, memory, process-count, and wall-time
+limits. Task metadata may request a lower timeout but cannot raise the
+adapter's hard resource ceilings. The adapter owns materialization,
+execution, and output truncation; it must not accept a host command,
+environment passthrough, or fallback from a failed isolation check. On
+self-hosted CubeSandbox, egress denial is a deployment-side responsibility —
+the adapter's `allow_internet_access=False` request is ignored there.
 - **`constraint`** — workers produce candidate text per subtask; the
   orchestrator picks the best (same selection flow as `image`/`video`); the
   chosen text is stored as `artifact.txt` and checked against hard
@@ -355,11 +380,13 @@ new hash.
   | `forbidden_patterns` | list of regexes — any hit always violates |
 
   Caveats: regex-based unsafe detection has false positives *and* negatives;
-  a clean `unsafe_hits` is not proof of safety. `complexity_lite` and
-  `code_lines` are lean-ness proxies, not performance measurements. The
-  `code-*` task specs form a difficulty ladder (fizzbuzz → slugify →
-  lru-cache → expr-parser) so a pairing's breakpoint shows up as the first
-  task where `score` drops below 1.0 or `passes` flips false.
+  a clean `unsafe_hits` is not proof of safety, and `no_unsafe` is only a
+  declared quality gate. It is never a substitute for the isolated runtime
+  boundary. `complexity_lite` and `code_lines` are lean-ness proxies, not
+  performance measurements. The `code-*` task specs form a difficulty ladder
+  (fizzbuzz → slugify → lru-cache → expr-parser) so a pairing's breakpoint
+  shows up as the first task where `score` drops below 1.0 or `passes` flips
+  false.
 
 ## Validation checks
 
@@ -399,14 +426,15 @@ new hash.
 | `has_paths` | every path in `metadata.expected_paths` is present as a non-empty regular file |
 | `has_content` | every token in `metadata.required_content[path]` appears in that file's body (case-insensitive); scoped per path, so one file cannot vouch for another |
 
-`code` tasks ignore `validation:` — the check is execution:
+`code` tasks ignore `validation:` — the check is the isolated-runtime gate:
 
 | Check | Passes when |
 |---|---|
 | `expected_paths` | `metadata.module` (and any declared `expected_paths`) are present non-empty |
 | `quality_ok` | no declared quality bound was violated |
 | `compiles` | (dry-run only) every `.py` file compiles |
-| `tests_pass` | `python -Es -m unittest task_tests` exits 0 with ≥1 test run |
+| `tests_pass` | an isolated runtime ran the suite and it exited 0 with ≥1 test; unavailable in this release |
+
 Constraint checks — for `constraint` tasks, or composable onto any text task.
 Each fails closed when requested but its metadata key is missing:
 

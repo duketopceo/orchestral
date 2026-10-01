@@ -16,6 +16,11 @@ function esc(s) {
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
+// detail views always offer a way back to their section
+function crumb(href, label) {
+  return `<a class="crumb" href="${href}">← ${esc(label)}</a>`;
+}
+
 async function api(path, opts) {
   const r = await fetch(path, opts);
   const body = await r.json().catch(() => ({}));
@@ -312,6 +317,7 @@ async function viewRun(runId, params) {
   $view.innerHTML = `
     <div class="run-head">
       <div class="rh-title">
+        ${crumb("#/runs", "Runs")}
         <h1>${esc(d.task_title || m.task_id)}</h1>
         ${d.task_title ? `<div class="rh-pair dim">${esc(m.task_id)}${d.task_blurb ? ` — ${esc(d.task_blurb)}` : ""}</div>` : ""}
         <div class="rh-pair">${esc(m.orchestrator)} <span class="arrow">→</span> ${esc(m.worker)}</div>
@@ -1279,9 +1285,13 @@ async function route() {
   const params = new URLSearchParams(query || "");
   const path = pathQ || "/";
 
+  // detail routes light up their parent section, not nothing
+  const parent = path.startsWith("/run/") ? "/runs"
+    : path === "/card" ? "/cards"
+    : path;
   document.querySelectorAll("#nav a").forEach(a => {
     a.classList.toggle("active",
-      a.dataset.route === "/" ? path === "/" : path.startsWith(a.dataset.route));
+      a.dataset.route === "/" ? parent === "/" : parent.startsWith(a.dataset.route));
   });
 
   delete $view.dataset.ready;

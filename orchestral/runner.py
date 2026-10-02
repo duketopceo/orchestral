@@ -764,7 +764,8 @@ class Runner:
                             attempt=attempt + 1, reason="error_retry",
                         )
                         continue
-                    if _subtask_produced_output(out, media_bytes, files, is_media, is_multi):
+                    produced = _subtask_produced_output(out, media_bytes, files, is_media, is_multi)
+                    if produced:
                         break
                     if attempt + 1 < attempts:
                         # a retry will actually follow — log it as such
@@ -789,13 +790,17 @@ class Runner:
                             "delegate", "empty worker output; retrying",
                             subtask_id=sub.get("id", i), attempt=attempt + 1,
                         )
-                if not out:  # None or exhausted-empty dict must not reach assembly
+                if not produced:
+                    # delegate returns a dict even for empty content, so `if not
+                    # out` could never catch exhaustion — an all-empty run would
+                    # reach assembly and let the orchestrator paper over it.
                     logger.lifecycle(
                         "worker.failed", phase="delegate", role="worker",
                         worker_id=wid, subtask_id=sub.get("id", i),
                         attempts=attempts, error_category="empty_output",
                     )
                     raise ValidationError(f"Worker {worker.slug} produced no output for subtask {sub.get('id')}")
+                assert out is not None  # produced=True implies a delegate result
                 out["attempts"] = attempt + 1
                 logger.lifecycle(
                     "worker.completed", phase="delegate", role="worker",

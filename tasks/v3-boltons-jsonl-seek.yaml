@@ -1,0 +1,84 @@
+id: v3-boltons-jsonl-seek
+title: 'boltons: JSONLIterator binary rel_seek'
+blurb: Repair a real jsonutils defect — relative seeks misalign on binary streams — graded by pytest in a sandboxed checkout.
+type: code
+prompt: 'You are contributing to `boltons` (a library of Python stdlib
+
+  extensions). A user filed this issue:
+
+
+  > `boltons.jsonutils.JSONLIterator` relative seeks misbehave when the
+
+  > underlying file object is opened in binary mode. The newline-alignment
+
+  > helper compares what it reads against a text `''\n''`, so on a binary
+
+  > stream the alignment never matches and the iterator lands on the wrong
+
+  > record.
+
+  >
+
+  > Reproducer:
+
+  >
+
+  >     # records.jsonl: {"n": 1}\n{"n": 2}\n{"n": 3}\n
+
+  >     with open(''records.jsonl'', ''rb'') as binary, open(''records.jsonl'') as text:
+
+  >         assert list(JSONLIterator(binary, rel_seek=0.4)) == \
+
+  >                list(JSONLIterator(text, rel_seek=0.4))
+
+  >     # AssertionError — binary iteration skips/shifts records
+
+  >
+
+  > Binary and text iteration over the same file must produce identical
+
+  > records at the same `rel_seek`. Text-mode behavior is unchanged.
+
+
+  Fix `boltons/jsonutils.py` and return the complete modified file as
+
+  `{"files": [{"path": "boltons/jsonutils.py", "content": "..."}]}`.
+
+  The harness overlays your files onto a full repo checkout and runs the
+
+  project''s test suite.'
+metadata:
+  fixture: boltons-jsonl
+  workdir: repo
+  expected_paths:
+  - boltons/jsonutils.py
+  setup_commands:
+  - python -m pip install --quiet --no-index --find-links /home/user/wheelhouse pytest
+  verify:
+    command:
+    - python
+    - -m
+    - pytest
+    - tests/test_v3_jsonl.py
+    - -x
+    - -q
+    fail_to_pass:
+    - test_jsonl_relative_seek_binary_matches_text
+  timeout_seconds: 240
+  difficulty: hard
+  archetype: bugfix
+  contamination_risk: medium
+  reference:
+    boltons/jsonutils.py: "# Copyright (c) 2013, Mahmoud Hashemi\n#\n# Redistribution and use in source and binary forms, with or without\n# modification, are permitted provided that the following conditions are\n# met:\n#\n#    * Redistributions of source code must retain the above copyright\n#      notice, this list of conditions and the following disclaimer.\n#\n#    * Redistributions in binary form must reproduce the above\n#      copyright notice, this list of conditions and the following\n#      disclaimer in the documentation and/or other materials provided\n#      with the distribution.\n#\n#    * The names of the contributors may not be used to endorse or\n#      promote products derived from this software without specific\n#      prior written permission.\n#\n# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS\n# \"AS IS\" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT\n# LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR\n# A PARTICULAR\
+      \ PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT\n# OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,\n# SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT\n# LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,\n# DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY\n# THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT\n# (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE\n# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.\n\n\"\"\"``jsonutils`` aims to provide various helpers for working with\nJSON. Currently it focuses on providing a reliable and intuitive means\nof working with `JSON Lines`_-formatted files.\n\n.. _JSON Lines: http://jsonlines.org/\n\n\"\"\"\n\n\nimport io\nimport os\nimport json\n\n\nDEFAULT_BLOCKSIZE = 4096\n\n\n__all__ = ['JSONLIterator', 'reverse_iter_lines']\n\n\ndef reverse_iter_lines(file_obj, blocksize=DEFAULT_BLOCKSIZE, preseek=True,\
+      \ encoding=None):\n    \"\"\"Returns an iterator over the lines from a file object, in\n    reverse order, i.e., last line first, first line last. Uses the\n    :meth:`file.seek` method of file objects, and is tested compatible with\n    :class:`file` objects, as well as :class:`StringIO.StringIO`.\n\n    Args:\n        file_obj (file): An open file object. Note that\n            ``reverse_iter_lines`` mutably reads from the file and\n            other functions should not mutably interact with the file\n            object after being passed. Files can be opened in bytes or\n            text mode.\n        blocksize (int): The block size to pass to\n          :meth:`file.read()`. Warning: keep this a fairly large\n          multiple of 2, defaults to 4096.\n        preseek (bool): Tells the function whether or not to automatically\n            seek to the end of the file. Defaults to ``True``.\n            ``preseek=False`` is useful in cases when the\n            file cursor is already\
+      \ in position, either at the end of\n            the file or in the middle for relative reverse line\n            generation.\n\n    \"\"\"\n    # This function is a bit of a pain because it attempts to be byte/text agnostic\n    try:\n        encoding = encoding or file_obj.encoding\n    except AttributeError:\n        # BytesIO\n        encoding = None\n    else:\n        encoding = 'utf-8'\n\n    # need orig_obj to keep alive otherwise __del__ on the TextWrapper will close the file\n    orig_obj = file_obj\n    try:\n        file_obj = orig_obj.detach()\n    except (AttributeError, io.UnsupportedOperation):\n        pass\n\n    empty_bytes, newline_bytes, empty_text = b'', b'\\n', ''\n\n    if preseek:\n        file_obj.seek(0, os.SEEK_END)\n    buff = empty_bytes\n    cur_pos = file_obj.tell()\n    while 0 < cur_pos:\n        read_size = min(blocksize, cur_pos)\n        cur_pos -= read_size\n        file_obj.seek(cur_pos, os.SEEK_SET)\n        cur = file_obj.read(read_size)\n \
+      \       buff = cur + buff\n        lines = buff.splitlines()\n\n        if len(lines) < 2 or lines[0] == empty_bytes:\n            continue\n        if buff[-1:] == newline_bytes:\n            yield empty_text if encoding else empty_bytes\n        for line in lines[:0:-1]:\n            yield line.decode(encoding) if encoding else line\n        buff = lines[0]\n    if buff:\n        yield buff.decode(encoding) if encoding else buff\n\n\n\n\"\"\"\nTODO: allow passthroughs for:\n\njson.load(fp[, encoding[, cls[, object_hook[, parse_float[, parse_int[, parse_constant[, object_pairs_hook[, **kw]]]]]]]])\n\"\"\"\n\n\nclass JSONLIterator:\n    \"\"\"The ``JSONLIterator`` is used to iterate over JSON-encoded objects\n    stored in the `JSON Lines format`_ (one object per line).\n\n    Most notably it has the ability to efficiently read from the\n    bottom of files, making it very effective for reading in simple\n    append-only JSONL use cases. It also has the ability to start from\n    anywhere\
+      \ in the file and ignore corrupted lines.\n\n    Args:\n        file_obj (file): An open file object.\n        ignore_errors (bool): Whether to skip over lines that raise an error on\n            deserialization (:func:`json.loads`).\n        reverse (bool): Controls the direction of the iteration.\n            Defaults to ``False``. If set to ``True`` and *rel_seek*\n            is unset, seeks to the end of the file before iteration\n            begins.\n        rel_seek (float): Used to preseek the start position of\n            iteration. Set to 0.0 for the start of the file, 1.0 for the\n            end, and anything in between.\n\n    .. _JSON Lines format: http://jsonlines.org/\n    \"\"\"\n    def __init__(self, file_obj,\n                 ignore_errors=False, reverse=False, rel_seek=None):\n        self._reverse = bool(reverse)\n        self._file_obj = file_obj\n        self.ignore_errors = ignore_errors\n\n        if rel_seek is None:\n            if reverse:\n         \
+      \       rel_seek = 1.0\n        elif not -1.0 < rel_seek <= 1.0:\n            raise ValueError(\"'rel_seek' expected a float between\"\n                             \" -1.0 and 1.0, not %r\" % rel_seek)\n        elif rel_seek < 0:\n            rel_seek = 1.0 + rel_seek\n        self._rel_seek = rel_seek\n        self._blocksize = 4096\n        if rel_seek is not None:\n            self._init_rel_seek()\n        if self._reverse:\n            self._line_iter = reverse_iter_lines(self._file_obj,\n                                                 blocksize=self._blocksize,\n                                                 preseek=False)\n        else:\n            self._line_iter = iter(self._file_obj)\n\n    @property\n    def cur_byte_pos(self):\n        \"A property representing where in the file the iterator is reading.\"\n        return self._file_obj.tell()\n\n    def _align_to_newline(self):\n        \"Aligns the file object's position to the next newline.\"\n        fo, bsize =\
+      \ self._file_obj, self._blocksize\n        newline = b'\\n' if isinstance(fo.read(0), bytes) else '\\n'\n        cur, total_read = newline[:0], 0\n        cur_pos = fo.tell()\n        while newline not in cur:\n            cur = fo.read(bsize)\n            if not cur:\n                # no newline until EOF; a partial trailing line was\n                # never yieldable from a mid-line seek anyway\n                fo.seek(0, os.SEEK_END)\n                return\n            total_read += bsize\n        newline_offset = cur.index(newline) + total_read - bsize\n        fo.seek(cur_pos + newline_offset)\n\n    def _init_rel_seek(self):\n        \"Sets the file object's position to the relative location set above.\"\n        rs, fo = self._rel_seek, self._file_obj\n        if rs == 0.0:\n            fo.seek(0, os.SEEK_SET)\n        else:\n            fo.seek(0, os.SEEK_END)\n            size = fo.tell()\n            if rs == 1.0:\n                self._cur_pos = size\n            else:\n\
+      \                target = int(size * rs)\n                fo.seek(target, os.SEEK_SET)\n                self._align_to_newline()\n                self._cur_pos = fo.tell()\n\n    def __iter__(self):\n        return self\n\n    def next(self):\n        \"\"\"Yields one :class:`dict` loaded with :func:`json.loads`, advancing\n        the file object by one line. Raises :exc:`StopIteration` upon reaching\n        the end of the file (or beginning, if ``reverse`` was set to ``True``.\n        \"\"\"\n        while 1:\n            line = next(self._line_iter).lstrip()\n            if not line:\n                continue\n            try:\n                obj = json.loads(line)\n            except Exception:\n                if not self.ignore_errors:\n                    raise\n                continue\n            return obj\n\n    __next__ = next\n\n\nif __name__ == '__main__':\n    def _main():\n        import sys\n        if '-h' in sys.argv or '--help' in sys.argv:\n            print('loads\
+      \ one or more JSON Line files for basic validation.')\n            return\n        verbose = False\n        if '-v' in sys.argv or '--verbose' in sys.argv:\n            verbose = True\n        file_count, obj_count = 0, 0\n        filenames = sys.argv[1:]\n        for filename in filenames:\n            if filename in ('-h', '--help', '-v', '--verbose'):\n                continue\n            file_count += 1\n            with open(filename, 'rb') as file_obj:\n                iterator = JSONLIterator(file_obj)\n                cur_obj_count = 0\n                while 1:\n                    try:\n                        next(iterator)\n                    except ValueError:\n                        print('error reading object #%s around byte %s in %s'\n                              % (cur_obj_count + 1, iterator.cur_byte_pos, filename))\n                        return\n                    except StopIteration:\n                        break\n                    obj_count += 1\n   \
+      \                 cur_obj_count += 1\n                    if verbose and obj_count and obj_count % 100 == 0:\n                        sys.stdout.write('.')\n                        if obj_count % 10000:\n                            sys.stdout.write('%s\\n' % obj_count)\n        if verbose:\n            print('files checked: %s' % file_count)\n            print('objects loaded: %s' % obj_count)\n        return\n\n    _main()\n"
+  test_files:
+    tests/test_v3_jsonl.py: "\"\"\"Verifier oracle for binary rel_seek — mirrors upstream fix commit\n805c803ca7 (BSD-3-Clause, boltons). Staged after the worker fileset.\"\"\"\nfrom boltons.jsonutils import JSONLIterator\n\n\ndef test_jsonl_relative_seek_binary_matches_text(tmp_path):\n    path = tmp_path / 'records.jsonl'\n    path.write_bytes(b'{\"n\": 1}\\n{\"n\": 2}\\n{\"n\": 3}\\n')\n    with path.open('rb') as binary, path.open() as text:\n        assert list(JSONLIterator(binary, rel_seek=0.4)) == list(JSONLIterator(text, rel_seek=0.4))\n"

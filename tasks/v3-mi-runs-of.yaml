@@ -1,0 +1,37 @@
+id: v3-mi-runs-of
+title: 'more-itertools: runs_of'
+blurb: Add a predicate-run locator to a real library — graded by pytest in a sandboxed repo checkout.
+type: code
+prompt: "You are contributing to the `more-itertools` library (a\nwidely-used extension of Python's itertools utilities). A maintainer has\nasked for a **run locator** in a new module.\n\nCreate `more_itertools/runs.py` exposing exactly one public function:\n\n    def runs_of(iterable, pred) -> list[tuple[int, int]]\n\nContract:\n- Return a list of ``(start_index, length)`` tuples, one per maximal run of\n  consecutive items for which ``pred(item)`` is truthy, preserving order.\n- ``runs_of([], bool)`` returns ``[]``;\n  ``runs_of([1, 1, 0, 1, 1, 1, 0], bool)`` returns ``[(0, 2), (3, 3)]``.\n- Works on any iterable, consumed lazily in a single pass — do not\n  materialize the input (``runs_of(iter([0, 1, 1]), bool)`` must work).\n- Empty runs are never reported; a run of length 0 does not appear.\n- Module must import cleanly with no third-party dependencies (stdlib and\n  ``more_itertools`` internals are allowed).\n- Match library style: a short docstring, snake_case name.\n\nReturn a JSON\
+  \ object `{\"files\": [{\"path\": \"more_itertools/runs.py\",\n\"content\": \"...\"}]}` with the complete module. The harness overlays your\nfiles onto a full repo checkout and runs the project's test suite."
+metadata:
+  fixture: more-itertools-10.8
+  workdir: repo
+  expected_paths:
+  - more_itertools/runs.py
+  setup_commands:
+  - python -m pip install --quiet --no-index --find-links /home/user/wheelhouse pytest
+  verify:
+    command:
+    - python
+    - -m
+    - pytest
+    - tests/test_v3_runs_of.py
+    - -x
+    - -q
+    fail_to_pass:
+    - test_empty
+    - test_no_runs
+    - test_runs_located
+    - test_edges
+    - test_predicate_not_bool
+    - test_generator_input
+  timeout_seconds: 240
+  difficulty: standard
+  archetype: feature-gap
+  contamination_risk: low
+  reference:
+    more_itertools/runs.py: "\"\"\"Run-locating utilities.\"\"\"\n\n\ndef runs_of(iterable, pred):\n    \"\"\"Return ``(start_index, length)`` for each maximal run of items\n    satisfying ``pred``.\n\n    Consumes the input lazily in a single pass.\n    \"\"\"\n    runs = []\n    start = None\n    length = 0\n    for index, item in enumerate(iterable):\n        if pred(item):\n            if start is None:\n                start = index\n            length += 1\n        elif start is not None:\n            runs.append((start, length))\n            start = None\n            length = 0\n    if start is not None:\n        runs.append((start, length))\n    return runs\n"
+  test_files:
+    tests/test_v3_runs_of.py: "\"\"\"Verifier oracle for runs_of — staged after the worker fileset.\"\"\"\nimport itertools\n\nfrom more_itertools.runs import runs_of\n\n\ndef test_empty():\n    assert runs_of([], bool) == []\n    assert runs_of(iter([]), bool) == []\n\n\ndef test_no_runs():\n    assert runs_of([0, 0, 0], bool) == []\n    assert runs_of(\"000\", lambda c: c == \"1\") == []\n\n\ndef test_runs_located():\n    assert runs_of([1, 1, 0, 1, 1, 1, 0], bool) == [(0, 2), (3, 3)]\n    assert runs_of(\"aaXbbYYcc\", str.isupper) == [(2, 1), (5, 2)]\n\n\ndef test_edges():\n    assert runs_of([1, 0, 0], bool) == [(0, 1)]\n    assert runs_of([0, 0, 1], bool) == [(2, 1)]\n    assert runs_of([1, 1, 1], bool) == [(0, 3)]\n\n\ndef test_predicate_not_bool():\n    data = [1, 2, 3, 4, 5, 6]\n    assert runs_of(data, lambda n: n % 2 == 0) == [(1, 1), (3, 1), (5, 1)]\n    assert runs_of(data, lambda n: n > 3) == [(3, 3)]\n\n\ndef test_generator_input():\n    gen = (c for c in \"xxyyz\")\n    assert\
+      \ runs_of(gen, lambda c: c == \"y\") == [(2, 2)]\n    # lazy: an infinite iterator under islice must terminate\n    inf = itertools.chain([0, 1, 1], itertools.cycle([0]))\n    assert runs_of(itertools.islice(inf, 5), bool) == [(1, 2)]\n"

@@ -104,6 +104,34 @@ class TestExperimentPayload(unittest.TestCase):
         self.assertAlmostEqual(p["cells"][0]["jev"]["cost_per_pass"], 0.01)
         self.assertAlmostEqual(p["cells"][0]["jev"]["cost"], 0.02)
 
+    def test_cells_carry_task_axes(self):
+        """Difficulty band + archetype flow from the task spec into each
+        experiment cell — that's the facet the 'survive the expert band'
+        view needs."""
+        tasks_dir = self.root / "tasks"
+        tasks_dir.mkdir()
+        (tasks_dir / "t.yaml").write_text(
+            "id: t\ntitle: T\nblurb: b\ntype: html\nprompt: p\n"
+            "metadata:\n  difficulty: expert\n  archetype: bugfix\n",
+            encoding="utf-8")
+        self._seed("baseline", 1)
+        p = experiment_payload(self.store, self.matrix_path,
+                               tasks_dir=tasks_dir)
+        assert p is not None
+        cell = p["cells"][0]
+        self.assertEqual(cell["difficulty"], "expert")
+        self.assertEqual(cell["archetype"], "bugfix")
+
+    def test_cells_axes_empty_without_specs(self):
+        """Missing task specs yield empty axes, never a crash."""
+        self._seed("baseline", 1)
+        p = experiment_payload(self.store, self.matrix_path,
+                               tasks_dir=self.root / "nope")
+        assert p is not None
+        cell = p["cells"][0]
+        self.assertEqual(cell["difficulty"], "")
+        self.assertEqual(cell["archetype"], "")
+
 
 if __name__ == "__main__":
     unittest.main()

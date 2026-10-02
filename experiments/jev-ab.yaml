@@ -24,4 +24,15 @@ tasks:
   - code-fizzbuzz
   - multi-file-site
   - constraint-product-blurb
+  # v3 real-repo family — sandboxed pytest grading; difficulty bands are
+  # authoring assignments until calibration evidence lands in
+  # docs/v3-curation.md. Each cell reprices its reps from real spend.
   - v3-mi-run-length
+  - v3-mi-runs-of
+  - v3-mi-chunked-by
+  - v3-boltons-deep-merge
+  - v3-boltons-parseqsl-encoding
+  - v3-boltons-namedutils-empty
+  - v3-boltons-bits-empty
+  - v3-boltons-jsonl-seek
+  - v3-boltons-barrellist-delete

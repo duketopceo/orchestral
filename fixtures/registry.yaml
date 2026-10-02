@@ -40,7 +40,7 @@ fixtures:
     commit: 4e5faa3d7e4008d89e0d8bf1ea87b6d9a061a16d
     license: BSD-3-Clause
     license_url: https://github.com/mahmoud/boltons/blob/master/LICENSE
-    verify_deps:
+    verify_deps: &boltons_deps
       - pytest==9.1.1
       - iniconfig==2.3.0
       - packaging==26.3
@@ -49,3 +49,57 @@ fixtures:
     notes: >
       Broad stdlib-adjacent utility library; large function surface makes it
       good for feature-gap tasks. Moderate visibility (~7k stars).
+
+  # Bugfix fixtures pin the PARENT of a real upstream fix commit: the repo
+  # arrives broken and the fix's added tests become the oracle. The fix sha
+  # is recorded in notes for provenance.
+  boltons-parseqsl:
+    repo: mahmoud/boltons
+    commit: 967864f89791509f9eb36b22b4579d36b72a6df2
+    license: BSD-3-Clause
+    license_url: https://github.com/mahmoud/boltons/blob/master/LICENSE
+    verify_deps: *boltons_deps
+    notes: >
+      Parent of d45cc414e3 ("urlutils: honor parse_qsl encoding (#455)").
+      urlutils.parse_qsl accepts `encoding` but ignores it — keys and values
+      always decode as UTF-8.
+  boltons-namedutils:
+    repo: mahmoud/boltons
+    commit: 9decba3e5736f61180eec274420ced0e572e30e6
+    license: BSD-3-Clause
+    license_url: https://github.com/mahmoud/boltons/blob/master/LICENSE
+    verify_deps: *boltons_deps
+    notes: >
+      Parent of 970051b664 ("namedutils: reject empty type and field names
+      (#462)"). Empty type/field names slip past the ValueError checks and
+      die on IndexError inside the factory.
+  boltons-bits:
+    repo: mahmoud/boltons
+    commit: 5eb6cc045560abf320712f262346ae95fb66d448
+    license: BSD-3-Clause
+    license_url: https://github.com/mahmoud/boltons/blob/master/LICENSE
+    verify_deps: *boltons_deps
+    notes: >
+      Parent of efff866a3b ("mathutils: preserve empty Bits through
+      conversions (#468)"). Empty Bits round-trips crash/misformat across
+      as_bin/as_hex/as_bytes and the from_* constructors.
+  boltons-jsonl:
+    repo: mahmoud/boltons
+    commit: 5150802911edbf8ade1e7d1bfb346fed52c88d05
+    license: BSD-3-Clause
+    license_url: https://github.com/mahmoud/boltons/blob/master/LICENSE
+    verify_deps: *boltons_deps
+    notes: >
+      Parent of 805c803ca7 ("jsonutils: align binary streams to binary
+      newlines (#464)"). JSONLIterator._align_to_newline compares against a
+      str '\n' while binary streams yield bytes, so rel_seek never aligns.
+  boltons-barrellist:
+    repo: mahmoud/boltons
+    commit: 56161fec0ac7a1e5ba0577cc33c20bbdbb331728
+    license: BSD-3-Clause
+    license_url: https://github.com/mahmoud/boltons/blob/master/LICENSE
+    verify_deps: *boltons_deps
+    notes: >
+      Parent of 574393a4c3 ("listutils: preserve barrel endpoints during
+      slice deletion (#472)"). BarrelList slice deletion across barrels drops
+      the stop barrel's head and maps stop=None/past-end to the wrong barrel.

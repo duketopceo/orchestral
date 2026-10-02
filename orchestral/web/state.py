@@ -725,6 +725,8 @@ def task_matrix_payload(
             "task_id": task_id,
             "task_title": tm.get("title") or "",
             "task_type": tm.get("type") or "",
+            "difficulty": tm.get("difficulty") or "",
+            "archetype": tm.get("archetype") or "",
             "cells": {},
         }
         for p in pairings:
@@ -754,7 +756,12 @@ def _task_meta(store: RunStore, tasks_dir: Path | str | None) -> dict[str, dict[
     for path in Path(tasks_dir).rglob("*.yaml"):
         try:
             spec = load_task(path)
-            out[spec.id] = {"type": spec.type, "title": spec.title, "blurb": spec.blurb}
+            md = spec.metadata or {}
+            out[spec.id] = {
+                "type": spec.type, "title": spec.title, "blurb": spec.blurb,
+                "difficulty": str(md.get("difficulty") or ""),
+                "archetype": str(md.get("archetype") or ""),
+            }
         except Exception:
             continue
     return out
@@ -2235,13 +2242,16 @@ def _arm_block(runs: list[Any]) -> dict[str, Any]:
 
 
 def experiment_payload(
-    store: RunStore, matrix_path: str | Path, *, diff_eps: float = 0.15
+    store: RunStore, matrix_path: str | Path, *,
+    diff_eps: float = 0.15, tasks_dir: Path | str | None = None,
 ) -> dict[str, Any] | None:
     """A/B experiment payload — per-cell arm comparison, honestly framed.
 
     Mechanical pass is the primary axis. The jev arm is both assisted and
     scored by the same decisions engine, so judge-score deltas between
     arms are self-referential; the payload says so wherever it reports.
+    Each cell also carries the task's difficulty band and archetype so the
+    board can facet "which pairings survive the expert band".
     """
     from orchestral.coverage import coverage_rows, coverage_summary
     from orchestral.experiment import Cell, cell_runs, load_matrix
@@ -2250,13 +2260,17 @@ def experiment_payload(
     if not p.exists():
         return None
     matrix = load_matrix(p)
+    tmeta = _task_meta(store, tasks_dir or "tasks")
     rows = coverage_rows(store, matrix, diff_eps=diff_eps)
     cells: list[dict[str, Any]] = []
     for row in rows:
         cell = Cell(task_id=row.task_id, orchestrator=row.orchestrator, worker=row.worker)
         arms = cell_runs(store, matrix.name, cell)
+        tm = tmeta.get(row.task_id) or {}
         cells.append({
             **row.to_dict(),
+            "difficulty": tm.get("difficulty") or "",
+            "archetype": tm.get("archetype") or "",
             "baseline": _arm_block(arms["baseline"]),
             "jev": {**_arm_block(arms["jev"]),
                     "interventions": _jev_interventions(arms["jev"])},

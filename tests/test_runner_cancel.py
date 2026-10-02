@@ -20,7 +20,7 @@ from unittest.mock import MagicMock, patch
 
 import harness
 from orchestral.config import ModelConfig, TaskSpec
-from orchestral.runner import RunCancelled, Runner
+from orchestral.runner import RunCancelled, Runner, ValidationError
 from orchestral.storage import RunStore
 
 
@@ -191,6 +191,77 @@ class TestReplicatesBudget(unittest.TestCase):
                 harness.cmd_run(args)
             self.assertIn("exceeds --max-cost", err.getvalue())
             self.assertEqual(len(store.list_runs(limit=None)), 1)  # nothing launched
+
+
+class TestRunawayWorkerOutput(unittest.TestCase):
+    """Worst case observed live (2026-10-02): a worker call that hits the
+    length cap after ~100k output tokens and returns empty content. Every
+    attempt burns real spend; the loop must stop at retry_limit+1, fail the
+    run as empty_output, and keep the accrued cost on the books."""
+
+    def _runaway_worker(self) -> MagicMock:
+        client = _chat_client("")
+        client.chat.return_value = {
+            "content": "",
+            "usage": {"prompt_tokens": 238, "completion_tokens": 102162},
+            "latency_ms": 2_976_000,
+            "id": "runaway",
+            "finish_reason": "length",
+        }
+        return client
+
+    def test_all_empty_attempts_fail_bounded_and_bill(self):
+        worker = self._runaway_worker()
+        with tempfile.TemporaryDirectory() as tmp:
+            store = RunStore(tmp)
+            runner = Runner(
+                runs_dir=tmp, store=store,
+                clients={"orchestrator": _orch_client(), "worker": worker},
+            )
+            with self.assertRaises(ValidationError):
+                runner.run(
+                    TaskSpec(id="t1", type="html", prompt="p"),
+                    _model("o/m", "orchestrator"),
+                    _model("w/m", "worker", retry_limit=2),
+                )
+            meta = store.list_runs(limit=None)[0]
+            # bounded: retry_limit=2 → exactly 3 worker calls, never more
+            self.assertEqual(worker.chat.call_count, 3)
+            self.assertEqual(meta.status, "failed")
+            self.assertEqual(meta.failure_reason, "exception:empty_output")
+            # billed: three runaway attempts still count toward run cost
+            attempt_cost = (238 * 0.1 + 102162 * 0.4) / 1_000_000
+            self.assertGreaterEqual(meta.total_cost_usd, attempt_cost * 3)
+            self.assertTrue((Path(meta.run_dir) / "cost.json").exists())
+
+    def test_partial_runaway_recovers_on_last_attempt(self):
+        """Two empty blowouts then a real answer: the run should succeed and
+        the two wasted attempts still show up in cost."""
+        worker = self._runaway_worker()
+        worker.chat.side_effect = [
+            {"content": "", "usage": {"prompt_tokens": 1, "completion_tokens": 102162},
+             "latency_ms": 1, "id": "r1", "finish_reason": "length"},
+            {"content": "", "usage": {"prompt_tokens": 1, "completion_tokens": 102162},
+             "latency_ms": 1, "id": "r2", "finish_reason": "length"},
+            {"content": json.dumps({"content": "<html><title>t</title><body>x</body></html>"}),
+             "usage": {"prompt_tokens": 100, "completion_tokens": 50},
+             "latency_ms": 1, "id": "r3"},
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            store = RunStore(tmp)
+            runner = Runner(
+                runs_dir=tmp, store=store,
+                clients={"orchestrator": _orch_client(), "worker": worker},
+            )
+            meta = runner.run(
+                TaskSpec(id="t1", type="html", prompt="p"),
+                _model("o/m", "orchestrator"),
+                _model("w/m", "worker", retry_limit=2),
+            )
+            self.assertEqual(meta.status, "finished")
+            self.assertEqual(worker.chat.call_count, 3)
+            attempt_cost = (1 * 0.1 + 102162 * 0.4) / 1_000_000
+            self.assertGreaterEqual(meta.total_cost_usd, attempt_cost * 2)
 
 
 if __name__ == "__main__":

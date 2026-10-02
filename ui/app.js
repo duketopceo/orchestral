@@ -188,7 +188,7 @@ async function viewOverview() {
       <th class="t-num">Diff CI</th><th>Verdict</th><th class="t-num">Target</th><th>State</th><th>Posted</th>
     </tr><tbody>` +
     exp.cells.map(c => `<tr>
-      <td>${esc(c.task)}<div class="dim sm">${esc(slug(c.orchestrator))} → ${esc(slug(c.worker))}${c.jev && c.jev.interventions && (c.jev.interventions.replan + c.jev.interventions.rework) ? ` · jev intervened ${c.jev.interventions.replan + c.jev.interventions.rework}×` : ""}</div></td>
+      <td>${esc(c.task)}<div class="dim sm">${esc(slug(c.orchestrator))} → ${esc(slug(c.worker))}${c.difficulty ? ` · ${esc(c.difficulty)}` : ""}${c.archetype ? ` ${esc(c.archetype)}` : ""}${c.jev && c.jev.interventions && (c.jev.interventions.replan + c.jev.interventions.rework) ? ` · jev intervened ${c.jev.interventions.replan + c.jev.interventions.rework}×` : ""}</div></td>
       <td class="t-num">${armCell(c.baseline)}</td>
       <td class="t-num">${armCell(c.jev)}</td>
       <td class="t-num">${c.diff_ci ? `[${c.diff_ci[0] >= 0 ? "+" : ""}${c.diff_ci[0].toFixed(2)}, ${c.diff_ci[1] >= 0 ? "+" : ""}${c.diff_ci[1].toFixed(2)}]` : "—"}</td>
@@ -211,7 +211,7 @@ async function viewOverview() {
         `<th class="heat-col"><div>${esc(slug(p.split(" → ")[0]))}</div><div class="dim">→ ${esc(slug(p.split(" → ")[1] || ""))}</div></th>`).join("")}</tr>
       ${mx.tasks.map(t => `<tr>
         <th class="heat-task"><a href="#/runs?task=${encodeURIComponent(t.task_id)}">${esc(t.task_title || t.task_id)}</a>
-          <div class="dim sm">${esc(t.task_id)}${t.task_type ? ` · ${esc(t.task_type)}` : ""}</div></th>
+          <div class="dim sm">${esc(t.task_id)}${t.task_type ? ` · ${esc(t.task_type)}` : ""}${t.difficulty ? ` · ${esc(t.difficulty)}` : ""}${t.archetype ? ` ${esc(t.archetype)}` : ""}</div></th>
         ${mx.pairings.map(p => {
           const c = t.cells[p];
           if (!c) return `<td class="heat-cell"><span class="dim">·</span></td>`;

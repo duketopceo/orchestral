@@ -32,10 +32,12 @@ Last updated: 2026-09-30.
    error + diff-CI gates), `coverage` (done/pending/aborted/posted ledger),
    `publish-mark`, the observatory Experiment section, and
    `docs/runbooks/tonight-ab.md`. What remains is executing the run.
-2. **v3 task curation + calibration** — 10–12 real-repo tasks across
-   bugfix/feature-gap/revert/refactor, calibrated ~30/45/25 difficulty split.
-   Machinery and three feature-gap tasks (`v3-mi-run-length`,
-   `v3-mi-chunked-by`, `v3-boltons-deep-merge`) are in; the set isn't.
+2. **v3 task curation + calibration** — real-repo tasks across
+   bugfix/feature-gap, calibrated difficulty split. Nine tasks are in:
+   four feature-gap and five bugfix pinned at parents of real boltons fix
+   commits (`docs/v3-curation.md` has provenance + the deferred
+   revert/refactor note). Remaining: calibration runs on reference
+   pairings, band reassignment from evidence, 1–3 more tasks.
 3. Write up the baseline findings (100+ commits of harness, zero published
    conclusions — the writeup is the product).
 4. Publish the harness + findings as the artifact.

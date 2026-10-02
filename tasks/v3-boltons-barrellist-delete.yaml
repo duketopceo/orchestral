@@ -1,0 +1,88 @@
+id: v3-boltons-barrellist-delete
+title: 'boltons: BarrelList slice deletion'
+blurb: Repair a real listutils defect — cross-barrel slice deletion corrupts the list — graded by pytest in a sandboxed checkout.
+type: code
+prompt: 'You are contributing to `boltons` (a library of Python stdlib
+
+  extensions). A user filed this issue:
+
+
+  > `boltons.listutils.BarrelList` slice deletion corrupts the list when the
+
+  > slice spans multiple barrels. `del bl[start:stop]` deletes the middle
+
+  > barrels before draining the stop barrel''s head, so the end segment lands
+
+  > in the wrong place; and `del bl[start:]` (or any `stop >= len(bl)`) maps
+
+  > the stop to the wrong barrel, deleting too little.
+
+  >
+
+  > Reproducer:
+
+  >
+
+  >     reference = list(range(12))
+
+  >     value = BarrelList(); value.lists = [reference[i:i+3] for i in range(0, 12, 3)]
+
+  >     del reference[2:10]; del value[2:10]
+
+  >     assert list(value) == reference      # fails — segments land wrong
+
+  >
+
+  > `del bl[10000:]` and `del bl[10000:40000]` on a 30k-element BarrelList
+
+  > must also match list semantics exactly. Behavior for single-barrel
+
+  > slices is already correct.
+
+
+  Fix `boltons/listutils.py` and return the complete modified file as
+
+  `{"files": [{"path": "boltons/listutils.py", "content": "..."}]}`.
+
+  The harness overlays your files onto a full repo checkout and runs the
+
+  project''s test suite.'
+metadata:
+  fixture: boltons-barrellist
+  workdir: repo
+  expected_paths:
+  - boltons/listutils.py
+  setup_commands:
+  - python -m pip install --quiet --no-index --find-links /home/user/wheelhouse pytest
+  verify:
+    command:
+    - python
+    - -m
+    - pytest
+    - tests/test_v3_barrellist.py
+    - -x
+    - -q
+    fail_to_pass:
+    - test_barrellist_delete_across_multiple_barrels
+    - test_barrel_list_delete_to_end
+  timeout_seconds: 240
+  difficulty: expert
+  archetype: bugfix
+  contamination_risk: medium
+  reference:
+    boltons/listutils.py: "# Copyright (c) 2013, Mahmoud Hashemi\n#\n# Redistribution and use in source and binary forms, with or without\n# modification, are permitted provided that the following conditions are\n# met:\n#\n#    * Redistributions of source code must retain the above copyright\n#      notice, this list of conditions and the following disclaimer.\n#\n#    * Redistributions in binary form must reproduce the above\n#      copyright notice, this list of conditions and the following\n#      disclaimer in the documentation and/or other materials provided\n#      with the distribution.\n#\n#    * The names of the contributors may not be used to endorse or\n#      promote products derived from this software without specific\n#      prior written permission.\n#\n# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS\n# \"AS IS\" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT\n# LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR\n# A PARTICULAR\
+      \ PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT\n# OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,\n# SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT\n# LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,\n# DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY\n# THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT\n# (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE\n# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.\n\n\"\"\"Python's builtin :class:`list` is a very fast and efficient\nsequence type, but it could be better for certain access patterns,\nsuch as non-sequential insertion into a large lists. ``listutils``\nprovides a pure-Python solution to this problem.\n\nFor utilities for working with iterables and lists, check out\n:mod:`iterutils`. For the a :class:`list`-based version of\n:class:`collections.namedtuple`, check out :mod:`namedutils`.\n\
+      \"\"\"\n\n\nimport operator\nfrom math import log as math_log\nfrom itertools import chain, islice\n\ntry:\n    from .typeutils import make_sentinel\n    _MISSING = make_sentinel(var_name='_MISSING')\nexcept ImportError:\n    _MISSING = object()\n\n# TODO: expose splaylist?\n__all__ = ['BList', 'BarrelList']\n\n\n# TODO: comparators\n# TODO: keep track of list lengths and bisect to the right list for\n# faster getitem (and slightly slower setitem and delitem ops)\n\nclass BarrelList(list):\n    \"\"\"The ``BarrelList`` is a :class:`list` subtype backed by many\n    dynamically-scaled sublists, to provide better scaling and random\n    insertion/deletion characteristics. It is a subtype of the builtin\n    :class:`list` and has an identical API, supporting indexing,\n    slicing, sorting, etc. If application requirements call for\n    something more performant, consider the `blist module available on\n    PyPI`_.\n\n    The name comes by way of Kurt Rose, who said it reminded him of\n\
+      \    barrel shifters. Not sure how, but it's BList-like, so the name\n    stuck. BList is of course a reference to `B-trees`_.\n\n    Args:\n        iterable: An optional iterable of initial values for the list.\n\n    >>> blist = BList(range(100000))\n    >>> blist.pop(50000)\n    50000\n    >>> len(blist)\n    99999\n    >>> len(blist.lists)  # how many underlying lists\n    8\n    >>> slice_idx = blist.lists[0][-1]\n    >>> blist[slice_idx:slice_idx + 2]\n    BarrelList([11637, 11638])\n\n    Slicing is supported and works just fine across list borders,\n    returning another instance of the BarrelList.\n\n    .. _blist module available on PyPI: https://pypi.python.org/pypi/blist\n    .. _B-trees: https://en.wikipedia.org/wiki/B-tree\n\n    \"\"\"\n\n    _size_factor = 1520\n    \"This size factor is the result of tuning using the tune() function below.\"\n\n    def __init__(self, iterable=None):\n        self.lists = [[]]\n        if iterable:\n            self.extend(iterable)\n\
+      \n    @property\n    def _cur_size_limit(self):\n        len_self, size_factor = len(self), self._size_factor\n        return int(round(size_factor * math_log(len_self + 2, 2)))\n\n    def _translate_index(self, index):\n        if index < 0:\n            index += len(self)\n        rel_idx, lists = index, self.lists\n        for list_idx in range(len(lists)):\n            len_list = len(lists[list_idx])\n            if rel_idx < len_list:\n                break\n            rel_idx -= len_list\n        else:\n            return None, None  # index >= len(self)\n        if rel_idx < 0:\n            return None, None\n        return list_idx, rel_idx\n\n    def _balance_list(self, list_idx):\n        if list_idx < 0:\n            list_idx += len(self.lists)\n        cur_list = self.lists[list_idx]\n        size_limit = self._cur_size_limit\n        if len(cur_list) > size_limit:\n            half_limit = size_limit // 2\n            while len(cur_list) > half_limit:\n              \
+      \  next_list_idx = list_idx + 1\n                self.lists.insert(next_list_idx, cur_list[-half_limit:])\n                del cur_list[-half_limit:]\n            return True\n        return False\n\n    def insert(self, index, item):\n        if len(self.lists) == 1:\n            self.lists[0].insert(index, item)\n            self._balance_list(0)\n        else:\n            len_self = len(self)\n            if index >= len_self:  # clamp to append, like list.insert\n                list_idx, rel_idx = len(self.lists) - 1, len(self.lists[-1])\n            elif index < -len_self:  # clamp to prepend, like list.insert\n                list_idx, rel_idx = 0, 0\n            else:\n                list_idx, rel_idx = self._translate_index(index)\n            self.lists[list_idx].insert(rel_idx, item)\n            self._balance_list(list_idx)\n        return\n\n    def append(self, item):\n        self.lists[-1].append(item)\n\n    def extend(self, iterable):\n        self.lists[-1].extend(iterable)\n\
+      \n    def pop(self, *a):\n        lists = self.lists\n        if len(lists) == 1 and not a:\n            return self.lists[0].pop()\n        index = a and a[0]\n        if index == () or index is None or index == -1:\n            while len(lists) > 1 and not lists[-1]:\n                lists.pop()  # clean up empty tail sublists first\n            ret = lists[-1].pop()\n            if len(lists) > 1 and not lists[-1]:\n                lists.pop()\n        else:\n            list_idx, rel_idx = self._translate_index(index)\n            if list_idx is None:\n                raise IndexError()\n            ret = lists[list_idx].pop(rel_idx)\n            if len(lists) > 1 and not lists[list_idx]:\n                del lists[list_idx]  # don't accumulate empty sublists\n            else:\n                self._balance_list(list_idx)\n        return ret\n\n    def iter_slice(self, start, stop, step=None):\n        length = len(self)\n        start, stop, step = slice(start, stop, step).indices(length)\n\
+      \        if step < 0:\n            return islice(reversed(self), length - 1 - start, length - 1 - stop, -step)\n        return islice(self, start, stop, step)\n\n    def del_slice(self, start, stop, step=None):\n        if step is not None and abs(step) > 1:  # punt\n            new_list = chain(self.iter_slice(0, start, step),\n                             self.iter_slice(stop, None, step))\n            self.lists[0][:] = new_list\n            self._balance_list(0)\n            return\n        if start is None:\n            start = 0\n        start_list_idx, start_rel_idx = self._translate_index(start)\n        if stop is None or stop >= len(self):\n            stop_list_idx, stop_rel_idx = len(self.lists) - 1, len(self.lists[-1])\n        else:\n            stop_list_idx, stop_rel_idx = self._translate_index(stop)\n        if start_list_idx is None:\n            raise IndexError()\n        if stop_list_idx is None:\n            raise IndexError()\n\n        if start_list_idx == stop_list_idx:\n\
+      \            del self.lists[start_list_idx][start_rel_idx:stop_rel_idx]\n        elif start_list_idx < stop_list_idx:\n            del self.lists[stop_list_idx][:stop_rel_idx]\n            del self.lists[start_list_idx][start_rel_idx:]\n            del self.lists[start_list_idx + 1:stop_list_idx]\n        else:\n            assert False, ('start list index should never translate to'\n                           ' greater than stop list index')\n\n    __delslice__ = del_slice\n\n    @classmethod\n    def from_iterable(cls, it):\n        return cls(it)\n\n    def __iter__(self):\n        return chain.from_iterable(self.lists)\n\n    def __reversed__(self):\n        return chain.from_iterable(reversed(l) for l in reversed(self.lists))\n\n    def __len__(self):\n        return sum([len(l) for l in self.lists])\n\n    def __contains__(self, item):\n        for cur in self.lists:\n            if item in cur:\n                return True\n        return False\n\n    def __getitem__(self, index):\n\
+      \        try:\n            start, stop, step = index.start, index.stop, index.step\n        except AttributeError:\n            index = operator.index(index)\n        else:\n            iter_slice = self.iter_slice(start, stop, step)\n            ret = self.from_iterable(iter_slice)\n            return ret\n        list_idx, rel_idx = self._translate_index(index)\n        if list_idx is None:\n            raise IndexError()\n        return self.lists[list_idx][rel_idx]\n\n    def __delitem__(self, index):\n        try:\n            start, stop, step = index.start, index.stop, index.step\n        except AttributeError:\n            index = operator.index(index)\n        else:\n            self.del_slice(start, stop, step)\n            return\n        list_idx, rel_idx = self._translate_index(index)\n        if list_idx is None:\n            raise IndexError()\n        del self.lists[list_idx][rel_idx]\n\n    def __setitem__(self, index, item):\n        try:\n            start, stop,\
+      \ step = index.start, index.stop, index.step\n        except AttributeError:\n            index = operator.index(index)\n        else:\n            if len(self.lists) == 1:\n                self.lists[0][index] = item\n            else:\n                tmp = list(self)\n                tmp[index] = item\n                self.lists[:] = [tmp]\n            self._balance_list(0)\n            return\n        list_idx, rel_idx = self._translate_index(index)\n        if list_idx is None:\n            raise IndexError()\n        self.lists[list_idx][rel_idx] = item\n\n    def __getslice__(self, start, stop):\n        iter_slice = self.iter_slice(start, stop, 1)\n        return self.from_iterable(iter_slice)\n\n    def __setslice__(self, start, stop, sequence):\n        if len(self.lists) == 1:\n            self.lists[0][start:stop] = sequence\n        else:\n            tmp = list(self)\n            tmp[start:stop] = sequence\n            self.lists[:] = [tmp]\n        self._balance_list(0)\n\
+      \        return\n\n    def __repr__(self):\n        return f'{self.__class__.__name__}({list(self)!r})'\n\n    def sort(self):\n        # poor pythonist's mergesort, it's faster than sorted(self)\n        # when the lists' average length is greater than 512.\n        if len(self.lists) == 1:\n            self.lists[0].sort()\n        else:\n            for li in self.lists:\n                li.sort()\n            tmp_sorted = sorted(chain.from_iterable(self.lists))\n            del self.lists[:]\n            self.lists.append(tmp_sorted)\n            self._balance_list(0)\n\n    def reverse(self):\n        for cur in self.lists:\n            cur.reverse()\n        self.lists.reverse()\n\n    def count(self, item):\n        return sum([cur.count(item) for cur in self.lists])\n\n    def index(self, item):\n        len_accum = 0\n        for cur in self.lists:\n            try:\n                rel_idx = cur.index(item)\n                return len_accum + rel_idx\n            except ValueError:\n\
+      \                len_accum += len(cur)\n        raise ValueError(f'{item!r} is not in list')\n\n\nBList = BarrelList\n\n\nclass SplayList(list):\n    \"\"\"Like a `splay tree`_, the SplayList facilitates moving higher\n    utility items closer to the front of the list for faster access.\n\n    .. _splay tree: https://en.wikipedia.org/wiki/Splay_tree\n    \"\"\"\n\n    def shift(self, item_index, dest_index=0):\n        if item_index == dest_index:\n            return\n        item = self.pop(item_index)\n        self.insert(dest_index, item)\n\n    def swap(self, item_index, dest_index):\n        self[dest_index], self[item_index] = self[item_index], self[dest_index]\n"
+  test_files:
+    tests/test_v3_barrellist.py: "\"\"\"Verifier oracle for cross-barrel deletion — mirrors upstream fix\ncommit 574393a4c3 (BSD-3-Clause, boltons). Staged after the worker fileset.\"\"\"\nimport pytest\n\nfrom boltons.listutils import BarrelList\n\n\ndef _multi_sublist_bl(n=30000):\n    # BarrelList only splits into sublists after a mutating op triggers\n    # _balance_list; a single indexed pop on a freshly-built list does it\n    bl = BarrelList(range(n))\n    bl.pop(0)\n    bl.insert(0, 0)\n    assert len(bl.lists) > 1\n    assert list(bl) == list(range(n))\n    return bl\n\n\ndef test_barrellist_delete_across_multiple_barrels():\n    for start, stop in ((2, 10), (1, 7), (4, 10), (2, 4)):\n        reference = list(range(12))\n        value = BarrelList()\n        value.lists = [reference[i : i + 3] for i in range(0, 12, 3)]\n        del reference[start:stop]\n        del value[start:stop]\n        assert list(value) == reference\n        assert len(value) == len(reference)\n\n\ndef test_barrel_list_delete_to_end():\n\
+      \    for stop in (None, 30000, 40000):\n        reference = list(range(30000))\n        value = _multi_sublist_bl()\n        del reference[10000:stop]\n        del value[10000:stop]\n        assert list(value) == reference\n"

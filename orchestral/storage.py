@@ -749,16 +749,29 @@ class RunStore:
             rows = conn.execute("SELECT run_id FROM sync_dirty").fetchall()
         return {r[0] for r in rows}
 
-    def clear_dirty(self, run_ids: Iterable[str]) -> None:
-        """Drop journal entries after a clean push; failures stay dirty."""
+    def clear_dirty(
+        self, run_ids: Iterable[str], *, before: str | None = None
+    ) -> None:
+        """Drop journal entries after a clean push; failures stay dirty.
+
+        ``before`` is the sync's start watermark — a run re-dirtied while
+        the push was in flight has a newer dirty_at and must NOT clear, or
+        the mutation would never sync.
+        """
         ids = list(run_ids)
         if not ids:
             return
         with self._connect() as conn:
-            conn.executemany(
-                "DELETE FROM sync_dirty WHERE run_id = ?",
-                [(r,) for r in ids],
-            )
+            if before is None:
+                conn.executemany(
+                    "DELETE FROM sync_dirty WHERE run_id = ?",
+                    [(r,) for r in ids],
+                )
+            else:
+                conn.executemany(
+                    "DELETE FROM sync_dirty WHERE run_id = ? AND dirty_at <= ?",
+                    [(r, before) for r in ids],
+                )
 
     def list_runs(
         self,

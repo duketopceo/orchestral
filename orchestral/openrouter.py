@@ -130,18 +130,23 @@ class OpenRouterClient:
         configured API origin — the bearer key must never leak to a
         provider-controlled or off-origin host.
         """
+        target_host: str | None = None
         if url is not None:
             parsed = urlparse(url)
             if parsed.scheme != "https" or parsed.hostname not in self._api_hosts():
                 return {}
+            target_host = parsed.hostname
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "HTTP-Referer": "https://github.com/duketopceo/orchestral",
             "X-Title": "orchestral",
         }
-        if self.aig_token:
+        gateway_host = urlparse(str(self.client.base_url)).hostname
+        if self.aig_token and target_host in (None, gateway_host):
             # gateway-authenticated request; payload logging must stay off or
-            # prompt/completion bodies persist in Cloudflare logs
+            # prompt/completion bodies persist in Cloudflare logs. The AIG
+            # token must never leave for a direct origin — decide()/images()
+            # post straight to OpenRouter when gateway mode is on.
             headers["cf-aig-authorization"] = f"Bearer {self.aig_token}"
             headers["cf-aig-collect-log-payload"] = "false"
             if labels:
@@ -158,7 +163,9 @@ class OpenRouterClient:
             try:
                 response = self.client.post(
                     path,
-                    headers=self._headers(labels=labels),
+                    headers=self._headers(
+                        url=path if path.startswith("http") else None,
+                        labels=labels),
                     json=payload,
                     follow_redirects=False,
                 )

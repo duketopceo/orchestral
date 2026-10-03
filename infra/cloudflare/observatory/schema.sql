@@ -31,9 +31,12 @@ CREATE TABLE IF NOT EXISTS runs (
   holdout             INTEGER NOT NULL DEFAULT 0
 );
 
+-- call_id is the local sqlite row id — only unique within (machine, run).
+-- The PK is (run_id, call_id): run_id is globally unique, so rebuilt local
+-- indexes or a second machine can't collide into each other's rows.
 CREATE TABLE IF NOT EXISTS calls (
-  call_id         TEXT PRIMARY KEY,
   run_id          TEXT NOT NULL REFERENCES runs(run_id),
+  call_id         TEXT NOT NULL,
   phase           TEXT,
   step            INTEGER,
   role            TEXT,
@@ -50,9 +53,9 @@ CREATE TABLE IF NOT EXISTS calls (
   worker_id       TEXT,
   dry_run         INTEGER,
   created_at      TEXT,
-  finish_reason   TEXT
+  finish_reason   TEXT,
+  PRIMARY KEY (run_id, call_id)
 );
-CREATE INDEX IF NOT EXISTS calls_run_id ON calls(run_id);
 
 CREATE TABLE IF NOT EXISTS annotations (
   kind       TEXT NOT NULL,

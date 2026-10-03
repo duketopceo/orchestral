@@ -286,9 +286,11 @@ def d1_projection(store: RunStore, run_ids: list[str] | None = None) -> dict[str
         if privacy.run_is_holdout(Path(m.run_dir)):
             continue
         calls.extend(_ledger_calls(store, m.run_id))
+    # Every field goes through scrub_dict, not just note — `post`
+    # annotations put free-text URLs in target.
     annotations = [
-        {k: privacy.scrub_dict(v) if k == "note" else v
-         for k, v in row.items() if k in ANNOTATION_COLUMNS}
+        {k: privacy.scrub_dict(v) for k, v in row.items()
+         if k in ANNOTATION_COLUMNS}
         for row in store.annotations()
     ]
     return {"runs": runs, "calls": calls, "annotations": annotations}
@@ -372,6 +374,10 @@ def sync(store: RunStore, tasks_dir: Path, models_dir: Path, groups_file: Path,
     move so the operator can see the dirty set without credentials.
     """
     result = PushResult()
+    # Watermark before the first push: entries re-dirtied mid-sync must
+    # survive clear_dirty or a mutation would silently never sync.
+    from datetime import UTC, datetime
+    watermark = datetime.now(UTC).isoformat()
     dirty = {r.run_id for r in store.list_runs(limit=None)} if all_runs else store.dirty_runs()
     metas = [m for rid in dirty if (m := store.get_run(rid)) is not None]
     with httpx.Client(headers=_ingest_headers() if push else {}) as client:
@@ -399,13 +405,16 @@ def sync(store: RunStore, tasks_dir: Path, models_dir: Path, groups_file: Path,
         # the next sync retries them. Holdout/missing clear too: they are
         # terminal, not transient.
         if push and not result.errors:
-            store.clear_dirty(dirty)
+            store.clear_dirty(dirty, before=watermark)
     return result
 
 
 def verify(store: RunStore) -> dict[str, Any]:
     """Diff local counts/sums against the hosted api/runs.json snapshot."""
-    remote = httpx.get(f"{OBS_URL}/api/runs", timeout=30, headers=_ingest_headers())
+    # Access gates the whole hostname, so the service token rides the read
+    # too — pinned to the configured host, redirects refused.
+    remote = httpx.get(f"{OBS_URL}/api/runs", timeout=30,
+                       headers=_ingest_headers(), follow_redirects=False)
     remote.raise_for_status()
     body = remote.json()
     remote_runs = body if isinstance(body, list) else body.get("runs", [])

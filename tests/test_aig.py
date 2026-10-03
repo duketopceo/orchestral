@@ -135,6 +135,30 @@ class TestGatewayHeaders(unittest.TestCase):
                          "https://openrouter.ai/api/alpha/decisions")
         self.assertEqual(seen["auth"], "Bearer k")
 
+    def test_direct_paths_never_leak_aig_token(self):
+        """decide()/images() go straight to OpenRouter — the Cloudflare AIG
+        credential must not ride along to the provider origin."""
+        client = self._client()
+        seen = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(request.headers)
+            if "decisions" in str(request.url):
+                return httpx.Response(200, json={"answers": {}, "usage": {}})
+            return httpx.Response(200, json={
+                "data": [{"b64_json": "aGk="}], "usage": {}})
+
+        client.client = httpx.Client(
+            base_url=COMPAT, transport=httpx.MockTransport(handler))
+        client.decide(model="m", state="s", questions={})
+        client.images(model="m", prompt="p")
+        self.assertEqual(len(seen), 2)
+        for h in seen:
+            self.assertEqual(h.get("authorization"), "Bearer k")
+            self.assertNotIn("cf-aig-authorization", h)
+            self.assertNotIn("cf-aig-metadata", h)
+            self.assertNotIn("cf-aig-collect-log-payload", h)
+
     def test_redirect_refused(self):
         client = self._client()
         client.client = httpx.Client(

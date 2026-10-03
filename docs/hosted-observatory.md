@@ -17,7 +17,8 @@ ORCHESTRAL_OBS_TOKEN=$(omaseal get cloudflare obs-ingest) \
   python3 harness.py sync --push
 
 # one-time backfill or repair
-python3 harness.py sync --push --all
+ORCHESTRAL_OBS_TOKEN=$(omaseal get cloudflare obs-ingest) \
+  python3 harness.py sync --push --all
 
 # diff local vs hosted counts/cost
 ORCHESTRAL_OBS_TOKEN=$(omaseal get cloudflare obs-ingest) \

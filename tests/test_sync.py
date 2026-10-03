@@ -279,18 +279,22 @@ class TestFinishHook(unittest.TestCase):
             run_id, _ = _make_run(store, holdout=True)
             meta = store.get_run(run_id)
             pushed = []
-            with unittest.mock.patch.dict(
-                    os.environ, {"ORCH_CF_SYNC": "1",
-                                 "ORCHESTRAL_OBS_TOKEN": "id:secret"}), \
-                 unittest.mock.patch(
-                     "orchestral.cf.push_run_events_only",
-                     side_effect=lambda c, s, m: pushed.append(m.run_id)):
-                hook = harness._cf_sync_hook(store)
-                self.assertIsNotNone(hook)
-                self.assertTrue(privacy.run_is_holdout(Path(meta.run_dir)))
-                hook(meta)
-            self.assertEqual(pushed, [])
-            harness._CF_HOOK_CLIENT = None
+            try:
+                with unittest.mock.patch.dict(
+                        os.environ, {"ORCH_CF_SYNC": "1",
+                                     "ORCHESTRAL_OBS_TOKEN": "id:secret"}), \
+                     unittest.mock.patch(
+                         "orchestral.cf.push_run_events_only",
+                         side_effect=lambda c, s, m: pushed.append(m.run_id)):
+                    hook = harness._cf_sync_hook(store)
+                    self.assertIsNotNone(hook)
+                    self.assertTrue(privacy.run_is_holdout(Path(meta.run_dir)))
+                    hook(meta)
+                self.assertEqual(pushed, [])
+            finally:
+                if harness._CF_HOOK_CLIENT is not None:
+                    harness._CF_HOOK_CLIENT.close()
+                    harness._CF_HOOK_CLIENT = None
 
 
 if __name__ == "__main__":

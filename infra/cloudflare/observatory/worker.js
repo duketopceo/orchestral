@@ -16,6 +16,12 @@
 
 const HOST = "obs.shippedit.dev";
 
+// Access application binding for ingest JWT validation — the JWT's aud
+// must match the app AUD tag and common_name must be the obs-ingest
+// service token's client ID (env.INGEST_IDENTITY in wrangler.toml).
+const ACCESS_TEAM = "duketopceo.cloudflareaccess.com";
+const APP_AUD = "acd03e81af7da5f90210f58bdbac8edec8025f0c5736c5847934d715f7e4457f";
+
 const READ_ONLY = {
   error: "hosted observatory is read-only",
   detail: "Launches, threads, flags, cancels, and estimates run locally via harness.py. This mirror only serves synced snapshots.",
@@ -268,14 +274,71 @@ async function writeObjects(env, map, prefixRe) {
   return written;
 }
 
+// --- Access JWT verification -------------------------------------------------
+// Access signs Cf-Access-Jwt-Assertion RS256 with the team keys at
+// /cdn-cgi/access/certs. Verify signature + exp + aud + service-token
+// common_name here — presence alone proves nothing if a client-side header
+// were ever forwarded unverified, and an aud/common_name pin blocks the
+// app's other admitted identities (human logins) from the write path.
+
+let jwksCache = { keys: null, exp: 0 };
+
+function b64url(s) {
+  return Uint8Array.from(
+    atob(s.replace(/-/g, "+").replace(/_/g, "/")),
+    c => c.charCodeAt(0));
+}
+
+async function accessKeys() {
+  if (!jwksCache.keys || Date.now() > jwksCache.exp) {
+    const r = await fetch(`https://${ACCESS_TEAM}/cdn-cgi/access/certs`);
+    if (!r.ok) throw new Error("access certs fetch failed");
+    const { keys = [] } = await r.json();
+    const map = new Map();
+    for (const k of keys) {
+      if (k.kty === "RSA") {
+        map.set(k.kid, await crypto.subtle.importKey(
+          "jwk", k, { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
+          false, ["verify"]));
+      }
+    }
+    jwksCache = { keys: map, exp: Date.now() + 3600e3 };
+  }
+  return jwksCache.keys;
+}
+
+async function verifyAccessJwt(assertion) {
+  const parts = (assertion || "").split(".");
+  if (parts.length !== 3) return null;
+  try {
+    const header = JSON.parse(new TextDecoder().decode(b64url(parts[0])));
+    const key = (await accessKeys()).get(header.kid);
+    if (!key) return null;
+    const ok = await crypto.subtle.verify(
+      "RSASSA-PKCS1-v1_5", key, b64url(parts[2]),
+      new TextEncoder().encode(`${parts[0]}.${parts[1]}`));
+    if (!ok) return null;
+    const claims = JSON.parse(new TextDecoder().decode(b64url(parts[1])));
+    if (!claims.exp || claims.exp * 1000 < Date.now()) return null;
+    const aud = claims.aud;
+    if (!(Array.isArray(aud) ? aud.includes(APP_AUD) : aud === APP_AUD)) {
+      return null;
+    }
+    return claims;
+  } catch {
+    return null;
+  }
+}
+
 async function handleIngest(request, env, url) {
   if (request.method !== "POST") return json({ error: "POST only" }, 405);
-  // Access (non_identity policy) already verified the service token and
-  // stamps Cf-Access-Authenticated-User-Email; user logins carry the JWT
-  // assertion instead. A request reaching the Worker with neither means
-  // the gate was bypassed.
-  if (!request.headers.get("CF-Access-Jwt-Assertion") &&
-      !request.headers.get("Cf-Access-Authenticated-User-Email")) {
+  // Access (non_identity policy) validates the service token at the edge;
+  // this verifies the assertion it issued and pins it to obs-ingest —
+  // human logins allowed for viewing carry different common_names and
+  // must not reach the write path.
+  const claims = await verifyAccessJwt(
+    request.headers.get("CF-Access-Jwt-Assertion"));
+  if (!claims || claims.common_name !== env.INGEST_IDENTITY) {
     return json({ error: "ingest requires the Access service token" }, 401);
   }
   let body;
@@ -300,7 +363,11 @@ async function handleIngest(request, env, url) {
         env, body.payloads, new RegExp(`^api/run/${esc}(\\.json|/)`));
       const filesWritten = await writeObjects(
         env, body.files, new RegExp(`^runs/${esc}/`));
-      if (body.manifest_hash) {
+      if (body.manifest_hash != null) {
+        if (typeof body.manifest_hash !== "string" ||
+            !/^[0-9a-f]{64}$/.test(body.manifest_hash)) {
+          return json({ error: "manifest_hash must be a sha256 hex digest" }, 400);
+        }
         await env.BUCKET.put(`runs/${runId}/.manifest-hash`, body.manifest_hash);
       }
       await upsert(env, "runs", RUN_COLUMNS, d1.runs);

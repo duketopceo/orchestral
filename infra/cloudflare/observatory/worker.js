@@ -90,7 +90,7 @@ function containsForbiddenKey(value) {
 }
 
 const RUN_ID_RE = /^[A-Za-z0-9._-]+$/;
-const KEY_RE = /^[A-Za-z0-9._\/-]+$/;
+const KEY_RE = /^[A-Za-z0-9._\/%-]+$/;
 
 function safeKey(key) {
   return typeof key === "string" && key.length < 512 &&

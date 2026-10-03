@@ -10,6 +10,7 @@ Generic providers are chat-only: image generation is OpenRouter-specific and
 
 from __future__ import annotations
 
+import os
 import sys
 from typing import Any, Protocol, runtime_checkable
 from urllib.parse import urlparse
@@ -24,6 +25,25 @@ from orchestral.openrouter import (
 
 SUPPORTED_PROVIDERS = ("openrouter", "openai-compatible")
 _DEFAULT_ENV = {"openrouter": "OPENROUTER_API_KEY", "openai-compatible": "OPENAI_API_KEY"}
+
+# Cloudflare AI Gateway (plan: docs/plans/2026-10-02-001). When
+# ORCHESTRAL_AIG_GATEWAY="account_id/gateway_name" is set, the default
+# OpenRouter base URL is rewritten to the gateway's /compat path and the
+# client requires CLOUDFLARE_AIG_TOKEN for cf-aig-authorization. Only the
+# default base URL is rewritten — a model's custom base_url stays direct.
+# decide()/images() always post to the real origin: those endpoints don't
+# exist behind /compat.
+AIG_TOKEN_ENV = "CLOUDFLARE_AIG_TOKEN"
+
+
+def _aig_compat_url() -> str | None:
+    spec = os.environ.get("ORCHESTRAL_AIG_GATEWAY", "").strip()
+    if "/" not in spec:
+        return None
+    account, gateway = spec.split("/", 1)
+    if not account or not gateway:
+        return None
+    return f"https://gateway.ai.cloudflare.com/v1/{account}/{gateway}/compat"
 
 
 @runtime_checkable
@@ -114,6 +134,11 @@ def provider_for(model: ModelConfig) -> Provider:
             f"Model {model.slug} uses provider {provider!r} but has no metadata.api_key_env"
         )
     _warn_http_base_url(base_url, model.slug)
+    gateway = _aig_compat_url()
+    if provider == "openrouter" and gateway and base_url == DEFAULT_BASE_URL:
+        return OpenRouterClient(
+            base_url=gateway, api_key_env=api_key_env, provider=provider,
+            aig_token_env=AIG_TOKEN_ENV, direct_base_url=base_url)
     return OpenRouterClient(base_url=base_url, api_key_env=api_key_env, provider=provider)
 
 

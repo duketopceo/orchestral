@@ -24,7 +24,32 @@ Account `1661907b2d7e4a20800306e6a57844c5` (Duketopceo@gmail.com).
 
 ## Not yet provisioned
 
-- Worker `orchestral-observatory` + custom domain `obs.shippedit.dev`
-  (U3).
 - Gateway spend limit rule — set in dashboard or via update call once a
   sane monthly figure is chosen; harness `--budget` is the primary brake.
+
+## Deployed since provisioning
+
+- Worker `orchestral-observatory` (`infra/cloudflare/observatory/`) on
+  custom domain `obs.shippedit.dev` — `workers_dev = false`, host check
+  in code, R2 `orchestral-artifacts` snapshots + D1 `orchestral-runs`
+  ledger, `/ingest/run` + `/ingest/state` behind the service token.
+- Access policy correction: `agent service token` changed **bypass →
+  non_identity** (2026-10-03). A bypass policy lets ANY request reach the
+  Worker unauthenticated; non_identity validates the token and stamps
+  `Cf-Access-Authenticated-User-Email`, which worker.js requires.
+- D1 schema applied from `infra/cloudflare/observatory/schema.sql`.
+- First backfill verified: 163 runs / 142 snapshot objects /
+  1003 ledger calls; `harness.py sync --verify` reports exact parity.
+
+## Sync client env
+
+- `ORCHESTRAL_OBS_TOKEN` = `client_id:client_secret` for `/ingest` and
+  Access-gated reads (omaseal `cloudflare/obs-ingest`); or split vars
+  `ORCHESTRAL_CF_ID` / `ORCHESTRAL_CF_SECRET`.
+- `ORCHESTRAL_OBS_URL` overrides the default `https://obs.shippedit.dev`.
+- `ORCH_CF_SYNC=1` enables the post-run ledger push hook on all
+  launch/grid/experiment paths.
+- `ORCHESTRAL_AIG_GATEWAY` = `account_id/gateway_name` rewrites the
+  default OpenRouter base URL through AI Gateway /compat;
+  `CLOUDFLARE_AIG_TOKEN` (omaseal `cloudflare/orchestral-aig-run`)
+  carries `cf-aig-authorization`. decide()/images() stay direct.

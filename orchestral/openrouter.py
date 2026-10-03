@@ -9,6 +9,7 @@ from __future__ import annotations
 import base64
 import contextlib
 import ipaddress
+import json
 import os
 import socket
 import time
@@ -70,7 +71,17 @@ class OpenRouterClient:
     `provider` names the configured backend ("openrouter" or
     "openai-compatible"); `api_key_env` names the env var the key is read from.
     The OpenRouter-only Images API is gated on provider == "openrouter".
+
+    When `aig_token_env` names an env var holding a Cloudflare AI Gateway
+    token, `base_url` is expected to be the gateway's /compat URL: every
+    request then carries `cf-aig-authorization` and
+    `cf-aig-collect-log-payload: false`, and chat() accepts per-call
+    `labels` (<=5 entries) sent as `cf-aig-metadata`. `direct_base_url`
+    must carry the real OpenRouter origin — the decisions endpoint cannot
+    traverse /compat, so decide()/images() stay direct.
     """
+
+    supports_labels = True  # callers may pass labels= to chat()
 
     def __init__(
         self,
@@ -78,8 +89,16 @@ class OpenRouterClient:
         base_url: str = DEFAULT_BASE_URL,
         api_key_env: str = "OPENROUTER_API_KEY",
         provider: str = "openrouter",
+        aig_token_env: str | None = None,
+        direct_base_url: str | None = None,
     ):
         self.provider = provider
+        self.direct_base_url = direct_base_url
+        self.aig_token = ""
+        if aig_token_env:
+            self.aig_token = os.environ.get(aig_token_env, "").strip()
+            if not self.aig_token:
+                raise ProviderConfigError(f"{aig_token_env} is not set")
         self.api_key = (api_key or os.environ.get(api_key_env) or "").strip()
         if not self.api_key:
             raise ProviderConfigError(f"{api_key_env} is not set")
@@ -96,26 +115,42 @@ class OpenRouterClient:
         with contextlib.suppress(Exception):
             self.debug("openrouter", message, **fields)
 
-    def _headers(self, url: str | None = None) -> dict[str, str]:
+    def _api_hosts(self) -> set[str]:
+        hosts = {urlparse(str(self.client.base_url)).hostname or ""}
+        if self.direct_base_url:
+            hosts.add(urlparse(self.direct_base_url).hostname or "")
+        return hosts
+
+    def _headers(self, url: str | None = None,
+                 labels: dict[str, Any] | None = None) -> dict[str, str]:
         """Auth + attribution headers for API calls.
 
         When `url` is given (an API-returned URL rather than a known endpoint),
-        the Authorization header is only sent when the URL's host matches the
+        the Authorization header is only sent when the URL's host matches a
         configured API origin — the bearer key must never leak to a
         provider-controlled or off-origin host.
         """
         if url is not None:
             parsed = urlparse(url)
-            api_host = urlparse(str(self.client.base_url)).hostname
-            if parsed.scheme != "https" or parsed.hostname != api_host:
+            if parsed.scheme != "https" or parsed.hostname not in self._api_hosts():
                 return {}
-        return {
+        headers = {
             "Authorization": f"Bearer {self.api_key}",
             "HTTP-Referer": "https://github.com/duketopceo/orchestral",
             "X-Title": "orchestral",
         }
+        if self.aig_token:
+            # gateway-authenticated request; payload logging must stay off or
+            # prompt/completion bodies persist in Cloudflare logs
+            headers["cf-aig-authorization"] = f"Bearer {self.aig_token}"
+            headers["cf-aig-collect-log-payload"] = "false"
+            if labels:
+                headers["cf-aig-metadata"] = json.dumps(
+                    {str(k): str(v) for k, v in list(labels.items())[:5]})
+        return headers
 
-    def _post_with_retry(self, path: str, payload: dict[str, Any]) -> httpx.Response:
+    def _post_with_retry(self, path: str, payload: dict[str, Any],
+                         labels: dict[str, Any] | None = None) -> httpx.Response:
         attempt = 0
         last_error: Exception | None = None
         while attempt <= MAX_RETRIES:
@@ -123,9 +158,16 @@ class OpenRouterClient:
             try:
                 response = self.client.post(
                     path,
-                    headers=self._headers(),
+                    headers=self._headers(labels=labels),
                     json=payload,
+                    follow_redirects=False,
                 )
+                if response.is_redirect:
+                    # A redirect would re-send Authorization + cf-aig headers
+                    # to a provider-chosen host — treat it as an error.
+                    raise OpenRouterError(
+                        f"OpenRouter redirect refused ({response.status_code} → "
+                        f"{response.headers.get('location', '?')})")
                 response.raise_for_status()
             except httpx.HTTPStatusError as exc:
                 if exc.response.status_code in NON_RETRYABLE_STATUSES:
@@ -164,6 +206,7 @@ class OpenRouterClient:
         messages: list[dict[str, str]],
         max_tokens: int = 4096,
         temperature: float = 0.4,
+        labels: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         start = time.time()
         response = self._post_with_retry("/chat/completions", {
@@ -174,7 +217,7 @@ class OpenRouterClient:
             # ask OpenRouter to report usage.cost so runs can compare the
             # provider-reported charge against configured pricing (drift check)
             "usage": {"include": True},
-        })
+        }, labels=labels)
 
         data = response.json()
         choices = data.get("choices")
@@ -223,7 +266,9 @@ class OpenRouterClient:
                 f"the decisions endpoint is only supported for provider 'openrouter'; "
                 f"{self.provider!r} has no /api/alpha/decisions"
             )
-        base = urlparse(str(self.client.base_url))
+        # the decisions endpoint cannot traverse a gateway /compat path —
+        # always post direct to the OpenRouter origin
+        base = urlparse(self.direct_base_url or str(self.client.base_url))
         url = f"{base.scheme}://{base.netloc}/api/alpha/decisions"
         start = time.time()
         response = self._post_with_retry(url, {
@@ -271,7 +316,9 @@ class OpenRouterClient:
         if aspect_ratio:
             payload["aspect_ratio"] = aspect_ratio
 
-        response = self._post_with_retry("/images", payload)
+        base = urlparse(self.direct_base_url or str(self.client.base_url))
+        url = f"{base.scheme}://{base.netloc}{base.path}/images"
+        response = self._post_with_retry(url, payload)
         data = response.json()
         items = data.get("data", [])
         if not isinstance(items, list):

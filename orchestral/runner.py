@@ -128,6 +128,31 @@ class RunCancelled(Exception):
     """Raised when the run's cancel_event is set between steps."""
 
 
+class LabeledProvider:
+    """Per-run, per-role wrapper that injects cf-aig-metadata labels.
+
+    Clients are shared across roles and replicates, so run/task/role labels
+    can't live on the client — they are attached at call time here. The
+    wrapper only forwards the labels kwarg when the inner client accepts it
+    (injected fakes and executor adapters don't).
+    """
+
+    def __init__(self, inner: Any, labels: dict[str, Any]):
+        self._inner = inner
+        self._labels = {k: v for k, v in labels.items() if v not in (None, "")}
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+    def chat(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        if getattr(self._inner, "supports_labels", False):
+            kwargs["labels"] = self._labels
+        return self._inner.chat(*args, **kwargs)
+
+    def decide(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        return self._inner.decide(*args, **kwargs)
+
+
 class Runner:
     def __init__(
         self,
@@ -317,6 +342,19 @@ class Runner:
             seed=run_seed, run_group=self.run_group, replicate=self.replicate,
         )
         write_manifest(run_dir, manifest)
+        # Per-run, per-role label wrappers — AI Gateway metadata must be
+        # attached per call (clients are shared across roles/threads, so
+        # client-level labels would mislabel or race). Wrapping each role's
+        # entry separately keeps `role` correct even when two roles share
+        # one underlying client.
+        role_clients = {
+            role: LabeledProvider(
+                c, labels={
+                    "run_id": run_id, "task": task.id, "role": role,
+                    "group": self.run_group or "", "seed": run_seed or "",
+                })
+            for role, c in role_clients.items()
+        }
         if self.on_run_created is not None:
             self.on_run_created(run_id)
         logger.lifecycle("run.created", phase="init", run_id=run_id, dry_run=self.dry_run)

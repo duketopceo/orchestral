@@ -279,8 +279,10 @@ class TestEmitSkeleton(unittest.TestCase):
             self.assertIn("task_id: cal-test", yaml_text)
             self.assertIn("artifact:", yaml_text)
             self.assertIn("passed:", yaml_text)  # blank for the human
-            # a different group's runs don't leak in
-            self.assertNotIn("g2", yaml_text)
+            # group exclusion is covered by
+            # test_emit_excludes_unjudged_and_other_groups — a bare
+            # substring check here false-positives whenever the random
+            # tmp path happens to contain "g2"
 
     def test_emit_excludes_unjudged_and_other_groups(self):
         """Skeletons only list judged runs — labeling an unjudged run can

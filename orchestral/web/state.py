@@ -501,6 +501,106 @@ def model_choices(models_dir: Path, role: str | None) -> list[dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
+# Spend estimates — shown before any paid action so a click never spends
+# blind. Estimates are deliberately labelled rough: on 2026-09-26 the rate-card
+# estimate understated billed spend by 5.3x (see orchestral/budget.py).
+
+# POST /api/thread sends at most 12,000 characters of card JSON plus the
+# prompt template (~4 chars/token) and caps the reply at 6,000 tokens.
+THREAD_INPUT_TOKENS_MAX = 4_000
+THREAD_OUTPUT_TOKENS_MAX = 6_000
+
+SPEND_CAVEAT = ("Rough estimate. Real billed cost has run several times higher "
+                "than estimates, so treat it as a floor.")
+
+
+def _configured_models(models_dir: Path) -> dict[str, Any]:
+    try:
+        return {m.slug: m for m in load_models(models_dir)}
+    except Exception:
+        return {}
+
+
+def _rate_card(cfg: Any) -> dict[str, float] | None:
+    if cfg is None:
+        return None
+    return {"input_per_mtok": float(cfg.input_price_per_mtok),
+            "output_per_mtok": float(cfg.output_price_per_mtok)}
+
+
+def launch_estimate(store: RunStore, models_dir: Path, spec: dict[str, Any]) -> dict[str, Any]:
+    """Estimated cost of a New run launch, from recorded past spend.
+
+    Prefers the same task + pairing (``mean_cell_cost``), then the pairing on
+    any task (``mean_run_cost``). With no history the estimate is ``None``
+    and the UI must say "unknown" rather than imply $0. Dry runs are $0.
+    """
+    try:
+        replicates = max(1, int(spec.get("replicates") or 1))
+    except (TypeError, ValueError):
+        replicates = 1
+    task = str(spec.get("task") or "")
+    orch = str(spec.get("orchestrator") or "")
+    worker = str(spec.get("worker") or "")
+    if spec.get("dry_run"):
+        return {"dry_run": True, "per_run_usd": 0.0, "total_usd": 0.0,
+                "replicates": replicates, "basis": "dry_run",
+                "basis_label": "Dry run: stub models, no API calls", "caveat": ""}
+    per_run: float | None = None
+    basis, basis_label = "unknown", "There are no past paid runs of this pairing to estimate from."
+    if task and orch and worker:
+        per_run = store.mean_cell_cost(task, orch, worker)
+        if per_run is not None:
+            basis, basis_label = "task_pairing", "Average of past paid runs of this task with this pairing."
+    if per_run is None and orch and worker:
+        per_run = store.mean_run_cost(orchestrator=orch, worker=worker)
+        if per_run is not None:
+            basis, basis_label = "pairing", "Average of past paid runs of this pairing on other tasks."
+    models = _configured_models(models_dir)
+    rates = {role: _rate_card(models.get(slug))
+             for role, slug in (("orchestrator", orch), ("worker", worker),
+                                ("judge", str(spec.get("judge") or "")))
+             if slug}
+    return {
+        "dry_run": False,
+        "per_run_usd": per_run,
+        "total_usd": per_run * replicates if per_run is not None else None,
+        "replicates": replicates,
+        "basis": basis,
+        "basis_label": basis_label,
+        "rates": rates,
+        "caveat": SPEND_CAVEAT,
+    }
+
+
+def thread_estimate(models_dir: Path, slug: str, *, provider_ready: bool) -> dict[str, Any]:
+    """Upper-bound cost of one Write thread call with writer ``slug``.
+
+    No paid call happens without a configured provider key, so
+    ``will_spend`` is False then and the server falls back to templates.
+    """
+    slug = slug.strip()
+    if not slug:
+        return {"model": "", "will_spend": False, "max_usd": 0.0,
+                "basis_label": "No writer model: posts come from templates, no API call.",
+                "caveat": ""}
+    cfg = _configured_models(models_dir).get(slug)
+    max_usd: float | None = None
+    if cfg is not None:
+        max_usd = (THREAD_INPUT_TOKENS_MAX * cfg.input_price_per_mtok
+                   + THREAD_OUTPUT_TOKENS_MAX * cfg.output_price_per_mtok) / 1_000_000
+        label = (f"Up to {THREAD_INPUT_TOKENS_MAX:,} input and {THREAD_OUTPUT_TOKENS_MAX:,} "
+                 "output tokens at the configured rate card.")
+    else:
+        label = "This model is not in models/, so its price is unknown."
+    if not provider_ready:
+        label = "No API key is set for this model's provider: posts come from templates, no API call."
+    return {"model": slug, "will_spend": provider_ready, "max_usd": max_usd,
+            "rates": _rate_card(cfg), "basis_label": label,
+            "caveat": SPEND_CAVEAT if provider_ready else ""}
+
+
+# ---------------------------------------------------------------------------
 # SPA API payloads — the rebuilt observatory reads everything through these.
 
 

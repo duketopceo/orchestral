@@ -21,11 +21,109 @@ function crumb(href, label) {
   return `<a class="crumb" href="${href}">← ${esc(label)}</a>`;
 }
 
+class ApiError extends Error {
+  constructor(message, status, body) {
+    super(message);
+    this.status = status;
+    this.body = body || {};
+  }
+}
+
+// One plain sentence for any failed request: the server's own message
+// (first line only, so a stray traceback never reaches the page), else a
+// description of the status instead of a bare code.
+function readableError(status, body) {
+  const msg = typeof body?.error === "string" ? body.error.split("\n")[0].trim() : "";
+  if (msg) return msg;
+  if (status === 0) return "Could not reach the observatory server. Check that it is still running, then try again.";
+  if (status === 404) return "That item was not found. It may have been moved or deleted.";
+  if (status === 403) return "The server refused this request. Reload the page and try again.";
+  if (status >= 500) return "The observatory server hit an error. Check the server terminal for details.";
+  return `The request failed (HTTP ${status}).`;
+}
+
 async function api(path, opts) {
-  const r = await fetch(path, opts);
+  let r;
+  try { r = await fetch(path, opts); }
+  catch { throw new ApiError(readableError(0, {}), 0, {}); }
   const body = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(body.error || `${r.status} ${path}`);
+  if (!r.ok) throw new ApiError(readableError(r.status, body), r.status, body);
   return body;
+}
+
+// Failure categories (orchestral/taxonomy.py) in plain words. The raw code
+// stays available as a tooltip for anyone grepping logs.
+const FAILURE_TEXT = {
+  rate_limit: "The provider rate-limited the request.",
+  auth: "The provider rejected the API key.",
+  timeout: "A model call timed out.",
+  transport: "A network error interrupted a model call.",
+  provider_error: "The model provider returned an error.",
+  submitted_job: "A submitted provider job failed.",
+  malformed_output: "A model returned output that could not be parsed.",
+  validation: "The artifact failed the task's checks.",
+  empty_output: "A model returned an empty response.",
+  config: "The run was misconfigured (model or task settings).",
+  executor_preflight: "The agent executor was not ready to run.",
+  executor_exit: "The agent executor exited with an error.",
+  executor_timeout: "The agent executor timed out.",
+  executor_no_output: "The agent executor produced no output.",
+  spawn_failed: "The agent executor could not be started.",
+  workspace: "The run workspace could not be prepared.",
+  cancelled: "The run was cancelled.",
+  unknown: "The run failed for an unrecognized reason.",
+};
+
+function failureText(reason) {
+  const code = String(reason || "").replace(/^exception:/, "");
+  return FAILURE_TEXT[code] || String(reason || "");
+}
+
+// Provider errors surfaced by the thread writer, e.g. "HTTP 402 ...".
+function providerErrorText(raw) {
+  const s = String(raw || "");
+  if (/\b401\b|\b403\b|unauthori[sz]ed|invalid api key/i.test(s)) return "the API key was rejected";
+  if (/\b402\b|insufficient|credit/i.test(s)) return "the account is out of credit";
+  if (/\b429\b|rate.?limit/i.test(s)) return "the provider rate-limited the request";
+  if (/timeout|timed out/i.test(s)) return "the request timed out";
+  if (/no posts/i.test(s)) return "the writer model returned no usable posts";
+  return s.split("\n")[0].slice(0, 160) || "the writer model failed";
+}
+
+/* ---------- spend confirmation ---------- */
+
+// Modal confirm for anything that bills a provider. Cancel holds initial
+// focus so Enter alone never spends; Escape cancels. Resolves true only on
+// an explicit activation of the spend button.
+function confirmSpend({ title, rows, note, confirmLabel }) {
+  return new Promise(resolve => {
+    const dlg = document.createElement("dialog");
+    dlg.className = "spend-dialog";
+    dlg.setAttribute("aria-labelledby", "spend-title");
+    dlg.innerHTML = `
+      <h2 id="spend-title">${esc(title)}</h2>
+      <dl class="spend-rows">${rows.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join("")}</dl>
+      ${note ? `<p class="spend-note">${esc(note)}</p>` : ""}
+      <div class="spend-actions">
+        <button type="button" data-act="cancel" autofocus>Cancel</button>
+        <button type="button" class="primary" data-act="confirm">${esc(confirmLabel)}</button>
+      </div>`;
+    document.body.appendChild(dlg);
+    let result = false;
+    dlg.addEventListener("click", e => {
+      const act = e.target.closest?.("button")?.dataset.act;
+      if (act) { result = act === "confirm"; dlg.close(); }
+    });
+    dlg.addEventListener("close", () => { dlg.remove(); resolve(result); });
+    dlg.showModal();
+    dlg.querySelector('[data-act="cancel"]').focus();
+  });
+}
+
+function fmtEstimate(usd) {
+  if (usd == null) return "Unknown";
+  if (usd === 0) return "$0.00";
+  return usd < 0.01 ? `about $${Number(usd).toFixed(4)}` : `about $${Number(usd).toFixed(2)}`;
 }
 
 function fmtMoney(v) { return v == null ? "—" : `$${Number(v).toFixed(4)}`; }
@@ -333,7 +431,7 @@ async function viewRun(runId, params) {
         ${kv("Cost", fmtMoney(m.total_cost_usd))}
         ${kv("Tokens", fmtTok((m.total_input_tokens || 0) + (m.total_output_tokens || 0)))}
         ${kv("Duration", fmtMs(m.latency_ms))}
-        ${m.failure_reason ? kv("Failure", esc(m.failure_reason), "") : ""}
+        ${m.failure_reason ? `<div class="stat" title="${esc(m.failure_reason)}"><span class="s-label">Failure</span><span class="s-val">${esc(failureText(m.failure_reason))}</span></div>` : ""}
         ${flagWidget("run", runId)}
         <a class="btn" href="#/card?kind=run&target=${esc(runId)}">View card</a>
         ${d.cancellable ? `<button class="danger" id="cancel-btn">Cancel</button>` : ""}
@@ -775,24 +873,85 @@ async function viewNew() {
       <label class="f">Judge (optional)<select name="judge"><option value="">None</option>${models.map(m => `<option value="${esc(m.slug)}"${m.default ? " selected" : ""}>${esc(m.slug)}</option>`).join("")}</select></label>
       <label class="f">Replicates<input type="number" name="replicates" value="1" min="1" max="50"></label>
       <label class="f">Seed (optional)<input type="number" name="seed" placeholder="auto"></label>
-      <label class="f wide check-line"><input type="checkbox" name="dry_run" value="1"> Dry run — stub models, no API spend</label>
+      <label class="f wide check-line"><input type="checkbox" name="dry_run" value="1" checked aria-describedby="spend-line"> Dry run: stub models, no API calls, no cost</label>
+      <p class="wide spend-line" id="spend-line" aria-live="polite"></p>
       <div class="wide form-actions">
-        <button type="submit" class="primary">Launch</button>
-        <span class="form-error" id="launch-err"></span>
+        <button type="submit" class="primary" id="launch-btn">Launch dry run</button>
       </div>
+      <p class="wide form-error" id="launch-err" role="alert"></p>
     </form></div>`;
 
-  document.getElementById("launch").addEventListener("submit", async e => {
+  const form = document.getElementById("launch");
+  const dry = form.elements.dry_run;
+  const line = document.getElementById("spend-line");
+  const btn = document.getElementById("launch-btn");
+  const formBody = () => {
+    const body = new URLSearchParams();
+    for (const [k, v] of new FormData(form)) body.set(k, v);
+    return body;
+  };
+  const estimate = () => api(`/api/estimate?${formBody().toString()}`);
+  let seq = 0;
+  const refresh = async () => {
+    btn.textContent = dry.checked ? "Launch dry run" : "Launch paid run";
+    line.classList.toggle("paid", !dry.checked);
+    if (dry.checked) { line.textContent = "No API spend. Turn off dry run to call real models."; return; }
+    const mine = ++seq;
+    line.textContent = "Paid run. Estimating cost…";
+    try {
+      const est = await estimate();
+      if (mine !== seq) return;
+      line.textContent = est.total_usd == null
+        ? `Paid run. Estimated cost: unknown. ${est.basis_label} You will be asked to confirm before launch.`
+        : `Paid run. Estimated cost: ${fmtEstimate(est.total_usd)} for ${est.replicates} run${est.replicates === 1 ? "" : "s"}. You will be asked to confirm before launch.`;
+    } catch (ex) {
+      if (mine === seq) line.textContent = `Paid run. Could not estimate cost: ${ex.message}`;
+    }
+  };
+  form.addEventListener("change", refresh);
+  refresh();
+
+  form.addEventListener("submit", async e => {
     e.preventDefault();
     const err = document.getElementById("launch-err");
     err.textContent = "";
-    const f = new FormData(e.target);
-    const body = new URLSearchParams();
-    for (const [k, v] of f) body.set(k, v);
+    const body = formBody();
+    const launch = () => api("/api/run", { method: "POST", body });
+    const confirmPaid = async est => confirmSpend({
+      title: "Launch a paid run?",
+      rows: [
+        ["Task", body.get("task")],
+        ["Pairing", `${body.get("orchestrator")} → ${body.get("worker")}`],
+        ["Judge", body.get("judge") || "None"],
+        ["Runs", String(est.replicates ?? body.get("replicates") ?? 1)],
+        ["Estimated cost", est.total_usd == null ? "Unknown" : fmtEstimate(est.total_usd)],
+        ["Estimate basis", est.basis_label || "—"],
+      ],
+      note: est.caveat || "",
+      confirmLabel: "Spend and launch",
+    });
+    btn.disabled = true;
     try {
-      const r = await api("/api/run", { method: "POST", body });
+      if (!dry.checked) {
+        const est = await estimate();
+        if (!(await confirmPaid(est))) { btn.disabled = false; return; }
+        body.set("confirm_spend", "1");
+      }
+      let r;
+      try { r = await launch(); }
+      catch (ex) {
+        // estimate changed or a stale form: the server asks again
+        if (ex.status === 409 && ex.body.needs_confirm && await confirmPaid(ex.body.estimate || {})) {
+          body.set("confirm_spend", "1");
+          r = await launch();
+        } else throw ex;
+      }
       location.hash = r.run_id ? `#/run/${r.run_id}` : "#/runs";
-    } catch (ex) { err.textContent = ex.message; }
+    } catch (ex) {
+      err.textContent = ex.status === 409 && ex.body.needs_confirm ? "Launch cancelled. Nothing was spent." : ex.message;
+    } finally {
+      btn.disabled = false;
+    }
   });
 }
 
@@ -1066,7 +1225,7 @@ async function viewCard(params) {
       <a class="btn" href="${inspectHref}">Inspect →</a>
       <a class="btn" href="/api/shot.png?route=${encodeURIComponent(location.hash.slice(1))}" download>Download PNG</a>
       <button class="btn" id="copy-context">Copy context</button>
-      <input id="thread-model" class="thread-model" placeholder="Writer model (blank = template)" value="moonshotai/kimi-k2">
+      <input id="thread-model" class="thread-model" placeholder="Writer model (optional, paid)" aria-label="Writer model slug. Leave blank to use free templates." value="">
       <select id="thread-n" class="thread-n" title="Follow-up posts (the card is post 1)">
         <option value="3" selected>4-post thread</option>
         <option value="4">5-post thread</option>
@@ -1108,18 +1267,46 @@ async function viewCard(params) {
   });
   document.getElementById("btn-thread").addEventListener("click", async e => {
     const btn = e.currentTarget;
+    const panel = document.getElementById("thread-panel");
+    const model = document.getElementById("thread-model").value.trim();
+    const body = new URLSearchParams({ kind, target, lens, model,
+      n: document.getElementById("thread-n").value });
+    if (scopedGroup) body.set("group", scopedGroup);
+    const confirmWriter = est => confirmSpend({
+      title: "Write the thread with a paid model?",
+      rows: [
+        ["Writer model", est.model || model],
+        ["Estimated cost", est.max_usd == null ? "Unknown (model not in models/)" : `up to ${fmtEstimate(est.max_usd).replace("about ", "")}`],
+        ["Estimate basis", est.basis_label || "—"],
+      ],
+      note: est.caveat || "",
+      confirmLabel: "Spend and write",
+    });
     btn.disabled = true;
-    btn.textContent = "Writing…";
     try {
-      const body = new URLSearchParams({ kind, target, lens,
-        model: document.getElementById("thread-model").value.trim(),
-        n: document.getElementById("thread-n").value });
-      if (scopedGroup) body.set("group", scopedGroup);
-      const out = await api("/api/thread", { method: "POST", body });
+      if (model) {
+        const est = await api(`/api/thread-estimate?${new URLSearchParams({ model }).toString()}`);
+        if (est.will_spend) {
+          if (!(await confirmWriter(est))) {
+            panel.innerHTML = `<div class="panel panel-pad dim">Thread not written. Nothing was spent.</div>`;
+            return;
+          }
+          body.set("confirm_spend", "1");
+        }
+      }
+      btn.textContent = "Writing…";
+      let out;
+      try { out = await api("/api/thread", { method: "POST", body }); }
+      catch (ex) {
+        if (ex.status === 409 && ex.body.needs_confirm && await confirmWriter(ex.body.estimate || {})) {
+          body.set("confirm_spend", "1");
+          out = await api("/api/thread", { method: "POST", body });
+        } else throw ex;
+      }
       document.getElementById("thread-panel").innerHTML = `<div class="panel panel-pad thread">
         <h3>Follow-up thread ${out.templated ? '<span class="chip chip-dim">Template</span>' : `<span class="chip">By ${esc(slug(out.model))}</span>`}</h3>
         ${out.posts.map((p, i) => `<div class="tpost"><span class="tnum">${i + 2}/${out.posts.length + 1}</span><p>${esc(p)}</p><button class="btn copy" data-p="${esc(p)}">Copy</button></div>`).join("")}
-        ${out.error ? `<div class="dim">Writer fell back to template: ${esc(out.error)}</div>` : ""}
+        ${out.error ? `<div class="dim" title="${esc(out.error)}">The writer model failed (${esc(providerErrorText(out.error))}), so these posts come from templates.</div>` : ""}
       </div>`;
       for (const b of $view.querySelectorAll("button.copy")) {
         b.addEventListener("click", async () => {
@@ -1128,10 +1315,13 @@ async function viewCard(params) {
         });
       }
     } catch (ex) {
-      document.getElementById("thread-panel").innerHTML = `<div class="panel panel-pad dim">Thread failed: ${esc(ex.message)}</div>`;
+      panel.innerHTML = ex.status === 409 && ex.body.needs_confirm
+        ? `<div class="panel panel-pad dim">Thread not written. Nothing was spent.</div>`
+        : `<div class="panel panel-pad form-error" role="alert">Could not write the thread: ${esc(ex.message)}</div>`;
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "Write thread";
     }
-    btn.disabled = false;
-    btn.textContent = "Write thread";
   });
   bindFlags($view);
   await waitForCardAssets();

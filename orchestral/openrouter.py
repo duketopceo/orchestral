@@ -316,9 +316,12 @@ class OpenRouterClient:
         if aspect_ratio:
             payload["aspect_ratio"] = aspect_ratio
 
-        base = urlparse(self.direct_base_url or str(self.client.base_url))
-        url = f"{base.scheme}://{base.netloc}{base.path}/images"
-        response = self._post_with_retry(url, payload)
+        if self.direct_base_url:
+            base = urlparse(self.direct_base_url)
+            path = f"{base.scheme}://{base.netloc}{base.path.rstrip('/')}/images"
+        else:
+            path = "/images"
+        response = self._post_with_retry(path, payload)
         data = response.json()
         items = data.get("data", [])
         if not isinstance(items, list):

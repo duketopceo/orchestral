@@ -146,6 +146,7 @@ class Runner:
         verbose: bool = False,
         cancel_event: threading.Event | None = None,
         on_run_created: Any = None,
+        on_run_finished: Any = None,
         allow_agent_exec: bool = False,
         jev_assist: bool = False,
     ):
@@ -166,6 +167,10 @@ class Runner:
         # called with run_id as soon as the run dir exists — lets a caller
         # (e.g. the TUI) map a job to its in-flight run before run() returns
         self.on_run_created = on_run_created
+        # called with the terminal RunMeta from the run() finally — fires on
+        # finish, cancel, AND failure (update_meta has already written the
+        # terminal state on all three paths, so the callback sees it)
+        self.on_run_finished = on_run_finished
         self.use_judge_cache = use_judge_cache
         self.store = store or RunStore(runs_dir)
         # role ("orchestrator"/"worker"/"judge") -> Provider, injected for tests
@@ -1283,6 +1288,13 @@ class Runner:
                 c.close()
             if self.client is not None:
                 self.client.close()
+            if self.on_run_finished is not None:
+                # suppressed: a sync/callback failure must never mask or
+                # replace the run's own outcome
+                with contextlib.suppress(Exception):
+                    meta = self.store.get_run(run_id)
+                    if meta is not None:
+                        self.on_run_finished(meta)
 
     def _judge_with_cache(
         self,

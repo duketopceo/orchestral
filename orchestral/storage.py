@@ -21,6 +21,7 @@ import re
 import sqlite3
 import threading
 import uuid
+from collections.abc import Iterable
 from contextlib import closing, contextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
@@ -227,6 +228,19 @@ class RunStore:
                 )
                 """
             )
+            # Sync journal: finished_at alone misses post-finish mutation
+            # (judge backfill, revalidate, calls backfill, annotations), so
+            # every mutation funnel marks the run dirty for the next
+            # `harness.py sync` push. Rows clear only on a clean push.
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS sync_dirty (
+                    run_id TEXT PRIMARY KEY,
+                    reason TEXT NOT NULL,
+                    dirty_at TEXT NOT NULL
+                )
+                """
+            )
 
     def new_run(
         self,
@@ -313,6 +327,11 @@ class RunStore:
                     int(meta.judge_passed) if meta.judge_passed is not None else None,
                     int(meta.delegated) if meta.delegated is not None else None,
                 ),
+            )
+            conn.execute(
+                "INSERT OR REPLACE INTO sync_dirty (run_id, reason, dirty_at)"
+                " VALUES (?, 'meta', ?)",
+                (meta.run_id, datetime.now(UTC).isoformat()),
             )
 
     def record_call(
@@ -564,6 +583,11 @@ class RunStore:
                 """,
                 rows,
             )
+            conn.execute(
+                "INSERT OR REPLACE INTO sync_dirty (run_id, reason, dirty_at)"
+                " VALUES (?, 'calls', ?)",
+                (meta.run_id, datetime.now(UTC).isoformat()),
+            )
         return len(rows)
 
     def calls_pricing_summary(self) -> list[dict[str, Any]]:
@@ -677,6 +701,14 @@ class RunStore:
                 """,
                 (kind, target, flag, note, datetime.now(UTC).isoformat()),
             )
+            if kind == "run":
+                # run annotations change the hosted run detail payload;
+                # other kinds only feed always-pushed global payloads.
+                conn.execute(
+                    "INSERT OR REPLACE INTO sync_dirty (run_id, reason, dirty_at)"
+                    " VALUES (?, 'annotation', ?)",
+                    (target, datetime.now(UTC).isoformat()),
+                )
         return {"kind": kind, "target": target, "flag": flag, "note": note}
 
     def annotations(self) -> list[dict[str, Any]]:
@@ -710,6 +742,23 @@ class RunStore:
     def update_meta(self, meta: RunMeta) -> None:
         self._write_meta_file(Path(meta.run_dir), meta)
         self.index_meta(meta)
+
+    def dirty_runs(self) -> set[str]:
+        """Run ids mutated since the last clean hosted sync."""
+        with self._connect() as conn:
+            rows = conn.execute("SELECT run_id FROM sync_dirty").fetchall()
+        return {r[0] for r in rows}
+
+    def clear_dirty(self, run_ids: Iterable[str]) -> None:
+        """Drop journal entries after a clean push; failures stay dirty."""
+        ids = list(run_ids)
+        if not ids:
+            return
+        with self._connect() as conn:
+            conn.executemany(
+                "DELETE FROM sync_dirty WHERE run_id = ?",
+                [(r,) for r in ids],
+            )
 
     def list_runs(
         self,

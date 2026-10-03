@@ -80,6 +80,18 @@ def _provider_ready(slug: str) -> bool:
     return bool(base_url and env and os.environ.get(env))
 
 
+def _internal_error(exc: BaseException) -> str:
+    """One readable line for an unexpected server error — never a traceback.
+
+    The exception text is kept (truncated) because it is usually the only
+    clue, but it is framed so the UI never shows a bare ``'key'`` or repr.
+    """
+    detail = " ".join(str(exc).split())[:160]
+    kind = type(exc).__name__
+    return (f"The observatory server hit an unexpected error ({kind}"
+            + (f": {detail}" if detail else "") + "). Check the server terminal for details.")
+
+
 def _safe_member(name: str) -> str | None:
     """Reject zip members that would escape the archive (../, absolute)."""
     normalized = name.replace("\\", "/")
@@ -146,6 +158,8 @@ def make_handler(obs: Observatory) -> type[BaseHTTPRequestHandler]:
             if not f.is_file():
                 return self._not_found(path)
             ctype = mimetypes.guess_type(name)[0] or "application/octet-stream"
+            if name.endswith(".svg"):
+                ctype = "image/svg+xml"
             self._send(f.read_bytes(), 200, ctype)
 
         # -- GET ----------------------------------------------------------
@@ -157,9 +171,9 @@ def make_handler(obs: Observatory) -> type[BaseHTTPRequestHandler]:
                 self._route_get(path, qs)
             except Exception as exc:  # never leak a stacktrace to the browser
                 if path.startswith("/api/"):
-                    self._json({"error": str(exc)[:200]}, 500)
+                    self._json({"error": _internal_error(exc)}, 500)
                 else:
-                    self._send(render.render_bad_request(f"internal error: {exc}"), 500)
+                    self._send(render.render_bad_request(_internal_error(exc)), 500)
 
         def _route_get(self, path: str, qs: dict[str, list[str]]) -> None:
             if path.startswith("/api/"):
@@ -168,6 +182,10 @@ def make_handler(obs: Observatory) -> type[BaseHTTPRequestHandler]:
                 self._static(path)
             elif path == "/":
                 self._spa()
+            elif path == "/favicon.ico":
+                # Browsers request /favicon.ico regardless of <link rel=icon>;
+                # answer with the neutral SVG placeholder instead of a 404.
+                self._static("/static/favicon.svg")
             elif path in ("/runs", "/leaderboard", "/compare", "/new"):
                 # legacy bookmarks → hash equivalents (hash isn't sent to
                 # the server, so the SPA itself must own the target path)
@@ -258,6 +276,19 @@ def make_handler(obs: Observatory) -> type[BaseHTTPRequestHandler]:
                 self._json(state.task_choices(obs.tasks_dir))
             elif path == "/api/models":
                 self._json(state.model_choices(obs.models_dir, self._q1(qs, "role")))
+            elif path == "/api/estimate":
+                self._json(state.launch_estimate(obs.store, obs.models_dir, {
+                    "task": self._q1(qs, "task"),
+                    "orchestrator": self._q1(qs, "orchestrator"),
+                    "worker": self._q1(qs, "worker"),
+                    "judge": self._q1(qs, "judge"),
+                    "replicates": self._q1(qs, "replicates"),
+                    "dry_run": self._q1(qs, "dry_run") == "1",
+                }))
+            elif path == "/api/thread-estimate":
+                model = (self._q1(qs, "model", "") or "").strip()
+                self._json(state.thread_estimate(
+                    obs.models_dir, model, provider_ready=bool(model) and _provider_ready(model)))
             elif path == "/api/models-catalog":
                 self._json(catalog.models_catalog_payload(obs.store, obs.models_dir))
             elif path.startswith("/api/run/"):
@@ -404,7 +435,7 @@ def make_handler(obs: Observatory) -> type[BaseHTTPRequestHandler]:
                     return self._json({"error": "cross-origin POST rejected"}, 403)
                 self._route_post(url.path)
             except Exception as exc:
-                self._json({"error": str(exc)[:200]}, 500)
+                self._json({"error": _internal_error(exc)}, 500)
 
         def _form(self) -> dict[str, str]:
             length = int(self.headers.get("Content-Length") or 0)
@@ -475,8 +506,17 @@ def make_handler(obs: Observatory) -> type[BaseHTTPRequestHandler]:
                 group=form.get("group") or None,
                 lens=form.get("lens") or "overall",
             )
-            writer = form.get("model") or ""
+            writer = (form.get("model") or "").strip()
             client = model = None
+            if writer and _provider_ready(writer) and form.get("confirm_spend") != "1":
+                # A configured writer is a paid call: the client must show the
+                # estimate and send confirm_spend=1 after an explicit confirm.
+                return self._json({
+                    "error": (f"Writing with {writer} is a paid API call. "
+                              "Confirm the estimated cost to continue."),
+                    "needs_confirm": True,
+                    "estimate": state.thread_estimate(obs.models_dir, writer, provider_ready=True),
+                }, 409)
             if writer and _provider_ready(writer):
                 model = ModelConfig(slug=writer, name=writer, role="writer",
                                     input_price_per_mtok=0.0, output_price_per_mtok=0.0)
@@ -490,6 +530,9 @@ def make_handler(obs: Observatory) -> type[BaseHTTPRequestHandler]:
 
         def _post_run(self, json_out: bool) -> None:
             form = self._form()
+            # confirm_spend is a transport field, not a launch field — the
+            # TUI/web LAUNCH_FIELDS parity contract stays untouched.
+            confirmed = form.pop("confirm_spend", "") == "1"
             spec = {
                 "task": form.get("task", ""),
                 "orchestrator": form.get("orchestrator", ""),
@@ -502,13 +545,25 @@ def make_handler(obs: Observatory) -> type[BaseHTTPRequestHandler]:
             unknown = set(form) - state.LAUNCH_FIELDS
             if unknown:
                 return self._json({"error": f"unknown fields: {sorted(unknown)}"}, 400)
+            if not spec["dry_run"] and not confirmed:
+                # Paid launches need an explicit confirm after the estimate
+                # is shown; a bare POST (or a stale form) cannot spend.
+                return self._json({
+                    "error": ("This is a paid run (dry run is off). "
+                              "Confirm the estimated cost to launch it."),
+                    "needs_confirm": True,
+                    "estimate": state.launch_estimate(obs.store, obs.models_dir, spec),
+                }, 409)
             try:
                 job = obs.registry.launch(spec)
             except ValueError as exc:
-                return self._json({"error": str(exc)}, 400)
+                return self._json({"error": f"The run could not start: {exc}"}, 400)
             # The run dir exists once on_run_created fires; poll briefly so
             # the response can point at the live view instead of nothing.
             run_id = self._wait_run_id(job)
+            if run_id is None and job.status == state.JobStatus.FAILED:
+                reason = job.detail or "setup failed before a run was created"
+                return self._json({"error": f"The run could not start: {reason}"}, 422)
             if json_out:
                 self._json({"run_id": run_id, "label": job.label, "status": str(job.status)})
             else:

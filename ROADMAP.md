@@ -41,8 +41,11 @@ Last updated: 2026-09-30.
 3. Write up the baseline findings (100+ commits of harness, zero published
    conclusions — the writeup is the product).
 4. Publish the harness + findings as the artifact.
-   - Hosted observatory: `obs.shippedit.dev` (Access-gated Worker + D1
-     index sync + R2 artifacts + AI Gateway inference telemetry) —
+   - Hosted observatory — **live** at `obs.shippedit.dev`: Access-gated
+     Worker mirroring R2 snapshots rendered locally by `harness.py sync`,
+     D1 reconciliation ledger, AI Gateway inference telemetry. First
+     backfill verified at parity (163 runs). Runbook:
+     `docs/hosted-observatory.md`; plan:
      `docs/plans/2026-10-02-001-feat-cloudflare-hosted-observatory-plan.md`.
 5. **Gemini 4 Argon eval slot** (watchlist, logged 2026-09-30) — announced
    today, gated to Fairwind trusted testers; not on OpenRouter yet.

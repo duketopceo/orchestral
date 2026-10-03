@@ -282,11 +282,39 @@ def _check_provider_envs(args: argparse.Namespace, *models: ModelConfig | None) 
         sys.exit(1)
 
 
+_CF_HOOK_CLIENT: Any = None
+
+
+def _cf_sync_hook(store: RunStore) -> Any:
+    """Runner.on_run_finished: push the terminal row + calls ledger to the
+    hosted observatory when ORCH_CF_SYNC is set (1/true/yes). Best-effort —
+    Runner suppresses callback errors, and the sync_dirty journal records the
+    run regardless, so `harness.py sync` catches anything the hook misses.
+    Holdouts are skipped here too; their journal entries clear as terminal on
+    the next sync."""
+    if os.environ.get("ORCH_CF_SYNC") not in ("1", "true", "yes"):
+        return None
+    from orchestral import cf, privacy  # deferred: cf pulls httpx/state deps
+
+    global _CF_HOOK_CLIENT
+    if _CF_HOOK_CLIENT is None:
+        _CF_HOOK_CLIENT = cf.ingest_client()  # raises SyncError early if creds unset
+    client = _CF_HOOK_CLIENT
+
+    def _push(meta: Any) -> None:
+        if privacy.run_is_holdout(Path(meta.run_dir)):
+            return
+        cf.push_run_events_only(client, store, meta)
+
+    return _push
+
+
 def _runner_kwargs(args: argparse.Namespace, store: RunStore, **extra: Any) -> dict[str, Any]:
     return {
         "dry_run": args.dry_run,
         "planner": args.planner,
         "runs_dir": args.runs_dir,
+        "on_run_finished": _cf_sync_hook(store),
         "prompt_variant": getattr(args, "prompt_variant", None),
         "use_judge_cache": not getattr(args, "no_judge_cache", False),
         "jev_assist": getattr(args, "jev_assist", False),
@@ -1740,6 +1768,51 @@ def cmd_scrub(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_sync(args: argparse.Namespace) -> int:
+    """Push the observatory's rendered payloads + scrubbed artifacts to the
+    hosted mirror. Default is a dry run: report the dirty set without
+    credentials or network."""
+    from orchestral import cf
+    from orchestral.storage import RunStore
+
+    store = RunStore(args.runs_dir)
+    tasks_dir = Path(args.tasks_dir)
+    groups_file = tasks_dir.parent / "groups.yaml"
+
+    if args.verify:
+        try:
+            diff = cf.verify(store)
+        except Exception as exc:
+            print(f"verify failed: {exc}", file=sys.stderr)
+            return 1
+        print(f"local runs:  {diff['local_runs']}  total ${diff['local_total_cost']:.4f}")
+        print(f"remote runs: {diff['remote_runs']}  total ${diff['remote_total_cost']:.4f}")
+        if diff["missing_remote"]:
+            print(f"missing remote ({len(diff['missing_remote'])}): "
+                  f"{', '.join(diff['missing_remote'][:10])}"
+                  + (" ..." if len(diff["missing_remote"]) > 10 else ""))
+        if diff["remote_only"]:
+            print(f"remote only ({len(diff['remote_only'])}): "
+                  f"{', '.join(diff['remote_only'][:10])}")
+        return 1 if diff["missing_remote"] else 0
+
+    result = cf.sync(
+        store, tasks_dir, Path(args.models_dir), groups_file,
+        push=args.push, all_runs=args.all,
+    )
+    verb = "pushed" if args.push else "would push"
+    print(f"{verb}: {len(result.pushed)} run(s)"
+          + (f", {len(result.skipped_holdout)} holdout withheld"
+             if result.skipped_holdout else "")
+          + (f", {len(result.skipped_missing)} missing dirs"
+             if result.skipped_missing else ""))
+    for err in result.errors:
+        print(f"  error: {err}", file=sys.stderr)
+    if not args.push and result.pushed:
+        print("dry run — pass --push to upload")
+    return 1 if result.errors else 0
+
+
 def cmd_selfcheck(args: argparse.Namespace) -> None:
     """Replay each spec's own reference material through its validators."""
     from orchestral.selfcheck import run_selfcheck
@@ -2332,6 +2405,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Skip the live sandbox probe (env/SDK/DNS/TLS checks only)",
     )
     doctor.set_defaults(func=cmd_doctor)
+
+    sync = sub.add_parser(
+        "sync",
+        help="Push observatory payloads + scrubbed run artifacts to the hosted mirror (obs.shippedit.dev)",
+    )
+    sync.add_argument("--push", action="store_true",
+                      help="Actually upload (default: dry run listing the dirty set)")
+    sync.add_argument("--verify", action="store_true",
+                      help="Diff local run count/cost against the hosted snapshot")
+    sync.add_argument("--all", action="store_true",
+                      help="Sync every run, not just the dirty set (initial backfill)")
+    sync.set_defaults(func=cmd_sync)
     return p
 
 

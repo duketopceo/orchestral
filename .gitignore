@@ -64,3 +64,4 @@ scripts/cube-env.sh
 # Provider model-catalog snapshot (harness.py models sync) — fetched data,
 # not config
 models/provider-catalog.json
+.wrangler/

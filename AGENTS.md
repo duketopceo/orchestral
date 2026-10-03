@@ -36,6 +36,9 @@ python3 harness.py scrub
 - Do not add unrelated dependencies. Keep the stack: Python 3.11+,
   `pyyaml`, `httpx`, `rich`. Optional extras only: `textual` ([tui]),
   `playwright` ([shots]), `e2b` ([e2b]).
+  Exception: `infra/cloudflare/observatory/` is a dependency-free
+  Cloudflare Worker (plain JS, `wrangler.toml`) — it stays that way;
+  it mirrors snapshots, it does not reimplement `web/state.py`.
 - Do not commit eval artifacts or API keys.
 
 ## Storage model

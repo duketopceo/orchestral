@@ -128,6 +128,31 @@ class RunCancelled(Exception):
     """Raised when the run's cancel_event is set between steps."""
 
 
+class LabeledProvider:
+    """Per-run, per-role wrapper that injects cf-aig-metadata labels.
+
+    Clients are shared across roles and replicates, so run/task/role labels
+    can't live on the client — they are attached at call time here. The
+    wrapper only forwards the labels kwarg when the inner client accepts it
+    (injected fakes and executor adapters don't).
+    """
+
+    def __init__(self, inner: Any, labels: dict[str, Any]):
+        self._inner = inner
+        self._labels = {k: v for k, v in labels.items() if v not in (None, "")}
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+    def chat(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        if getattr(self._inner, "supports_labels", False):
+            kwargs["labels"] = self._labels
+        return self._inner.chat(*args, **kwargs)
+
+    def decide(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        return self._inner.decide(*args, **kwargs)
+
+
 class Runner:
     def __init__(
         self,
@@ -146,6 +171,7 @@ class Runner:
         verbose: bool = False,
         cancel_event: threading.Event | None = None,
         on_run_created: Any = None,
+        on_run_finished: Any = None,
         allow_agent_exec: bool = False,
         jev_assist: bool = False,
     ):
@@ -166,6 +192,10 @@ class Runner:
         # called with run_id as soon as the run dir exists — lets a caller
         # (e.g. the TUI) map a job to its in-flight run before run() returns
         self.on_run_created = on_run_created
+        # called with the terminal RunMeta from the run() finally — fires on
+        # finish, cancel, AND failure (update_meta has already written the
+        # terminal state on all three paths, so the callback sees it)
+        self.on_run_finished = on_run_finished
         self.use_judge_cache = use_judge_cache
         self.store = store or RunStore(runs_dir)
         # role ("orchestrator"/"worker"/"judge") -> Provider, injected for tests
@@ -312,6 +342,19 @@ class Runner:
             seed=run_seed, run_group=self.run_group, replicate=self.replicate,
         )
         write_manifest(run_dir, manifest)
+        # Per-run, per-role label wrappers — AI Gateway metadata must be
+        # attached per call (clients are shared across roles/threads, so
+        # client-level labels would mislabel or race). Wrapping each role's
+        # entry separately keeps `role` correct even when two roles share
+        # one underlying client.
+        role_clients = {
+            role: LabeledProvider(
+                c, labels={
+                    "run_id": run_id, "task": task.id, "role": role,
+                    "group": self.run_group or "", "seed": run_seed or "",
+                })
+            for role, c in role_clients.items()
+        }
         if self.on_run_created is not None:
             self.on_run_created(run_id)
         logger.lifecycle("run.created", phase="init", run_id=run_id, dry_run=self.dry_run)
@@ -1283,6 +1326,13 @@ class Runner:
                 c.close()
             if self.client is not None:
                 self.client.close()
+            if self.on_run_finished is not None:
+                # suppressed: a sync/callback failure must never mask or
+                # replace the run's own outcome
+                with contextlib.suppress(Exception):
+                    meta = self.store.get_run(run_id)
+                    if meta is not None:
+                        self.on_run_finished(meta)
 
     def _judge_with_cache(
         self,

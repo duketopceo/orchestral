@@ -1,0 +1,34 @@
+name = "orchestral-observatory"
+main = "worker.js"
+compatibility_date = "2026-01-01"
+
+# workers.dev route OFF — the default *.workers.dev hostname would bypass
+# the Access app on obs.shippedit.dev. worker.js also host-checks.
+workers_dev = false
+
+# Custom domain on the shippedit.dev zone; Access app 4461aeb7 gates it.
+routes = [
+  { pattern = "obs.shippedit.dev", custom_domain = true },
+]
+
+# The SPA (ui/) is static — pushed snapshots live in R2, not here.
+[assets]
+directory = "../../../ui"
+binding = "ASSETS"
+
+[[r2_buckets]]
+binding = "BUCKET"
+bucket_name = "orchestral-artifacts"
+
+# Reconciliation ledger only — the observatory reads R2 snapshots, not D1.
+[[d1_databases]]
+binding = "DB"
+database_name = "orchestral-runs"
+database_id = "0b6f162d-26a0-4428-ba4a-eaecac0a003a"
+
+# The obs-ingest service token's client ID — Access stamps it into
+# Cf-Access-Authenticated-User-Email; /ingest requires exactly this
+# identity so logged-in humans can't write (the allow policy admits
+# humans for viewing, non_identity admits only the token).
+[vars]
+INGEST_IDENTITY = "eada3322162f0f00514c838e169b9a6d.access"

@@ -244,10 +244,6 @@ class TestMutedTextContrast(unittest.TestCase):
             self.assertGreaterEqual(ratio, 4.5, f"--text-3 on --{surface}: {ratio:.2f}")
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 try:
     from playwright.sync_api import sync_playwright
     HAS_PLAYWRIGHT = True
@@ -287,3 +283,7 @@ class TestNewRunBrowser(_Server):
             finally:
                 browser.close()
         self.assertEqual(len(self.obs.registry.jobs), before)
+
+
+if __name__ == "__main__":
+    unittest.main()

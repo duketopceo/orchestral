@@ -13,6 +13,7 @@ serves the app's assets. ``/api/*`` is the JSON surface the SPA polls.
 from __future__ import annotations
 
 import json
+import logging
 import mimetypes
 import os
 import re
@@ -86,10 +87,10 @@ def _internal_error(exc: BaseException) -> str:
     The exception text is kept (truncated) because it is usually the only
     clue, but it is framed so the UI never shows a bare ``'key'`` or repr.
     """
-    detail = " ".join(str(exc).split())[:160]
+    logging.getLogger(__name__).exception("observatory request failed")
     kind = type(exc).__name__
-    return (f"The observatory server hit an unexpected error ({kind}"
-            + (f": {detail}" if detail else "") + "). Check the server terminal for details.")
+    return (f"The observatory server hit an unexpected error ({kind}). "
+            "Check the server terminal for details.")
 
 
 def _safe_member(name: str) -> str | None:

@@ -30,9 +30,11 @@ import hashlib
 import json
 import os
 import tempfile
+import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
+from urllib.parse import quote
 
 import httpx
 
@@ -111,6 +113,19 @@ def global_payloads(store: RunStore, tasks_dir: Path, models_dir: Path,
             payload = state.experiment_payload(store, spec, tasks_dir=tasks_dir)
             if payload is not None:
                 out[f"api/experiment.{spec.stem}.json"] = payload
+    # /api/compare?a=&b= and /api/card?kind=&target= are query-param routes —
+    # enumerate every pair/card the catalog can name so the hosted mirror
+    # serves the same surface.
+    groups = [g["group"] for g in out["api/groups.json"]]
+    for a in groups:
+        for b in groups:
+            if a != b:
+                out[f"api/compare.{quote(a, safe='')}.vs.{quote(b, safe='')}.json"] = (
+                    state.compare_payload(store, a, b))
+    for card in out["api/cards.json"]["cards"]:
+        kind, target = card.get("kind"), card.get("target")
+        if kind and target:
+            out[f"api/card.{kind}.{quote(target, safe='')}.json"] = card
     return out
 
 
@@ -158,6 +173,7 @@ def _hosted_detail(store: RunStore, run_id: str, scrubbed: Path, tasks_dir: Path
     if payload is None:
         return None
     payload["calls"] = _ledger_calls(store, run_id)
+    payload["cancellable"] = False  # hosted mirror is read-only
     return payload
 
 
@@ -171,13 +187,65 @@ def scrub_to_dir(run_dir: Path, dst_root: Path) -> Path:
 
 
 def _collect_files(scrubbed: Path) -> dict[str, str]:
-    """{relative posix path: base64} for every file in the scrubbed tree."""
-    files: dict[str, str] = {}
-    for f in sorted(scrubbed.rglob("*")):
-        if f.is_file():
-            files[f.relative_to(scrubbed).as_posix()] = base64.b64encode(
-                f.read_bytes()).decode()
-    return files
+    """Every scrubbed file → base64, plus extracted artifact.zip members so
+    the hosted mirror can serve /api/run/<id>/artifact/<member> without a
+    zip library. Members pass the same traversal check the local server
+    uses; member count and size are capped against zip bombs."""
+    from orchestral.web.server import _safe_member
+
+    out: dict[str, str] = {}
+    for p in sorted(scrubbed.rglob("*")):
+        if not p.is_file():
+            continue
+        rel = p.relative_to(scrubbed).as_posix()
+        out[rel] = base64.b64encode(p.read_bytes()).decode()
+        if p.name == "artifact.zip":
+            try:
+                with zipfile.ZipFile(p) as zf:
+                    members = 0
+                    for info in zf.infolist():
+                        if members >= 50 or info.file_size > 5 * 1024 * 1024:
+                            break
+                        safe = _safe_member(info.filename)
+                        if safe is None or info.is_dir():
+                            continue
+                        out[f"artifact.members/{safe}"] = base64.b64encode(
+                            zf.read(info)).decode()
+                        members += 1
+            except zipfile.BadZipFile:
+                pass  # corrupt zip — it still ships as the raw file above
+    return out
+
+
+def push_run(client: httpx.Client, store: RunStore, meta: Any,
+             tasks_dir: Path, groups_file: Path) -> dict[str, Any]:
+    """Scrub + payload + ledger for one run → POST /ingest/run."""
+    run_dir = Path(meta.run_dir)
+    with tempfile.TemporaryDirectory(prefix="orch-scrub-") as tmp:
+        scrubbed = scrub_to_dir(run_dir, Path(tmp))
+        files = _collect_files(scrubbed)
+        detail = _hosted_detail(store, meta.run_id, scrubbed, tasks_dir, groups_file)
+        evidence = state.run_evidence_payload(
+            cast(RunStore, _ScrubbedStore(store, meta.run_id, scrubbed)),
+            meta.run_id)
+        live = state.live_payload(
+            scrubbed, 0, started_at=meta.started_at, meta=meta)
+        live["cancellable"] = False
+    body: dict[str, Any] = {
+        "run_id": meta.run_id,
+        "payloads": {
+            f"api/run/{meta.run_id}/live.json": live,
+        },
+        "d1": d1_projection(store, [meta.run_id]),
+        "files": {f"runs/{meta.run_id}/{name}": b64
+                  for name, b64 in files.items()},
+        "manifest_hash": manifest_hash(run_dir),
+    }
+    if detail is not None:
+        body["payloads"][f"api/run/{meta.run_id}.json"] = detail
+    if evidence is not None:
+        body["payloads"][f"api/run/{meta.run_id}/evidence.json"] = evidence
+    return _post(client, "/ingest/run", body)
 
 
 def manifest_hash(run_dir: Path) -> str:
@@ -268,32 +336,6 @@ def _post(client: httpx.Client, path: str, body: dict[str, Any]) -> dict[str, An
         return {}
 
 
-def push_run(client: httpx.Client, store: RunStore, meta: Any,
-             tasks_dir: Path, groups_file: Path) -> dict[str, Any]:
-    """Scrub + payload + ledger for one run → POST /ingest/run."""
-    run_dir = Path(meta.run_dir)
-    with tempfile.TemporaryDirectory(prefix="orch-scrub-") as tmp:
-        scrubbed = scrub_to_dir(run_dir, Path(tmp))
-        files = _collect_files(scrubbed)
-        detail = _hosted_detail(store, meta.run_id, scrubbed, tasks_dir, groups_file)
-        evidence = state.run_evidence_payload(
-            cast(RunStore, _ScrubbedStore(store, meta.run_id, scrubbed)),
-            meta.run_id)
-    body: dict[str, Any] = {
-        "run_id": meta.run_id,
-        "payloads": {},
-        "d1": d1_projection(store, [meta.run_id]),
-        "files": {f"runs/{meta.run_id}/{name}": b64
-                  for name, b64 in files.items()},
-        "manifest_hash": manifest_hash(run_dir),
-    }
-    if detail is not None:
-        body["payloads"][f"api/run/{meta.run_id}.json"] = detail
-    if evidence is not None:
-        body["payloads"][f"api/run/{meta.run_id}/evidence.json"] = evidence
-    return _post(client, "/ingest/run", body)
-
-
 def push_state(client: httpx.Client, store: RunStore, tasks_dir: Path,
                models_dir: Path, groups_file: Path) -> dict[str, Any]:
     """Global payload snapshot + full ledger projection → POST /ingest/state."""
@@ -363,8 +405,7 @@ def sync(store: RunStore, tasks_dir: Path, models_dir: Path, groups_file: Path,
 
 def verify(store: RunStore) -> dict[str, Any]:
     """Diff local counts/sums against the hosted api/runs.json snapshot."""
-    remote = httpx.get(f"{OBS_URL}/api/runs.json", timeout=30,
-                       headers={"User-Agent": "orchestral-sync/1.0"})
+    remote = httpx.get(f"{OBS_URL}/api/runs", timeout=30, headers=_ingest_headers())
     remote.raise_for_status()
     body = remote.json()
     remote_runs = body if isinstance(body, list) else body.get("runs", [])

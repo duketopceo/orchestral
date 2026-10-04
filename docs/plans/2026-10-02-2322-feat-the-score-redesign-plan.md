@@ -9,24 +9,21 @@ execution: code
 
 # The Score redesign - Plan
 
-## Status (2026-10-04)
+## Status as of 2026-10-04 (evening)
 
-Verified against `gh pr list -R duketopceo/orchestral` and `git log origin/main` (main at `7f707bd`, PR #139). Nothing in this plan is on main yet: 0 of 23 units done. PR #120 (the prerequisite) merged, so the stop condition on U23 no longer applies. Merged and outside the unit set: #121 (this spec and plan), #122, #123 (Cloudflare hosted observatory), #139 (calibrate run ids stay strings).
+Verified against `git log origin/main` (main at `516af58`, merge of PR #145) and `gh pr list -R duketopceo/orchestral`, with units confirmed by files present on main. 17 of 23 units are done, 2 are in progress locally, 3 are todo and 1 is blocked. No Score PR is open.
 
-**Done:** none.
+**Done (merged to main):** U1, U2, U3, U4, U5, U6, U7, U8, U9, U10, U11, U12, U13, U16, U17, U18, U23 (logo option A "ictus" applied to U3). Landing PR #145 carried U3 (ictus logo), U6, U7, U9 to U13, U16 to U18, U8, U23, the holdout privacy fix and hosted deploy parity. Earlier merges: #124 (U23, U8), #125 (U1), #126 (U2), #127 (U3), #128 (U4), #129 (U5), #131 (U9), #136 (U16), #141 (U4 r-starting Rest follows ictus), #142 (U10 to U13 integration into the U7 branch). Stack PRs #130, #132, #133, #134, #135, #137, #138 and #140 were closed unmerged because their content landed through #142 and #145 (#132 folded into #145).
 
-**Open PRs carrying units (all drafts except #124):**
-- #124 U23 + U8 cost truth (base main, ready for review)
-- Foundation stack: #125 U1 tokens (base main) -> #126 U2 type (base #125 branch) -> #127 U3 mark (base #126 branch; needs mark approval). #128 U4 icons (base #125 branch). #136 U16 error pages (base #128 branch).
-- Format stack: #129 U5 formatter (base main) -> #133 U18 CLI tables and #135 U17 TUI (both base #129 branch) and #130 U6 SPA runtime (base #129 branch) -> #131 U9 liveness (base #130 branch) -> #132 U7 shell (base #131 branch) -> #134 U11 Runs, #137 U13 charts, #138 U10 Now, #140 U12 Run detail (all base #132 branch).
+**In progress (local branches, not pushed, no PR):** U14 (New run, Models, Guide, palette) on `feat/score-u14-new-models-guide`; U15 (Publish, cards, OG) on `feat/score-u15-publish`.
 
-**In progress:** U10 to U13 are being integrated on local branch `feat/score-u10-u13-integration` (not on the remote as of this check); the four PRs above stay open until it lands. U3 logo: option A "ictus" is decided and being applied to #127.
+**Todo:** U19, U20, U21. **Blocked:** U22 (Open Question: Remotion home, music license, spend).
 
-**Next:** U14 (needs U7, U8), U15 (needs U3 and U13), U19 (needs U15), U20 (needs U10, U12), U21 (needs U19).
+**Next:** finish and push U14 and U15 (U15 needs U3 and U13, both on main); then U19 (needs U15), U20 (needs U10, U12, both on main), U21 (needs U19).
 
-**Blocked on the user:** U22 (Open Question: Remotion home, music license, spend). Mark approval for #127 is resolved by the logo decision once applied. Open Questions listed below still await answers; the ROADMAP.md Cut-section conflict must be settled in the U1 PR (#125).
+**Hosted observatory:** the Worker is deployed to obs.shippedit.dev (version 35204e4a, 2026-10-04); the snapshot re-push is pending (the sync ran from the wrong cwd; the script is fixed).
 
-**Recommended merge order:** #124; then #125 and #129 (both base main); then retarget and merge #126, #128, #130, #133, #135; then #127 (after the logo is applied), #136, #131; then #132; then the integration branch result for U10 to U13 (replacing #134, #137, #138, #140 or merging them in order #134, #138, #140, #137). Each stacked PR must be retargeted to main after its parent merges.
+**Still open:** the Open Questions listed below await answers; the ROADMAP.md Cut-section conflict was to be settled in the U1 PR (#125).
 
 ## Goal Capsule
 
@@ -297,25 +294,25 @@ Money and liveness ship first because they are the only items with evidence of r
 
 | U-ID | Title | Key files | Depends on | Status |
 |---|---|---|---|---|
-| U1 | Design spec, tokens, themes, static serving | `DESIGN.md`, `ui/tokens.css`, `ui/app.css`, `orchestral/web/server.py` | PR #120 | in-PR #125 |
-| U2 | Self-hosted typefaces | `ui/fonts/`, `scripts/subset-fonts.sh` | U1 | in-PR #126 |
-| U3 | Downbeat mark, wordmark, favicon set | `ui/brand/`, `ui/favicon.svg`, `server.py` | U2 | in-PR #127 (logo A "ictus" being applied) |
-| U4 | Icon sprite, Rests, glyph parity | `ui/icons.svg`, `orchestral/glyphs.py` | U1 | in-PR #128 |
-| U23 | Observatory fixture corpus | `tests/fixtures/observatory/`, `scripts/build-fixture-corpus.py` | PR #120 | in-PR #124 |
-| U5 | Formatter and copy rules | `orchestral/format.py`, `ui/js/format.js`, `state.py` | U1, U23 | in-PR #129 |
-| U6 | SPA runtime: modules, meta, adapter, poller, snapshot writer | `ui/js/`, `ui/app.html`, `server.py`, `state.py`, `web/snapshot.py` | U5 | in-PR #130 |
-| U7 | Shell, IA, layout primitives, live indicator, browser CI | `ui/js/shell.js`, `ui/app.css`, `.github/workflows/ci.yml` | U4, U6, U9 | in-PR #132 |
-| U8 | Cost truth and spend safety | `storage.py`, `stats.py`, `state.py`, `budget.py`, `server.py`, `tui/` | U23 | in-PR #124 |
-| U9 | Liveness and orphan retirement | `state.py`, `server.py` | U23 | in-PR #131 |
-| U10 | Now and Experiments | `ui/js/views/now.js`, `ui/js/views/experiment.js` | U7, U8, U9 | in-PR #138 (integration in progress) |
-| U11 | Runs | `ui/js/views/runs.js` | U7 | in-PR #134 (integration in progress) |
-| U12 | Run detail | `ui/js/views/run.js` | U7, U9 | in-PR #140 (integration in progress) |
-| U13 | Chart kit, Pairings, Compare | `ui/js/charts.js`, `ui/js/views/pairings.js`, `compare.js` | U7 | in-PR #137 (integration in progress) |
-| U14 | New run, Models, Guide, command palette | `ui/js/views/new.js`, `models.js`, `guide.js`, `palette.js` | U7, U8 | todo |
-| U15 | Publish: Program card, capture, alt text, OG | `ui/js/views/publish.js`, `orchestral/shots.py`, `ui/og/` | U3, U13 | todo (blocked on U3 merge) |
-| U16 | Error pages and static reports | `orchestral/web/render.py`, `orchestral/reporter.py` | U1, U4 | in-PR #136 |
-| U17 | TUI theme, glyphs, spend parity | `orchestral/tui/` | U4, U5, U8 | in-PR #135 |
-| U18 | CLI tables | `harness.py`, `orchestral/cli_table.py` | U4, U5 | in-PR #133 |
+| U1 | Design spec, tokens, themes, static serving | `DESIGN.md`, `ui/tokens.css`, `ui/app.css`, `orchestral/web/server.py` | PR #120 | done (#125) |
+| U2 | Self-hosted typefaces | `ui/fonts/`, `scripts/subset-fonts.sh` | U1 | done (#126) |
+| U3 | Downbeat mark, wordmark, favicon set | `ui/brand/`, `ui/favicon.svg`, `server.py` | U2 | done (#127, #145; logo A "ictus") |
+| U4 | Icon sprite, Rests, glyph parity | `ui/icons.svg`, `orchestral/glyphs.py` | U1 | done (#128, #141) |
+| U23 | Observatory fixture corpus | `tests/fixtures/observatory/`, `scripts/build-fixture-corpus.py` | PR #120 | done (#124) |
+| U5 | Formatter and copy rules | `orchestral/format.py`, `ui/js/format.js`, `state.py` | U1, U23 | done (#129) |
+| U6 | SPA runtime: modules, meta, adapter, poller, snapshot writer | `ui/js/`, `ui/app.html`, `server.py`, `state.py`, `web/snapshot.py` | U5 | done (#145) |
+| U7 | Shell, IA, layout primitives, live indicator, browser CI | `ui/js/shell.js`, `ui/app.css`, `.github/workflows/ci.yml` | U4, U6, U9 | done (#145) |
+| U8 | Cost truth and spend safety | `storage.py`, `stats.py`, `state.py`, `budget.py`, `server.py`, `tui/` | U23 | done (#124) |
+| U9 | Liveness and orphan retirement | `state.py`, `server.py` | U23 | done (#131, #145) |
+| U10 | Now and Experiments | `ui/js/views/now.js`, `ui/js/views/experiment.js` | U7, U8, U9 | done (#142, #145) |
+| U11 | Runs | `ui/js/views/runs.js` | U7 | done (#142, #145) |
+| U12 | Run detail | `ui/js/views/run.js` | U7, U9 | done (#142, #145) |
+| U13 | Chart kit, Pairings, Compare | `ui/js/charts.js`, `ui/js/views/pairings.js`, `compare.js` | U7 | done (#142, #145) |
+| U14 | New run, Models, Guide, command palette | `ui/js/views/new.js`, `models.js`, `guide.js`, `palette.js` | U7, U8 | in progress (local branch feat/score-u14-new-models-guide, not pushed) |
+| U15 | Publish: Program card, capture, alt text, OG | `ui/js/views/publish.js`, `orchestral/shots.py`, `ui/og/` | U3, U13 | in progress (local branch feat/score-u15-publish, not pushed) |
+| U16 | Error pages and static reports | `orchestral/web/render.py`, `orchestral/reporter.py` | U1, U4 | done (#136) |
+| U17 | TUI theme, glyphs, spend parity | `orchestral/tui/` | U4, U5, U8 | done (#145) |
+| U18 | CLI tables | `harness.py`, `orchestral/cli_table.py` | U4, U5 | done (#145) |
 | U19 | README visuals and social image | `README.md`, `docs/assets/` | U15 | todo |
 | U20 | Motion polish | `ui/tokens.css`, `ui/js/motion.js` | U10, U12 | todo |
 | U21 | Launch video storyboard and capture kit | `demo/` | U19 | todo |

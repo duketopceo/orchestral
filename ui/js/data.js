@@ -68,6 +68,7 @@ export function localAdapter() {
     runs: (f = {}, o) => get(`/api/runs${qs({ group: f.group, status: f.status, task: f.task, q: f.q })}`, o),
     groups: o => get("/api/groups", o),
     matrix: o => get("/api/matrix", o),
+    experiments: o => get("/api/experiments", o),
     experiment: (name, o) => get(`/api/experiment${qs({ matrix: name })}`, o),
     run: (id, o) => get(`/api/run/${encodeURIComponent(id)}`, o),
     runLive: (id, after = 0, o) => get(`/api/run/${encodeURIComponent(id)}/live?after=${after}`, o),
@@ -104,6 +105,7 @@ export const HOSTED_KEYS = {
   runs: () => "runs",
   groups: () => "groups",
   matrix: () => "matrix",
+  experiments: () => "experiments",
   experiment: name => `experiment.${keyEnc(name || "jev-ab")}`,
   run: id => `run/${keyEnc(id)}`,
   runLive: id => `run/${keyEnc(id)}/live`,
@@ -148,7 +150,9 @@ export function hostedAdapter() {
     runs: async (f = {}, o) => filterRuns(await get(HOSTED_KEYS.runs(), o), f),
     groups: o => get(HOSTED_KEYS.groups(), o),
     matrix: o => get(HOSTED_KEYS.matrix(), o),
-    experiment: (name, o) => get(HOSTED_KEYS.experiment(name), o),
+    experiments: o => get(HOSTED_KEYS.experiments(), o),
+    experiment: (name, o) => get(HOSTED_KEYS.experiment(name), o,
+      `There is no experiment named ${name || "jev-ab"} in this snapshot.`),
     run: (id, o) => get(HOSTED_KEYS.run(id), o, "That run is not part of this snapshot."),
     runLive: async (id, after = 0, o) => {
       const p = await get(HOSTED_KEYS.runLive(id), o);

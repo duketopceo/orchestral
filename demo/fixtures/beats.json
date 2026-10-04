@@ -1,0 +1,65 @@
+{
+  "version": 1,
+  "theme": "paper",
+  "viewport": { "width": 1920, "height": 1080 },
+  "zoom": 1.3333333,
+  "video": { "width": 1920, "height": 1080, "fps": 60 },
+  "total_s": 45,
+  "beats": [
+    { "id": "b0-hook", "start_s": 0, "end_s": 2, "kind": "composed",
+      "caption": "Which model pair is actually worth it?" },
+    { "id": "b1-score", "start_s": 2, "end_s": 8, "kind": "composed",
+      "caption": "One planner. One worker. One bill." },
+    { "id": "b2-run", "start_s": 8, "end_s": 18, "kind": "capture",
+      "caption": "Every call has a lane. Every cent is counted.",
+      "route": "/run/{judged_run}",
+      "ready": ".ln-bar",
+      "steps": [
+        { "op": "hold", "ms": 800 },
+        { "op": "target", "selector": ".lanes", "label": "lane timeline" },
+        { "op": "hover", "selector": ".ln-bar" },
+        { "op": "hold", "ms": 4200 },
+        { "op": "target", "selector": "[data-tick='cost']", "label": "billed cost" },
+        { "op": "hold", "ms": 2500 },
+        { "op": "target", "selector": "[data-tick='tokens']", "label": "tokens" },
+        { "op": "hold", "ms": 2500 }
+      ] },
+    { "id": "b3-axes", "start_s": 18, "end_s": 26, "kind": "capture",
+      "caption": "Mechanical pass and judge score are separate axes.",
+      "route": "/leaderboard",
+      "ready": "table.rank tbody tr",
+      "steps": [
+        { "op": "scroll", "to": "table.rank", "ms": 1200 },
+        { "op": "hold", "ms": 600 },
+        { "op": "column", "table": "table.rank", "col": 4, "label": "pass column" },
+        { "op": "hold", "ms": 2200 },
+        { "op": "column", "table": "table.rank", "col": 6, "label": "judge column" },
+        { "op": "hold", "ms": 2200 },
+        { "op": "target", "selector": "table.rank", "label": "both axes" },
+        { "op": "hold", "ms": 1800 }
+      ] },
+    { "id": "b4-pairings", "start_s": 26, "end_s": 35, "kind": "capture",
+      "caption": "Cost per pass, with n on every row.",
+      "route": "/leaderboard",
+      "ready": "#lb-strip svg",
+      "steps": [
+        { "op": "scroll", "to": "#lb-strip", "ms": 1000 },
+        { "op": "hold", "ms": 600 },
+        { "op": "target", "selector": "#lb-strip .ch-row", "label": "leading pairing" },
+        { "op": "hold", "ms": 3200 },
+        { "op": "target", "selector": "#lb-strip svg", "label": "full strip plot" },
+        { "op": "hold", "ms": 4200 }
+      ] },
+    { "id": "b5-card", "start_s": 35, "end_s": 41, "kind": "capture",
+      "caption": "Then publish what holds up.",
+      "route": "/card?kind=group&target={group}",
+      "ready": ".pub-feed",
+      "steps": [
+        { "op": "hold", "ms": 700 },
+        { "op": "target", "selector": ".pub-feed", "label": "program note card" },
+        { "op": "hold", "ms": 5300 }
+      ] },
+    { "id": "b6-end", "start_s": 41, "end_s": 45, "kind": "composed",
+      "caption": "github.com/duketopceo/orchestral" }
+  ]
+}

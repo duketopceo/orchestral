@@ -511,8 +511,22 @@ def make_handler(obs: Observatory) -> type[BaseHTTPRequestHandler]:
                 obs.registry.cancel_run(parts[1])
                 return self._redirect(f"/#/run/{parts[1]}")
             if len(parts) == 4 and parts[3] == "cancel" and parts[0] == "api" and parts[1] == "run":
-                cancelled = obs.registry.cancel_run(parts[2])
-                return self._json({"cancelled": cancelled})
+                run_id = parts[2]
+                if obs.registry.job_for_run(run_id) is None:
+                    if obs.store.get_run(run_id) is None:
+                        return self._json({"error": f"unknown run {run_id}", "cancelled": False}, 404)
+                    return self._json({
+                        "error": (f"Run {run_id} was not started by this server, possibly by another "
+                                  "process, so it cannot be cancelled here. Stop it where it was "
+                                  "started, or abandon it if it has stalled."),
+                        "cancelled": False,
+                    }, 409)
+                return self._json({"cancelled": obs.registry.cancel_run(run_id)})
+            if len(parts) == 4 and parts[3] == "abandon" and parts[0] == "api" and parts[1] == "run":
+                try:
+                    return self._json(state.abandon_run(obs.store, obs.registry, parts[2]))
+                except state.LivenessRefusal as exc:
+                    return self._json({"error": str(exc), "abandoned": False}, exc.status)
             if path == "/api/flag":
                 form = self._form()
                 try:

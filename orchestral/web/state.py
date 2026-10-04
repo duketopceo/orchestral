@@ -171,6 +171,11 @@ class JobRegistry:
         job = self.job_for_run(run_id)
         return job.cancel() if job else False
 
+    def owns(self, run_id: str) -> bool:
+        """True when this process started run_id and its job is still active."""
+        job = self.job_for_run(run_id)
+        return bool(job and job.active)
+
     def job_for_run(self, run_id: str) -> Job | None:
         for job in self.jobs:
             if run_id in job.run_ids:
@@ -439,6 +444,160 @@ def thread_context(store: RunStore, kind: str, target: str,
     return ctx
 
 
+# KTD8: live is derived, not registered. A `running` index row is live while its
+# last event is younger than this; past it the row is `stalled`. Stalled is a
+# display state and is never written to the index.
+STALL_AFTER_S = 600
+_HEARTBEAT_TAIL_BYTES = 16 * 1024
+
+
+class LivenessRefusal(Exception):
+    """A liveness action that must not happen; carries the HTTP status to answer."""
+
+    def __init__(self, message: str, status: int = 409):
+        super().__init__(message)
+        self.status = status
+
+
+def _now() -> datetime:
+    return datetime.now(UTC)
+
+
+def _parse_ts(value: Any) -> datetime | None:
+    try:
+        ts = datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return None
+    return ts if ts.tzinfo else ts.replace(tzinfo=UTC)
+
+
+def liveness_state(idle_s: float | None) -> str:
+    """live while the heartbeat is at most STALL_AFTER_S old; stalled past it or unknown."""
+    return "live" if idle_s is not None and idle_s <= STALL_AFTER_S else "stalled"
+
+
+def last_heartbeat(run_dir: Path | str, started_at: str | None = None) -> datetime | None:
+    """Time of the last event in events.jsonl, else the file's mtime, else started_at."""
+    path = Path(run_dir) / "events.jsonl"
+    try:
+        size = path.stat().st_size
+        with path.open("rb") as fh:
+            fh.seek(max(0, size - _HEARTBEAT_TAIL_BYTES))
+            tail = fh.read().decode("utf-8", errors="replace")
+        for line in reversed(tail.splitlines()):
+            try:
+                ev = json.loads(line)
+            except ValueError:
+                continue
+            ts = _parse_ts(ev.get("timestamp")) if isinstance(ev, dict) else None
+            if ts:
+                return ts
+        return datetime.fromtimestamp(path.stat().st_mtime, UTC)
+    except OSError:
+        return _parse_ts(started_at) if started_at else None
+
+
+def _abandoned_runs(store: RunStore) -> set[str]:
+    return {a["target"] for a in store.annotations()
+            if a["kind"] == "run" and a["flag"] == "aborted"}
+
+
+def _event_spend(events: list[dict[str, Any]]) -> float:
+    total = 0.0
+    for ev in events:
+        if ev.get("type") == "llm_call":
+            c = ev.get("cost") or {}
+            billed = c.get("api_cost_usd")
+            total += float(billed if billed is not None else (c.get("usd") or 0))
+    return total
+
+
+def live_runs(store: RunStore, registry: JobRegistry, now: datetime | None = None) -> list[dict[str, Any]]:
+    """Everything running right now: index `running` rows (CLI-launched included)
+    plus this server's active jobs, each exactly once. Rows the operator marked
+    abandoned are terminal and absent. `owned` means this process can cancel it."""
+    now = now or _now()
+    abandoned = _abandoned_runs(store)
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for r in store.list_runs(limit=None):
+        if r.status != "running" or r.run_id in abandoned:
+            continue
+        seen.add(r.run_id)
+        beat = last_heartbeat(r.run_dir, r.started_at) if r.run_dir else _parse_ts(r.started_at)
+        idle = max(0.0, (now - beat).total_seconds()) if beat else None
+        events, _ = tail_events(Path(r.run_dir) / "events.jsonl", 0) if r.run_dir else ([], 0)
+        started = _parse_ts(r.started_at)
+        job = registry.job_for_run(r.run_id)
+        owned = bool(job and job.active)
+        state_ = liveness_state(idle)
+        spend = r.display_cost_usd or _event_spend(events)
+        rows.append({
+            "run_id": r.run_id,
+            "label": f"{r.task_id}·{r.worker.split('/')[-1]}",
+            "task_id": r.task_id, "orchestrator": r.orchestrator, "worker": r.worker,
+            "run_group": r.run_group,
+            "phase": run_phase(events),
+            "started_at": r.started_at,
+            "elapsed_s": int((now - started).total_seconds()) if started else None,
+            "elapsed": fmt_elapsed(r.started_at),
+            "last_event_at": beat.isoformat() if beat else None,
+            "idle_s": int(idle) if idle is not None else None,
+            "spend_usd": spend,
+            "owned": owned,
+            "state": state_,
+            "stalled": state_ == "stalled",
+            "cancellable": owned,
+            "abandonable": state_ == "stalled" and not owned,
+            "detail": job.detail if job else "",
+        })
+    for job in registry.jobs:
+        if not job.active or any(rid in seen for rid in job.run_ids):
+            continue
+        rows.append({
+            "run_id": None, "label": job.label, "task_id": None, "orchestrator": None,
+            "worker": None, "run_group": None, "phase": "starting", "started_at": None,
+            "elapsed_s": None, "elapsed": NULL_GLYPH, "last_event_at": None, "idle_s": None,
+            "spend_usd": 0.0, "owned": True, "state": "live", "stalled": False,
+            "cancellable": True, "abandonable": False, "detail": job.detail,
+        })
+    rows.sort(key=lambda row: (row["stalled"], -(row["elapsed_s"] or 0)))
+    return rows
+
+
+def _job_row(row: dict[str, Any]) -> dict[str, Any]:
+    """A live_runs row in the overview `jobs` shape (old keys kept)."""
+    return {**row, "status": "running",
+            "run_ids": [row["run_id"]] if row["run_id"] else []}
+
+
+def abandon_run(store: RunStore, registry: JobRegistry, run_id: str,
+                now: datetime | None = None) -> dict[str, Any]:
+    """Retire an orphan by writing the `aborted` run annotation. The run's index
+    status and spend are untouched. Idempotent; refuses finished, owned and
+    recently active runs."""
+    meta = store.get_run(run_id)
+    if meta is None:
+        raise LivenessRefusal(f"There is no run {run_id}.", 404)
+    if meta.status != "running":
+        raise LivenessRefusal(
+            f"Run {run_id} is already {meta.status}, so there is nothing to abandon.")
+    if run_id in _abandoned_runs(store):
+        return {"run_id": run_id, "abandoned": True, "already": True}
+    if registry.owns(run_id):
+        raise LivenessRefusal(
+            f"Run {run_id} belongs to a job in this server. Cancel it instead of abandoning it.")
+    now = now or _now()
+    beat = last_heartbeat(meta.run_dir, meta.started_at) if meta.run_dir else None
+    idle = max(0.0, (now - beat).total_seconds()) if beat else None
+    if liveness_state(idle) == "live":
+        raise LivenessRefusal(
+            f"Run {run_id} has a recent event ({int(idle or 0)} seconds ago), so it may still be "
+            f"running. It can be abandoned after {STALL_AFTER_S // 60} minutes without events.")
+    store.set_annotation("run", run_id, "aborted", note="abandoned: no owner and no recent events")
+    return {"run_id": run_id, "abandoned": True, "already": False}
+
+
 def overview_payload(
     store: RunStore,
     registry: JobRegistry,
@@ -461,13 +620,7 @@ def overview_payload(
         d["judge_state"], d["judge_reason"] = judge_state(r)
         recent.append(d)
     return {
-        "jobs": [
-            {
-                "label": j.label, "status": str(j.status), "detail": j.detail,
-                "run_ids": list(j.run_ids), "cancellable": j.active,
-            }
-            for j in registry.jobs
-        ],
+        "jobs": [_job_row(r) for r in live_runs(store, registry, now=_now())],
         "leaderboard": [r.to_dict() for r in lb[:10]],
         "recent": recent,
         "groups": groups_payload(store, groups_file)[:8],

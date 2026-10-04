@@ -86,6 +86,7 @@ export function localAdapter() {
     threadEstimate: (model, o) => get(`/api/thread-estimate?${new URLSearchParams({ model })}`, o),
     // writes: local only
     cancelRun: id => post(`/api/run/${encodeURIComponent(id)}/cancel`),
+    abandonRun: id => post(`/api/run/${encodeURIComponent(id)}/abandon`),
     launch: init => post("/api/run", init),
     setFlag: init => post("/api/flag", init),
     thread: init => post("/api/thread", init),
@@ -180,6 +181,7 @@ export function hostedAdapter() {
     estimate: async () => { throw READ_ONLY(); },
     threadEstimate: async () => { throw READ_ONLY(); },
     cancelRun: async () => { throw READ_ONLY(); },
+    abandonRun: async () => { throw READ_ONLY(); },
     launch: async () => { throw READ_ONLY(); },
     setFlag: async () => { throw READ_ONLY(); },
     thread: async () => { throw READ_ONLY(); },

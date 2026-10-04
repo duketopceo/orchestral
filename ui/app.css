@@ -131,9 +131,25 @@ code, .mono { font-family: var(--mono); }
   font-size: 12px;
   color: var(--text-2);
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 7px;
+  gap: 2px 7px;
 }
+.rail-job .jl { flex: 1 1 0; min-width: 0; color: inherit; }
+.rail-job .rj-meta { flex: 1 0 100%; padding-left: 14px; color: var(--text-3); font-size: 11px; }
+.rail-job.stalled .jl { color: var(--text-3); }
+.rail-job button {
+  margin: 2px 0 0 14px;
+  padding: 2px 8px;
+  font: 11px var(--sans);
+  background: transparent;
+  color: var(--ink-2);
+  border: 1px solid var(--control-border);
+  border-radius: var(--r-control);
+}
+.rail-job button:hover:not(:disabled) { color: var(--ink); border-color: var(--ink-2); }
+.rail-job button:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+.rail-job .rj-err { flex: 1 0 100%; padding-left: 14px; color: var(--fail-fill); font-size: 11px; }
 .rail-job:hover { background: var(--bg-hover); }
 .rail-job .jl { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #theme-toggle {
@@ -199,6 +215,7 @@ h2 {
 .dot-fail { background: var(--fail-fill); }
 .dot-run  { background: var(--live-fill); }
 .dot-dim  { background: var(--text-3); }
+.dot-stalled { background: transparent; border: 1.5px solid var(--live-fill); } /* TODO(U7): sprite stalled glyph */
 .pulse { animation: pulse 1.4s ease-in-out infinite; }
 @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .25; } }
 

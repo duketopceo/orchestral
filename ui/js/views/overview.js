@@ -28,9 +28,9 @@ export async function viewOverview() {
     <p class="page-sub">Live experiment observatory. Mechanical verdicts and judge scores are separate axes.</p>
 
     ${live.length ? `<div class="live-strip">${live.map(j => `
-      <div class="live-card"><span class="dot dot-run pulse"></span>
+      <div class="live-card"><span class="dot ${j.stalled ? "dot-stalled" : "dot-run pulse"}"></span>
         <span class="lc-label">${esc(j.label)}</span>
-        <span class="dim">${esc(j.detail || "")}</span>
+        <span class="dim">${esc(j.stalled ? "stalled" : (j.detail || ""))}${j.owned ? "" : " · unowned"}</span>
       </div>`).join("")}</div>` : ""}
 
     <h2>Groups</h2>

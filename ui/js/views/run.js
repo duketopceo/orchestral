@@ -9,6 +9,7 @@ import { bindJsonViewer, copyText, jsonViewerHtml } from "../components/json-vie
 import { icon, liveGlyph, stateHtml } from "../components/states.js";
 import { bindTabs, tabsHtml } from "../components/tabs.js";
 import { timelineHtml } from "../components/timeline.js";
+import { fillBars, enterRows, patch, tick } from "../motion.js";
 import { bindFlags, flagWidget, loadFlags } from "../flags.js";
 import { duration } from "../format.js";
 import { STOP, start, stop } from "../poller.js";
@@ -87,6 +88,8 @@ function failureHtml(d) {
     <h2 id="rd-fail-h">Why it failed</h2><dl>${rows.join("")}</dl></section>`;
 }
 
+const tokensText = m => fmtTok((m.total_input_tokens || 0) + (m.total_output_tokens || 0));
+
 function headHtml(d, runId, tab, hosted) {
   const m = d.meta;
   const js = (d.report && d.report.judges) || {};
@@ -111,9 +114,9 @@ function headHtml(d, runId, tab, hosted) {
         <div class="stat"><span class="s-label">Verdict</span><span class="s-val">${statusChip(m)}${m.dry_run ? ' <span class="chip chip-dim">Dry run</span>' : ""}${d.holdout ? ' <span class="chip chip-dim">Holdout</span>' : ""}</span></div>
         <div class="stat"><span class="s-label">Judge</span><span class="s-val">${judgeChip({ ...m, judge_state: d.judge_state, judge_reason: d.judge_reason })}${
           extra.length ? ` <span class="chip chip-dim" title="Secondary judge verdicts. The primary axis is ${esc(primary || "unknown")}">${extra.map(([s, j]) => `${esc(slug(s))} ${fmtScore(j && j.score)}`).join(" · ")}</span>` : ""}</span></div>
-        ${kv("Cost", `${nilOr(fmtMoney(billed))}${m.cost_basis ? ` <span class="dim sm" title="${esc(basisNote(m))}">${esc(basisNote(m))}</span>` : ""}${
+        ${kv("Cost", `<span data-tick="cost">${nilOr(fmtMoney(billed))}</span>${m.cost_basis ? ` <span class="dim sm" title="${esc(basisNote(m))}">${esc(basisNote(m))}</span>` : ""}${
           differs ? ` <span class="dim sm" data-rate-card="1">rate card ${fmtMoney(rate)}</span>` : ""}`)}
-        ${kv("Tokens", fmtTok((m.total_input_tokens || 0) + (m.total_output_tokens || 0)))}
+        ${kv("Tokens", `<span data-tick="tokens">${tokensText(m)}</span>`)}
         ${kv("Duration", fmtMs(m.latency_ms))}
         ${kv("Started", fmtWhen(m.started_at))}
       </div>
@@ -191,10 +194,18 @@ function bindActions(runId, d, params) {
   });
 }
 
+function tickStat(name, text) {
+  const el = document.querySelector(`#view [data-tick="${name}"]`);
+  if (el) tick(el, text);
+}
+
 async function refreshRun(runId, tab, params, signal) {
   const d = await data.run(runId, { signal });
   const tl = document.getElementById("tl");
-  if (tl) tl.innerHTML = timelineHtml(runId, d.lanes, { running: true });
+  // phase advance: only bars that appeared since the last poll fill in
+  if (tl) patch(tl, timelineHtml(runId, d.lanes, { running: true }), ".ln-bar", n => n.getAttribute("href"), fillBars);
+  tickStat("cost", nilOr(fmtMoney(billedOf(d.meta))));
+  tickStat("tokens", tokensText(d.meta));
   const live = document.getElementById("rd-live");
   const next = (d.liveness || {}).state;
   if (d.meta.status === "running" && next !== "abandoned") {
@@ -304,7 +315,9 @@ async function renderEvents(el, runId, d, running, params) {
     liveCursor = inc.next;
     const w = document.getElementById("ev-wrap");
     if (w && inc.rows.length) {
+      const seen = w.children.length;
       w.insertAdjacentHTML("beforeend", inc.rows.map((r, i) => evRow(r, inc.details[i], evCount + i)).join(""));
+      enterRows([...w.children].slice(seen));
       evCount += inc.rows.length;
       const tabCount = document.querySelector("#tab-events .tab-count");
       if (tabCount) tabCount.textContent = String(evCount);

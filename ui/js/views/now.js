@@ -3,6 +3,7 @@ import { $view } from "../dom.js";
 import { can, data, isHosted, optional } from "../data.js";
 import { isAbort } from "../api.js";
 import { heatmap } from "../charts/index.js";
+import { enterRows, patch } from "../motion.js";
 import { start } from "../poller.js";
 import { bindFlags, flagWidget, loadFlags } from "../flags.js";
 import { HOSTED_NOTE, UNOWNED_NOTE } from "../live.js";
@@ -281,7 +282,8 @@ export async function viewNow() {
   const host = $view.querySelector("#live-host");
   const refreshLive = async signal => {
     const fresh = await data.overview({ signal });
-    host.innerHTML = liveBand(fresh.jobs || [], hosted);
+    // a lane that starts after the first paint enters with the row-insert wash
+    patch(host, liveBand(fresh.jobs || [], hosted), ".live-lane", n => n.dataset.run, enterRows);
   };
   bindLive(host, refreshLive);
   if (can("live_stream")) start("now-live", refreshLive, { ms: 5000, scope: "route" });

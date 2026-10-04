@@ -49,9 +49,9 @@ function dispatch(path, params) {
   if (path === "/leaderboard") return viewLeaderboard(params);
   if (path === "/cards") return viewCards(params);
   if (path === "/card") return viewCard(params);
-  if (path === "/models") return viewModels();
+  if (path === "/models") return viewModels(params);
   if (path === "/new") return viewNew();
-  if (path === "/about") return viewAbout();
+  if (path === "/about") return viewAbout(params);
   $view.innerHTML = stateHtml("nomatch", {
     heading: true, title: "No such view",
     body: `There is nothing at <code>${esc(path)}</code>.`,

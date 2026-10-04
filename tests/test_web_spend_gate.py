@@ -358,7 +358,9 @@ class TestUiDefaults(unittest.TestCase):
             self.assertIn(row, self.js)
 
     def test_spend_button_is_disabled_while_the_estimate_loads(self):
-        self.assertIn("btn.disabled = true;\n    line.textContent = \"Paid run. Estimating cost", self.js)
+        # the price segment is disabled while "loading" (components/spend.js) and new.js enters that state
+        self.assertIn('btn.disabled = !dry && status === "loading"', self.js)
+        self.assertIn('setSpendButton(btn, { dry: false, status: "loading" });\n    line.textContent = "Paid run. Estimating cost', self.js)
 
 
 def _lum(hex_color: str) -> float:
@@ -405,13 +407,16 @@ class TestNewRunBrowser(_Server):
                 pg.goto(f"http://127.0.0.1:{self.port}/#/new")
                 pg.wait_for_selector("#launch-btn")
                 self.assertTrue(pg.is_checked("input[name=dry_run]"))
-                self.assertEqual(pg.inner_text("#launch-btn"), "Launch dry run")
+                self.assertEqual(pg.inner_text("#launch-btn .spend-label"), "Launch dry run")
 
+                pg.fill("#launch-task", "t-task")
+                pg.keyboard.press("ArrowDown")
+                pg.keyboard.press("Enter")
                 pg.uncheck("input[name=dry_run]")
                 pg.wait_for_function(
                     "document.getElementById('spend-line').textContent.includes('Estimated cost')")
                 self.assertIn("unknown", pg.inner_text("#spend-line"))
-                self.assertEqual(pg.inner_text("#launch-btn"), "Launch paid run")
+                self.assertEqual(pg.inner_text("#launch-btn .spend-label"), "Launch paid run")
 
                 pg.click("#launch-btn")
                 pg.wait_for_selector("dialog.spend-dialog[open]")

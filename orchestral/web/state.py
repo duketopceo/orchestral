@@ -781,6 +781,39 @@ def task_choices(tasks_dir: Path) -> list[str]:
     return ids
 
 
+def task_picker_payload(store: RunStore, tasks_dir: Path | str) -> dict[str, Any]:
+    """Task rows for the New run combobox: type, family, difficulty and the
+    median billed cost of past real runs. A task with no billed history has
+    ``expected_cost_usd`` None, which the UI shows as unknown, never as $0."""
+    import statistics
+
+    from orchestral.config import load_task
+    root = Path(tasks_dir)
+    costs: dict[str, list[float]] = {}
+    for r in runs_payload(store, tasks_dir=root):
+        if r.get("dry_run") or r.get("status") not in {"finished", "failed"}:
+            continue
+        costs.setdefault(r["task_id"], []).append(float(r.get("billed_cost_usd") or 0.0))
+    rows: list[dict[str, Any]] = []
+    for path in sorted(root.rglob("*.yaml")):
+        try:
+            spec = load_task(path)
+        except Exception:
+            continue
+        md = spec.metadata or {}
+        folder = path.parent.relative_to(root).parts
+        history = costs.get(spec.id, [])
+        rows.append({
+            "id": spec.id, "title": spec.title or "", "type": spec.type,
+            "family": str(md.get("archetype") or (folder[0] if folder else "")),
+            "difficulty": str(md.get("difficulty") or ""),
+            "runs": len(history),
+            "expected_cost_usd": statistics.median(history) if history else None,
+        })
+    rows.sort(key=lambda r: (r["type"], r["id"]))
+    return {"tasks": rows, "types": sorted({r["type"] for r in rows})}
+
+
 def model_choices(models_dir: Path, role: str | None) -> list[dict[str, Any]]:
     """Model options for the launch form — slug plus the metadata the UI
     needs for executor badges and capability/modality filtering.

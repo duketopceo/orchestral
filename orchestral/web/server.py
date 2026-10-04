@@ -375,6 +375,8 @@ def make_handler(obs: Observatory) -> type[BaseHTTPRequestHandler]:
                 self._shot_png(qs)
             elif path == "/api/tasks":
                 self._json(state.task_choices(obs.tasks_dir))
+            elif path == "/api/task-picker":
+                self._json(state.task_picker_payload(obs.store, obs.tasks_dir))
             elif path == "/api/models":
                 self._json(state.model_choices(obs.models_dir, self._q1(qs, "role")))
             elif path == "/api/estimate":

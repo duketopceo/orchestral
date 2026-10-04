@@ -210,14 +210,14 @@ class TestShellAndServing(unittest.TestCase):
         self.assertIn('class="brand-mark"', html)
 
     def test_report_card_brand_inlines_the_ictus_mark(self):
-        card = (UI / "js" / "views" / "card.js").read_text(encoding="utf-8")
+        card = (UI / "js" / "components" / "program-card.js").read_text(encoding="utf-8")
         self.assertNotIn("◆", card)
         path = re.search(r'<path fill="currentColor" d="([^"]+)"/>',
-                         (BRAND / "mark-16.svg").read_text(encoding="utf-8"))
+                         (BRAND / "mark.svg").read_text(encoding="utf-8"))
         assert path
-        brand = re.search(r'<div class="xc-brand">.*?</div>', card).group(0)  # type: ignore[union-attr]
+        brand = re.search(r'<svg class="pc-mark".*?</svg>', card).group(0)  # type: ignore[union-attr]
         self.assertIn(f'<path fill="currentColor" d="{path.group(1)}"/>', brand)
-        self.assertIn('viewBox="0 0 16 16"', brand)
+        self.assertIn('viewBox="0 0 24 24"', brand)
 
     def test_linked_hrefs_resolve(self):
         _, _, body = self.get("/")

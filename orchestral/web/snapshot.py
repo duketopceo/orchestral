@@ -75,6 +75,15 @@ class _PublishedStore:
         return getattr(self._store, name)
 
 
+PublishedStore = _PublishedStore
+
+
+def withheld_run(store: RunStore, run_id: str) -> bool:
+    """True when ``run_id`` is a holdout run: no card, capture or OG may show it."""
+    meta = store.get_run(run_id)
+    return meta is not None and _is_holdout_meta(meta)
+
+
 def _is_holdout_meta(meta: Any) -> bool:
     return run_is_holdout(Path(meta.run_dir), meta.config) if meta.run_dir else bool(
         (meta.config or {}).get("holdout"))

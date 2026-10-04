@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en" data-theme="paper">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=1200">
+<title>orchestral: social image</title>
+<!-- Static source of og-default.png (1200x630, 1x). Rendered by
+     `python harness.py cards --og` through orchestral/shots.py. It carries no
+     run data and makes no network request: type, the ictus mark and the staff
+     geometry only. Paper theme, tokens from ../tokens.css. -->
+<link rel="stylesheet" href="../tokens.css">
+<style>
+  html, body { margin: 0; width: 1200px; height: 630px; overflow: hidden; background: var(--canvas); color: var(--ink); }
+  body { position: relative; font-family: var(--font-sans); }
+  .brand { position: absolute; left: 72px; top: 64px; display: flex; align-items: center; gap: 14px; }
+  .brand svg { width: 40px; height: 40px; display: block; }
+  .brand span { font: 600 32px/40px var(--font-sans); letter-spacing: -.01em; }
+  h1 {
+    position: absolute; left: 72px; top: 196px; width: 800px; margin: 0;
+    font: 600 56px/60px var(--font-sans); font-stretch: 90%; letter-spacing: -.02em;
+  }
+  .sub { position: absolute; left: 72px; top: 444px; width: 700px; margin: 0; font: 400 22px/32px var(--font-sans); color: var(--ink-2); }
+  .foot { position: absolute; left: 72px; right: 72px; bottom: 48px; display: flex; justify-content: space-between;
+    padding-top: 16px; border-top: 1px solid var(--rule-strong); font: 400 18px/24px var(--font-mono); color: var(--ink-2); }
+  /* the ictus staff, drawn large: two lines and the baton landing on the top one */
+  .staff { position: absolute; right: 72px; top: 64px; width: 280px; height: 280px; color: var(--ink); }
+  .staff svg { width: 100%; height: 100%; display: block; }
+</style>
+</head>
+<body>
+<div class="brand">
+  <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path fill="currentColor" d="M2 12h20v2H2zM2 18h20v2H2zM4.38 2.62L2.62 4.38L10.23 12h3.54z"/></svg>
+  <span>orchestral</span>
+</div>
+<div class="staff"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path fill="currentColor" d="M2 12h20v2H2zM2 18h20v2H2zM4.38 2.62L2.62 4.38L10.23 12h3.54z"/></svg></div>
+<h1>Which orchestrator and worker pairing does the job at the lowest cost per pass?</h1>
+<p class="sub">Every claim shows its sample size, its interval and its caveat.</p>
+<div class="foot"><span>github.com/duketopceo/orchestral</span><span>observatory</span></div>
+</body>
+</html>

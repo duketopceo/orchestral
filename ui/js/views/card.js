@@ -3,84 +3,63 @@ import { $view } from "../dom.js";
 import { can, data, optional } from "../data.js";
 import { confirmSpend } from "../confirm.js";
 import { bindFlags, flagOf, flagWidget, loadFlags } from "../flags.js";
-import { NIL, esc, fmtEstimate, fmtMoney, fmtScore, fmtUsdRange, newIdempotencyKey, providerErrorText, slug, spendContextRows } from "../util.js";
+import { esc, fmtEstimate, fmtUsdRange, newIdempotencyKey, providerErrorText, slug, spendContextRows } from "../util.js";
+import { bindFit, cardModel, fitFrame, programCard, waitForCardAssets } from "../components/program-card.js";
 
-function cardMetric(metric) {
-  return `<div class="xc-metric ${esc(metric.tone || "cost")}">
-    <span class="xc-metric-label">${esc(metric.label)}</span>
-    <strong>${esc(metric.value)}</strong>
-    <span class="xc-metric-detail">${esc(metric.detail || "")}</span>
+const FIELD_MAX = 1000;
+const DL_PROBLEMS = {
+  playwright_missing: "Playwright is not installed, so the PNG cannot be made here. Install it, then try again:",
+  chromium_missing: "Chromium is not installed for Playwright, so the PNG cannot be made here. Install it, then try again:",
+  timeout: "Making the PNG took too long. The card is fine; try again.",
+  view_error: "The card view reported an error, so no PNG was made. Reload the card and try again.",
+  withheld: "This card is withheld and cannot be published.",
+};
+
+/* Capture mode (?capture=1): the bare card at its true 1200x675 size on the
+   paper theme, with no shell around it. Playwright screenshots `.xcard`. */
+function captureMode() {
+  const root = document.documentElement;
+  root.dataset.capture = "1";
+  root.dataset.theme = "paper";
+}
+
+function counted(id, value) {
+  return `<div class="pub-field">
+    <label for="${id}-text">${id === "alt" ? "Alt text" : "Caption"}</label>
+    <textarea id="${id}-text" rows="${id === "alt" ? 6 : 5}" maxlength="${FIELD_MAX}" spellcheck="true">${esc(value)}</textarea>
+    <div class="pub-field-foot"><span id="${id}-count" class="pub-count">${value.length} / ${FIELD_MAX}</span>
+      ${id === "alt" ? `<span id="alt-error" class="form-error" role="alert"></span>` : ""}
+      <button type="button" class="btn" id="copy-${id}">Copy ${id === "alt" ? "alt text" : "caption"}</button></div>
   </div>`;
 }
 
-function cardProof(proof, evidence) {
-  const resolved = evidence || proof || {};
-  const transcript = resolved.transcript || proof?.transcript;
-  const artifact = resolved.artifact || proof?.artifact;
-  const artifactBytes = artifact && artifact.bytes != null ? Number(artifact.bytes) : null;
-  const hasArtifact = !!artifact && artifactBytes !== 0;
-  const transcriptText = transcript && transcript.text ? transcript.text : "";
-  const proofStatus = resolved.status || proof?.status || "unavailable";
-  const runId = resolved.run_id || proof?.run_id;
-  const left = transcriptText
-    ? `<pre class="xc-proof-code">${esc(transcriptText)}</pre>`
-    : `<div class="xc-proof-empty"><span class="proof-mark">${NIL}</span><p>No terminal or test transcript stored for this run.</p></div>`;
-  let right;
-  if (!hasArtifact) {
-    right = `<div class="xc-proof-empty"><span class="proof-mark">∅</span><p>No artifact survives in this run. The transcript is the available proof.</p></div>`;
-  } else if (artifact.media_type === "image" || artifact.kind === "image") {
-    right = `<img class="xc-proof-media" src="${esc(artifact.url)}" alt="${esc(artifact.name)} stored artifact">`;
-  } else if (artifact.media_type === "video" || artifact.kind === "video") {
-    right = `<video class="xc-proof-media" src="${esc(artifact.url)}" controls muted></video>`;
-  } else if (artifact.render_url) {
-    right = `<iframe class="xc-proof-frame" sandbox="allow-scripts" src="${esc(artifact.render_url)}" title="rendered artifact ${esc(artifact.render_name || artifact.name)}" loading="lazy"></iframe>`;
-  } else if (artifact.preview) {
-    right = `<pre class="xc-proof-code artifact">${esc(artifact.preview)}</pre>`;
-  } else {
-    right = `<div class="xc-proof-empty"><span class="proof-mark">↗</span><p><a href="${esc(artifact.url)}">Open ${esc(artifact.name)}</a> in the run inspector.</p></div>`;
+async function download(route, status) {
+  status.textContent = "Making the PNG…";
+  let res;
+  try { res = await fetch(`/api/shot.png?route=${encodeURIComponent(route)}`); }
+  catch { status.textContent = "The request did not reach the observatory. Is it still running?"; return; }
+  if (!res.ok) {
+    let body = {};
+    try { body = await res.json(); } catch { /* not JSON */ }
+    const lead = DL_PROBLEMS[body.code] || body.error || `The PNG could not be made (status ${res.status}).`;
+    status.textContent = body.install ? `${lead} ${body.install}` : lead;
+    return;
   }
-  return `<div class="xc-proof-grid">
-    <section class="xc-proof-panel">
-      <div class="xc-proof-head"><span>Terminal / Tests</span><span class="proof-status ${proofStatus}">${transcriptText ? "Stored" : "Unavailable"}</span></div>
-      ${left}
-    </section>
-    <section class="xc-proof-panel">
-      <div class="xc-proof-head"><span>Code / Artifact</span><span class="proof-status ${hasArtifact ? "stored" : "unavailable"}">${hasArtifact ? esc(artifact.name) : "Unavailable"}</span></div>
-      ${right}
-    </section>
-  </div>${runId ? `<div class="xc-proof-foot">Representative evidence: <a href="#/run/${esc(runId)}">inspect run ${esc(runId.slice(0, 12))}</a></div>` : ""}`;
-}
-
-function cardTitle(d, kind) {
-  if (kind === "pairing") return `${esc(slug(d.orchestrator))} <span class="arrow">→</span> ${esc(slug(d.worker))}`;
-  if (kind === "run") return esc(d.task_title || d.task_id || d.target);
-  return esc(d.group_label || d.target);
-}
-
-function cardContext(d, kind, cohort) {
-  cohort = cohort || {};
-  if (kind === "group") {
-    const repeats = cohort.repeats ? ` · ${cohort.repeats} repeats` : "";
-    return `${cohort.runs ?? 0} runs · ${cohort.finished ?? 0} finished · ${cohort.tasks ?? 0} tasks · ${cohort.pairings ?? 0} pairings · ${cohort.orchestrators ?? 0} orchestrators / ${cohort.workers ?? 0} workers${repeats}`;
-  }
-  if (kind === "pairing") {
-    return `${d.runs} runs · ${d.tasks} tasks · ${(d.groups || []).map(esc).join(", ") || "ungrouped"}`;
-  }
-  return `${esc(d.task_id || "")} · ${esc(d.group_label || d.run_group || "ungrouped")} · run ${esc((d.target || "").slice(0, 12))}`;
-}
-
-async function waitForCardAssets() {
-  const images = [...document.querySelectorAll(".xcard img")];
-  await Promise.all(images.map(image => image.complete
-    ? Promise.resolve()
-    : new Promise(resolve => { image.addEventListener("load", resolve, { once: true }); image.addEventListener("error", resolve, { once: true }); })));
-  if (document.fonts && document.fonts.ready) await document.fonts.ready;
+  const blob = await res.blob();
+  const name = /filename="([^"]+)"/.exec(res.headers.get("Content-Disposition") || "")?.[1] || "orchestral-card.png";
+  const url = URL.createObjectURL(blob);
+  const a = Object.assign(document.createElement("a"), { href: url, download: name });
+  document.body.append(a);
+  a.click();
+  a.remove();
+  status.textContent = `Saved ${name}.`;
 }
 
 export async function viewCard(params) {
   const kind = params.get("kind") || (params.get("run") ? "run" : "group");
   const target = params.get("target") || params.get("run") || params.get("group") || "";
   if (!target) { location.hash = "#/cards"; return; }
+  const capture = params.get("capture") === "1";
   const scopedGroup = params.get("group") || "";
   const lens = params.get("lens") || "overall";
   const d = await data.card({ kind, target, lens, group: scopedGroup });
@@ -89,41 +68,28 @@ export async function viewCard(params) {
   if (proof?.run_id) {
     evidence = (await optional(data.runEvidence(proof.run_id))) ?? proof;
   }
+  const model = cardModel(d, kind, lens, evidence);
+  if (capture) {
+    captureMode();
+    $view.innerHTML = programCard(model);
+    await waitForCardAssets($view);
+    return;
+  }
   await loadFlags();
-  const story = d.story || {
-    claim: d.verdict_line || "Evidence is still incomplete.",
-    caption: d.description || "",
-    lens: { id: lens, label: lens, reason: "" },
-    cohort: { runs: d.runs ?? 1, finished: d.finished ?? 0, tasks: d.tasks ?? 1, pairings: d.pairings?.length ?? 1, orchestrators: 1, workers: 1 },
-    metrics: [],
-    signals: [],
-    caveats: [],
-  };
-  const metrics = story.metrics?.length ? story.metrics : [
-    { id: "mechanical", label: "Mechanical", value: d.passes == null ? F.NULL_GLYPH : d.passes ? "PASS" : "FAIL", detail: "Execution gate", tone: "mech" },
-    { id: "judge", label: "Judge", value: fmtScore(d.judge_score), detail: d.judge_state || "not judged", tone: "judge" },
-    { id: "cost", label: "Cost", value: fmtMoney(d.cost_usd), detail: "Observed spend", tone: "cost" },
-  ];
-  const signals = story.signals || [];
   const flag = flagOf(kind, target);
-  const signalHtml = signals.length
-    ? `<div class="xc-signal-row">${signals.map(signal => `<span class="xc-signal ${esc(signal.tone || "info")}">${esc(signal.label)}</span>`).join("")}</div>`
-    : `<div class="xc-signal-row"><span class="xc-signal neutral">No escalation signal</span></div>`;
-  const caveats = (story.caveats || []).slice(0, 2).join(" · ");
   const inspectHref = kind === "group"
     ? `#/runs?group=${encodeURIComponent(target)}`
     : kind === "pairing"
       ? `#/leaderboard?${new URLSearchParams({ group: scopedGroup, lens }).toString()}`
       : `#/run/${encodeURIComponent(target)}`;
+  const route = `${location.hash.slice(1).replace(/&?capture=1/, "")}`;
 
   $view.innerHTML = `<div class="card-stage">
     <h1 class="sr-only">${esc(kind[0].toUpperCase() + kind.slice(1))} card: ${esc(target)}</h1>
     <div class="card-toolbar">
       ${flagWidget(kind, target)}
-      <a class="btn" href="#/cards">All cards</a>
-      <a class="btn" href="${inspectHref}">Inspect →</a>
-      ${can("png_capture") ? `<a class="btn" href="/api/shot.png?route=${encodeURIComponent(location.hash.slice(1))}" download>Download PNG</a>` : ""}
-      <button class="btn" id="copy-context">Copy context</button>
+      <a class="btn" href="#/cards">Publish</a>
+      <a class="btn" href="${inspectHref}">Inspect</a>
       ${can("thread") ? `<input id="thread-model" class="thread-model" placeholder="Writer model (optional, paid)" aria-label="Writer model slug. Leave blank to use free templates." value="">
       <select id="thread-n" class="thread-n" title="Follow-up posts (the card is post 1)">
         <option value="3" selected>4-post thread</option>
@@ -131,39 +97,56 @@ export async function viewCard(params) {
         <option value="2">3-post thread</option>
       </select>
       <button class="btn primary" id="btn-thread">Write thread</button>` : ""}
-      ${can("png_capture") ? `<span class="hint">1200×675 PNG (X-ready) · named download · ${flag === "interesting" ? "Flagged story" : "Local export"}</span>` : ""}
     </div>
-    <div class="xcard" data-card-scope="${esc(kind)}" data-card-lens="${esc(story.lens?.id || lens)}">
-      <div class="xc-top">
-        <div class="xc-brand"><span class="mark" aria-hidden="true"><svg viewBox="0 0 16 16" width="16" height="16" fill="none" aria-hidden="true" focusable="false"><path fill="currentColor" d="M1 8h14v2H1zM1 13h14v2H1zM2 2h2v2H2zM4 4h2v2H4zM6 6h2v2H6z"/></svg></span><span class="word">orchestral</span><span class="sub">observatory</span></div>
-        <div class="xc-suite">${esc(kind[0].toUpperCase() + kind.slice(1))} card · suite ${esc(d.suite || F.NULL_GLYPH)}</div>
-      </div>
-      <div class="xc-story-head">
-        <div class="xc-story-title">
-          <div class="xc-scope">${esc(kind === "group" ? "Run group" : kind === "pairing" ? "Orchestrator → Worker" : "Individual run")}</div>
-          <div class="xc-title">${cardTitle(d, kind)}</div>
-          <div class="xc-sub">${cardContext(d, kind, story.cohort)}</div>
+    <div class="pub-editor">
+      <figure class="pub-feed">
+        ${fitFrame(programCard(model), { max: 600, id: "feed-preview" })}
+        <figcaption class="hint">Feed size, 600 px wide. ${can("png_capture") ? `The PNG is 2400 by 1350 (1200 by 675 at 2x). ${flag === "interesting" ? "Flagged story." : "Local export."}` : "PNGs are made on the machine that holds the runs."}</figcaption>
+      </figure>
+      <div class="pub-side">
+        ${counted("alt", model.alt)}
+        ${counted("caption", model.caption)}
+        <div class="pub-actions">
+          ${can("png_capture") ? `<button type="button" class="btn primary" id="download-png">Download PNG</button>` : ""}
+          <span id="dl-status" class="pub-status" role="status" aria-live="polite"></span>
         </div>
-        <div class="xc-lens"><span>${esc(story.lens?.label || lens)}</span><small>${esc(story.lens?.reason || "")}</small></div>
-      </div>
-      <div class="xc-claim">${esc(story.claim)}</div>
-      ${signalHtml}
-      <div class="xc-metrics">${metrics.map(cardMetric).join("")}</div>
-      ${cardProof(proof, evidence)}
-      <div class="xc-footer">
-        <span>${esc(caveats || "Mechanical and judge axes remain separate")}</span>
-        <span>${esc(d.suite ? d.suite : "no suite")} · ${esc((story.provenance?.source || "orchestral observatory"))}</span>
       </div>
     </div>
     <div id="thread-panel"></div>
   </div>`;
 
-  document.getElementById("copy-context").addEventListener("click", async e => {
-    const button = e.currentTarget;
-    const text = story.caption || d.description || story.claim;
-    try { await navigator.clipboard?.writeText(text); button.textContent = "Copied"; }
-    catch { button.textContent = "Copy failed"; }
+  const alt = document.getElementById("alt-text");
+  const caption = document.getElementById("caption-text");
+  const dl = document.getElementById("download-png");
+  const syncAlt = () => {
+    document.getElementById("alt-count").textContent = `${alt.value.length} / ${FIELD_MAX}`;
+    const empty = !alt.value.trim();
+    document.getElementById("alt-error").textContent = empty ? "Alt text is required before you publish." : "";
+    alt.setAttribute("aria-invalid", empty ? "true" : "false");
+    if (dl) dl.disabled = empty;
+    document.getElementById("copy-alt").disabled = empty;
+  };
+  alt.addEventListener("input", syncAlt);
+  caption.addEventListener("input", () => {
+    document.getElementById("caption-count").textContent = `${caption.value.length} / ${FIELD_MAX}`;
   });
+  syncAlt();
+  for (const [id, field] of [["copy-alt", alt], ["copy-caption", caption]]) {
+    document.getElementById(id).addEventListener("click", async e => {
+      const button = e.currentTarget;
+      const label = button.textContent;
+      try { await navigator.clipboard?.writeText(field.value); button.textContent = "Copied"; }
+      catch { button.textContent = "Copy failed"; }
+      button.addEventListener("blur", () => { button.textContent = label; }, { once: true });
+    });
+  }
+  if (dl) {
+    dl.addEventListener("click", async () => {
+      dl.disabled = true;
+      try { await download(route, document.getElementById("dl-status")); }
+      finally { syncAlt(); }
+    });
+  }
   document.getElementById("btn-thread")?.addEventListener("click", async e => {
     const btn = e.currentTarget;
     const panel = document.getElementById("thread-panel");
@@ -227,5 +210,6 @@ export async function viewCard(params) {
     }
   });
   bindFlags($view);
-  await waitForCardAssets();
+  bindFit($view);
+  await waitForCardAssets($view);
 }

@@ -711,13 +711,14 @@ class TestHttpRoutes(unittest.TestCase):
                 return_value=b"\x89PNG-fake") as cap:
             req = urllib.request.Request(
                 f"http://127.0.0.1:{self.port}/api/shot.png"
-                f"?route={quote('/card?kind=pairing&target=o/m|w/m')}")
+                f"?route={quote('/card?kind=pairing&target=o/model|w/model')}")
             with urllib.request.urlopen(req) as r:
                 self.assertEqual(r.status, 200)
                 self.assertEqual(r.headers.get("Content-Type"), "image/png")
                 self.assertIn("filename=", r.headers.get("Content-Disposition", ""))
                 self.assertEqual(r.read(), b"\x89PNG-fake")
         self.assertEqual(cap.call_args.kwargs["element"], ".xcard")
+        self.assertIn("capture=1", cap.call_args.args[0])
         # non-card routes capture the settled view, not a card node
         with unittest.mock.patch(
                 "orchestral.shots.capture_page",

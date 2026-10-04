@@ -2099,16 +2099,24 @@ def cmd_cards(args: argparse.Namespace) -> None:
     from urllib.parse import quote
 
     from orchestral.shots import (
+        CARD_SCALE,
+        CARD_VIEWPORT,
+        CaptureError,
         ScreenshotUnavailable,
         browser_session,
         capture_page,
+        optimize_png,
+        render_og,
         shot_name,
     )
     from orchestral.web import state as wstate
-    from orchestral.web.server import Observatory, make_handler
+    from orchestral.web.server import Observatory, make_handler, published_observatory
 
-    store = RunStore(args.runs_dir)
-    obs = Observatory(Path(args.runs_dir), Path(args.tasks_dir), Path(args.models_dir))
+    # Holdout runs are withheld whole: the export reads the published view of
+    # the store, so no page it captures and no card target it names carries one.
+    obs = published_observatory(
+        Observatory(Path(args.runs_dir), Path(args.tasks_dir), Path(args.models_dir)))
+    store = obs.store
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(obs))
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     base = f"http://127.0.0.1:{httpd.server_address[1]}"
@@ -2146,8 +2154,13 @@ def cmd_cards(args: argparse.Namespace) -> None:
         with browser_session() as browser:
             for route, element in targets:
                 try:
-                    png = capture_page(f"{base}/#{route}", element=element, browser=browser)
-                except ScreenshotUnavailable as exc:
+                    if element:
+                        png = optimize_png(capture_page(
+                            f"{base}/#{route}&capture=1", element=element, browser=browser,
+                            scale=CARD_SCALE, width=CARD_VIEWPORT[0], height=CARD_VIEWPORT[1]))
+                    else:
+                        png = capture_page(f"{base}/#{route}", browser=browser)
+                except (ScreenshotUnavailable, CaptureError) as exc:
                     failed += 1
                     if failed == 1:
                         print(f"capture failed: {exc}")
@@ -2169,6 +2182,10 @@ def cmd_cards(args: argparse.Namespace) -> None:
                     stale.unlink()
                 (out_dir / name).write_bytes(png)
                 written += 1
+        if getattr(args, "og", False):
+            og_out = Path(__file__).resolve().parent / "ui" / "og" / "og-default.png"
+            render_og(og_out)
+            print(f"og: wrote {og_out}")
     except ScreenshotUnavailable as exc:
         print(f"Screenshot unavailable: {exc}")
         return
@@ -2456,6 +2473,8 @@ def build_parser() -> argparse.ArgumentParser:
     cards = sub.add_parser("cards", help="Batch-export X-ready PNGs (leaderboard + every group/pairing card) via playwright")
     cards.add_argument("--reports-dir", default="reports", help="Output root: writes <reports>/cards/")
     cards.add_argument("--group", default=None, help="Only export cards scoped to this run_group")
+    cards.add_argument("--og", action="store_true",
+                       help="Also render ui/og/og-default.png (1200x630) from ui/og/default.html")
     cards.set_defaults(func=cmd_cards)
     shots.set_defaults(func=cmd_shots)
 

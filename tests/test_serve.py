@@ -365,11 +365,11 @@ class TestPureLayer(unittest.TestCase):
         self.assertGreater(hi, 0.25)
         self.assertIsNone(state._wilson(0, 0))
         v = state._verdict_line
-        self.assertEqual(v(True, True, "finished"), "passes both axes — structure and semantics")
+        self.assertEqual(v(True, True, "finished"), "passes both axes: structure and semantics")
         self.assertEqual(v(True, False, "finished"), "well-formed but semantically rejected")
-        self.assertEqual(v(False, True, "finished"), "mechanical reject, semantic rescue — inspect")
+        self.assertEqual(v(False, True, "finished"), "mechanical reject, semantic rescue: inspect")
         self.assertEqual(v(False, False, "finished"), "rejected on both axes")
-        self.assertEqual(v(True, None, "finished"), "mechanical pass — unjudged")
+        self.assertEqual(v(True, None, "finished"), "mechanical pass, unjudged")
         self.assertIn("no verdict", v(None, None, "running"))
 
     def test_escaping_in_error_pages(self):
@@ -515,7 +515,7 @@ class TestHttpRoutes(unittest.TestCase):
     def test_spa_shell_and_api_surface(self):
         code, body = self._get("/")
         self.assertEqual(code, 200)
-        self.assertIn('src="/static/app.js"', body)
+        self.assertRegex(body, r'src="/static/app\.js\?v=[0-9a-f]+"')
         for path in ("/api/overview", "/api/groups", "/api/tasks",
                      "/api/models", "/api/leaderboard", "/api/runs"):
             code, body = self._get(path)

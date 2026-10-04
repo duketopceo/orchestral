@@ -10,6 +10,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
+from orchestral.format import NULL_GLYPH
 from orchestral.storage import RunStore
 
 STYLE = """
@@ -137,7 +138,7 @@ def _run_card(run: Any, run_dir: Path) -> str:
     <div class="card"><div class="metric">{meta.task_id}</div><small>Task</small></div>
     <div class="card"><div class="metric">{meta.worker}</div><small>Worker</small></div>
     <div class="card"><div class="metric">{pass_label}</div><small>Pass</small></div>
-    <div class="card"><div class="metric">${meta.total_cost_usd:.6f}</div><small>Cost</small></div>
+    <div class="card"><div class="metric">${meta.display_cost_usd:.6f}</div><small>Cost</small></div>
     <div class="card"><div class="metric">{meta.total_input_tokens + meta.total_output_tokens}</div><small>Tokens</small></div>
   </div>
 
@@ -239,7 +240,7 @@ def _index_html(runs: list[Any]) -> str:
             f"<td>{_esc(r.worker)}</td>"
             f"<td>{group_cell}</td>"
             f"<td>{rep_cell}</td>"
-            f"<td>${r.total_cost_usd:.6f}</td>"
+            f"<td>${r.display_cost_usd:.6f}</td>"
             f"<td>{score}</td>"
             f"<td>{jscore}</td>"
             f"<td><span class='tag {pass_cls}'>{pass_label}</span></td>"
@@ -251,11 +252,11 @@ def _index_html(runs: list[Any]) -> str:
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>orchestral — Runs</title>
+  <title>orchestral: Runs</title>
   {STYLE}
 </head>
 <body>
-  <h1>Orchestral — Runs</h1>
+  <h1>Orchestral: Runs</h1>
   <p>Click a run to drill into events, plan, cost, and artifact. <a href="gallery.html">Visual gallery</a> &middot; <a href="dashboard.html">Dashboard</a></p>
   {_groups_table_html(runs)}
   <table>
@@ -348,7 +349,7 @@ def _gallery_card(run: Any, shots_dir: Path) -> str:
         f"<div>{_esc(run.orchestrator)} &rarr; {_esc(run.worker)}</div>"
         f"<div class='tags'><span class='tag {pass_cls}'>{pass_label}</span> "
         f"<span class='tag'>mech {score}</span> {jscore_tag}"
-        f"<span class='tag'>${run.total_cost_usd:.4f}</span></div>"
+        f"<span class='tag'>${run.display_cost_usd:.4f}</span></div>"
         f"</div></div>"
     )
 
@@ -378,11 +379,11 @@ def generate_gallery(runs: list[Any], reports_dir: Path, task_id: str | None = N
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>orchestral — Gallery</title>
+  <title>orchestral: Gallery</title>
   {STYLE}
 </head>
 <body>
-  <h1>Orchestral — Gallery</h1>
+  <h1>Orchestral: Gallery</h1>
   <a href="index.html">&larr; All runs</a> &middot; <a href="dashboard.html">Dashboard</a>
   {sections}
 </body>
@@ -424,7 +425,7 @@ def _dashboard_html(runs: list[Any], summary: dict[str, Any], *, experiment: str
         recent_rows += (
             f"<tr><td><a href='{r.run_id}.html'>{r.run_id}</a></td>"
             f"<td>{_esc(planner)}</td><td>{_esc(r.orchestrator)}</td>"
-            f"<td>{_esc(r.worker)}</td><td>${r.total_cost_usd:.6f}</td>"
+            f"<td>{_esc(r.worker)}</td><td>${r.display_cost_usd:.6f}</td>"
             f"<td>{tokens}</td><td>{pass_label}</td></tr>"
         )
 
@@ -445,11 +446,11 @@ def _dashboard_html(runs: list[Any], summary: dict[str, Any], *, experiment: str
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>orchestral — Dashboard</title>
+  <title>orchestral: Dashboard</title>
   {STYLE}
 </head>
 <body>
-  <h1>Orchestral — Dashboard</h1>
+  <h1>Orchestral: Dashboard</h1>
   <a href="index.html">&larr; Per-run drill-down</a> &middot; <a href="gallery.html">Gallery</a>
 
   <div class="summary">
@@ -498,7 +499,7 @@ def _dashboard_html(runs: list[Any], summary: dict[str, Any], *, experiment: str
 def _bucket(table: dict[str, dict[str, float]], key: str, run: Any) -> None:
     if key not in table:
         table[key] = {"cost": 0.0, "tokens": 0, "runs": 0}
-    table[key]["cost"] += run.total_cost_usd
+    table[key]["cost"] += run.display_cost_usd
     table[key]["tokens"] += run.total_input_tokens + run.total_output_tokens
     table[key]["runs"] += 1
 
@@ -517,7 +518,7 @@ def model_history(runs: list[Any]) -> dict[str, dict[str, dict[str, Any]]]:
         g["passed"] += 1 if run.passes else 0
         if run.score is not None:
             g["scores"].append(run.score)
-        g["cost"] += run.total_cost_usd
+        g["cost"] += run.display_cost_usd
         g["tokens"] += run.total_input_tokens + run.total_output_tokens
 
     for r in runs:
@@ -548,7 +549,7 @@ def _scatter_svg(runs: list[Any]) -> str:
     if not pts:
         return "<p>No finished runs yet.</p>"
     w, h, pad_l, pad_r, pad_t, pad_b = 720, 340, 70, 20, 20, 50
-    xs = [r.total_cost_usd for r in pts]
+    xs = [r.display_cost_usd for r in pts]
     x_max = max(xs) or 1.0
 
     def quality(r: Any) -> float:
@@ -572,9 +573,9 @@ def _scatter_svg(runs: list[Any]) -> str:
         q = quality(r)
         judged = r.judge_score is not None
         axis = "judge" if judged else "score" if r.score is not None else "pass"
-        label = f"{_esc(pairing)} · {_esc(r.task_id)} · ${r.total_cost_usd:.4f} · {axis} {q:.2f}"
+        label = f"{_esc(pairing)} · {_esc(r.task_id)} · ${r.display_cost_usd:.4f} · {axis} {q:.2f}"
         circles.append(
-            f"<circle cx='{px(r.total_cost_usd):.1f}' cy='{py(q):.1f}' r='5' fill='{color}'"
+            f"<circle cx='{px(r.display_cost_usd):.1f}' cy='{py(q):.1f}' r='5' fill='{color}'"
             f" fill-opacity='{0.85 if judged else 0.4}' stroke='{color}' stroke-width='1'>"
             f"<title>{label}</title></circle>"
         )
@@ -642,7 +643,8 @@ def generate_dashboard(
 
     store = RunStore(runs_dir)
     runs = store.list_runs(limit=None)
-    summary = store.summary()
+    # the dashboard's headline cost is the provider's bill, not the rate card
+    summary = {**store.summary(), "total_cost_usd": store.billed_total_usd()}
 
     mp = Path(matrix_path) if matrix_path else Path(runs_dir).parent / "experiments" / "jev-ab.yaml"
     experiment = _experiment_html(store, mp) if mp.exists() else ""
@@ -664,15 +666,15 @@ def _experiment_html(store: Any, matrix_path: Path) -> str:
         return ""
     body = "".join(
         f"<tr><td>{_esc(r.task_id)}<br><small>{_esc(r.orchestrator)} → {_esc(r.worker)}</small></td>"
-        f"<td>{f'{r.baseline_passes}/{r.baseline_n}' if r.baseline_n else '—'}</td>"
-        f"<td>{f'{r.jev_passes}/{r.jev_n}' if r.jev_n else '—'}</td>"
-        f"<td>{f'[{r.diff[0]:+.2f}, {r.diff[1]:+.2f}]' if r.diff else '—'}</td>"
+        f"<td>{f'{r.baseline_passes}/{r.baseline_n}' if r.baseline_n else NULL_GLYPH}</td>"
+        f"<td>{f'{r.jev_passes}/{r.jev_n}' if r.jev_n else NULL_GLYPH}</td>"
+        f"<td>{f'[{r.diff[0]:+.2f}, {r.diff[1]:+.2f}]' if r.diff else NULL_GLYPH}</td>"
         f"<td>{_esc(r.verdict)}</td><td>{_esc(r.state)}</td>"
-        f"<td>{'✓' if r.posted else ''}</td></tr>"
+        f"<td>{'posted' if r.posted else ''}</td></tr>"
         for r in rows
     )
     return f"""<div class="section">
-    <h2>Experiment — {_esc(matrix.name)}</h2>
+    <h2>Experiment: {_esc(matrix.name)}</h2>
     <p><small>Baseline vs jev-assist, paired replicates. Primary axis: mechanical pass.
     Judge-score deltas are self-referential (the decisions engine assists the
     jev arm and scores both arms).</small></p>

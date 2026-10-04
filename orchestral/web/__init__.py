@@ -22,9 +22,9 @@ def run_server(
 
     url = f"http://127.0.0.1:{port}"
     print(f"orchestral observatory: {url}")
-    print("localhost only — Ctrl-C to stop")
+    print("localhost only, Ctrl-C to stop")
     if allow_agent_exec:
-        print("executor workers ENABLED (--allow-agent-exec) — agent CLIs run with your OS privileges")
+        print("executor workers ENABLED (--allow-agent-exec): agent CLIs run with your OS privileges")
     if open_browser:
         webbrowser.open(url)
     serve(Path(runs_dir), Path(tasks_dir), Path(models_dir), port,

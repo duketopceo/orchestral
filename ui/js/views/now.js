@@ -5,7 +5,7 @@ import { isAbort } from "../api.js";
 import { start } from "../poller.js";
 import { bindFlags, flagWidget, loadFlags } from "../flags.js";
 import { HOSTED_NOTE, UNOWNED_NOTE } from "../live.js";
-import { NIL, esc, failureText, fmtMoney, fmtPct, fmtScore, fmtWhen, nilOr, slug } from "../util.js";
+import { NIL, esc, failureText, fmtMoney, fmtPct, fmtScore, fmtWhen, nilOr, pairingParam, slug } from "../util.js";
 import { icon, liveGlyph, stateHtml } from "../components/states.js";
 
 /* Now: three bands (Live, Changed since you last looked, Needs a look), then the
@@ -139,7 +139,8 @@ const rampStep = v => (v == null ? 0 : Math.min(5, Math.floor(v * 6)));
 const sentence = t => (t && t === t.toUpperCase() && /[A-Z]/.test(t) ? t.charAt(0) + t.slice(1).toLowerCase() : t);
 
 function heatCell(t, p, c, lowN) {
-  const href = `#/runs?task=${encodeURIComponent(t.task_id)}&pairing=${encodeURIComponent(p)}`;
+  const [orch, worker = ""] = p.split(" \u2192 ");
+  const href = `#/runs?task=${encodeURIComponent(t.task_id)}&pairing=${encodeURIComponent(pairingParam(orch, worker))}`;
   if (!c) return `<td class="heat-cell"><span class="hm-none" role="img" aria-label="Not attempted"></span></td>`;
   const v = c.pass_rate, low = c.n < lowN;
   const jm = c.judge_mean != null ? `, judge ${fmtScore(c.judge_mean)}` : "";

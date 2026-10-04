@@ -12,6 +12,7 @@ import shutil
 import tempfile
 import threading
 import unittest
+import urllib.request
 from datetime import UTC, datetime, timedelta
 from http.server import ThreadingHTTPServer
 from pathlib import Path
@@ -87,6 +88,10 @@ class _Server:
             status="finished" if passes or not reason else "failed",
             started_at=(done - timedelta(minutes=1)).isoformat(), finished_at=done.isoformat(),
             passes=passes, total_cost_usd=0.02, failure_reason=reason, run_group="u10-new"))
+
+    def api(self, path: str):
+        with urllib.request.urlopen(self.base + path, timeout=15) as r:  # noqa: S310
+            return json.loads(r.read())
 
     def close(self) -> None:
         self.httpd.shutdown()
@@ -208,6 +213,29 @@ class TestNow(_Base):
         q = pg.evaluate("Object.fromEntries(new URLSearchParams(location.hash.split('?')[1]))")
         self.assertTrue(q["task"].startswith("corpus-"))
         self.assertIn("corpus/", q["pairing"])
+
+    def test_heatmap_cell_lands_on_runs_with_the_pairing_facet_and_its_rows(self):
+        """Canonical URL form is `pairing=orch|worker` (URL-encoded), the same
+        one Runs reads and writes: clicking a cell applies both facets."""
+        pg = self.open(self.page(self.srv), self.srv)
+        cell = pg.locator("table.heat a.hm, .chart-heatmap a.hm-cell").first
+        href = cell.get_attribute("href")
+        self.assertIn("pairing=corpus%2F", href)
+        self.assertIn("%7C", href)  # the pipe, encoded
+        self.assertNotIn("%E2%86%92", href)  # never the arrow
+        cell.click()
+        pg.wait_for_selector("#view[data-ready]")
+        pg.wait_for_selector("#runs-count")
+        q = pg.evaluate("Object.fromEntries(new URLSearchParams(location.hash.split('?')[1]))")
+        orch, worker = q["pairing"].split("|")
+        self.assertEqual(pg.locator("#f-pairing").input_value(), q["pairing"])
+        self.assertEqual(pg.locator("#f-task").input_value(), q["task"])
+        self.assertEqual(pg.locator(".facet-chip.bad").count(), 0)
+        want = [r for r in self.srv.api("/api/runs")
+                if r["task_id"] == q["task"] and r["orchestrator"] == orch and r["worker"] == worker]
+        self.assertTrue(want)
+        pg.wait_for_function(
+            f"document.getElementById('runs-count').dataset.total === '{len(want)}'")
 
     def test_low_n_cell_is_hatched_and_says_low_n_without_a_warning_color(self):
         pg = self.open(self.page(self.srv), self.srv)

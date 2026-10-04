@@ -1060,7 +1060,7 @@ def runs_payload(
 
     `status` accepts a lifecycle status, `passed`/`failed` (verdict filters) or
     `stalled` (a `running` row with no event for STALL_AFTER_S, KTD8; derived,
-    never stored). `pairing` is `orchestrator|worker`. Every row carries
+    never stored). `pairing` is `orchestrator|worker` (the arrow form is a legacy alias). Every row carries
     `stalled`, `type`, `difficulty`, `group_label` and `tokens`. Filtering,
     sorting and paging are repeated client-side for the hosted snapshot
     (`filterRuns` in ui/js/data.js); keep the two in step.
@@ -1070,7 +1070,8 @@ def runs_payload(
     if q:
         rows = filter_runs(rows, q)
     if pairing:
-        orch, _, worker = pairing.partition("|")
+        # canonical `orch|worker`; the matrix key `orch → worker` is a legacy alias
+        orch, _, worker = (pairing if "|" in pairing else pairing.replace(" \u2192 ", "|", 1)).partition("|")
         rows = [r for r in rows if r.orchestrator == orch and r.worker == worker]
     abandoned = _abandoned_runs(store) if any(r.status == "running" for r in rows) else set()
 

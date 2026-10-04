@@ -134,6 +134,15 @@ class TestRunsList(_Base):
         pg.wait_for_function("Number(document.getElementById('runs-count').dataset.total) > 0")
         self.assertEqual(pg.locator(".facet-chip.bad").count(), 0)
 
+    def test_legacy_arrow_pairing_url_is_accepted_and_normalised(self):
+        arrow = "corpus%2Forch-b%20%E2%86%92%20corpus%2Fworker-hot"
+        pg = self.open(self.page(), f"?pairing={arrow}")
+        want = len(self.srv.api("/api/runs?pairing=corpus%2Forch-b%7Ccorpus%2Fworker-hot"))
+        self.assertGreater(want, 0)
+        pg.wait_for_function(f"document.getElementById('runs-count').dataset.total === '{want}'")
+        self.assertEqual(pg.locator("#f-pairing").input_value(), "corpus/orch-b|corpus/worker-hot")
+        self.assertEqual(pg.locator(".facet-chip.bad").count(), 0)
+
     def test_facets_are_url_synced_and_removable(self):
         pg = self.open(self.page())
         pg.select_option("#f-pairing", "corpus/orch-b|corpus/worker-hot")

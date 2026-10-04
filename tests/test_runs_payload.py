@@ -65,6 +65,13 @@ class TestRunsPayload(unittest.TestCase):
         self.assertTrue(all(r["orchestrator"] == "corpus/orch-b" and r["worker"] == "corpus/worker-hot"
                             for r in rows))
 
+    def test_pairing_facet_accepts_the_legacy_arrow_form(self):
+        """U10 heatmap links once used the matrix payload key `orch → worker`."""
+        want = self.rows(pairing="corpus/orch-b|corpus/worker-hot")
+        got = self.rows(pairing="corpus/orch-b \u2192 corpus/worker-hot")
+        self.assertTrue(want)
+        self.assertEqual([r["run_id"] for r in got], [r["run_id"] for r in want])
+
     def test_judge_facet_filters_on_judge_state(self):
         rows = self.rows(judge="judged")
         self.assertTrue(rows)

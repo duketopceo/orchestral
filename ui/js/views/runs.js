@@ -11,7 +11,7 @@ import { judgeChip, statusChip } from "../chips.js";
 import { bindFlags, flagWidget, loadFlags } from "../flags.js";
 import { start } from "../poller.js";
 import { announce } from "../shell.js";
-import { NIL, basisNote, billedOf, esc, fmtMoney, fmtMs, fmtTok, fmtWhen, slug } from "../util.js";
+import { NIL, basisNote, billedOf, esc, fmtMoney, fmtMs, fmtTok, fmtWhen, normPairing, slug } from "../util.js";
 
 export const PAGE_SIZE = 200;
 const POLL_MS = 20000;
@@ -26,6 +26,7 @@ const SORTS = [
 function readState(params) {
   const filters = { q: params.get("q") || "" };
   for (const f of RUN_FACETS) filters[f.key] = params.get(f.key) || "";
+  filters.pairing = normPairing(filters.pairing);
   return {
     filters, sort: params.get("sort") || "started", dir: params.get("dir") || "",
     page: Math.max(1, parseInt(params.get("page") || "1", 10) || 1),

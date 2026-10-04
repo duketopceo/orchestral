@@ -119,3 +119,13 @@ function calAxis(d) {
   const axis = calibrated ? "Calibrated semantic axis" : "Advisory semantic axis";
   return bits.length ? `${bits.join(" · ")} · ${axis}` : axis;
 }
+
+/* The one URL form for a pairing facet is `orchestrator|worker` (URL-encoded by the caller).
+   The matrix payload key `orchestrator \u2192 worker` is accepted as a legacy alias. */
+export const pairingParam = (orch, worker) => `${orch}|${worker}`;
+export function normPairing(v) {
+  const s = String(v || "");
+  if (s.includes("|")) return s;
+  const i = s.indexOf(" \u2192 ");
+  return i < 0 ? s : `${s.slice(0, i)}|${s.slice(i + 3)}`;
+}

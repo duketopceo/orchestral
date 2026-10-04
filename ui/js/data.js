@@ -5,6 +5,7 @@
    orchestral/web/snapshot.py writes (served by the Worker as /api/<name>) and
    does filtering client-side. */
 import { ApiError, api, isAbort } from "./api.js";
+import { normPairing, pairingParam } from "./util.js";
 
 const DEFAULT_META = {
   mode: "local", synced_at: null, source_commit: null,
@@ -132,7 +133,7 @@ export function filterRuns(rows, f = {}) {
   const out = rows.filter(r => {
     if (f.group && r.run_group !== f.group) return false;
     if (f.task && r.task_id !== f.task) return false;
-    if (f.pairing && `${r.orchestrator}|${r.worker}` !== f.pairing) return false;
+    if (f.pairing && pairingParam(r.orchestrator, r.worker) !== normPairing(f.pairing)) return false;
     if (f.judge && r.judge_state !== f.judge) return false;
     if (f.type && r.type !== f.type) return false;
     if (f.difficulty && r.difficulty !== f.difficulty) return false;

@@ -15,6 +15,7 @@ import tempfile
 import threading
 import time
 import unittest
+import urllib.parse
 import urllib.request
 from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -416,6 +417,17 @@ class TestSpaRuntimeHosted(_Browser):
         self.assertIn("Read-only snapshot", pg.inner_text("#status-line"))
         self.assertIn("Now", pg.inner_text("h1"))
         self.assertEqual(self.errors, [])
+
+    def test_hosted_runs_pairing_filter_takes_pipe_and_legacy_arrow(self):
+        rows = self.snap["runs.json"]
+        orch, worker = rows[0]["orchestrator"], rows[0]["worker"]
+        want = len([r for r in rows if r["orchestrator"] == orch and r["worker"] == worker])
+        for form in (f"{orch}|{worker}", f"{orch} \u2192 {worker}"):
+            pg = self.page()
+            pg.goto(f"{self.hbase}/#/runs?pairing={urllib.parse.quote(form, safe='')}")
+            pg.wait_for_selector("#view[data-ready='ok']")
+            pg.wait_for_function(f"document.getElementById('runs-count').dataset.total === '{want}'")
+            self.assertEqual(pg.locator("#f-pairing").input_value(), f"{orch}|{worker}")
 
     def test_hosted_ui_has_no_launch_flag_or_cancel_controls(self):
         pg = self.page()

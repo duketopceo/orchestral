@@ -263,7 +263,9 @@ def make_handler(obs: Observatory) -> type[BaseHTTPRequestHandler]:
             return vals[0] if vals else default
 
         def _api_get(self, path: str, qs: dict[str, list[str]]) -> None:
-            if path == "/api/overview":
+            if path == "/api/meta":
+                self._json(state.meta_payload())
+            elif path == "/api/overview":
                 self._json(state.overview_payload(
                     obs.store, obs.registry, tasks_dir=obs.tasks_dir,
                     groups_file=obs.groups_file))

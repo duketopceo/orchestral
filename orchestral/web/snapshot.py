@@ -1,0 +1,136 @@
+"""The hosted observatory's key tree (U6, KTD5).
+
+One writer renders every payload the hosted SPA reads, by calling the same
+``state.py`` functions the local server calls, so hosted parity comes from
+sharing the code path rather than porting it. ``build_snapshot`` returns
+``{key: payload}``; ``write_snapshot`` lays the keys out under ``api/``.
+
+Keys are what the hosted adapter in ``ui/js/data.js`` requests, minus the
+``.json`` suffix the Worker adds (``/api/<name>`` maps to ``api/<name>.json``):
+
+    meta.json  overview.json  runs.json  groups.json  matrix.json
+    leaderboard.json  flags.json  pairings.json  pairings.<group>.json
+    cards.<lens>.json  card/<kind>/<target>.<lens>.json
+    compare.<a>.<b>.json   (every ordered pair, only below MAX_COMPARE_GROUPS)
+    run/<id>.json  run/<id>/live.json  run/<id>/evidence.json
+
+Names inside a key are percent-encoded with ``quote(..., safe="")``; the SPA
+applies the same encoding (``encodeURIComponent`` plus ``!'()*``). Filtering,
+sorting and pagination are client-side, so query parameters never select a key.
+"""
+
+from __future__ import annotations
+
+import json
+import tempfile
+from pathlib import Path
+from typing import Any, cast
+from urllib.parse import quote
+
+from orchestral import cf
+from orchestral.privacy import HoldoutRunError
+from orchestral.storage import RunStore
+from orchestral.web import state
+
+# Compare keys grow quadratically; past this many groups the hosted build omits
+# them and the SPA says the pair is not part of the snapshot.
+MAX_COMPARE_GROUPS = 30
+
+
+def enc(name: str) -> str:
+    """Key-safe form of a group, run or card target (matches ui/js/data.js)."""
+    return quote(name, safe="")
+
+
+def _plain(value: Any) -> Any:
+    """JSON round-trip so every payload is exactly what the wire would carry."""
+    return json.loads(json.dumps(value, default=str))
+
+
+def build_snapshot(
+    store: RunStore,
+    tasks_dir: Path,
+    models_dir: Path,
+    groups_file: Path | None = None,
+    *,
+    run_ids: list[str] | None = None,
+    synced_at: str | None = None,
+    source_commit: str | None = None,
+) -> dict[str, Any]:
+    """Render the key tree for ``store``. ``run_ids`` limits the per-run keys
+    (None means every run in the index)."""
+    tasks_dir, models_dir = Path(tasks_dir), Path(models_dir)
+    registry = state.JobRegistry(Path(store.root), tasks_dir, models_dir, store)
+    out: dict[str, Any] = {
+        "meta.json": state.meta_payload("hosted", synced_at, source_commit or ""),
+        "overview.json": state.overview_payload(
+            store, registry, tasks_dir=tasks_dir, groups_file=groups_file),
+        "runs.json": state.runs_payload(store, tasks_dir=tasks_dir),
+        "groups.json": state.groups_payload(store, groups_file),
+        "matrix.json": state.task_matrix_payload(store, tasks_dir),
+        "leaderboard.json": state.leaderboard_rows(store),
+        "flags.json": store.annotations(),
+        "pairings.json": state.pairings_payload(store, tasks_dir=tasks_dir),
+    }
+    groups = [g["group"] for g in out["groups.json"]]
+    for g in groups:
+        out[f"pairings.{enc(g)}.json"] = state.pairings_payload(
+            store, tasks_dir=tasks_dir, group=g)
+    if len(groups) < MAX_COMPARE_GROUPS:
+        for a in groups:
+            for b in groups:
+                if a != b:
+                    out[f"compare.{enc(a)}.{enc(b)}.json"] = state.compare_payload(store, a, b)
+    for lens in state.CARD_LENSES:
+        lens_id = lens["id"]
+        catalog = state.card_catalog_payload(
+            store, tasks_dir=tasks_dir, groups_file=groups_file, lens=lens_id)
+        out[f"cards.{lens_id}.json"] = catalog
+        for card in catalog["cards"]:
+            kind, target = card.get("kind"), card.get("target")
+            if kind and target:
+                out[f"card/{kind}/{enc(target)}.{lens_id}.json"] = card
+    ids = run_ids if run_ids is not None else [r.run_id for r in store.list_runs(limit=None)]
+    for rid in ids:
+        out.update(run_payloads(store, rid, tasks_dir, groups_file))
+    return _plain(out)
+
+
+def run_payloads(
+    store: RunStore, run_id: str, tasks_dir: Path, groups_file: Path | None = None,
+) -> dict[str, Any]:
+    """Detail, live and evidence keys for one run, rendered over the scrubbed
+    tree so prompt and completion text never reach a hosted payload. A holdout
+    run, or an unknown id, yields no keys."""
+    meta = store.get_run(run_id)
+    if meta is None:
+        return {}
+    gf = groups_file or Path(tasks_dir).parent / "groups.yaml"
+    try:
+        with tempfile.TemporaryDirectory(prefix="orch-snap-") as tmp:
+            scrubbed = cf.scrub_to_dir(Path(meta.run_dir), Path(tmp))
+            detail = cf._hosted_detail(store, run_id, scrubbed, Path(tasks_dir), gf)
+            if detail is None:
+                return {}
+            evidence = state.run_evidence_payload(
+                cast(RunStore, cf._ScrubbedStore(store, run_id, scrubbed)), run_id)
+            live = state.live_payload(scrubbed, 0, started_at=meta.started_at, meta=meta)
+    except HoldoutRunError:
+        return {}
+    live["cancellable"] = False
+    out: dict[str, Any] = {f"run/{run_id}.json": detail, f"run/{run_id}/live.json": live}
+    if evidence is not None:
+        out[f"run/{run_id}/evidence.json"] = evidence
+    return out
+
+
+def write_snapshot(snapshot: dict[str, Any], out_dir: Path) -> int:
+    """Write ``snapshot`` as ``<out_dir>/api/<key>``; returns the file count."""
+    root = (Path(out_dir) / "api").resolve()
+    for key, payload in snapshot.items():
+        dest = (root / key).resolve()
+        if not dest.is_relative_to(root) or dest == root:
+            raise ValueError(f"snapshot key escapes api/: {key!r}")
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(json.dumps(payload, separators=(",", ":")), encoding="utf-8")
+    return len(snapshot)

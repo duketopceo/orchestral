@@ -10,8 +10,10 @@ doing.
 from __future__ import annotations
 
 import contextlib
+import functools
 import json
 import statistics
+import subprocess
 import threading
 import uuid
 import zipfile
@@ -32,6 +34,8 @@ from orchestral.config import (
     resolve_model,
 )
 from orchestral.format import (
+    LOW_N_BEST,
+    LOW_N_CELL,
     NULL_GLYPH,
     fmt_duration_ms,
     fmt_money,
@@ -468,6 +472,43 @@ def overview_payload(
         "recent": recent,
         "groups": groups_payload(store, groups_file)[:8],
         "taxonomy": dict(sorted(taxonomy.items(), key=lambda kv: -kv[1])),
+    }
+
+
+# What the local observatory can do that the hosted mirror cannot (R13). The
+# SPA reads these flags; it never infers a capability from the HTTP status.
+CAPABILITY_FLAGS = ("launch", "cancel", "flag_write", "thread", "png_capture", "live_stream")
+
+
+@functools.cache
+def _source_commit() -> str | None:
+    """Short commit of the checkout serving the UI; None outside a git tree."""
+    try:
+        out = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"], cwd=Path(__file__).resolve().parent,
+            capture_output=True, text=True, timeout=2, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    sha = out.stdout.strip()
+    return sha if out.returncode == 0 and sha else None
+
+
+def meta_payload(
+    mode: str = "local",
+    synced_at: str | None = None,
+    source_commit: str | None = None,
+) -> dict[str, Any]:
+    """The capabilities document (KTD5): mode, freshness, capability flags and
+    the sample-size thresholds, so the SPA picks its adapter from one place."""
+    if mode not in {"local", "hosted"}:
+        raise ValueError(f"meta mode must be 'local' or 'hosted', got {mode!r}")
+    local = mode == "local"
+    return {
+        "mode": mode,
+        "synced_at": synced_at,
+        "source_commit": source_commit if source_commit is not None or not local else _source_commit(),
+        "capabilities": dict.fromkeys(CAPABILITY_FLAGS, local),
+        "low_n": {"cell": LOW_N_CELL, "best": LOW_N_BEST},
     }
 
 

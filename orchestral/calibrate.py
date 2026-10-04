@@ -33,7 +33,6 @@ from typing import Any
 
 import yaml
 
-from orchestral.config import load_yaml
 from orchestral.storage import RunStore
 
 # a judge only earns the "calibrated" label when it has both enough
@@ -43,8 +42,48 @@ MIN_CALIBRATION_PAIRS = 30
 MIN_CALIBRATION_KAPPA = 0.7
 
 
+class _LabelsLoader(yaml.SafeLoader):
+    """SafeLoader that keeps every ``run_id`` scalar as its literal text.
+
+    Run ids are opaque hex strings, but YAML 1.1 happily resolves an
+    unquoted ``1234567890`` to an int, ``0123`` to octal 83, ``true`` to
+    a bool and ``2026-10-03`` to a date — and by the time ``str()`` runs
+    the original text is gone. Hand-edited label files (quotes dropped
+    while filling in ``passed:``) hit this, so ids are constructed as
+    str from the raw scalar. A blank/unquoted null stays None so the
+    "needs a run_id" check still fires.
+    """
+
+    def construct_mapping(self, node: yaml.MappingNode, deep: bool = False) -> dict[Any, Any]:
+        for key_node, value_node in node.value:
+            if (
+                isinstance(key_node, yaml.ScalarNode)
+                and key_node.value == "run_id"
+                and isinstance(value_node, yaml.ScalarNode)
+                and value_node.tag != "tag:yaml.org,2002:null"
+            ):
+                value_node.tag = "tag:yaml.org,2002:str"
+        return super().construct_mapping(node, deep)
+
+
+class _QuotedId(str):
+    """Marker: always emit this str single-quoted, whatever it looks like."""
+
+
+class _SkeletonDumper(yaml.SafeDumper):
+    pass
+
+
+_SkeletonDumper.add_representer(
+    _QuotedId,
+    lambda d, v: d.represent_scalar("tag:yaml.org,2002:str", str(v), style="'"),
+)
+
+
 def load_labels(path: Path | str) -> list[dict[str, Any]]:
-    data = load_yaml(path) or {}
+    data = yaml.load(Path(path).read_text(encoding="utf-8"), Loader=_LabelsLoader) or {}
+    if not isinstance(data, dict):
+        raise ValueError(f"{path} has no `labels` list")
     labels = data.get("labels")
     if not isinstance(labels, list):
         raise ValueError(f"{path} has no `labels` list")
@@ -52,6 +91,7 @@ def load_labels(path: Path | str) -> list[dict[str, Any]]:
     for i, item in enumerate(labels):
         if not isinstance(item, dict) or not item.get("run_id"):
             raise ValueError(f"labels[{i}] needs a run_id")
+        item["run_id"] = str(item["run_id"])
         out.append(item)
     return out
 
@@ -300,7 +340,7 @@ def emit_label_skeleton(
         )
         entries.append(
             {
-                "run_id": m.run_id,
+                "run_id": _QuotedId(m.run_id),
                 "task_id": m.task_id,
                 "artifact": str(artifact) if artifact else None,
                 "judge_model": report["judge"].get("model"),
@@ -308,7 +348,7 @@ def emit_label_skeleton(
                 "passed": None,
             }
         )
-    return yaml.safe_dump({"labels": entries}, sort_keys=False)
+    return yaml.dump({"labels": entries}, Dumper=_SkeletonDumper, sort_keys=False)
 
 
 def persist_calibration(

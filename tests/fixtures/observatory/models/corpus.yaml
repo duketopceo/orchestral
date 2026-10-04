@@ -1,0 +1,44 @@
+# Rate cards for the synthetic observatory corpus (scripts/build-fixture-corpus.py).
+# Prices are per million tokens. The corpus bills each model at a different
+# multiple of its rate card so calibration has real spread to work with.
+models:
+  - slug: corpus/orch-a
+    name: Corpus Orchestrator A
+    role: orchestrator
+    input_price_per_mtok: 0.30
+    output_price_per_mtok: 1.20
+  - slug: corpus/orch-b
+    name: Corpus Orchestrator B
+    role: orchestrator
+    input_price_per_mtok: 0.60
+    output_price_per_mtok: 2.40
+  - slug: corpus/worker-cheap
+    name: Corpus Worker Cheap
+    role: worker
+    input_price_per_mtok: 0.10
+    output_price_per_mtok: 0.40
+  - slug: corpus/worker-mid
+    name: Corpus Worker Mid
+    role: worker
+    input_price_per_mtok: 0.20
+    output_price_per_mtok: 0.80
+  - slug: corpus/worker-hot
+    name: Corpus Worker Hot
+    role: worker
+    input_price_per_mtok: 0.05
+    output_price_per_mtok: 0.20
+  - slug: corpus/worker-fresh
+    name: Corpus Worker Fresh
+    role: worker
+    input_price_per_mtok: 0.15
+    output_price_per_mtok: 0.60
+  - slug: corpus/worker-local
+    name: Corpus Worker Local
+    role: worker
+    input_price_per_mtok: 0.10
+    output_price_per_mtok: 0.40
+  - slug: corpus/judge
+    name: Corpus Judge
+    role: judge
+    input_price_per_mtok: 0.20
+    output_price_per_mtok: 0.80

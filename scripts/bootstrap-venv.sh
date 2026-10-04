@@ -12,6 +12,11 @@
 #   scripts/bootstrap-venv.sh /tmp/duk-142-venv
 #   /tmp/duk-142-venv/bin/python -m unittest discover -s tests
 #
+# Browser tests: set BROWSER=1 to match the CI `browser` job (KTD13). That adds
+# the `[shots]` extra and downloads Chromium, so the Playwright suites run
+# instead of skipping.
+#   BROWSER=1 scripts/bootstrap-venv.sh /tmp/duk-142-venv
+#
 # Leave the directory in place for the whole run; deleting it is the cleanup.
 set -euo pipefail
 
@@ -34,7 +39,12 @@ PYTHON="${PYTHON:-python3}"
 # `.[dev,tui]` is exactly what ci.yml installs. Anything less makes the local
 # gate measure a different environment than CI does.
 "$VENV_DIR/bin/python" -m pip install --quiet --upgrade pip
-"$VENV_DIR/bin/python" -m pip install --quiet -e "$REPO_ROOT[dev,tui]"
+if [ "${BROWSER:-0}" = "1" ]; then
+  "$VENV_DIR/bin/python" -m pip install --quiet -e "$REPO_ROOT[dev,tui,shots]"
+  "$VENV_DIR/bin/python" -m playwright install chromium
+else
+  "$VENV_DIR/bin/python" -m pip install --quiet -e "$REPO_ROOT[dev,tui]"
+fi
 
 cat <<EOF
 gate venv ready: $VENV_DIR

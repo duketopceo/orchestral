@@ -95,6 +95,35 @@ jobs:
       - name: Types
         run: mypy orchestral harness.py
 
+  # Browser verification (KTD13). The Playwright tests skip in every other job
+  # because `[shots]` is not installed there, which is how a layout regression
+  # could pass `test-matrix` unseen. This job installs the extra plus Chromium and
+  # runs the same suite, so they execute.
+  #
+  # It is deliberately NOT required and NOT in the `test` reporter's needs:
+  # `.github/required-checks.json` stays `["test"]` until the user decides to
+  # require it (plan, Open Questions). Making it required is two edits in one
+  # change: add `browser` to the reporter's needs and result check, and to the
+  # JSON. tests/test_ci_gate_independence.py pins the current shape.
+  browser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
+        with:
+          python-version: "3.11"
+
+      - name: Install
+        run: pip install -e .[dev,tui,shots]
+
+      - name: Chromium
+        run: python -m playwright install --with-deps chromium
+
+      - name: Browser tests
+        run: python -m unittest discover -s tests
+
   # The gate branch protection actually requires. Ruleset main-2 requires the
   # context `test`; a matrix job can never report that, because GitHub appends
   # the matrix value. This job is not a matrix, so it reports exactly `test`.

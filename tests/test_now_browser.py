@@ -20,7 +20,6 @@ from unittest.mock import patch
 
 import browser_corpus as bc
 
-
 from orchestral.storage import RunMeta, RunStore
 from orchestral.web.server import Observatory, make_handler
 
@@ -91,7 +90,7 @@ class _Server:
             passes=passes, total_cost_usd=0.02, failure_reason=reason, run_group="u10-new"))
 
     def api(self, path: str):
-        with urllib.request.urlopen(self.base + path, timeout=15) as r:  # noqa: S310
+        with urllib.request.urlopen(self.base + path, timeout=15) as r:
             return json.loads(r.read())
 
     def close(self) -> None:

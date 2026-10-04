@@ -60,7 +60,7 @@ class _PublishedStore:
         self._store = store
 
     def list_runs(self, *args: Any, limit: int | None = None, **kwargs: Any) -> list[Any]:
-        rows = [m for m in self._store.list_runs(*args, limit=None, **kwargs)
+        rows = [m for m in self._store.list_runs(*args, **{**kwargs, "limit": None})
                 if not _is_holdout_meta(m)]
         return rows if limit is None else rows[:limit]
 

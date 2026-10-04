@@ -1,1 +1,7 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><style>rect{fill:#0b0d10}path{fill:#d7dee7}@media (prefers-color-scheme:light){rect{fill:#fff}path{fill:#0b0d10}}</style><rect width="32" height="32" rx="6"/><path d="M16 5 27 16 16 27 5 16Z"/></svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="16" height="16" fill="none">
+  <title>orchestral</title>
+  <!-- The 16px Ictus (brand/mark-16.svg). Ink swaps with the tab theme;
+       values are the ink token in the paper and stage themes of ui/tokens.css. -->
+  <style>.i{fill:#121417}@media (prefers-color-scheme:dark){.i{fill:#ECEEF0}}</style>
+  <path class="i" d="M1 8h14v2H1zM1 13h14v2H1zM2 2h2v2H2zM4 4h2v2H4zM6 6h2v2H6z"/>
+</svg>

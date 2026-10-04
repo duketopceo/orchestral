@@ -183,9 +183,7 @@ class TestStaticServing(_Served):
         made = not fonts.exists()
         fonts.mkdir(exist_ok=True)
         probe = fonts / "x.woff2"
-        manifest = server.UI_DIR / "site.webmanifest"
         probe.write_bytes(b"wOF2")
-        manifest.write_text("{}")
         try:
             with patch("mimetypes.guess_type", return_value=(None, None)):
                 cases = {
@@ -201,7 +199,6 @@ class TestStaticServing(_Served):
                     self.assertEqual((code, got), (200, ctype), path)
         finally:
             probe.unlink()
-            manifest.unlink()
             if made:
                 fonts.rmdir()
 

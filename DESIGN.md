@@ -245,20 +245,20 @@ raw ms, no low-n marker, no glyphs.
 
 Each asset has a creative brief, a production method, and an owner file.
 
-**A1. Logomark: "Downbeat"**
+**A1. Logomark: "Ictus"**
 - Brief: the orchestrator is a conductor, workers are the players. The mark is a
-  musical staff reduced to its engineering essence: **three horizontal staff
-  lines** (workers) crossed by **one rising diagonal stroke** that ends just above
-  the top line (the conductor's baton on the downbeat, and also a "plan -> delegate"
-  vector). No clef, no notes, no emoji. Reads as a tally/measurement mark at 16px
-  and as a score fragment at 512px.
-- Geometry: 24-unit grid; lines at y=8/12/16, 1.5u stroke, square caps; baton from
-  (5,19) to (19,4), 2u stroke, square caps; the baton breaks the middle line with a
-  1u gap on each side (knockout) so the mark stays legible in one color.
+  musical staff reduced to its engineering essence: **two horizontal staff lines**
+  (workers) and **one baton** arriving from the upper left that **lands on top of the
+  upper line** (the ictus: the beat's point of contact, and a "plan -> delegate"
+  vector). Nothing crosses anything, so it never reads as not-equal (a slash through
+  two bars), as a strikethrough, or as a hamburger. No clef, no notes, no emoji.
+- Geometry: 24-unit grid; lines at y=12-14 and y=18-20 (2u, x=2-22); baton at 45
+  degrees from (3.5,3.5), 2.5u wide, cut flat so its foot sits exactly on y=12.
+  `mark-24.svg` redraws every stroke at 2u on whole pixel rows; `mark-16.svg` is
+  pixel-drawn: lines on rows 8-9 and 13-14, baton as three 2px steps.
 - Colors: one color only (`--ink`). Never on a gradient, never in a rounded tile.
 - Production: hand-authored SVG in `ui/brand/mark.svg`; optical variants
-  `mark-16.svg` (2 lines + baton, 2px strokes snapped to pixel grid) and
-  `mark-24.svg`. Verify at 16/24/32/512 in both themes.
+  `mark-16.svg` and `mark-24.svg`. Verify at 16/24/32/512 in both themes.
 
 **A2. Wordmark**
 - Brief: `orchestral` set in lowercase Instrument Sans SemiBold, `wdth 90`,

@@ -383,21 +383,21 @@ class TestStates(_Base):
 class TestCarryOvers(_Base):
     def test_group_cards_shorten_long_keys_and_keep_the_full_key_available(self):
         pg = self.open(self.page(390, 844))
-        names = pg.locator(".group-card .gc-name")
+        names = pg.locator("#band-groups td > a[title]")
         texts = names.all_inner_texts()
         self.assertTrue(texts)
         self.assertTrue(all(len(t) <= 36 for t in texts), texts)
         long_key = self.srv.manifest["long_group"]
-        card = pg.locator(f".group-card[href*='{long_key[:20]}']").first
-        self.assertEqual(card.locator(".gc-name").get_attribute("title"), long_key)
+        link = pg.locator(f"#band-groups td > a[href*='{long_key[:20]}']").first
+        self.assertEqual(link.get_attribute("title"), long_key)
 
     def test_stat_lines_use_the_nil_mark_never_a_text_hyphen(self):
         pg = self.open(self.page(), "/")
-        stats = pg.locator(".gc-stats").all_inner_texts()
+        stats = pg.locator("#band-groups td.t-num").all_inner_texts()
         self.assertTrue(stats)
         for s in stats:
             self.assertNotRegex(s, r"(^|\s)-($|\s)")
-        self.assertGreaterEqual(pg.locator(".gc-stats .nil").count(), 1)
+        self.assertGreaterEqual(pg.locator("#band-groups td.t-num .nil").count(), 1)
 
 
 @unittest.skipUnless(HAS_PLAYWRIGHT, "playwright not installed (pip install 'orchestral[shots]')")

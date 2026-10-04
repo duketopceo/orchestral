@@ -17,10 +17,12 @@ import subprocess
 import threading
 import uuid
 import zipfile
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
 from urllib.parse import quote
+
+import yaml
 
 from orchestral.agentexec import ExecutorPreflightError, launch_gate
 from orchestral.calibrate import calibration_status
@@ -42,8 +44,11 @@ from orchestral.format import (
     fmt_percent,
     fmt_range_pct,
     fmt_score,
+    is_low_n_best,
+    is_low_n_cell,
 )
 from orchestral.judge import DEFAULT_JUDGE
+from orchestral.privacy import run_is_holdout
 from orchestral.runner import Runner
 from orchestral.stats import aggregate, mean, pairing_leaderboard, wilson_interval
 from orchestral.storage import RunStore
@@ -619,13 +624,107 @@ def overview_payload(
         d["task_title"] = (tmeta.get(r.task_id) or {}).get("title") or ""
         d["judge_state"], d["judge_reason"] = judge_state(r)
         recent.append(d)
+    now = _now()
+    live = live_runs(store, registry, now=now)
+    needs_look = needs_look_items(store, registry.models_dir, live)
     return {
-        "jobs": [_job_row(r) for r in live_runs(store, registry, now=_now())],
+        "generated_at": now.isoformat(),
+        "jobs": [_job_row(r) for r in live],
+        "changes": changes_rows(runs, tmeta),
+        "needs_look": needs_look[:NEEDS_LOOK_CAP],
+        "needs_look_total": len(needs_look),
         "leaderboard": [r.to_dict() for r in lb[:10]],
         "recent": recent,
         "groups": groups_payload(store, groups_file)[:8],
         "taxonomy": dict(sorted(taxonomy.items(), key=lambda kv: -kv[1])),
     }
+
+
+CHANGES_CAP = 500
+CHANGES_WINDOW = timedelta(days=30)
+NEEDS_LOOK_CAP = 50
+# Failure categories that say the environment failed, not the model's output.
+_INFRA_REASONS = frozenset({
+    "rate_limit", "auth", "timeout", "transport", "provider_error", "submitted_job",
+    "config", "executor_preflight", "executor_exit", "executor_timeout",
+    "executor_no_output", "spawn_failed", "workspace",
+})
+
+
+def _is_infra(reason: str | None) -> bool:
+    code = (reason or "").removeprefix("exception:")
+    return code in _INFRA_REASONS or code.endswith("_timeout")
+
+
+def changes_rows(runs: list[Any], tmeta: dict[str, dict[str, str]]) -> list[dict[str, Any]]:
+    """Terminal real runs, newest first, for the client-side "changed since you
+    last looked" band. The watermark lives on the device, so the server only
+    supplies a bounded window. Running rows belong to Live; dry runs are not
+    results."""
+    cutoff = _now() - CHANGES_WINDOW
+    rows: list[tuple[datetime, dict[str, Any]]] = []
+    for r in runs:
+        if r.status == "running" or r.dry_run or not r.finished_at:
+            continue
+        done = _parse_ts(r.finished_at)
+        if done is None or done < cutoff:
+            continue
+        rows.append((done, {
+            "run_id": r.run_id, "task_id": r.task_id,
+            "task_title": (tmeta.get(r.task_id) or {}).get("title") or "",
+            "status": r.status, "passes": r.passes, "failure_reason": r.failure_reason,
+            "cost_usd": r.display_cost_usd, "finished_at": r.finished_at,
+        }))
+    rows.sort(key=lambda t: t[0], reverse=True)
+    return [row for _, row in rows[:CHANGES_CAP]]
+
+
+def needs_look_items(store: RunStore, models_dir: Path | str,
+                     live: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """What deserves a human glance: stalled runs, infra errors, inconclusive
+    judges, flagged items and pricing drift. Each item names its target and
+    links to it; none of them is a verdict about the model."""
+    from orchestral.pricing import pricing_drift
+
+    items: list[dict[str, Any]] = []
+    for row in live:
+        if row["stalled"]:
+            items.append({
+                "kind": "stalled", "run_id": row["run_id"], "title": f"{row['label']} has gone quiet",
+                "detail": "No events for a while. Check whether it is still running.",
+                "href": f"#/run/{row['run_id']}" if row["run_id"] else "#/runs"})
+    for r in store.list_runs(limit=None):
+        if r.dry_run or r.status == "running":
+            continue
+        if r.status == "failed" and _is_infra(r.failure_reason):
+            items.append({
+                "kind": "infra_error", "run_id": r.run_id,
+                "title": f"{r.task_id} hit an infrastructure error",
+                "detail": f"{r.failure_reason}: the run did not get a fair attempt.",
+                "href": f"#/run/{r.run_id}"})
+        elif r.status == "finished" and r.judge_score is None and judge_state(r)[0] == "inconclusive":
+            items.append({
+                "kind": "inconclusive_judge", "run_id": r.run_id,
+                "title": f"The judge was inconclusive on {r.task_id}",
+                "detail": judge_state(r)[1], "href": f"#/run/{r.run_id}"})
+    for a in store.annotations():
+        if a["flag"] != "interesting":
+            continue
+        href = (f"#/runs?group={quote(a['target'], safe='')}" if a["kind"] == "group"
+                else f"#/run/{quote(a['target'], safe='')}" if a["kind"] == "run" else "#/runs")
+        items.append({
+            "kind": "flagged", "run_id": a["target"] if a["kind"] == "run" else None,
+            "title": f"You flagged {a['kind']} {a['target']}", "detail": a["note"] or "Flagged as interesting.",
+            "href": href})
+    models = _configured_models(Path(models_dir))
+    for d in pricing_drift(store.calls_pricing_summary(), models):
+        if d.drifted and d.ratio is not None:
+            items.append({
+                "kind": "pricing_drift", "run_id": None,
+                "title": f"{d.model} bills {d.ratio:.2f}x its rate card",
+                "detail": f"Across {d.api_calls} provider-reported calls. The configured price may be stale.",
+                "href": "#/models"})
+    return items
 
 
 # What the local observatory can do that the hosted mirror cannot (R13). The
@@ -919,6 +1018,27 @@ def judge_state(meta) -> tuple[str, str]:
     return "not_judged", "judge wasn't run for this run"
 
 
+# Sortable Runs columns: query value -> (row key, default direction).
+RUN_SORTS: dict[str, tuple[str, str]] = {
+    "started": ("started_at", "desc"), "cost": ("billed_cost_usd", "desc"),
+    "duration": ("latency_ms", "desc"), "tokens": ("tokens", "desc"),
+    "task": ("task_id", "asc"), "status": ("status", "asc"),
+}
+
+
+def _sort_runs(rows: list[dict[str, Any]], sort: str | None, direction: str | None) -> list[dict[str, Any]]:
+    """Order rows by a named column. Unknown sort names keep the default (newest
+    first); a missing value sorts last in either direction."""
+    if sort not in RUN_SORTS:
+        return rows
+    key, default_dir = RUN_SORTS[sort]
+    desc = (direction if direction in ("asc", "desc") else default_dir) == "desc"
+    known = [r for r in rows if r.get(key) not in (None, "")]
+    unknown = [r for r in rows if r.get(key) in (None, "")]
+    known.sort(key=lambda r: r[key], reverse=desc)
+    return known + unknown
+
+
 def runs_payload(
     store: RunStore,
     group: str | None = None,
@@ -926,27 +1046,72 @@ def runs_payload(
     status: str | None = None,
     q: str = "",
     tasks_dir: Path | str | None = None,
+    *,
+    pairing: str | None = None,
+    judge: str | None = None,
+    type: str | None = None,
+    difficulty: str | None = None,
+    sort: str | None = None,
+    direction: str | None = None,
+    groups_file: Path | str | None = None,
+    now: datetime | None = None,
 ) -> list[dict[str, Any]]:
-    """Run rows for the filterable table. `status` accepts a lifecycle status
-    or `passed`/`failed` (verdict filters)."""
+    """Run rows for the filterable table, newest first unless `sort` says otherwise.
+
+    `status` accepts a lifecycle status, `passed`/`failed` (verdict filters) or
+    `stalled` (a `running` row with no event for STALL_AFTER_S, KTD8; derived,
+    never stored). `pairing` is `orchestrator|worker` (the arrow form is a legacy alias). Every row carries
+    `stalled`, `type`, `difficulty`, `group_label` and `tokens`. Filtering,
+    sorting and paging are repeated client-side for the hosted snapshot
+    (`filterRuns` in ui/js/data.js); keep the two in step.
+    """
+    now = now or _now()
     rows = store.list_runs(run_group=group, task_id=task, limit=None)
     if q:
         rows = filter_runs(rows, q)
+    if pairing:
+        # canonical `orch|worker`; the matrix key `orch → worker` is a legacy alias
+        orch, _, worker = (pairing if "|" in pairing else pairing.replace(" \u2192 ", "|", 1)).partition("|")
+        rows = [r for r in rows if r.orchestrator == orch and r.worker == worker]
+    abandoned = _abandoned_runs(store) if any(r.status == "running" for r in rows) else set()
+
+    def is_stalled(r: Any) -> bool:
+        if r.status != "running" or r.run_id in abandoned:
+            return False
+        beat = last_heartbeat(r.run_dir, r.started_at) if r.run_dir else _parse_ts(r.started_at)
+        idle = max(0.0, (now - beat).total_seconds()) if beat else None
+        return liveness_state(idle) == "stalled"
+
+    stalled = {r.run_id for r in rows if is_stalled(r)}
     if status == "passed":
         rows = [r for r in rows if r.status == "finished" and r.passes]
     elif status == "failed":
         rows = [r for r in rows if r.status == "failed" or (r.status == "finished" and not r.passes)]
+    elif status == "stalled":
+        rows = [r for r in rows if r.run_id in stalled]
     elif status:
         rows = [r for r in rows if r.status == status]
     tmeta = _task_meta(store, tasks_dir)
+    if type:
+        rows = [r for r in rows if (tmeta.get(r.task_id) or {}).get("type") == type]
+    if difficulty:
+        rows = [r for r in rows if (tmeta.get(r.task_id) or {}).get("difficulty") == difficulty]
+    labels = _groups_meta(groups_file)
     out = []
     for r in rows:
         d = _public_run(r)
         tm = tmeta.get(r.task_id) or {}
         d["task_title"] = tm.get("title") or ""
+        d["type"] = tm.get("type") or ""
+        d["difficulty"] = tm.get("difficulty") or ""
+        d["group_label"] = (labels.get(r.run_group or "") or {}).get("label") or ""
+        d["stalled"] = r.run_id in stalled
+        d["tokens"] = (r.total_input_tokens or 0) + (r.total_output_tokens or 0)
         d["judge_state"], d["judge_reason"] = judge_state(r)
+        if judge and d["judge_state"] != judge:
+            continue
         out.append(d)
-    return out
+    return _sort_runs(out, sort, direction)
 
 
 _TIMELINE_PHASE_ORDER = ("plan", "delegate", "assemble", "validate", "judge", "review")
@@ -1010,22 +1175,203 @@ def artifact_info(run_dir: Path) -> dict[str, Any] | None:
     return info
 
 
+def resolve_run_dir(store: Any, meta: Any) -> Path:
+    """The directory a run's files live in.
+
+    The index records `run_dir` as it was when the run started, which is relative
+    to the working directory for any run launched with a relative runs path. Read
+    from another directory, or from a copied or moved runs dir, that path points
+    nowhere and every file looks missing. When it does not exist, the recorded
+    `orch/task/worker/run_id` tail is rebased under the store's root, the same
+    rule `RunStore.backfill_calls` uses."""
+    p = Path(meta.run_dir)
+    if p.exists():
+        return p
+    root = getattr(store, "root", None)
+    if root:
+        cand = Path(root).joinpath(*p.parts[-4:])
+        if cand.exists():
+            return cand
+    return p
+
+
+_ERROR_TYPE_MARKERS = (".failed", "_error", "worker_error")
+
+
+def _is_error_event(ev: dict[str, Any]) -> bool:
+    typ = str(ev.get("type") or "")
+    return bool(ev.get("error")) or typ.endswith(_ERROR_TYPE_MARKERS) or typ in ("error", "run.failed")
+
+
+def _first_failing_check(report: Any) -> str | None:
+    checks = report.get("checks") if isinstance(report, dict) else None
+    if isinstance(checks, dict):
+        for name, ok in checks.items():
+            if ok is False:
+                return str(name)
+    return None
+
+
+def _failure_summary(meta: Any, events: list[dict[str, Any]], report: Any,
+                     report_exists: bool) -> dict[str, Any] | None:
+    """Why a failed run failed, from what the run dir holds: the taxonomy reason,
+    the first failing check, and the event to read first (the first error event, or
+    the last event when none carries an error). With no events at all the run died
+    before it started recording, and the summary says so."""
+    if meta.status != "failed":
+        return None
+    idx: int | None = next((i for i, ev in enumerate(events) if _is_error_event(ev)), None)
+    kind = "error"
+    if idx is None and events:
+        idx, kind = len(events) - 1, "last"
+    event: dict[str, Any] | None = None
+    if idx is not None:
+        ev = events[idx]
+        event = {"index": idx, "kind": kind, "type": str(ev.get("type") or "?"),
+                 "phase": str(ev.get("phase") or ""),
+                 "summary": event_row(ev)[3] or str(ev.get("error") or "")[:160]}
+    errors = report.get("errors") if isinstance(report, dict) else None
+    return {
+        "reason": meta.failure_reason or "",
+        "failing_check": _first_failing_check(report),
+        "errors": [str(e)[:300] for e in errors[:3]] if isinstance(errors, list) else [],
+        "event": event,
+        "no_detail": not events,
+        "report_available": report_exists,
+    }
+
+
+def _lane_for(ev: dict[str, Any], worker: str | None) -> tuple[str, str] | None:
+    phase, role = ev.get("phase"), ev.get("role")
+    if role == "judge" or phase == "judge":
+        return "judge", "judge"
+    if phase == "assemble":
+        return "assemble", "assemble"
+    if phase == "validate":
+        return "validate", "validate"
+    if phase == "plan":
+        return "orchestrator", "orchestrator"
+    if phase == "delegate":
+        wid = ev.get("worker_id") or worker or "worker"
+        return str(wid), str(wid)
+    return None
+
+
+_LANE_ORDER = ("orchestrator", "worker", "assemble", "validate", "judge")
+
+
+def lanes_payload(events: list[dict[str, Any]], running: bool = False) -> dict[str, Any]:
+    """Lane timeline data (DESIGN 6.9 #7): one lane per orchestrator, worker, assemble,
+    validate and judge, one bar per call with its start offset, length (latency), cost
+    and a verdict tick. `event` is the index of the call's event in the stream."""
+    stamps = [t for t in (_parse_ts(e.get("timestamp")) for e in events) if t]
+    if not stamps:
+        return {"span_ms": 0, "lanes": [], "live": None}
+    t0, t1 = min(stamps), max(stamps)
+    lanes: dict[str, dict[str, Any]] = {}
+    worker: str | None = None
+    for i, ev in enumerate(events):
+        typ = ev.get("type")
+        if typ == "worker.started":
+            worker = ev.get("worker_id") or worker
+        lane = _lane_for(ev, worker)
+        timed = typ in ("llm_call", "worker_error") or (ev.get("latency_ms") or 0) > 0
+        end = _parse_ts(ev.get("timestamp"))
+        if lane is None or not timed or end is None:
+            continue
+        dur = float(ev.get("latency_ms") or 0.0)
+        start = max(0.0, (end - t0).total_seconds() * 1000 - dur)
+        bucket = lanes.setdefault(lane[0], {"id": lane[0], "label": lane[1], "bars": []})
+        cost = ev.get("cost") or {}
+        bucket["bars"].append({
+            "start_ms": start, "dur_ms": dur, "event": i, "type": str(typ),
+            "verdict": "fail" if _is_error_event(ev) else "ok",
+            "cost_usd": cost.get("api_cost_usd") if cost.get("api_cost_usd") is not None else cost.get("usd"),
+            "model": str(ev.get("model") or ""),
+        })
+
+    def order(item: dict[str, Any]) -> tuple[int, str]:
+        k = item["id"]
+        return (_LANE_ORDER.index(k) if k in _LANE_ORDER else 1, k)
+    ordered = sorted(lanes.values(), key=order)
+    live = None
+    if running and events:
+        live = (_lane_for(events[-1], worker) or (None, None))[0]
+    return {"span_ms": max((t1 - t0).total_seconds() * 1000, 1.0), "lanes": ordered, "live": live}
+
+
+def run_liveness(store: RunStore, registry: JobRegistry | None, meta: Any,
+                 now: datetime | None = None) -> dict[str, Any]:
+    """live, stalled, abandoned or done for one run, plus which action applies.
+    Cancel only for runs this server owns; abandon only for stalled unowned ones."""
+    if meta.status != "running":
+        return {"state": "done", "owned": False, "cancellable": False, "abandonable": False,
+                "idle_s": None}
+    if meta.run_id in _abandoned_runs(store):
+        return {"state": "abandoned", "owned": False, "cancellable": False, "abandonable": False,
+                "idle_s": None}
+    now = now or _now()
+    beat = last_heartbeat(resolve_run_dir(store, meta), meta.started_at)
+    idle = max(0.0, (now - beat).total_seconds()) if beat else None
+    owned = bool(registry and registry.owns(meta.run_id))
+    st = liveness_state(idle)
+    return {"state": st, "owned": owned, "cancellable": owned,
+            "abandonable": st == "stalled" and not owned,
+            "idle_s": int(idle) if idle is not None else None}
+
+
+_SECTION_TABS = ("artifact", "events", "calls", "report", "review", "plan", "manifest")
+_HOLDOUT_REASON = ("This run belongs to the holdout arm, so its task text, answer key and outputs "
+                   "are not published. Open it on the machine that ran it.")
+
+
+def _section(state_: str, reason: str = "", count: int | None = None) -> dict[str, Any]:
+    return {"state": state_, "reason": reason, "count": count}
+
+
+def _file_section(path: Path, running: bool, parsed: Any, what: str,
+                  dry: bool = False, stopped: bool = False) -> dict[str, Any]:
+    if parsed is not None:
+        return _section("ok")
+    if path.exists():
+        return _section("missing", f"{what} could not be read: it is unreadable or truncated.")
+    if stopped:
+        return _section("missing", f"This run stopped reporting before it wrote {what.lower()}.")
+    if running:
+        return _section("not_yet", f"The run is still working. {what} is written when it finishes.")
+    if dry:
+        return _section("empty_by_design", f"A dry run does not write {what.lower()}.")
+    return _section("missing", f"This run did not write {what.lower()}.")
+
+
 def run_detail_payload(
     store: RunStore,
     run_id: str,
     tasks_dir: Path | str | None = None,
     groups_file: Path | str | None = None,
+    *,
+    registry: JobRegistry | None = None,
+    hosted: bool = False,
+    raw_dir: Path | None = None,
+    now: datetime | None = None,
 ) -> dict[str, Any] | None:
-    """Everything the run detail view needs in one fetch."""
+    """Everything the run detail view needs in one fetch.
+
+    Beyond the stored files it derives, so the view never guesses: `failure` (the
+    summary for a failed run), `sections` (one evidence state per tab: ok, not_yet,
+    empty_by_design, missing or withheld), `lanes` (timeline bars), `plan_json`
+    (the subtask list) and `liveness` (state and which action applies). `hosted`
+    marks the public mirror: holdout runs are withheld whole, `plan.md` (found in
+    `raw_dir`, the unscrubbed run dir) and zip artifacts are withheld."""
     meta = store.get_run(run_id)
     if meta is None:
         return None
-    run_dir = Path(meta.run_dir)
-    plan_path = run_dir / "plan.md"
+    run_dir = resolve_run_dir(store, meta)
     tm = _task_meta(store, tasks_dir).get(meta.task_id) or {}
     gm = _groups_meta(groups_file).get(meta.run_group or "") or {}
     jstate, jreason = judge_state(meta)
-    return {
+    holdout = run_is_holdout(run_dir, meta.config)
+    out: dict[str, Any] = {
         "meta": _public_run(meta),
         "judge_state": jstate,
         "judge_reason": jreason,
@@ -1033,14 +1379,105 @@ def run_detail_payload(
         "task_blurb": tm.get("blurb") or "",
         "group_label": gm.get("label") or "",
         "group_description": gm.get("description") or "",
-        "calls": store.call_previews(run_id),
-        "report": read_json(run_dir / "report.json"),
-        "review": read_json(run_dir / "review.json"),
-        "manifest": read_json(run_dir / "manifest.json"),
-        "plan": plan_path.read_text(encoding="utf-8", errors="replace") if plan_path.exists() else None,
-        "timeline": timeline_payload(run_dir),
-        "artifact": artifact_info(run_dir),
+        "holdout": holdout,
+        "liveness": run_liveness(store, registry, meta, now),
     }
+    if hosted and holdout:
+        out.update(
+            calls=[], report=None, review=None, manifest=None, plan=None, plan_json=None,
+            timeline=[], artifact=None, failure=None,
+            lanes={"span_ms": 0, "lanes": [], "live": None},
+            sections={t: _section("withheld", _HOLDOUT_REASON) for t in _SECTION_TABS})
+        return out
+
+    # `running` means the run is live and may still write these; a run that is stalled or
+    # abandoned is not "not yet", it has stopped.
+    running = meta.status == "running" and out["liveness"]["state"] == "live"
+    stopped = meta.status == "running" and not running
+    dry = bool(meta.dry_run)
+    events, _ = tail_events(run_dir / "events.jsonl", 0)
+    calls = store.call_previews(run_id)
+    report = read_json(run_dir / "report.json")
+    review = read_json(run_dir / "review.json")
+    manifest = read_json(run_dir / "manifest.json")
+    plan_path = run_dir / "plan.md"
+    plan = plan_path.read_text(encoding="utf-8", errors="replace") if plan_path.exists() else None
+    plan_json = read_json(run_dir / "plan.json")
+    if not isinstance(plan_json, dict):
+        plan_json = None
+    artifact = artifact_info(run_dir)
+    if artifact:
+        # the run-relative path (orch/task/worker/run_id/name), never an absolute one
+        artifact["path"] = "/".join([*Path(meta.run_dir).parts[-4:], artifact["name"]])
+    out.update(
+        calls=calls, report=report, review=review, manifest=manifest, plan=plan, plan_json=plan_json,
+        timeline=timeline_payload(run_dir), artifact=artifact,
+        lanes=lanes_payload(events, running),
+        failure=_failure_summary(meta, events, report, (run_dir / "report.json").exists()))
+
+    sections: dict[str, dict[str, Any]] = {}
+    if artifact:
+        sections["artifact"] = _section("ok")
+    elif stopped:
+        sections["artifact"] = _section("missing", "This run stopped reporting before it stored an artifact.")
+    elif running:
+        sections["artifact"] = _section("not_yet", "The run is still working. The artifact is stored when it finishes.")
+    elif dry:
+        sections["artifact"] = _section("empty_by_design", "A dry run calls no model, so it stores no artifact.")
+    else:
+        why = meta.failure_reason or jreason or ""
+        sections["artifact"] = _section(
+            "missing", "This run did not store an artifact." + (f" Reason on record: {why}." if why else ""))
+    if events:
+        sections["events"] = _section("ok", count=len(events))
+    elif running:
+        sections["events"] = _section("not_yet", "No event has been written yet.")
+    elif stopped:
+        sections["events"] = _section("missing", "This run never wrote an event.", 0)
+    else:
+        sections["events"] = _section("missing", "This run recorded no events.", 0)
+    if calls:
+        sections["calls"] = _section("ok", count=len(calls))
+    elif running or stopped:
+        sections["calls"] = (_section("not_yet", "No model call has finished yet.", 0) if running
+                             else _section("missing", "This run stopped reporting before a call was recorded.", 0))
+    elif dry:
+        sections["calls"] = _section(
+            "empty_by_design", "This was a dry run: no model was called, so there are no calls to list.", 0)
+    else:
+        sections["calls"] = _section("missing", "No calls were recorded for this run.", 0)
+    sections["report"] = _file_section(run_dir / "report.json", running, report, "A report", stopped=stopped)
+    sections["review"] = _file_section(run_dir / "review.json", running, review, "A review", stopped=stopped)
+    sections["manifest"] = _file_section(run_dir / "manifest.json", running, manifest, "A manifest",
+                                         stopped=stopped)
+    if plan_json is not None or plan is not None:
+        subtasks = plan_json.get("subtasks") if plan_json else None
+        sections["plan"] = _section("ok", count=len(subtasks) if isinstance(subtasks, list) else None)
+    else:
+        sections["plan"] = _file_section(run_dir / "plan.json", running, None, "A plan", dry, stopped)
+    if hosted:
+        if plan_path.exists() or (raw_dir is not None and (Path(raw_dir) / "plan.md").exists()):
+            out["plan"] = None
+            sections["plan"] = _section("withheld", "The plan carries the task prompt, so it is not published on the hosted copy.")
+        if artifact and artifact.get("ext") == "zip":
+            sections["artifact"] = _section(
+                "withheld", "Archive contents are not published on the hosted copy. The member list is shown.")
+    out["sections"] = sections
+    return out
+
+
+_ARMS = ("baseline", "jev")
+
+
+def auto_group_label(group: str) -> str:
+    """Human label for an experiment driver's group key
+    (`matrix:task:orchestrator:worker:arm`) as `experiment · task · orch / worker · arm`.
+    Any other group has no auto-label (empty string)."""
+    parts = group.split(":")
+    if len(parts) != 5 or parts[4] not in _ARMS:
+        return ""
+    matrix, task, orch, worker, arm = parts
+    return f"{matrix} · {task} · {orch.split('/')[-1]} / {worker.split('/')[-1]} · {arm}"
 
 
 def groups_payload(
@@ -1078,6 +1515,7 @@ def groups_payload(
         out.append({
             **g,
             "label": gm.get("label") or "",
+            "display_label": gm.get("label") or auto_group_label(g["group"]) or g["group"],
             "description": gm.get("description") or "",
             "tasks": len(g["tasks"]),
             "pairings": len(g["pairings"]),
@@ -1287,6 +1725,7 @@ def pairings_payload(
     metas = _runs_for_group(store, group)
     rows = pairing_leaderboard(metas, unmetered_workers=store.unmetered_workers())
     types = _task_types(store, tasks_dir)
+    default_group = None if group else default_pairing_group(metas)
 
     by_pair: dict[tuple[str, str], list[Any]] = {}
     for m in metas:
@@ -1321,6 +1760,7 @@ def pairings_payload(
             "best_type": best[0] if best else None,
             "worst_type": worst[0] if worst else None,
             "why": _pairing_why(r, best, worst, top_failure),
+            "low_n_best": is_low_n_best(r.finished),
         })
         enriched.append(d)
 
@@ -1335,6 +1775,7 @@ def pairings_payload(
                 "orchestrator": o, "worker": w,
                 "pass_rate": (c["pass_rate"] if c else None),
                 "runs": (c["runs"] if c else 0),
+                "finished": (c["finished"] if c else 0),
                 "score_mean": (c["score_mean"] if c else None),
                 "low_sample": (c["low_sample"] if c else False),
             }
@@ -1342,7 +1783,33 @@ def pairings_payload(
             for c in [by_key.get((o, w))]
         ],
     }
-    return {"rows": enriched, "matrix": matrix, "lenses": _lens_payloads(enriched)}
+    summary = {
+        "pairings": len(enriched),
+        "metered": sum(1 for d in enriched if (d.get("cost_total") or 0) > 0),
+        "unmetered": sum(1 for d in enriched if not (d.get("cost_total") or 0) > 0),
+        "best_eligible": sum(1 for d in enriched if not d["low_n_best"]),
+        "no_pass": sum(1 for d in enriched if d.get("finished") and not d.get("passed")),
+    }
+    return {"rows": enriched, "matrix": matrix, "lenses": _lens_payloads(enriched),
+            "summary": summary, "default_group": default_group}
+
+
+def default_pairing_group(metas: list[Any]) -> str:
+    """The run group Pairings opens on: the most recent labelled group holding
+    at least three pairings, else ``""`` (all groups). A one-pairing cohort is
+    never the default story."""
+    pairs: dict[str, set[tuple[str, str]]] = {}
+    latest: dict[str, str] = {}
+    for m in metas:
+        group = getattr(m, "run_group", "") or ""
+        if not group:
+            continue
+        pairs.setdefault(group, set()).add((m.orchestrator, m.worker))
+        started = getattr(m, "started_at", "") or ""
+        if started > latest.get(group, ""):
+            latest[group] = started
+    big = [g for g, p in pairs.items() if len(p) >= 3]
+    return max(big, key=lambda g: (latest.get(g, ""), g)) if big else ""
 
 
 def _pairing_why(r: Any, best: Any, worst: Any, top_failure: str | None) -> str:
@@ -2546,12 +3013,24 @@ def card_catalog_payload(
 
 
 def compare_payload(store: RunStore, group_a: str, group_b: str) -> dict[str, Any]:
-    """Cell-by-cell group delta — the same join `report --compare` prints,
-    plus a pairing matrix the SPA renders as a grid."""
+    """Cell-by-cell group delta, baseline (a) first against candidate (b).
+
+    A cell is improved or regressed only when the two 95% Wilson intervals do
+    not overlap and both sides have at least LOW_N_CELL finished runs;
+    otherwise it is "no-clear-difference" (the point delta is still reported).
+
+    Each cell carries both Wilson intervals, the pass-rate delta and the cost
+    delta. Rows sort by regression (largest drop first), one-sided cells last.
+    ``a == b`` is blocked with a message instead of a vacuous all-stable table."""
+    if group_a == group_b:
+        return {"group_a": group_a, "group_b": group_b, "cells": [], "verdicts": {},
+                "shared": 0, "one_sided": 0, "cost_a": 0, "cost_b": 0, "cost_delta": None,
+                "blocked": "Pick two different run groups to compare."}
+
     def cells(group: str) -> dict[tuple[str, str, str], Any]:
         return {
             (c.task_id, c.orchestrator, c.worker): c
-            for c in aggregate(store.list_runs(run_group=group))
+            for c in aggregate(_runs_for_group(store, group) if group else [])
         }
 
     cells_a, cells_b = cells(group_a), cells(group_b)
@@ -2561,30 +3040,60 @@ def compare_payload(store: RunStore, group_a: str, group_b: str) -> dict[str, An
         a, b = cells_a.get((task_id, orch, worker)), cells_b.get((task_id, orch, worker))
         pa = a.pass_rate if a else None
         pb = b.pass_rate if b else None
+        side = ""
+        ci_a = _wilson(a.passed, a.finished) if a else None
+        ci_b = _wilson(b.passed, b.finished) if b else None
+        low_n = bool(a and b and (is_low_n_cell(a.finished) or is_low_n_cell(b.finished)))
         if pa is None or pb is None:
             verdict = "one-sided"
-        elif pb > pa:
+            side = "baseline" if pa is not None else "candidate" if pb is not None else "neither"
+        elif low_n or ci_a is None or ci_b is None:
+            verdict = "no-clear-difference"
+        elif ci_a[1] < ci_b[0]:
             verdict = "improved"
-        elif pb < pa:
+        elif ci_b[1] < ci_a[0]:
             verdict = "regressed"
         else:
-            verdict = "stable"
+            verdict = "no-clear-difference"
+        cost_a = a.cost_total if a else None
+        cost_b = b.cost_total if b else None
+        two_sided = verdict != "one-sided"
         rows.append({
             "task_id": task_id, "orchestrator": orch, "worker": worker,
-            "n_a": a.runs if a else 0, "pass_a": pa, "cost_a": a.cost_total if a else None,
-            "n_b": b.runs if b else 0, "pass_b": pb, "cost_b": b.cost_total if b else None,
+            "n_a": a.runs if a else 0, "pass_a": pa, "cost_a": cost_a,
+            "n_b": b.runs if b else 0, "pass_b": pb, "cost_b": cost_b,
+            "passed_a": a.passed if a else 0, "finished_a": a.finished if a else 0,
+            "passed_b": b.passed if b else 0, "finished_b": b.finished if b else 0,
+            "ci_a": ci_a, "ci_b": ci_b, "low_n": low_n,
+            "delta": (pb - pa) if two_sided and pa is not None and pb is not None else None,
+            "cost_delta": (cost_b or 0) - (cost_a or 0) if two_sided else None,
+            "side": side,
             "verdict": verdict,
             "failures_a": a.failures if a else {},
             "failures_b": b.failures if b else {},
         })
+    # regressions (largest drop first), improvements (largest gain first),
+    # no clear difference (largest point change first), one-sided last
+    rank = {"regressed": 0, "improved": 1, "no-clear-difference": 2, "one-sided": 3}
+    rows.sort(key=lambda r: (rank[r["verdict"]],
+                             {"regressed": r["delta"], "improved": -(r["delta"] or 0),
+                              "no-clear-difference": -abs(r["delta"] or 0)}.get(r["verdict"], 0.0),
+                             r["task_id"], r["orchestrator"], r["worker"]))
     verdicts: dict[str, int] = {}
     for r in rows:
         verdicts[r["verdict"]] = verdicts.get(r["verdict"], 0) + 1
+    cost_a_total = sum(r["cost_a"] or 0 for r in rows)
+    cost_b_total = sum(r["cost_b"] or 0 for r in rows)
+    one_sided = verdicts.get("one-sided", 0)
     return {
         "group_a": group_a, "group_b": group_b, "cells": rows,
         "verdicts": verdicts,
-        "cost_a": sum(r["cost_a"] or 0 for r in rows),
-        "cost_b": sum(r["cost_b"] or 0 for r in rows),
+        "shared": len(rows) - one_sided,
+        "one_sided": one_sided,
+        "cost_a": cost_a_total,
+        "cost_b": cost_b_total,
+        "cost_delta": cost_b_total - cost_a_total,
+        "blocked": "",
     }
 
 
@@ -2624,6 +3133,40 @@ def _arm_block(runs: list[Any]) -> dict[str, Any]:
     }
 
 
+def _matrix_budget(path: Path) -> dict[str, Any]:
+    """The driver takes --budget on the command line and does not record it, so
+    a spec only has one when its author wrote a `budget:` key. Unknown stays
+    unknown; the UI says so rather than inventing a ceiling."""
+    try:
+        raw = yaml.safe_load(path.read_text(encoding="utf-8")).get("budget")
+    except Exception:
+        raw = None
+    if isinstance(raw, (int, float)) and not isinstance(raw, bool) and raw > 0:
+        return {"usd": float(raw), "recorded": True}
+    return {"usd": None, "recorded": False}
+
+
+def experiments_list(store: RunStore, experiments_dir: Path | str,
+                     tasks_dir: Path | str | None = None) -> list[dict[str, Any]]:
+    """One summary row per matrix spec under `experiments/`, name-sorted."""
+    root = Path(experiments_dir)
+    if not root.is_dir():
+        return []
+    out: list[dict[str, Any]] = []
+    for spec in sorted(root.glob("*.yaml")):
+        try:
+            payload = experiment_payload(store, spec, tasks_dir=tasks_dir)
+        except Exception:
+            continue
+        if payload is None:
+            continue
+        summary = payload["summary"]
+        out.append({"name": spec.stem, "matrix": payload["matrix"], "cells": summary["cells"],
+                    "states": summary["states"], "posted": summary["posted"],
+                    "spend": summary["spend"], "budget": payload["budget"]})
+    return out
+
+
 def experiment_payload(
     store: RunStore, matrix_path: str | Path, *,
     diff_eps: float = 0.15, tasks_dir: Path | str | None = None,
@@ -2660,6 +3203,7 @@ def experiment_payload(
         })
     return {
         "matrix": matrix.name,
+        "budget": _matrix_budget(p),
         "summary": coverage_summary(rows),
         "cells": cells,
         "primary_axis": "mechanical pass",

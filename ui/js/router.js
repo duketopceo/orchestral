@@ -18,7 +18,7 @@ import { viewCompare } from "./views/compare.js";
 import { viewLeaderboard } from "./views/leaderboard.js";
 import { viewModels } from "./views/models.js";
 import { viewNew } from "./views/new.js";
-import { viewOverview } from "./views/overview.js";
+import { viewNow } from "./views/now.js";
 import { viewRun } from "./views/run.js";
 import { viewRuns } from "./views/runs.js";
 
@@ -41,11 +41,11 @@ function sleep(ms, signal) {
 
 function dispatch(path, params) {
   if (LOCAL_ONLY[path] && !can(LOCAL_ONLY[path])) return renderUnavailable();
-  if (path === "/") return viewOverview();
+  if (path === "/") return viewNow();
   if (path === "/runs") return viewRuns(params);
   if (path.startsWith("/run/")) return viewRun(decodeURIComponent(path.split("/")[2]), params);
   if (path === "/compare") return viewCompare(params);
-  if (path === "/experiment") return viewExperiment();
+  if (path === "/experiment") return viewExperiment(params);
   if (path === "/leaderboard") return viewLeaderboard(params);
   if (path === "/cards") return viewCards(params);
   if (path === "/card") return viewCard(params);

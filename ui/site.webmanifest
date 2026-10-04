@@ -1,0 +1,15 @@
+{
+  "name": "orchestral",
+  "short_name": "orchestral",
+  "description": "Orchestral observatory: evidence from model evals.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#F7F8F8",
+  "theme_color": "#F7F8F8",
+  "icons": [
+    {"src": "/static/favicon.svg", "sizes": "any", "type": "image/svg+xml"},
+    {"src": "/static/brand/apple-touch-icon.png", "sizes": "180x180", "type": "image/png"},
+    {"src": "/static/brand/icon-512.png", "sizes": "512x512", "type": "image/png"}
+  ]
+}

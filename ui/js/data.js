@@ -5,6 +5,7 @@
    orchestral/web/snapshot.py writes (served by the Worker as /api/<name>) and
    does filtering client-side. */
 import { ApiError, api, isAbort } from "./api.js";
+import { normPairing, pairingParam } from "./util.js";
 
 const DEFAULT_META = {
   mode: "local", synced_at: null, source_commit: null,
@@ -65,9 +66,12 @@ export function localAdapter() {
   return {
     mode: "local",
     overview: o => get("/api/overview", o),
-    runs: (f = {}, o) => get(`/api/runs${qs({ group: f.group, status: f.status, task: f.task, q: f.q })}`, o),
+    runs: (f = {}, o) => get(`/api/runs${qs({
+      group: f.group, status: f.status, task: f.task, q: f.q, pairing: f.pairing, judge: f.judge,
+      type: f.type, difficulty: f.difficulty, sort: f.sort, dir: f.dir })}`, o),
     groups: o => get("/api/groups", o),
     matrix: o => get("/api/matrix", o),
+    experiments: o => get("/api/experiments", o),
     experiment: (name, o) => get(`/api/experiment${qs({ matrix: name })}`, o),
     run: (id, o) => get(`/api/run/${encodeURIComponent(id)}`, o),
     runLive: (id, after = 0, o) => get(`/api/run/${encodeURIComponent(id)}/live?after=${after}`, o),
@@ -104,6 +108,7 @@ export const HOSTED_KEYS = {
   runs: () => "runs",
   groups: () => "groups",
   matrix: () => "matrix",
+  experiments: () => "experiments",
   experiment: name => `experiment.${keyEnc(name || "jev-ab")}`,
   run: id => `run/${keyEnc(id)}`,
   runLive: id => `run/${keyEnc(id)}/live`,
@@ -117,19 +122,41 @@ export const HOSTED_KEYS = {
   modelsCatalog: () => "models-catalog",
 };
 
-// Mirrors orchestral.tui.state.filter_runs and state.runs_payload's status filter.
+// Mirrors orchestral.tui.state.filter_runs and state.runs_payload (facets and sort).
+const SORT_KEYS = {
+  started: ["started_at", "desc"], cost: ["billed_cost_usd", "desc"], duration: ["latency_ms", "desc"],
+  tokens: ["tokens", "desc"], task: ["task_id", "asc"], status: ["status", "asc"],
+};
+
 export function filterRuns(rows, f = {}) {
   const q = String(f.q || "").trim().toLowerCase();
-  return rows.filter(r => {
+  const out = rows.filter(r => {
     if (f.group && r.run_group !== f.group) return false;
     if (f.task && r.task_id !== f.task) return false;
+    if (f.pairing && pairingParam(r.orchestrator, r.worker) !== normPairing(f.pairing)) return false;
+    if (f.judge && r.judge_state !== f.judge) return false;
+    if (f.type && r.type !== f.type) return false;
+    if (f.difficulty && r.difficulty !== f.difficulty) return false;
     if (q && ![r.run_id, r.task_id, r.orchestrator, r.worker, r.run_group, r.status, r.failure_reason]
       .some(v => String(v || "").toLowerCase().includes(q))) return false;
-    if (f.status === "passed") return r.status === "finished" && !!r.passes;
-    if (f.status === "failed") return r.status === "failed" || (r.status === "finished" && !r.passes);
+    if (f.status === "passed") return r.status === "finished" && !!r.passes; // a withheld holdout row has no outcome
+    if (f.status === "failed") return r.status === "failed" || (r.status === "finished" && !r.passes && !r.holdout);
+    if (f.status === "stalled") return !!r.stalled;
     if (f.status) return r.status === f.status;
     return true;
   });
+  return sortRuns(out, f.sort, f.dir);
+}
+
+/* Unknown sort names keep the incoming order; a missing value sorts last either way. */
+export function sortRuns(rows, sort, dir) {
+  const spec = SORT_KEYS[sort];
+  if (!spec) return rows;
+  const [key, dflt] = spec;
+  const sign = (dir === "asc" || dir === "desc" ? dir : dflt) === "desc" ? -1 : 1;
+  const has = r => r[key] !== null && r[key] !== undefined && r[key] !== "";
+  const cmp = (a, b) => (a[key] < b[key] ? -1 : a[key] > b[key] ? 1 : 0) * sign;
+  return [...rows.filter(has).sort(cmp), ...rows.filter(r => !has(r))];
 }
 
 export function hostedAdapter() {
@@ -148,7 +175,9 @@ export function hostedAdapter() {
     runs: async (f = {}, o) => filterRuns(await get(HOSTED_KEYS.runs(), o), f),
     groups: o => get(HOSTED_KEYS.groups(), o),
     matrix: o => get(HOSTED_KEYS.matrix(), o),
-    experiment: (name, o) => get(HOSTED_KEYS.experiment(name), o),
+    experiments: o => get(HOSTED_KEYS.experiments(), o),
+    experiment: (name, o) => get(HOSTED_KEYS.experiment(name), o,
+      `There is no experiment named ${name || "jev-ab"} in this snapshot.`),
     run: (id, o) => get(HOSTED_KEYS.run(id), o, "That run is not part of this snapshot."),
     runLive: async (id, after = 0, o) => {
       const p = await get(HOSTED_KEYS.runLive(id), o);

@@ -54,8 +54,13 @@ class TestSnapshot(unittest.TestCase):
         self.assertFalse(any(meta["capabilities"].values()))
 
     def test_core_resources_match_the_payload_functions(self):
-        self.assertEqual(self.snap["runs.json"],
-                         json.loads(json.dumps(state.runs_payload(self.store, tasks_dir=FIXTURES / "tasks"), default=str)))
+        local = json.loads(json.dumps(state.runs_payload(self.store, tasks_dir=FIXTURES / "tasks"), default=str))
+        # hosted differs only by the outcome of holdout runs, which it withholds
+        for r in local:
+            if (r.get("config") or {}).get("holdout"):
+                r.update(dict.fromkeys(("passes", "score", "judge_score", "judge_passed", "failure_reason")),
+                         holdout=True, judge_state="not_judged", judge_reason="Withheld: holdout arm.")
+        self.assertEqual(self.snap["runs.json"], local)
         for key in ("overview.json", "groups.json", "matrix.json", "leaderboard.json",
                     "pairings.json", "flags.json"):
             self.assertIn(key, self.snap)

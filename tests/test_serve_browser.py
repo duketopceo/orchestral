@@ -15,6 +15,7 @@ import tempfile
 import threading
 import time
 import unittest
+import urllib.parse
 import urllib.request
 from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -74,7 +75,7 @@ class TestBrowserSmoke(unittest.TestCase):
                 pg = browser.new_page()
                 pg.goto(f"http://127.0.0.1:{self.port}/")
                 pg.wait_for_selector("h1")
-                self.assertIn("Overview", pg.inner_text("h1"))
+                self.assertIn("Now", pg.inner_text("h1"))
                 self.assertIn("orchestral", pg.inner_text("body"))
                 self.assertIn("t-task", pg.inner_text("body"))
                 pg.goto(f"http://127.0.0.1:{self.port}/#/new")
@@ -233,8 +234,10 @@ class TestSpaRuntimeLocal(_Browser):
                 route.fulfill(status=503, content_type="application/json", body="{}")
             else:
                 route.continue_()
-        pg.route("**/api/matrix*", flaky)
-        pg.goto(f"{self.base}/")
+        # Now degrades a failed matrix to an inline band error (U10), so the router's
+        # retry path is exercised on a route whose only required read is this one.
+        pg.route("**/api/groups*", flaky)
+        pg.goto(f"{self.base}/#/leaderboard")
         pg.wait_for_selector("#status-line:not([hidden])", timeout=5000)
         self.assertIn("Reconnecting", pg.inner_text("#status-line"))
         pg.wait_for_selector("#view[data-ready='error']", timeout=20000)
@@ -243,7 +246,7 @@ class TestSpaRuntimeLocal(_Browser):
         self.assertIn("Offline", pg.inner_text("#status-line"))
         pg.click("#retry")
         pg.wait_for_selector("#view[data-ready='ok']", timeout=10000)
-        self.assertIn("Overview", pg.inner_text("h1"))
+        self.assertEqual(pg.locator("h1").count(), 1)
         self.assertTrue(pg.locator("#status-line").is_hidden())
 
     def test_client_errors_are_not_retried(self):
@@ -278,7 +281,7 @@ class TestSpaRuntimeLocal(_Browser):
         pg.select_option("#f-status", "passed")
         pg.wait_for_timeout(3500)
         body = pg.inner_text("#runs-body")
-        self.assertEqual(pg.locator("#runs-body tr").count(), passed)
+        self.assertEqual(int(pg.get_attribute("#runs-count", "data-total")), passed)
         self.assertNotIn("Failed", body)
 
     def test_finish_noticed_after_switching_to_events_tab(self):
@@ -412,8 +415,19 @@ class TestSpaRuntimeHosted(_Browser):
         pg.wait_for_selector("#view[data-ready='ok']")
         self.assertEqual(pg.evaluate("document.documentElement.dataset.mode"), "hosted")
         self.assertIn("Read-only snapshot", pg.inner_text("#status-line"))
-        self.assertIn("Overview", pg.inner_text("h1"))
+        self.assertIn("Now", pg.inner_text("h1"))
         self.assertEqual(self.errors, [])
+
+    def test_hosted_runs_pairing_filter_takes_pipe_and_legacy_arrow(self):
+        rows = self.snap["runs.json"]
+        orch, worker = rows[0]["orchestrator"], rows[0]["worker"]
+        want = len([r for r in rows if r["orchestrator"] == orch and r["worker"] == worker])
+        for form in (f"{orch}|{worker}", f"{orch} \u2192 {worker}"):
+            pg = self.page()
+            pg.goto(f"{self.hbase}/#/runs?pairing={urllib.parse.quote(form, safe='')}")
+            pg.wait_for_selector("#view[data-ready='ok']")
+            pg.wait_for_function(f"document.getElementById('runs-count').dataset.total === '{want}'")
+            self.assertEqual(pg.locator("#f-pairing").input_value(), f"{orch}|{worker}")
 
     def test_hosted_ui_has_no_launch_flag_or_cancel_controls(self):
         pg = self.page()
@@ -434,13 +448,14 @@ class TestSpaRuntimeHosted(_Browser):
 
     def test_runs_filtered_by_status_failed_shows_only_failed_rows(self):
         expected = [r for r in self.snap["runs.json"]
-                    if r["status"] == "failed" or (r["status"] == "finished" and not r["passes"])]
+                    if r["status"] == "failed" or (
+                        r["status"] == "finished" and not r["passes"] and not r.get("holdout"))]
         self.assertTrue(expected)
         pg = self.page()
         pg.goto(f"{self.hbase}/#/runs?status=failed")
         pg.wait_for_selector("#view[data-ready='ok']")
         pg.wait_for_selector("#runs-body tr .chip")
-        self.assertEqual(pg.locator("#runs-body tr").count(), len(expected))
+        self.assertEqual(int(pg.get_attribute("#runs-count", "data-total")), len(expected))
         chips = pg.locator("#runs-body tr td:first-child .chip").all_inner_texts()
         self.assertTrue(chips and all(c in {"Failed", "Fail"} for c in chips), set(chips))
 
@@ -466,7 +481,7 @@ class TestSpaRuntimeHosted(_Browser):
         pg = self.page()
         pg.goto(f"{self.hbase}/")
         pg.wait_for_selector("#view[data-ready='ok']")
-        pg.route("**/api/groups", lambda r: r.abort())
+        pg.route("**/api/runs", lambda r: r.abort())
         pg.goto(f"{self.hbase}/#/runs")
         pg.wait_for_selector("#view[data-ready='error']", timeout=20000)
         self.assertIn("Sign in again", pg.inner_text("#view"))
@@ -519,6 +534,24 @@ class TestSpaRuntimeHosted(_Browser):
         hosted = self._adapter_calls(hosted_pg)
         self.assertEqual(local_pg.evaluate("document.documentElement.dataset.mode"), "local")
         self.assertEqual(hosted_pg.evaluate("document.documentElement.dataset.mode"), "hosted")
+        # Holdout runs are the one deliberate difference: hosted never aggregates them and
+        # masks their outcome on the runs list (tests/test_privacy_holdout_config.py).
+        held = {r["run_id"] for r in local["runsAll"] if (r.get("config") or {}).get("holdout")}
+        self.assertTrue(held)
+        local["groups"] = [g for g in local["groups"] if g["group"] != "corpus-holdout"]
+        local["cards"] = [c for c in local["cards"] if c != "corpus-holdout"]
+        for rows in (local["runsAll"], local["runsFailed"], local["runsGroup"]):
+            for r in rows:
+                if r["run_id"] in held:
+                    r.update(dict.fromkeys(("passes", "score", "judge_score", "judge_passed",
+                                            "failure_reason")), holdout=True,
+                             judge_state="not_judged", judge_reason="Withheld: holdout arm.")
+        local["runsFailed"] = [r for r in local["runsFailed"]
+                               if not (r["run_id"] in held and r["status"] == "finished")]
+        n_held = len(held)
+        cells = lambda m: sum(c["n"] for t in m["tasks"] for c in t["cells"].values())  # noqa: E731
+        self.assertEqual(cells(local["matrix"]) - n_held, cells(hosted.pop("matrix")))
+        local.pop("matrix")
         for name in local:
             self.assertEqual(local[name], hosted[name], name)
         self.assertGreater(len(local["runsAll"]), 1000)

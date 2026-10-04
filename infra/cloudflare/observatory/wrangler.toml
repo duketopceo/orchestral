@@ -12,12 +12,12 @@ routes = [
 ]
 
 # The SPA is static — pushed snapshots live in R2, not here. The assets are the
-# staged copy of ui/ with app.html's ?v= token resolved (see # Required so Workers Builds PR previews (`npx wrangler preview`) work;
+# staged copy of ui/ with app.html's ?v= token resolved (see [build]); never
+# point this at ../../../ui directly or the page ships a literal "__V__".
+# Required so Workers Builds PR previews (`npx wrangler preview`) work;
 # the block may be empty — assets/bindings inherit from the top level.
 previews = {}
 
-[build]); never
-# point this at ../../../ui directly or the page ships a literal "__V__".
 [build]
 command = "python3 ../../../scripts/build-hosted-assets.py"
 cwd = "."

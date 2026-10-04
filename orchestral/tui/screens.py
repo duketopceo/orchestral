@@ -28,6 +28,7 @@ from textual.widgets import (
 
 from orchestral.calibrate import calibration_status
 from orchestral.export import leaderboard_csv, run_audit_markdown
+from orchestral.format import NULL_GLYPH, fmt_percent, fmt_score
 from orchestral.judge import DEFAULT_JUDGE
 from orchestral.stats import aggregate, pairing_leaderboard
 from orchestral.storage import RunStore
@@ -91,7 +92,7 @@ class RunDetailScreen(Screen):
         self._reports_dir = reports_dir or Path("reports")
 
     def compose(self) -> ComposeResult:
-        yield Static(f"run {self._run_id} — loading…", id="detail-summary")
+        yield Static(f"run {self._run_id}: loading…", id="detail-summary")
         with TabbedContent():
             with TabPane("Events"):
                 yield RichLog(id="detail-events", highlight=False, markup=False)
@@ -180,7 +181,7 @@ class GroupsScreen(Screen):
         self._store = store
 
     def compose(self) -> ComposeResult:
-        yield Static("Replicate groups — variance per (group, task, orchestrator, worker) cell")
+        yield Static("Replicate groups: variance per (group, task, orchestrator, worker) cell")
         yield DataTable(id="groups-table", cursor_type="row")
         yield Footer()
 
@@ -237,10 +238,10 @@ class LiveRunScreen(Screen):
         self._meta: Any = None
 
     def compose(self) -> ComposeResult:
-        yield Static(f"run {self._run_id} — loading…", id="live-info")
+        yield Static(f"run {self._run_id}: loading…", id="live-info")
         with Horizontal(id="live-main"):
             with Vertical(id="live-left"):
-                yield Static("workers: —", id="live-workers")
+                yield Static("workers: none yet", id="live-workers")
                 yield Static("select an event to inspect", id="live-detail")
             yield DataTable(id="live-events", cursor_type="row", zebra_stripes=True)
         yield Footer()
@@ -318,7 +319,7 @@ class LiveRunScreen(Screen):
         self.query_one("#live-info", Static).update("\n".join(info))
 
         states = worker_states(self._events)
-        chips = "  ".join(f"{wid} {st}" for wid, st in sorted(states.items())) or "—"
+        chips = "  ".join(f"{wid} {st}" for wid, st in sorted(states.items())) or NULL_GLYPH
         if phase in ("planning",):
             chips = f"orchestrator running · {chips}"
         elif phase in ("assembling",):
@@ -331,7 +332,7 @@ class LiveRunScreen(Screen):
             self._done = True
             self._timer.stop()
             self.query_one("#live-info", Static).update(
-                "\n".join(info) + f"\n[dim]run {meta.status} — Esc back, e export[/dim]"
+                "\n".join(info) + f"\n[dim]run {meta.status}. Esc back, e export[/dim]"
             )
 
     def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
@@ -353,7 +354,7 @@ class LiveRunScreen(Screen):
             self.app.notify("only runs launched from this TUI can be cancelled", severity="warning")
             return
         if job.cancel():
-            self.app.notify(f"cancelling {self._run_id} — stops between subtasks")
+            self.app.notify(f"cancelling {self._run_id}, stops between subtasks")
         else:
             self.app.notify("run already finished", severity="warning")
 
@@ -389,7 +390,7 @@ class LeaderboardScreen(Screen):
         self._judge_bits: list[str] = []
 
     def compose(self) -> ComposeResult:
-        yield Static("Leaderboard — loading…", id="lb-header")
+        yield Static("Leaderboard: loading…", id="lb-header")
         yield DataTable(id="lb-table", cursor_type="row", zebra_stripes=True)
         yield Footer()
 
@@ -421,7 +422,7 @@ class LeaderboardScreen(Screen):
         low = sum(1 for r in rows if r.low_sample)
         judge_note = f" · judge {'; '.join(judge_bits)}" if judge_bits else ""
         header.update(
-            f"Pairing leaderboard — sort {key} (s cycles) · "
+            f"Pairing leaderboard, sort {key} (s cycles) · "
             f"{len(rows)} pairings · {low} below {self._min_samples} samples "
             "[dim](low-sample ranks are anecdote, not evidence)[/dim]"
             f"{judge_note}"
@@ -431,11 +432,11 @@ class LeaderboardScreen(Screen):
         for r in sort_leaderboard(rows, key):
             table.add_row(
                 r.orchestrator, r.worker, str(r.runs), str(r.tasks_covered),
-                f"{(r.pass_rate or 0) * 100:.0f}%",
-                f"{r.judge_score_median:.2f}" if r.judge_score_median is not None else "-",
+                fmt_percent(r.pass_rate or 0),
+                fmt_score(r.judge_score_median),
                 fmt_cost(r.cost_median),
                 fmt_ms(r.duration_median_ms),
-                f"{(r.failure_rate or 0) * 100:.0f}%",
+                fmt_percent(r.failure_rate or 0),
                 fmt_cost(r.cost_per_pass),
                 "low-n" if r.low_sample else "ok",
             )
@@ -459,26 +460,26 @@ class LeaderboardScreen(Screen):
 
 
 HELP_TEXT = """\
-[b]orchestral tui[/b] — experiment observatory
+[b]orchestral tui[/b]: experiment observatory
 
   1              live run (tails events.jsonl for the newest running run)
   2              run history (this table)
   3              pairing leaderboard (s cycles sort, e exports CSV)
   j / ↓, k / ↑   move selection
-  Enter          open run — live view while running, detail once finished
+  Enter          open run: live view while running, detail once finished
   /              filter runs (task, model, group, status, failure)
   g              replicate-group variance table
   n              launch a run (or replicate batch)
   x              cancel the active job
   c              cancel the run being watched (live view)
-  e              export — audit markdown (detail/live), CSV (history/board)
+  e              export: audit markdown (detail/live), CSV (history/board)
   r              refresh run list
   ?              this help
   Esc            back / close
   q              quit
 
 Detail tabs: events stream, per-call index, metrics, report, plan, manifest.
-Jobs run on background threads — the UI stays responsive; cancelling
+Jobs run on background threads, so the UI stays responsive; cancelling
 stops between subtasks and records status=cancelled.
 """
 
@@ -520,7 +521,7 @@ class LaunchScreen(ModalScreen):
             yield Select([(m, m) for m in self._orchestrators], id="launch-orch", allow_blank=not self._orchestrators)
             yield Label("Worker")
             yield Select([(m, m) for m in self._workers], id="launch-worker", allow_blank=not self._workers)
-            yield Label("Judge (optional — default is the decisions engine)")
+            yield Label("Judge (optional, default is the decisions engine)")
             yield Select(
                 [("(none)", ""), *[(m, m) for m in self._judges]],
                 id="launch-judge",

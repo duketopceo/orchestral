@@ -28,6 +28,7 @@ from orchestral.config import (
     resolve_model,
 )
 from orchestral.export import runs_csv
+from orchestral.format import fmt_score
 from orchestral.judge import judge_choices
 from orchestral.runner import Runner
 from orchestral.storage import RunStore
@@ -126,7 +127,7 @@ class OrchestralApp(App):
 
     def compose(self) -> ComposeResult:
         yield Header()
-        yield Input(placeholder="filter runs — task, model, group, status, failure (esc to close)", id="filter-box")
+        yield Input(placeholder="filter runs by task, model, group, status or failure (esc to close)", id="filter-box")
         yield DataTable(id="runs-table", cursor_type="row", zebra_stripes=True)
         yield StatusBar()
         yield Footer()
@@ -175,7 +176,7 @@ class OrchestralApp(App):
                 r.worker,
                 fmt_cost(r.display_cost_usd),
                 fmt_tokens(r.total_input_tokens + r.total_output_tokens),
-                f"{r.score:.2f}" if r.score is not None else "-",
+                fmt_score(r.score),
                 pl,
                 sl,
                 (r.started_at or "")[:19],
@@ -248,7 +249,7 @@ class OrchestralApp(App):
             return
         running = [r for r in self._runs if r.status == "running"]
         if not running:
-            self.notify("no run in flight — press n to launch one", severity="warning")
+            self.notify("no run in flight, press n to launch one", severity="warning")
             return
         self.push_screen(LiveRunScreen(self.store, running[-1].run_id, self.reports_dir))
 

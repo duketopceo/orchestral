@@ -43,6 +43,7 @@ from orchestral.format import (
     fmt_range_pct,
     fmt_score,
     is_low_n_best,
+    is_low_n_cell,
 )
 from orchestral.judge import DEFAULT_JUDGE
 from orchestral.runner import Runner
@@ -2578,6 +2579,10 @@ def card_catalog_payload(
 def compare_payload(store: RunStore, group_a: str, group_b: str) -> dict[str, Any]:
     """Cell-by-cell group delta, baseline (a) first against candidate (b).
 
+    A cell is improved or regressed only when the two 95% Wilson intervals do
+    not overlap and both sides have at least LOW_N_CELL finished runs;
+    otherwise it is "no-clear-difference" (the point delta is still reported).
+
     Each cell carries both Wilson intervals, the pass-rate delta and the cost
     delta. Rows sort by regression (largest drop first), one-sided cells last.
     ``a == b`` is blocked with a message instead of a vacuous all-stable table."""
@@ -2600,15 +2605,20 @@ def compare_payload(store: RunStore, group_a: str, group_b: str) -> dict[str, An
         pa = a.pass_rate if a else None
         pb = b.pass_rate if b else None
         side = ""
+        ci_a = _wilson(a.passed, a.finished) if a else None
+        ci_b = _wilson(b.passed, b.finished) if b else None
+        low_n = bool(a and b and (is_low_n_cell(a.finished) or is_low_n_cell(b.finished)))
         if pa is None or pb is None:
             verdict = "one-sided"
             side = "baseline" if pa is not None else "candidate" if pb is not None else "neither"
-        elif pb > pa:
+        elif low_n or ci_a is None or ci_b is None:
+            verdict = "no-clear-difference"
+        elif ci_a[1] < ci_b[0]:
             verdict = "improved"
-        elif pb < pa:
+        elif ci_b[1] < ci_a[0]:
             verdict = "regressed"
         else:
-            verdict = "stable"
+            verdict = "no-clear-difference"
         cost_a = a.cost_total if a else None
         cost_b = b.cost_total if b else None
         two_sided = verdict != "one-sided"
@@ -2618,8 +2628,7 @@ def compare_payload(store: RunStore, group_a: str, group_b: str) -> dict[str, An
             "n_b": b.runs if b else 0, "pass_b": pb, "cost_b": cost_b,
             "passed_a": a.passed if a else 0, "finished_a": a.finished if a else 0,
             "passed_b": b.passed if b else 0, "finished_b": b.finished if b else 0,
-            "ci_a": _wilson(a.passed, a.finished) if a else None,
-            "ci_b": _wilson(b.passed, b.finished) if b else None,
+            "ci_a": ci_a, "ci_b": ci_b, "low_n": low_n,
             "delta": (pb - pa) if two_sided and pa is not None and pb is not None else None,
             "cost_delta": (cost_b or 0) - (cost_a or 0) if two_sided else None,
             "side": side,
@@ -2627,7 +2636,12 @@ def compare_payload(store: RunStore, group_a: str, group_b: str) -> dict[str, An
             "failures_a": a.failures if a else {},
             "failures_b": b.failures if b else {},
         })
-    rows.sort(key=lambda r: (r["delta"] is None, r["delta"] if r["delta"] is not None else 0.0,
+    # regressions (largest drop first), improvements (largest gain first),
+    # no clear difference (largest point change first), one-sided last
+    rank = {"regressed": 0, "improved": 1, "no-clear-difference": 2, "one-sided": 3}
+    rows.sort(key=lambda r: (rank[r["verdict"]],
+                             {"regressed": r["delta"], "improved": -(r["delta"] or 0),
+                              "no-clear-difference": -abs(r["delta"] or 0)}.get(r["verdict"], 0.0),
                              r["task_id"], r["orchestrator"], r["worker"]))
     verdicts: dict[str, int] = {}
     for r in rows:

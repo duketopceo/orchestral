@@ -414,25 +414,58 @@ class TestChartPayloads(unittest.TestCase):
         flags = {r["worker"]: r["low_n_best"] for r in payload["rows"]}
         self.assertEqual(flags, {"wbig": False, "wzero": True, "wfree": True})
 
-    def test_compare_cells_carry_intervals_and_sort_by_regression(self):
+    def _cmp(self, specs):
+        """specs: task -> (a_pass, a_fail, b_pass, b_fail); one-sided via None."""
         from orchestral.web import state
         with tempfile.TemporaryDirectory() as tmp:
-            metas = (self._runs("A", "o", "w", "t-up", 2, 8) + self._runs("B", "o", "w", "t-up", 8, 2)
-                     + self._runs("A", "o", "w", "t-down", 9, 1) + self._runs("B", "o", "w", "t-down", 3, 7)
-                     + self._runs("A", "o", "w", "t-same", 5, 5) + self._runs("B", "o", "w", "t-same", 5, 5)
-                     + self._runs("A", "o", "w", "t-only-a", 5, 5))
+            metas = []
+            for task, (ap, af, bp, bf) in specs.items():
+                if ap is not None:
+                    metas += self._runs("A", "o", "w", task, ap, af)
+                if bp is not None:
+                    metas += self._runs("B", "o", "w", task, bp, bf)
             payload = state.compare_payload(self._store(tmp, metas), "A", "B")
-        order = [c["task_id"] for c in payload["cells"]]
-        self.assertEqual(order, ["t-down", "t-same", "t-up", "t-only-a"])
-        down = payload["cells"][0]
-        self.assertEqual((down["passed_a"], down["finished_a"], down["passed_b"], down["finished_b"]), (9, 10, 3, 10))
-        self.assertAlmostEqual(down["delta"], -0.6)
+        return payload, {c["task_id"]: c for c in payload["cells"]}
+
+    def test_separated_intervals_are_improved_or_regressed(self):
+        _, cells = self._cmp({"up": (4, 16, 16, 4), "down": (18, 2, 4, 16)})
+        self.assertEqual(cells["up"]["verdict"], "improved")
+        self.assertEqual(cells["down"]["verdict"], "regressed")
+
+    def test_overlapping_intervals_are_no_clear_difference_but_keep_the_delta(self):
+        _, cells = self._cmp({"noise": (10, 10, 12, 8), "same": (10, 10, 10, 10)})
+        self.assertEqual(cells["noise"]["verdict"], "no-clear-difference")
+        self.assertAlmostEqual(cells["noise"]["delta"], 0.1)
+        self.assertEqual(cells["same"]["verdict"], "no-clear-difference")
+
+    def test_low_n_cells_never_get_improved_or_regressed(self):
+        _, cells = self._cmp({"thin-a": (0, 2, 20, 0), "thin-b": (20, 0, 0, 2)})
+        self.assertEqual(cells["thin-a"]["verdict"], "no-clear-difference")
+        self.assertEqual(cells["thin-b"]["verdict"], "no-clear-difference")
+        self.assertTrue(cells["thin-a"]["low_n"])
+
+    def test_one_sided_keeps_its_label(self):
+        _, cells = self._cmp({"only-a": (5, 5, None, None)})
+        self.assertEqual(cells["only-a"]["verdict"], "one-sided")
+
+    def test_compare_sorts_regressions_then_improvements_then_noise_then_one_sided(self):
+        payload, _ = self._cmp({
+            "t-noise": (10, 10, 12, 8), "t-up": (4, 16, 16, 4), "t-down": (18, 2, 4, 16),
+            "t-only-a": (5, 5, None, None), "t-up2": (2, 18, 18, 2)})
+        self.assertEqual([c["task_id"] for c in payload["cells"]],
+                         ["t-down", "t-up2", "t-up", "t-noise", "t-only-a"])
+        self.assertEqual(payload["verdicts"], {"regressed": 1, "improved": 2,
+                                               "no-clear-difference": 1, "one-sided": 1})
+        self.assertEqual(payload["shared"], 4)
+        self.assertEqual(payload["one_sided"], 1)
+
+    def test_compare_cells_carry_intervals_and_counts(self):
+        _, cells = self._cmp({"down": (18, 2, 4, 16)})
+        down = cells["down"]
+        self.assertEqual((down["passed_a"], down["finished_a"], down["passed_b"], down["finished_b"]), (18, 20, 4, 20))
+        self.assertAlmostEqual(down["delta"], -0.7)
         self.assertEqual(len(down["ci_a"]), 2)
         self.assertEqual(len(down["ci_b"]), 2)
-        self.assertLess(down["ci_a"][0], 0.9)
-        self.assertIsNone(payload["cells"][-1]["delta"])
-        self.assertEqual(payload["shared"], 3)
-        self.assertEqual(payload["one_sided"], 1)
 
     def test_compare_reports_a_cost_delta(self):
         from orchestral.web import state

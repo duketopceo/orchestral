@@ -228,12 +228,30 @@ class TestCompare(_Base):
         summary = pg.locator(".cmp-summary").inner_text()
         for verdict, n in api["verdicts"].items():
             self.assertIn(f"{n}", summary, verdict)
-        deltas = pg.eval_on_selector_all(".cmp-row", "els => els.map(e => e.dataset.delta)")
-        nums = [float(d) for d in deltas if d != ""]
-        self.assertEqual(nums, sorted(nums))
+        order = {"regressed": 0, "improved": 1, "no-clear-difference": 2, "one-sided": 3}
+        verdicts = pg.eval_on_selector_all(".cmp-row", "els => els.map(e => e.dataset.verdict)")
+        ranks = [order[v] for v in verdicts]
+        self.assertEqual(ranks, sorted(ranks))
+        reg = [float(d) for v, d in zip(verdicts, pg.eval_on_selector_all(
+            ".cmp-row", "els => els.map(e => e.dataset.delta)"), strict=True) if v == "regressed"]
+        self.assertEqual(reg, sorted(reg))
         self.assertEqual(pg.locator(".cmp-row svg[role='img']").count(), pg.locator(".cmp-row").count())
         self.assertEqual(pg.locator(".cmp-row").first.get_attribute("data-verdict"), "regressed")
         self.assertIn("cost", pg.locator("#cmp-out").inner_text().lower())
+
+    def test_overlapping_intervals_are_labeled_no_clear_difference_with_a_glyph(self):
+        pg = self.open(self.page(), "/compare?a=corpus-main:r0&b=corpus-main:r1")
+        api = self.srv.api("/api/compare?a=corpus-main:r0&b=corpus-main:r1")
+        self.assertIn("no-clear-difference", api["verdicts"])
+        noise = pg.locator(".cmp-row[data-verdict='no-clear-difference'] .chip").first
+        self.assertIn("No clear difference", noise.inner_text())
+        self.assertGreaterEqual(noise.locator("svg").count(), 1)
+        self.assertNotIn("Stable", pg.locator("#cmp-out").inner_text())
+        # a point delta is still shown, flagged as within noise
+        row = pg.locator(".cmp-row[data-verdict='no-clear-difference']").first
+        self.assertIn("within noise", row.inner_text())
+        pg.locator("details.chart-table summary").click()
+        self.assertIn("No clear difference", pg.locator("details.chart-table table").inner_text())
 
     def test_compare_has_a_table_fallback(self):
         pg = self.open(self.page(), "/compare?a=corpus-main:r0&b=corpus-main:r1")

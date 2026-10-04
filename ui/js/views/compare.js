@@ -6,11 +6,11 @@ import { icon } from "../components/states.js";
 import { chartFigure, dataTable, dumbbell } from "../charts/index.js";
 
 const MAX_ROWS = 300;
-const CHIP = { improved: "chip-pass", regressed: "chip-fail", stable: "chip-dim", "one-sided": "chip-warn" };
-const LABEL = { improved: "Improved", regressed: "Regressed", stable: "Stable", "one-sided": "One-sided" };
-// Shapes, not hues, carry the verdict (grayscale-safe): check, box with slash, open circle, half-filled box.
-const GLYPH = { improved: "pass", regressed: "fail", stable: "not-judged", "one-sided": "inconclusive" };
-const VERDICTS = ["regressed", "improved", "stable", "one-sided"];
+const CHIP = { improved: "chip-pass", regressed: "chip-fail", "no-clear-difference": "chip-dim", "one-sided": "chip-warn" };
+const LABEL = { improved: "Improved", regressed: "Regressed", "no-clear-difference": "No clear difference", "one-sided": "One-sided" };
+// Shapes, not hues, carry the verdict (grayscale-safe): check, box with slash, open circle, half-filled box. The open circle (not-judged glyph) marks "no clear difference": a hollow shape reads as "nothing established" next to the filled check and slashed box.
+const GLYPH = { improved: "pass", regressed: "fail", "no-clear-difference": "not-judged", "one-sided": "inconclusive" };
+const VERDICTS = ["regressed", "improved", "no-clear-difference", "one-sided"];
 
 export async function viewCompare(params) {
   const groups = await data.groups();
@@ -57,7 +57,8 @@ async function renderCompare(a, b) {
 
   const rowHtml = (c, i) => {
     const two = c.verdict !== "one-sided";
-    const low = F.lowNCell(Math.min(c.finished_a, c.finished_b)) && two;
+    const low = c.low_n && two;
+    const noise = c.verdict === "no-clear-difference";
     return `<li class="cmp-row" data-verdict="${c.verdict}" data-delta="${c.delta ?? ""}">
       <div class="cmp-id"><a href="#/runs?task=${encodeURIComponent(c.task_id)}">${esc(c.task_id)}</a>
         <span class="mono dim">${esc(slug(c.orchestrator))} → ${esc(slug(c.worker))}</span></div>
@@ -66,7 +67,7 @@ async function renderCompare(a, b) {
         b: { passed: c.passed_b, finished: c.finished_b, ci: c.ci_b } })}</div>
       <div class="cmp-nums">
         <span class="cell-delta">${two ? F.delta(c.delta, "pp") : esc(side(c))}</span>
-        <span class="dim sm">${two ? `cost ${F.delta(c.cost_delta, "money")}` : ""}${low ? " · low n" : ""}</span>
+        <span class="dim sm">${noise ? "within noise · " : ""}${two ? `cost ${F.delta(c.cost_delta, "money")}` : ""}${low ? " · low n" : ""}</span>
       </div>
       <span class="chip ${CHIP[c.verdict]}">${icon(GLYPH[c.verdict])}${LABEL[c.verdict]}</span>
     </li>`;

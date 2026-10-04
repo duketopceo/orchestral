@@ -425,7 +425,12 @@ class TestSpaRuntimeHosted(_Browser):
         pg.goto(f"{self.hbase}/#/card?kind=group&target=corpus-thin")
         pg.wait_for_selector("#view[data-ready='ok']")
         self.assertNotIn("Download PNG", pg.inner_text("#view"))
-        self.assertTrue(pg.locator("#rail-live").is_hidden())
+        # the hosted rail is one static read: nothing moves, nothing can be cancelled
+        pg.goto(f"{self.hbase}/")
+        pg.wait_for_selector("#rail-jobs .rail-job")
+        self.assertIn("Running at last sync", pg.inner_text("#rail-jobs"))
+        self.assertEqual(pg.locator("#rail-jobs button").count(), 0)
+        self.assertEqual(pg.locator("#rail-jobs .live-ring:not(.still)").count(), 0)
 
     def test_runs_filtered_by_status_failed_shows_only_failed_rows(self):
         expected = [r for r in self.snap["runs.json"]

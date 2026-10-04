@@ -2,6 +2,7 @@ import * as F from "../format.js";
 import { $view } from "../dom.js";
 import { data } from "../data.js";
 import { bindFlags, flagWidget, loadFlags } from "../flags.js";
+import { icon } from "../components/states.js";
 import { NIL, esc, fmtMoney, fmtMs, fmtPct, fmtScore, slug } from "../util.js";
 
 function lbScatter(rows, cardHref, selectedTarget) {
@@ -158,15 +159,15 @@ export async function viewLeaderboard(params) {
       <th>#</th><th>Pairing</th><th class="t-num">Runs</th>
       <th class="t-num">Pass</th><th class="t-num">95% CI</th><th class="t-num">Judge</th>
       <th class="t-num">Fail</th><th class="t-num">Cost / pass</th><th class="t-num">Cost</th>
-      <th class="t-num">p50</th><th class="t-num">p90</th>
-      <th>Rationale</th><th></th>
+      <th class="t-num" data-pri="3">p50</th><th class="t-num" data-pri="3">p90</th>
+      <th data-pri="3">Rationale</th><th></th>
     </tr><tbody>` +
     rows.map(r => {
       const rowRank = !r.low_sample && order.has(r.target) ? ++rank : null;
       return `<tr class="${r.low_sample ? "row-thin" : ""}${r.target === lens.selected_target ? "story-selected" : ""}">
         <td class="dim">${rowRank == null ? NIL : `${rowRank}<span class="dim sm"> / ${ranked}</span>`}</td>
         <td class="mono">${esc(slug(r.orchestrator))} <span class="dim">→</span> ${esc(slug(r.worker))}
-          ${r.low_sample ? ' <span class="chip chip-dim">Low n</span>' : ""}${r.target === lens.selected_target ? ' <span class="chip chip-acc">Selected</span>' : ""}</td>
+          ${r.low_sample ? ` <span class="chip chip-dim">${icon("low-n")}Low n</span>` : ""}${r.target === lens.selected_target ? ' <span class="chip chip-acc">Selected</span>' : ""}</td>
         <td class="t-num">${r.finished ?? 0}/${r.runs ?? 0}</td>
         <td class="t-num mech-axis">${fmtPct(r.pass_rate)}</td>
         <td class="t-num dim">${r.pass_ci ? F.rangePct(r.pass_ci[0], r.pass_ci[1]) : NIL}</td>

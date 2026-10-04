@@ -86,11 +86,12 @@ class TestRailActivity(unittest.TestCase):
                 self.assertEqual(stalled.count(), 1)
                 self.assertEqual(stalled.get_attribute("data-state"), "stalled")
                 self.assertEqual(live.get_attribute("data-state"), "live")
-                # unowned is said in words, and the glyph slot is a U7 sprite hook
+                # unowned is said in words; the glyph is the sprite's, and differs by shape
                 self.assertIn("stalled", stalled.inner_text().lower())
-                self.assertIn("unowned", stalled.inner_text().lower())
-                self.assertIn("unowned", live.inner_text().lower())
-                self.assertEqual(stalled.locator("[data-rest]").get_attribute("data-rest"), "stalled")
+                self.assertIn("Started from the CLI. Stop it there.", stalled.inner_text())
+                self.assertIn("Started from the CLI. Stop it there.", live.inner_text())
+                self.assertEqual(stalled.locator("svg use").get_attribute("href"), "#i-stalled")
+                self.assertEqual(live.locator("svg use").get_attribute("href"), "#i-live")
                 # abandon only on stalled unowned; cancel never on unowned
                 self.assertEqual(stalled.locator("button.abandon").count(), 1)
                 self.assertEqual(live.locator("button.abandon").count(), 0)

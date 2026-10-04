@@ -8,6 +8,9 @@ import { can, isHosted, setSignal } from "./data.js";
 import { stopScope } from "./poller.js";
 import { setConnection } from "./status.js";
 import { esc } from "./util.js";
+import { markNav } from "./shell.js";
+import { stateHtml } from "./components/states.js";
+import { viewExperiment } from "./views/experiment.js";
 import { viewAbout } from "./views/about.js";
 import { viewCard } from "./views/card.js";
 import { viewCards } from "./views/cards.js";
@@ -42,23 +45,25 @@ function dispatch(path, params) {
   if (path === "/runs") return viewRuns(params);
   if (path.startsWith("/run/")) return viewRun(decodeURIComponent(path.split("/")[2]), params);
   if (path === "/compare") return viewCompare(params);
+  if (path === "/experiment") return viewExperiment();
   if (path === "/leaderboard") return viewLeaderboard(params);
   if (path === "/cards") return viewCards(params);
   if (path === "/card") return viewCard(params);
   if (path === "/models") return viewModels();
   if (path === "/new") return viewNew();
   if (path === "/about") return viewAbout();
-  $view.innerHTML = `<div class="empty">Unknown view: ${esc(path)}</div>`;
+  $view.innerHTML = stateHtml("nomatch", {
+    heading: true, title: "No such view",
+    body: `There is nothing at <code>${esc(path)}</code>.`,
+    action: { label: "Go to Now", href: "#/" } });
 }
 
 function renderUnavailable() {
-  $view.innerHTML = `
-    <div class="empty rest-state" data-rest="r-missing" id="not-available">
-      <h1>Not available on this read-only build</h1>
-      <p>This page launches or changes runs, which only the local observatory can do.
-         Run <code>python harness.py serve</code> on the machine that holds the runs.</p>
-      <p><a class="btn" href="#/">Go to Now</a></p>
-    </div>`;
+  $view.innerHTML = stateHtml("missing", {
+    heading: true, title: "Not available on this read-only build", attrs: 'id="not-available"',
+    body: `This page launches or changes runs, which only the local observatory can do.
+           Run <code>python harness.py serve</code> on the machine that holds the runs.`,
+    action: { label: "Go to Now", href: "#/" } });
 }
 
 function renderError(e) {
@@ -68,24 +73,17 @@ function renderError(e) {
     ? "Nothing is wrong with the page; the item may be outside this data set."
     : e.network ? "The request did not reach the server, so nothing here is out of date or lost."
     : "The request reached the server but did not succeed.";
-  $view.innerHTML = `
-    <div class="empty rest-state state-error" data-rest="r-error" role="alert">
-      <h1>This view could not load</h1>
-      <p>${esc(e.message)}</p>
-      <p class="dim">${esc(meaning)}</p>
-      <p><button type="button" class="primary" id="retry">Retry</button> ${signIn}
-         <a class="btn" href="#/">Go to Now</a></p>
-    </div>`;
+  $view.innerHTML = stateHtml("error", {
+    heading: true, title: "This view could not load", role: "alert",
+    body: `${esc(e.message)}<br><span class="dim">${esc(meaning)}</span>`,
+    action: { label: "Retry", id: "retry" } }).replace("</div>", `${signIn ? `<p class="state-act">${signIn}</p>` : ""}</div>`);
   document.getElementById("retry").addEventListener("click", () => route());
 }
 
-function markNav(path) {
-  // detail routes light up their parent section, not nothing
-  const parent = path.startsWith("/run/") ? "/runs" : path === "/card" ? "/cards" : path;
-  document.querySelectorAll("#nav a").forEach(a => {
-    a.classList.toggle("active",
-      a.dataset.route === "/" ? parent === "/" : parent.startsWith(a.dataset.route));
-  });
+/* The tab title follows the view's one h1. */
+function titleFromView() {
+  const h = $view.querySelector("h1");
+  document.title = h ? `${h.textContent.trim()} · orchestral` : "orchestral · observatory";
 }
 
 export async function route() {
@@ -106,6 +104,7 @@ export async function route() {
       await dispatch(path, params);
       if (ctl.signal.aborted) return;
       setConnection("ok");
+      titleFromView();
       $view.dataset.ready = "ok";
       return;
     } catch (e) {

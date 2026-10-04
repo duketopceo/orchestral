@@ -1,43 +1,70 @@
 import { $jobs } from "./dom.js";
-import { data, can } from "./data.js";
+import { data, can, isHosted } from "./data.js";
 import { esc, fmtMoney } from "./util.js";
 import * as F from "./format.js";
 import { start } from "./poller.js";
+import { liveGlyph } from "./components/states.js";
+import { announce } from "./shell.js";
 
-/* One Activity row per live_runs entry. A stalled row carries data-rest="stalled"
-   and a text word; unowned is always said in words. TODO(U7): swap the dot for
-   the sprite's `stalled` glyph (shape must differ from running) once U4 lands. */
-export function jobRow(j) {
+/* Activity: one row per live_runs entry, in the rail and in the More sheet.
+   Live shows the baton ring (a static dot plus the word "live" under reduced
+   motion); stalled shows the `stalled` glyph, which differs from running by
+   shape. Unowned rows say so in words and never offer Cancel. On the hosted
+   mirror nothing is live, so rows say "Running at last sync" and never move. */
+export const UNOWNED_NOTE = "Started from the CLI. Stop it there.";
+export const HOSTED_NOTE = "Running at last sync";
+
+export function jobRow(j, { hosted = false } = {}) {
   const stalled = j.state === "stalled";
-  const idle = j.idle_s == null ? "" : `${stalled ? "quiet for " : "last event "}${F.duration(j.idle_s * 1000)}`;
+  const idle = j.idle_s == null || hosted ? "" : `${stalled ? "quiet for " : "last event "}${F.duration(j.idle_s * 1000)}`;
   const bits = [
-    stalled ? "stalled" : "live",
-    j.owned ? "" : "unowned",
+    hosted ? HOSTED_NOTE : stalled ? "stalled" : "live",
     idle,
     j.spend_usd ? fmtMoney(j.spend_usd) : "",
   ].filter(Boolean);
+  const glyph = liveGlyph({ stalled, still: hosted });
   const name = j.run_id
     ? `<a class="jl" href="#/run/${encodeURIComponent(j.run_id)}">${esc(j.label)}</a>`
     : `<span class="jl">${esc(j.label)}</span>`;
-  const abandon = j.abandonable && can("flag_write")
+  const note = !hosted && !j.owned ? `<span class="rj-note">${UNOWNED_NOTE}</span>` : "";
+  const abandon = !hosted && j.abandonable && can("flag_write")
     ? `<button class="abandon" type="button" data-run="${esc(j.run_id)}">Mark abandoned</button>` : "";
-  const cancel = j.cancellable && j.run_id && can("cancel")
+  const cancel = !hosted && j.cancellable && j.run_id && can("cancel")
     ? `<button class="cancel" type="button" data-run="${esc(j.run_id)}">Cancel</button>` : "";
   return `<div class="rail-job${stalled ? " stalled" : ""}" data-run="${esc(j.run_id || "")}" data-state="${esc(j.state)}">
-    <span class="dot ${stalled ? "dot-stalled" : "dot-run pulse"}" data-rest="${stalled ? "stalled" : "running"}"></span>
+    ${glyph}
     ${name}
     <span class="rj-meta">${esc(bits.join(" · "))}</span>
-    ${abandon}${cancel}
+    ${note}${abandon}${cancel}
     <span class="rj-err" role="alert" hidden></span>
   </div>`;
+}
+
+const hosts = () => [$jobs, document.getElementById("more-jobs")].filter(Boolean);
+let known = new Map(); // run_id -> state, so only phase-level changes are announced
+
+function announceChanges(jobs) {
+  const next = new Map(jobs.map(j => [j.run_id, j.state]));
+  for (const j of jobs) {
+    if (known.has(j.run_id) && known.get(j.run_id) !== j.state && j.state === "stalled")
+      announce(`${j.label} has gone quiet.`);
+  }
+  for (const [id] of known) {
+    if (!next.has(id)) announce("A run left the activity list.");
+  }
+  known = next;
 }
 
 export async function refreshJobs(signal) {
   const ov = await data.overview({ signal });
   const jobs = ov.jobs || [];
-  $jobs.innerHTML = jobs.length
-    ? jobs.map(jobRow).join("")
+  const hosted = isHosted();
+  const html = jobs.length
+    ? jobs.map(j => jobRow(j, { hosted })).join("")
     : `<div class="rail-empty">No active jobs</div>`;
+  for (const h of hosts()) h.innerHTML = html;
+  if (!hosted) announceChanges(jobs);
+  document.getElementById("rail")?.toggleAttribute("data-has-live", jobs.some(j => j.state !== "stalled"));
 }
 
 async function act(btn, call) {
@@ -54,16 +81,24 @@ async function act(btn, call) {
   }
 }
 
-$jobs.addEventListener("click", ev => {
-  const btn = ev.target.closest("button");
-  if (!btn || !btn.dataset.run) return;
-  if (btn.classList.contains("abandon")) act(btn, id => data.abandonRun(id));
-  else if (btn.classList.contains("cancel")) act(btn, id => data.cancelRun(id));
-});
+for (const h of hosts()) {
+  h.addEventListener("click", ev => {
+    const btn = ev.target.closest("button");
+    if (!btn || !btn.dataset.run) return;
+    if (btn.classList.contains("abandon")) act(btn, id => data.abandonRun(id));
+    else if (btn.classList.contains("cancel")) act(btn, id => data.cancelRun(id));
+  });
+}
 
-/* The rail is live only where there is a server to ask. */
+/* The rail is live only where there is a server to ask. The hosted mirror
+   shows one static read of what was running at the last sync. */
 export function startRail() {
   const rail = document.getElementById("rail-live");
-  if (!can("live_stream")) { if (rail) rail.hidden = true; return; }
-  start("rail", refreshJobs, { ms: 5000, scope: "app", immediate: true });
+  if (can("live_stream")) {
+    start("rail", refreshJobs, { ms: 5000, scope: "app", immediate: true });
+  } else if (isHosted()) {
+    refreshJobs().catch(() => { if (rail) rail.hidden = true; });
+  } else if (rail) {
+    rail.hidden = true;
+  }
 }

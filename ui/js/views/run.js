@@ -1,6 +1,8 @@
 import { $view } from "../dom.js";
 import { can, data } from "../data.js";
 import { judgeChip, statusChip } from "../chips.js";
+import { liveGlyph, stateHtml } from "../components/states.js";
+import { bindTabs, tabsHtml } from "../components/tabs.js";
 import { bindFlags, flagWidget, loadFlags } from "../flags.js";
 import { STOP, start, stop } from "../poller.js";
 import { basisNote, billedOf, crumb, esc, failureText, fmtMoney, fmtMs, fmtScore, fmtTok, slug } from "../util.js";
@@ -15,7 +17,7 @@ function timelineHtml(tl, livePhase) {
     const cls = n.errors ? "ph-err" : live ? "ph-live" : "ph-done";
     const share = Math.min(100, Math.round(100 * (n.latency_ms || 0) / totalMs));
     return `<div class="ph-seg ${cls}" title="${esc(n.phase)}: ${n.events} events, ${fmtMoney(n.cost_usd)}, ${fmtMs(n.latency_ms)}${n.errors ? `, ${n.errors} errors` : ""}">
-      <div class="ph-name">${esc(n.phase)}${live ? ' <span class="dot dot-run pulse"></span>' : ""}${n.errors ? ` <span class="e">${n.errors} err</span>` : ""}</div>
+      <div class="ph-name">${esc(n.phase)}${live ? ` ${liveGlyph()}` : ""}${n.errors ? ` <span class="e">${n.errors} err</span>` : ""}</div>
       <div class="ph-meta">${n.events} events · ${fmtMoney(n.cost_usd)} · ${fmtMs(n.latency_ms)}</div>
       <div class="ph-share"><i style="width:${share}%"></i></div>
     </div>`;
@@ -62,15 +64,10 @@ export async function viewRun(runId, params) {
       </div>
     </div>
     <div class="panel ph-strip" id="tl">${timelineHtml(d.timeline, running ? "running" : null)}</div>
-    <div class="tabs">${tabs.map(t =>
-      `<button data-tab="${t}" class="${t === tab ? "active" : ""}">${TAB_LABELS[t]}</button>`).join("")}</div>
-    <div id="tab-body"></div>`;
+    ${tabsHtml(tabs.map(t => ({ id: t, label: TAB_LABELS[t] })), tab, { label: "Run sections" })}
+    <div id="tab-body" role="tabpanel" tabindex="0" aria-labelledby="tab-${tab}"></div>`;
 
-  for (const b of $view.querySelectorAll(".tabs button")) {
-    b.addEventListener("click", () => {
-      location.hash = `#/run/${runId}?tab=${b.dataset.tab}`;
-    });
-  }
+  bindTabs($view, id => { location.hash = `#/run/${runId}?tab=${id}`; });
   const cancelBtn = document.getElementById("cancel-btn");
   if (cancelBtn) cancelBtn.addEventListener("click", async () => {
     cancelBtn.disabled = true;
@@ -101,7 +98,10 @@ async function renderTab(runId, tab, d, running) {
 
   if (tab === "artifact") {
     const a = d.artifact;
-    if (!a) { el.innerHTML = `<div class="empty">No artifact stored${running ? " yet" : ""}</div>`; return; }
+    if (!a) { el.innerHTML = running
+      ? stateHtml("starting", { title: "No artifact yet", body: "The run is still working. This fills in when it finishes." })
+      : stateHtml("missing", { title: "No artifact stored", body: "This run did not keep one." });
+    return; }
     let inner = `<div class="artifact-meta"><span>${esc(a.name)}</span><span>${a.bytes} B</span></div>`;
     if (a.ext === "zip") {
       const members = a.members || [];
@@ -164,7 +164,7 @@ async function renderTab(runId, tab, d, running) {
   if (tab === "calls") {
     const calls = d.calls || [];
     el.innerHTML = `<div class="panel"><table class="data"><tr>
-      <th>Phase</th><th>Model</th><th class="t-num">Input tokens</th><th class="t-num">Output tokens</th>
+      <th>Phase</th><th>Model</th><th class="t-num" data-pri="3">Input tokens</th><th class="t-num" data-pri="3">Output tokens</th>
       <th class="t-num">Cost</th><th class="t-num">Latency</th></tr><tbody>` +
       calls.map(c => `<tr>
         <td class="mono">${esc(c.phase || "")}</td>

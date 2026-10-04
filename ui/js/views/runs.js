@@ -1,5 +1,6 @@
 import { $view } from "../dom.js";
-import { STALE, data, latest } from "../data.js";
+import { STALE, can, data, latest } from "../data.js";
+import { stateHtml } from "../components/states.js";
 import { isAbort } from "../api.js";
 import { RUN_HEAD, runRow } from "../chips.js";
 import { bindFlags, loadFlags } from "../flags.js";
@@ -47,8 +48,13 @@ export async function viewRuns(params) {
     if (rows === STALE) return;
     const body = document.getElementById("runs-body");
     if (body) {
-      body.innerHTML =
-        rows.map(runRow).join("") || `<tr><td colspan="9" class="empty">No matching runs</td></tr>`;
+      const filtered = Object.values(filters).some(Boolean);
+      const none = filtered
+        ? stateHtml("nomatch", { title: "No runs match these filters", body: "Change a filter, or clear them all.",
+            action: { label: "Clear filters", href: "#/runs" } })
+        : stateHtml("empty", { title: "No runs yet", body: "Runs appear here as soon as one is recorded.",
+            action: can("launch") ? { label: "Start a run", href: "#/new" } : { label: "Read the guide", href: "#/about" } });
+      body.innerHTML = rows.map(runRow).join("") || `<tr><td colspan="9">${none}</td></tr>`;
       bindFlags(body);
     }
   }

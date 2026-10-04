@@ -1,7 +1,8 @@
 import { $view } from "../dom.js";
 import { data } from "../data.js";
 import { setFlags, bindFlags, flagWidget } from "../flags.js";
-import { esc, slug } from "../util.js";
+import { esc, nilOr, slug } from "../util.js";
+import { stateHtml } from "../components/states.js";
 
 function galleryCardHref(card, lens, group) {
   const query = new URLSearchParams({ kind: card.kind, target: card.target, lens });
@@ -34,7 +35,7 @@ function galleryCard(card, lens, group) {
     <a class="gallery-card-title" href="${href}">${esc(title)}</a>
     <div class="gallery-card-context">${esc(context)}</div>
     <p class="gallery-card-claim">${esc(story.claim || card.verdict_line || "Evidence is still incomplete.")}</p>
-    <div class="gallery-card-metrics">${metrics.map(metric => `<span><b>${esc(metric.value)}</b><small>${esc(metric.label)}</small></span>`).join("")}</div>
+    <div class="gallery-card-metrics">${metrics.map(metric => `<span><b>${nilOr(esc(metric.value))}</b><small>${esc(metric.label)}</small></span>`).join("")}</div>
     <div class="gallery-card-foot"><span class="proof-status ${proof.status || "unavailable"}">${esc(proofLabel)}</span>
       <span class="gallery-card-actions"><a class="btn" href="${href}">Open</a><a class="btn" href="/api/shot.png?route=${encodeURIComponent(href.slice(1))}" download>PNG</a></span>
     </div>
@@ -82,7 +83,7 @@ export async function viewCards(params) {
         <a class="btn" href="#/leaderboard?${new URLSearchParams({ group, lens: activeLens.id }).toString()}">Open leaderboard →</a></div>
     </div>
     <div class="gallery-grid">${cards.map(card => galleryCard(card, activeLens.id, group)).join("") ||
-      `<div class="empty gallery-empty">No cards match this view.<br><a href="${cardHash()}">Clear filters</a></div>`}</div>`;
+      stateHtml("nomatch", { title: "No cards match this view", action: { label: "Clear filters", href: cardHash() } })}</div>`;
   for (const [id, key] of [["cards-group", "group"], ["cards-scope", "scope"], ["cards-lens", "lens"]]) {
     document.getElementById(id).addEventListener("change", e => {
       const next = new URLSearchParams({ scope, lens: activeLens.id });

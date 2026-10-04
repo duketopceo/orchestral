@@ -50,7 +50,7 @@ export async function viewModels() {
     errored calls, and a provider-blocked model surfaces there. Dry runs don't count. ${synced}.</p>
     <div class="panel panel-pad"><input type="search" id="cat-q" placeholder="Filter models…" style="width:100%"></div>
     <div class="panel"><table class="data"><thead><tr>
-      <th>Model</th><th>Declared</th><th>Qualified for</th><th>Out modalities</th>
+      <th>Model</th><th data-pri="3">Declared</th><th>Qualified for</th><th data-pri="3">Out modalities</th>
       ${d.roles.map(r => `<th class="t-num">${esc(r)}</th>`).join("")}
       <th class="t-num">Spend</th>
     </tr></thead><tbody>${body}</tbody></table></div>`;

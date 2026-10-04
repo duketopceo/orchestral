@@ -117,6 +117,7 @@ export async function viewCard(params) {
       : `#/run/${encodeURIComponent(target)}`;
 
   $view.innerHTML = `<div class="card-stage">
+    <h1 class="sr-only">${esc(kind[0].toUpperCase() + kind.slice(1))} card: ${esc(target)}</h1>
     <div class="card-toolbar">
       ${flagWidget(kind, target)}
       <a class="btn" href="#/cards">All cards</a>

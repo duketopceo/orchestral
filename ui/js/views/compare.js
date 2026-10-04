@@ -45,7 +45,7 @@ async function renderCompare(a, b) {
       <span class="chip chip-dim">${esc(b)} ${fmtMoney(d.cost_b)}</span>
     </div>
     <div class="panel"><table class="data"><tr>
-      <th>Task</th><th>Orchestrator → Worker</th><th class="t-num">Runs</th>
+      <th>Task</th><th>Orchestrator → Worker</th><th class="t-num" data-pri="3">Runs</th>
       <th class="t-num">${esc(a)}</th><th class="t-num">${esc(b)}</th><th class="t-num">Δ</th><th>Verdict</th>
     </tr><tbody>` +
     (d.cells || []).map(c => {

@@ -57,6 +57,10 @@ export function fmtEstimate(usd) {
 // Designed null glyph for HTML cells (text surfaces use F.NULL_GLYPH).
 export const NIL = '<span class="nil" role="img" aria-label="no data"></span>';
 
+// A stat line that has no value shows the designed mark, never a text hyphen.
+// Pass the already formatted string: the formatters return F.NULL_GLYPH for null.
+export function nilOr(text) { return text === F.NULL_GLYPH ? NIL : text; }
+
 export function fmtMoney(v) { return F.money(v); }
 
 // Billed spend (failed runs included). `cost_basis` says whether every call was

@@ -1,0 +1,12 @@
+#  orchestrator  worker                n  pass%  med cost  fail%  $/pass
+────────────────────────────────────────────────────────────────────────
+1  orch-a        worker-cheap        292    74%   $0.0079    29%  $0.010
+2  orch-b        worker-cheap        240    73%    $0.010    29%  $0.015
+3  orch-a        worker-mid          240    61%    $0.015    43%  $0.027
+4  orch-b        worker-hot          241    54%    $0.019    51%  $0.044
+5  orch-a        worker-local          4    50%    $0.011    50%  $0.021
+── unranked: fewer than 3 runs, anecdote not evidence ──
+-  orch-a        worker-fresh  2 ░ low n   100%    $0.013     0%  $0.013
+-  orch-b        worker-fresh  2 ░ low n   100%    $0.019     0%  $0.019
+
+holdout arm: 4 run(s) excluded from every figure above and withheld from publication. Compare arms with: python harness.py report --contamination

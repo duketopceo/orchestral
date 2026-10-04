@@ -1,0 +1,15 @@
+
+Orchestrator history
+Model   Runs  Pass  Avg score  Avg cost  Total cost
+───────────────────────────────────────────────────
+orch-b   459   64%       0.66    $0.015       $6.98
+orch-a   515   68%       0.65    $0.011       $5.80
+
+Worker history
+Model         Runs  Pass  Avg score  Avg cost  Total cost
+─────────────────────────────────────────────────────────
+worker-cheap   517   73%       0.65   $0.0091       $4.70
+worker-hot     221   54%       0.67    $0.020       $4.36
+worker-mid     228   61%       0.65    $0.016       $3.61
+worker-fresh     4  100%       0.65    $0.016      $0.065
+worker-local     4   50%       0.78    $0.011      $0.042

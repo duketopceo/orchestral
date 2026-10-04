@@ -1,0 +1,3 @@
+group           task                 orchestrator  worker        n  pass%
+-------------------------------------------------------------------------
+corpus-holdout  corpus-landing-page  orch-b        worker-cheap  4    50%

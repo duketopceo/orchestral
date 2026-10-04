@@ -1,0 +1,59 @@
+{
+ "cmds": {
+  "compare": [
+   "report",
+   "--compare",
+   "corpus-dry,corpus-failed",
+   "--json"
+  ],
+  "contamination": [
+   "report",
+   "--contamination",
+   "--json"
+  ],
+  "export_csv": [
+   "export",
+   "--format",
+   "csv"
+  ],
+  "export_leaderboard": [
+   "export",
+   "--leaderboard"
+  ],
+  "groups": [
+   "report",
+   "--groups",
+   "--json"
+  ],
+  "leaderboard": [
+   "report",
+   "--leaderboard",
+   "--json"
+  ],
+  "prices": [
+   "prices",
+   "--json"
+  ],
+  "report": [
+   "report",
+   "--json"
+  ],
+  "report_limit": [
+   "report",
+   "--json",
+   "--limit",
+   "25"
+  ]
+ },
+ "sha256": {
+  "compare": "c2706468b196420eea3bb34ee90498644c316e0c7315958aebd781bc1fce6860",
+  "contamination": "1bf1c1f64a77aaf6cf4324c9773a2761551aca5e88c64f81920b7b85c54a3651",
+  "export_csv": "3f0ba642df41639793bccc5c8d7b94cd158bf1049736ce16c1828c6933f8ad0c",
+  "export_leaderboard": "d6f69b7ca1a334c6df683686310cf16555c76bcb2d63e9b08c5d985011c41add",
+  "groups": "08962522f1c791e4c9eaacdaccdea028171843239d7d4d9d499190031a7c0bf1",
+  "leaderboard": "a85408bbbc4b7e3bcf68dc73a2781c3e53ab0f244dece50644f747bc7d9b5938",
+  "prices": "5173cccdfddaf70678884321ca5116c1fdd4a2fe25007f6a0679cd2c3d141893",
+  "report": "f107dcef477fd2f225d0ff59690897668a3285160a9e99401655047a4e4fe93e",
+  "report_limit": "2bb8699327808aab07a5ca110b56d11cd435ad89dc14a0444efd6c529a008b45"
+ }
+}

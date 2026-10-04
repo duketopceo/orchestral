@@ -1,0 +1,152 @@
+/* orchestral design tokens -- "The Score" (DESIGN.md section 6).
+   The only token source: app.css consumes it, orchestral/design_tokens.py
+   parses it for Python surfaces. Role-first names, never hue.
+
+   Themes: paper (default) and stage. The stage block is written twice, once
+   for the OS dark preference and once for an explicit choice; a test keeps
+   the copies identical. data-theme is set before first paint (app.html). */
+
+:root {
+  color-scheme: light;
+
+  /* neutrals */
+  --canvas: #F7F8F8;
+  --surface: #FFFFFF;
+  --sunken: #EEF0F1;
+  --raised: #FFFFFF;
+  --rule: #E2E5E8;
+  --rule-strong: #C9CED3;
+  --control-border: #858C94;
+  --ink: #121417;
+  --ink-2: #4A5159;
+  --ink-3: #69717A;
+  --on-ink: #FFFFFF;
+  --white: #FFFFFF;
+
+  /* evidence: fill for marks and bars, text for words, wash for 8-12% fields */
+  --pass-fill: #009E73;
+  --pass-text: #00775A;
+  --pass-wash: color-mix(in srgb, var(--pass-fill) 10%, transparent);
+  --fail-fill: #D55E00;
+  --fail-text: #B04A00;
+  --fail-wash: color-mix(in srgb, var(--fail-fill) 10%, transparent);
+  --judge-fill: #0072B2;
+  --judge-text: #005A8F;
+  --judge-wash: color-mix(in srgb, var(--judge-fill) 10%, transparent);
+  --live-fill: #E69F00;
+  --live-text: #8A5F00;
+  --live-wash: color-mix(in srgb, var(--live-fill) 12%, transparent);
+  --on-fill: #121417;
+  --on-judge: #FFFFFF;
+
+  /* focus: ring plus halo, 2px + 2px offset */
+  --focus-ring: #121417;
+  --focus-halo: #FFFFFF;
+
+  /* elevation: two raised layers only */
+  --shadow-pop: 0 8px 24px rgb(18 20 23 / .10);
+  --scrim: rgb(14 16 18 / .4);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="paper"]) {
+    color-scheme: dark;
+
+    --canvas: #0E1012;
+    --surface: #15181B;
+    --sunken: #0A0C0E;
+    --raised: #1C2024;
+    --rule: #262B30;
+    --rule-strong: #394047;
+    --control-border: #5F6770;
+    --ink: #ECEEF0;
+    --ink-2: #A9B0B8;
+    --ink-3: #838B94;
+    --on-ink: #0E1012;
+    --white: #FFFFFF;
+
+    --pass-fill: #2EC495;
+    --pass-text: #2EC495;
+    --pass-wash: color-mix(in srgb, var(--pass-fill) 12%, transparent);
+    --fail-fill: #F2813F;
+    --fail-text: #F2813F;
+    --fail-wash: color-mix(in srgb, var(--fail-fill) 12%, transparent);
+    --judge-fill: #6CC0EE;
+    --judge-text: #6CC0EE;
+    --judge-wash: color-mix(in srgb, var(--judge-fill) 12%, transparent);
+    --live-fill: #F0B429;
+    --live-text: #F0B429;
+    --live-wash: color-mix(in srgb, var(--live-fill) 12%, transparent);
+    --on-fill: #0E1012;
+    --on-judge: #0E1012;
+
+    --focus-ring: #ECEEF0;
+    --focus-halo: #0E1012;
+
+    --shadow-pop: 0 8px 24px rgb(0 0 0 / .45);
+    --scrim: rgb(14 16 18 / .4);
+  }
+}
+
+:root[data-theme="stage"] {
+  color-scheme: dark;
+
+  --canvas: #0E1012;
+  --surface: #15181B;
+  --sunken: #0A0C0E;
+  --raised: #1C2024;
+  --rule: #262B30;
+  --rule-strong: #394047;
+  --control-border: #5F6770;
+  --ink: #ECEEF0;
+  --ink-2: #A9B0B8;
+  --ink-3: #838B94;
+  --on-ink: #0E1012;
+  --white: #FFFFFF;
+
+  --pass-fill: #2EC495;
+  --pass-text: #2EC495;
+  --pass-wash: color-mix(in srgb, var(--pass-fill) 12%, transparent);
+  --fail-fill: #F2813F;
+  --fail-text: #F2813F;
+  --fail-wash: color-mix(in srgb, var(--fail-fill) 12%, transparent);
+  --judge-fill: #6CC0EE;
+  --judge-text: #6CC0EE;
+  --judge-wash: color-mix(in srgb, var(--judge-fill) 12%, transparent);
+  --live-fill: #F0B429;
+  --live-text: #F0B429;
+  --live-wash: color-mix(in srgb, var(--live-fill) 12%, transparent);
+  --on-fill: #0E1012;
+  --on-judge: #0E1012;
+
+  --focus-ring: #ECEEF0;
+  --focus-halo: #0E1012;
+
+  --shadow-pop: 0 8px 24px rgb(0 0 0 / .45);
+  --scrim: rgb(14 16 18 / .4);
+}
+
+/* theme-invariant: typography families, spacing, radius, motion.
+   Families fall back to system stacks until U2 self-hosts the faces. */
+html {
+  --font-sans: "Instrument Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
+
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-5: 24px;
+  --s-6: 32px;
+  --s-7: 48px;
+  --s-8: 64px;
+
+  --r-0: 0;
+  --r-control: 2px;
+
+  --dur-micro: 120ms;
+  --dur-panel: 200ms;
+  --dur-route: 320ms;
+  --ease-out: cubic-bezier(.2, 0, 0, 1);
+  --ease-in: cubic-bezier(.4, 0, 1, 1);
+}

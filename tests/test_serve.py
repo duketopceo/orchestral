@@ -515,7 +515,7 @@ class TestHttpRoutes(unittest.TestCase):
     def test_spa_shell_and_api_surface(self):
         code, body = self._get("/")
         self.assertEqual(code, 200)
-        self.assertIn('src="/static/app.js"', body)
+        self.assertRegex(body, r'src="/static/app\.js\?v=[0-9a-f]+"')
         for path in ("/api/overview", "/api/groups", "/api/tasks",
                      "/api/models", "/api/leaderboard", "/api/runs"):
             code, body = self._get(path)

@@ -171,7 +171,7 @@ def make_handler(obs: Observatory) -> type[BaseHTTPRequestHandler]:
                 html = app.read_text(encoding="utf-8").replace(_VERSION_TOKEN, _asset_version())
                 self._send(html.encode("utf-8"))
             else:
-                self._send(render.render_bad_request("ui/app.html missing"), 500)
+                self._send(render.render_server_error("ui/app.html is missing"), 500)
 
         def _static(self, path: str) -> None:
             name = path.removeprefix("/static/")
@@ -196,7 +196,7 @@ def make_handler(obs: Observatory) -> type[BaseHTTPRequestHandler]:
                 if path.startswith("/api/"):
                     self._json({"error": _internal_error(exc)}, 500)
                 else:
-                    self._send(render.render_bad_request(_internal_error(exc)), 500)
+                    self._send(render.render_server_error(_internal_error(exc)), 500)
 
         def _route_get(self, path: str, qs: dict[str, list[str]]) -> None:
             if path.startswith("/api/"):

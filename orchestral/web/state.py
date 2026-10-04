@@ -919,6 +919,27 @@ def judge_state(meta) -> tuple[str, str]:
     return "not_judged", "judge wasn't run for this run"
 
 
+# Sortable Runs columns: query value -> (row key, default direction).
+RUN_SORTS: dict[str, tuple[str, str]] = {
+    "started": ("started_at", "desc"), "cost": ("billed_cost_usd", "desc"),
+    "duration": ("latency_ms", "desc"), "tokens": ("tokens", "desc"),
+    "task": ("task_id", "asc"), "status": ("status", "asc"),
+}
+
+
+def _sort_runs(rows: list[dict[str, Any]], sort: str | None, direction: str | None) -> list[dict[str, Any]]:
+    """Order rows by a named column. Unknown sort names keep the default (newest
+    first); a missing value sorts last in either direction."""
+    if sort not in RUN_SORTS:
+        return rows
+    key, default_dir = RUN_SORTS[sort]
+    desc = (direction if direction in ("asc", "desc") else default_dir) == "desc"
+    known = [r for r in rows if r.get(key) not in (None, "")]
+    unknown = [r for r in rows if r.get(key) in (None, "")]
+    known.sort(key=lambda r: r[key], reverse=desc)
+    return known + unknown
+
+
 def runs_payload(
     store: RunStore,
     group: str | None = None,
@@ -926,27 +947,71 @@ def runs_payload(
     status: str | None = None,
     q: str = "",
     tasks_dir: Path | str | None = None,
+    *,
+    pairing: str | None = None,
+    judge: str | None = None,
+    type: str | None = None,
+    difficulty: str | None = None,
+    sort: str | None = None,
+    direction: str | None = None,
+    groups_file: Path | str | None = None,
+    now: datetime | None = None,
 ) -> list[dict[str, Any]]:
-    """Run rows for the filterable table. `status` accepts a lifecycle status
-    or `passed`/`failed` (verdict filters)."""
+    """Run rows for the filterable table, newest first unless `sort` says otherwise.
+
+    `status` accepts a lifecycle status, `passed`/`failed` (verdict filters) or
+    `stalled` (a `running` row with no event for STALL_AFTER_S, KTD8; derived,
+    never stored). `pairing` is `orchestrator|worker`. Every row carries
+    `stalled`, `type`, `difficulty`, `group_label` and `tokens`. Filtering,
+    sorting and paging are repeated client-side for the hosted snapshot
+    (`filterRuns` in ui/js/data.js); keep the two in step.
+    """
+    now = now or _now()
     rows = store.list_runs(run_group=group, task_id=task, limit=None)
     if q:
         rows = filter_runs(rows, q)
+    if pairing:
+        orch, _, worker = pairing.partition("|")
+        rows = [r for r in rows if r.orchestrator == orch and r.worker == worker]
+    abandoned = _abandoned_runs(store) if any(r.status == "running" for r in rows) else set()
+
+    def is_stalled(r: Any) -> bool:
+        if r.status != "running" or r.run_id in abandoned:
+            return False
+        beat = last_heartbeat(r.run_dir, r.started_at) if r.run_dir else _parse_ts(r.started_at)
+        idle = max(0.0, (now - beat).total_seconds()) if beat else None
+        return liveness_state(idle) == "stalled"
+
+    stalled = {r.run_id for r in rows if is_stalled(r)}
     if status == "passed":
         rows = [r for r in rows if r.status == "finished" and r.passes]
     elif status == "failed":
         rows = [r for r in rows if r.status == "failed" or (r.status == "finished" and not r.passes)]
+    elif status == "stalled":
+        rows = [r for r in rows if r.run_id in stalled]
     elif status:
         rows = [r for r in rows if r.status == status]
     tmeta = _task_meta(store, tasks_dir)
+    if type:
+        rows = [r for r in rows if (tmeta.get(r.task_id) or {}).get("type") == type]
+    if difficulty:
+        rows = [r for r in rows if (tmeta.get(r.task_id) or {}).get("difficulty") == difficulty]
+    labels = _groups_meta(groups_file)
     out = []
     for r in rows:
         d = _public_run(r)
         tm = tmeta.get(r.task_id) or {}
         d["task_title"] = tm.get("title") or ""
+        d["type"] = tm.get("type") or ""
+        d["difficulty"] = tm.get("difficulty") or ""
+        d["group_label"] = (labels.get(r.run_group or "") or {}).get("label") or ""
+        d["stalled"] = r.run_id in stalled
+        d["tokens"] = (r.total_input_tokens or 0) + (r.total_output_tokens or 0)
         d["judge_state"], d["judge_reason"] = judge_state(r)
+        if judge and d["judge_state"] != judge:
+            continue
         out.append(d)
-    return out
+    return _sort_runs(out, sort, direction)
 
 
 _TIMELINE_PHASE_ORDER = ("plan", "delegate", "assemble", "validate", "judge", "review")

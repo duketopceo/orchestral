@@ -277,6 +277,13 @@ def make_handler(obs: Observatory) -> type[BaseHTTPRequestHandler]:
                     status=self._q1(qs, "status"),
                     q=self._q1(qs, "q", "") or "",
                     tasks_dir=obs.tasks_dir,
+                    pairing=self._q1(qs, "pairing"),
+                    judge=self._q1(qs, "judge"),
+                    type=self._q1(qs, "type"),
+                    difficulty=self._q1(qs, "difficulty"),
+                    sort=self._q1(qs, "sort"),
+                    direction=self._q1(qs, "dir"),
+                    groups_file=obs.groups_file,
                 ))
             elif path == "/api/groups":
                 self._json(state.groups_payload(obs.store, obs.groups_file))

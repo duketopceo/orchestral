@@ -66,7 +66,7 @@ def build_snapshot(
         "meta.json": state.meta_payload("hosted", synced_at, source_commit or ""),
         "overview.json": state.overview_payload(
             store, registry, tasks_dir=tasks_dir, groups_file=groups_file),
-        "runs.json": state.runs_payload(store, tasks_dir=tasks_dir),
+        "runs.json": state.runs_payload(store, tasks_dir=tasks_dir, groups_file=groups_file),
         "groups.json": state.groups_payload(store, groups_file),
         "matrix.json": state.task_matrix_payload(store, tasks_dir),
         "leaderboard.json": state.leaderboard_rows(store),

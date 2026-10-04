@@ -31,6 +31,7 @@ import json
 import os
 import subprocess
 import tempfile
+import time
 import zipfile
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -315,13 +316,34 @@ def ingest_client() -> httpx.Client:
     return httpx.Client(headers=_ingest_headers())
 
 
+POST_ATTEMPTS = 3
+POST_BACKOFF_S = 1.0
+_sleep = time.sleep  # indirection so tests can run retries without waiting
+
+
+def _retryable(status: int) -> bool:
+    return status == 429 or 500 <= status < 600
+
+
 def _post(client: httpx.Client, path: str, body: dict[str, Any]) -> dict[str, Any]:
-    try:
-        r = client.post(f"{OBS_URL}{path}", json=body, timeout=120)
-    except httpx.HTTPError as exc:
-        raise SyncError(f"{path}: transport failed: {exc}") from exc
+    """POST with bounded retry (exponential backoff) on transient 429/5xx.
+
+    4xx other than 429 is a request/auth problem — retrying cannot help.
+    """
+    r: httpx.Response | None = None
+    for attempt in range(POST_ATTEMPTS):
+        try:
+            r = client.post(f"{OBS_URL}{path}", json=body, timeout=120)
+        except httpx.HTTPError as exc:
+            raise SyncError(f"{path}: transport failed: {str(exc)[:120]}") from exc
+        if r.status_code == 200 or not _retryable(r.status_code):
+            break
+        if attempt < POST_ATTEMPTS - 1:
+            _sleep(POST_BACKOFF_S * 2 ** attempt)
+    assert r is not None
     if r.status_code != 200:
-        raise SyncError(f"{path}: HTTP {r.status_code}: {r.text[:200]}")
+        snippet = " ".join(r.text[:120].split())
+        raise SyncError(f"{path}: HTTP {r.status_code}: {snippet}")
     try:
         return r.json()
     except json.JSONDecodeError:
@@ -386,7 +408,8 @@ def push_run_events_only(client: httpx.Client, store: RunStore, meta: Any) -> di
 # ---------------------------------------------------------------------------
 
 def sync(store: RunStore, tasks_dir: Path, models_dir: Path, groups_file: Path,
-         *, push: bool = False, all_runs: bool = False) -> PushResult:
+         *, push: bool = False, all_runs: bool = False,
+         client: httpx.Client | None = None) -> PushResult:
     """Render + push the dirty set (or everything with --all).
 
     Dry run (push=False) renders nothing remote — it reports what would
@@ -399,7 +422,10 @@ def sync(store: RunStore, tasks_dir: Path, models_dir: Path, groups_file: Path,
     watermark = datetime.now(UTC).isoformat()
     dirty = {r.run_id for r in store.list_runs(limit=None)} if all_runs else store.dirty_runs()
     metas = [m for rid in dirty if (m := store.get_run(rid)) is not None]
-    with httpx.Client(headers=_ingest_headers() if push else {}) as client:
+    owned = client is None
+    if client is None:
+        client = httpx.Client(headers=_ingest_headers() if push else {})
+    try:
         for meta in metas:
             try:
                 if privacy.run_is_holdout(Path(meta.run_dir), meta.config):
@@ -420,11 +446,15 @@ def sync(store: RunStore, tasks_dir: Path, models_dir: Path, groups_file: Path,
                 push_state(client, store, tasks_dir, models_dir, groups_file)
             except SyncError as exc:
                 result.errors.append(f"state: {exc}")
-        # Journal entries clear only on a clean push — errors stay dirty so
-        # the next sync retries them. Holdout/missing clear too: they are
-        # terminal, not transient.
-        if push and not result.errors:
-            store.clear_dirty(dirty, before=watermark)
+        # Journal entries clear per run, and only for runs that actually
+        # landed (or are terminally withheld as holdout). Failed and
+        # missing-dir runs stay dirty so the next sync retries them.
+        if push:
+            settled = set(result.pushed) | set(result.skipped_holdout)
+            store.clear_dirty(settled & dirty, before=watermark)
+    finally:
+        if owned:
+            client.close()
     return result
 
 

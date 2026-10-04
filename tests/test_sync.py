@@ -12,6 +12,8 @@ import unittest
 import unittest.mock
 from pathlib import Path
 
+import httpx
+
 from orchestral import cf
 from orchestral.config import ModelConfig, TaskSpec
 from orchestral.runner import Runner
@@ -299,3 +301,121 @@ class TestFinishHook(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def _store_with_relative_run_dirs(tmp: str) -> tuple[RunStore, list[str]]:
+    """A store whose index records run_dir relative to the repo, as a run
+    launched with `--runs-dir runs` does."""
+    cwd = os.getcwd()
+    os.chdir(tmp)
+    try:
+        store = RunStore("runs")
+        ids = [_make_run(store, with_calls=False)[0] for _ in range(2)]
+    finally:
+        os.chdir(cwd)
+    return store, ids
+
+
+def _creds_env():
+    return unittest.mock.patch.dict(
+        os.environ, {"ORCHESTRAL_OBS_TOKEN": "id:secret"})
+
+
+class TestSyncCwdIndependence(unittest.TestCase):
+    def test_relative_run_dir_resolves_against_store_root(self):
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as other:
+            _, ids = _store_with_relative_run_dirs(tmp)
+            store = RunStore(Path(tmp) / "runs")  # absolute root, index still relative
+            cwd = os.getcwd()
+            os.chdir(other)
+            try:
+                result = cf.sync(store, Path(tmp) / "tasks", Path(tmp) / "models",
+                                 Path(tmp) / "groups.yaml", push=False)
+            finally:
+                os.chdir(cwd)
+            self.assertEqual(result.skipped_missing, [])
+            self.assertEqual(set(result.pushed), set(ids))
+            for r in store.list_runs():
+                self.assertTrue(Path(r.run_dir).is_dir())
+
+
+class TestPartialFailureAndRetry(unittest.TestCase):
+    def _sync(self, tmp, store, handler, **kw):
+        transport = httpx.MockTransport(handler)
+        with (_creds_env(),
+              unittest.mock.patch.object(cf, "_sleep", lambda s: None),
+              httpx.Client(transport=transport) as client):
+            return cf.sync(store, Path(tmp) / "tasks", Path(tmp) / "models",
+                           Path(tmp) / "groups.yaml", push=True,
+                           client=client, **kw)
+
+    def test_failed_runs_stay_dirty_successes_clear(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = RunStore(tmp)
+            good, bad = (_make_run(store, with_calls=False)[0] for _ in range(2))
+
+            def handler(req: httpx.Request) -> httpx.Response:
+                body = json.loads(req.content)
+                if req.url.path == "/ingest/run" and body["run_id"] == bad:
+                    return httpx.Response(503, text="<html>" + "x" * 500 + "</html>")
+                return httpx.Response(200, json={})
+
+            result = self._sync(tmp, store, handler)
+            self.assertEqual(result.pushed, [good])
+            self.assertEqual(len(result.errors), 1)
+            self.assertLessEqual(len(result.errors[0]), 250)  # no HTML dump
+            self.assertEqual(store.dirty_runs(), {bad})
+
+            again = self._sync(tmp, store, lambda r: httpx.Response(200, json={}))
+            self.assertEqual(again.pushed, [bad])
+            self.assertEqual(store.dirty_runs(), set())
+
+    def test_retries_503_then_succeeds(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = RunStore(tmp)
+            run_id = _make_run(store, with_calls=False)[0]
+            attempts: dict[str, int] = {}
+
+            def handler(req: httpx.Request) -> httpx.Response:
+                n = attempts[req.url.path] = attempts.get(req.url.path, 0) + 1
+                if req.url.path == "/ingest/run" and n < 3:
+                    return httpx.Response(503, text="busy")
+                return httpx.Response(200, json={})
+
+            result = self._sync(tmp, store, handler)
+            self.assertEqual(attempts["/ingest/run"], 3)
+            self.assertEqual(result.pushed, [run_id])
+            self.assertEqual(result.errors, [])
+
+    def test_gives_up_after_three_attempts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = RunStore(tmp)
+            run_id = _make_run(store, with_calls=False)[0]
+            calls = []
+
+            def handler(req: httpx.Request) -> httpx.Response:
+                if req.url.path == "/ingest/run":
+                    calls.append(1)
+                    return httpx.Response(429, text="slow down")
+                return httpx.Response(200, json={})
+
+            result = self._sync(tmp, store, handler)
+            self.assertEqual(len(calls), 3)
+            self.assertEqual(store.dirty_runs(), {run_id})
+            self.assertIn("429", result.errors[0])
+
+    def test_no_retry_on_4xx(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = RunStore(tmp)
+            _make_run(store, with_calls=False)
+            calls = []
+
+            def handler(req: httpx.Request) -> httpx.Response:
+                if req.url.path == "/ingest/run":
+                    calls.append(1)
+                    return httpx.Response(403, text="forbidden")
+                return httpx.Response(200, json={})
+
+            result = self._sync(tmp, store, handler)
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(len(result.errors), 1)

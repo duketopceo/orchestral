@@ -963,8 +963,27 @@ class RunStore:
         if not row:
             return None
         meta = _row_to_meta(row)
+        meta.run_dir = self._anchor_run_dir(meta.run_dir)
         self._attach_billed([meta])
         return meta
+
+    def _anchor_run_dir(self, run_dir: str) -> str:
+        """Resolve a recorded run_dir that is relative to the launch cwd.
+
+        The index stores `run_dir` as it was when the run started — relative
+        (e.g. `runs/<orch>/<task>/<worker>/<id>`) for runs launched with a
+        relative runs path. Read from another cwd that points nowhere, so the
+        `<orch>/<task>/<worker>/<id>` tail is rebased under this store's root
+        (the same rule `backfill_calls` and `web.state.resolve_run_dir` use).
+        Existing and absolute paths pass through untouched.
+        """
+        if not run_dir:
+            return run_dir
+        p = Path(run_dir)
+        if p.is_absolute() or p.exists():
+            return run_dir
+        cand = self.root.joinpath(*p.parts[-4:])
+        return str(cand) if cand.exists() else run_dir
 
     def update_meta(self, meta: RunMeta) -> None:
         self._write_meta_file(Path(meta.run_dir), meta)
@@ -1034,6 +1053,8 @@ class RunStore:
         with self._connect() as conn:
             rows = conn.execute(query, params).fetchall()
         metas = [_row_to_meta(row) for row in rows]
+        for m in metas:
+            m.run_dir = self._anchor_run_dir(m.run_dir)
         self._attach_billed(metas)
         return metas
 

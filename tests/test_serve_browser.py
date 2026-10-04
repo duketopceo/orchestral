@@ -74,7 +74,7 @@ class TestBrowserSmoke(unittest.TestCase):
                 pg = browser.new_page()
                 pg.goto(f"http://127.0.0.1:{self.port}/")
                 pg.wait_for_selector("h1")
-                self.assertIn("Overview", pg.inner_text("h1"))
+                self.assertIn("Now", pg.inner_text("h1"))
                 self.assertIn("orchestral", pg.inner_text("body"))
                 self.assertIn("t-task", pg.inner_text("body"))
                 pg.goto(f"http://127.0.0.1:{self.port}/#/new")
@@ -233,8 +233,10 @@ class TestSpaRuntimeLocal(_Browser):
                 route.fulfill(status=503, content_type="application/json", body="{}")
             else:
                 route.continue_()
-        pg.route("**/api/matrix*", flaky)
-        pg.goto(f"{self.base}/")
+        # Now degrades a failed matrix to an inline band error (U10), so the router's
+        # retry path is exercised on a route whose only required read is this one.
+        pg.route("**/api/groups*", flaky)
+        pg.goto(f"{self.base}/#/leaderboard")
         pg.wait_for_selector("#status-line:not([hidden])", timeout=5000)
         self.assertIn("Reconnecting", pg.inner_text("#status-line"))
         pg.wait_for_selector("#view[data-ready='error']", timeout=20000)
@@ -243,7 +245,7 @@ class TestSpaRuntimeLocal(_Browser):
         self.assertIn("Offline", pg.inner_text("#status-line"))
         pg.click("#retry")
         pg.wait_for_selector("#view[data-ready='ok']", timeout=10000)
-        self.assertIn("Overview", pg.inner_text("h1"))
+        self.assertEqual(pg.locator("h1").count(), 1)
         self.assertTrue(pg.locator("#status-line").is_hidden())
 
     def test_client_errors_are_not_retried(self):
@@ -412,7 +414,7 @@ class TestSpaRuntimeHosted(_Browser):
         pg.wait_for_selector("#view[data-ready='ok']")
         self.assertEqual(pg.evaluate("document.documentElement.dataset.mode"), "hosted")
         self.assertIn("Read-only snapshot", pg.inner_text("#status-line"))
-        self.assertIn("Overview", pg.inner_text("h1"))
+        self.assertIn("Now", pg.inner_text("h1"))
         self.assertEqual(self.errors, [])
 
     def test_hosted_ui_has_no_launch_flag_or_cancel_controls(self):

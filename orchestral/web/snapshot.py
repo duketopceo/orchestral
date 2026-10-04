@@ -9,7 +9,7 @@ Keys are what the hosted adapter in ``ui/js/data.js`` requests, minus the
 ``.json`` suffix the Worker adds (``/api/<name>`` maps to ``api/<name>.json``):
 
     meta.json  overview.json  runs.json  groups.json  matrix.json
-    leaderboard.json  flags.json  models-catalog.json  experiment.<name>.json
+    leaderboard.json  flags.json  models-catalog.json  experiments.json  experiment.<name>.json
     pairings.json  pairings.<group>.json
     cards.<lens>.json  card/<kind>/<target>.<lens>.json
     compare.<a>.<b>.json   (every ordered pair, only below MAX_COMPARE_GROUPS)
@@ -75,6 +75,7 @@ def build_snapshot(
         "models-catalog.json": catalog.models_catalog_payload(store, models_dir),
     }
     experiments_dir = tasks_dir.parent / "experiments"
+    out["experiments.json"] = state.experiments_list(store, experiments_dir, tasks_dir=tasks_dir)
     if experiments_dir.is_dir():
         for spec in sorted(experiments_dir.glob("*.yaml")):
             payload = state.experiment_payload(store, spec, tasks_dir=tasks_dir)

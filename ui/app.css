@@ -75,16 +75,24 @@ svg.rest { width: 64px; height: 64px; color: var(--ink-3); }
   outline-offset: 2px;
 }
 
+/* The rail panel stretches the full height of the page (so a full-page capture
+   or a long page never shows bare background under it); its content sits in a
+   viewport-tall sticky inner that scrolls on its own when the rail is taller
+   than the window. */
 #rail {
   width: var(--rail-w);
   flex: 0 0 var(--rail-w);
   border-right: 1px solid var(--line);
   background: var(--surface);
-  display: flex;
-  flex-direction: column;
+}
+.rail-inner {
   position: sticky;
   top: 0;
   height: 100vh;
+  height: 100dvh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
 }
 
 .brand {
@@ -905,13 +913,10 @@ tr.story-selected td { background: color-mix(in srgb, var(--ink) 4%, transparent
 .heat-task .sm { font: 10px var(--mono); font-weight: 400; }
 .heat-col { font: 10px var(--mono); font-weight: 500; color: var(--text-2); padding: 6px 8px; text-align: center; vertical-align: bottom; min-width: 92px; }
 .heat-cell { padding: 3px; text-align: center; }
-.heat-cell .heat-fill {
-  display: block; padding: 7px 4px; border-radius: 3px;
-  background: var(--pass-fill); color: var(--on-fill);
-  font: 11px var(--mono); font-weight: 600;
-}
-.heat-cell.thin .heat-fill { background: var(--live-fill); color: var(--on-fill); }
-.heat-cell:hover .heat-fill { outline: 1px solid var(--text-2); }
+.heat-task, .heat th.heat-task { text-transform: none; letter-spacing: normal; }
+.heat thead th.heat-task { position: sticky; left: 0; z-index: 1; background: var(--surface); }
+.heat tbody th.heat-task { position: sticky; left: 0; background: var(--surface); z-index: 1; }
+.heat-cell:hover .hm { outline: 1px solid var(--text-2); }
 
 .xc-self td { color: var(--accent); font-weight: 600; }
 .xc-self td:first-child::before { content: "▸ "; }
@@ -1109,6 +1114,95 @@ td > .state { margin: 0; }
 .detail-list dt { font: 600 10px/1 var(--sans); letter-spacing: .09em; text-transform: uppercase; color: var(--ink-3); margin-bottom: 2px; }
 .detail-list dd { margin: 0; }
 
+/* ---------- Now (U10) ---------- */
+
+.band { margin: 0 0 var(--s-4); }
+.band h2 { margin: var(--s-4) 0 var(--s-2); }
+.band-sub { margin: 0 0 var(--s-2); color: var(--ink-2); font-size: 12px; }
+.band-empty { margin: 0; color: var(--ink-2); }
+.band-more { margin: var(--s-1) 0 0; font-size: 12px; }
+.band-error { display: flex; align-items: center; gap: var(--s-3); flex-wrap: wrap; padding: var(--s-3);
+  border: 1px solid var(--fail-fill); border-radius: var(--r-control); background: var(--fail-dim); }
+.band-error p { margin: 0; }
+
+.lanes { display: flex; flex-direction: column; border: 1px solid var(--rule); border-radius: var(--r-control); background: var(--surface); }
+.live-lane { display: flex; flex-wrap: wrap; align-items: center; gap: 2px var(--s-3); padding: 6px var(--s-3); min-height: 32px; }
+.live-lane + .live-lane { border-top: 1px solid var(--rule); }
+.live-lane .jl { font-weight: 550; color: var(--ink); }
+.live-lane.stalled .jl { color: var(--ink-3); }
+.live-lane .job-glyph { color: var(--live-text); }
+.ll-meta { color: var(--ink-2); font: 12px var(--mono); }
+.ll-note { color: var(--ink-3); font-size: 11px; }
+.ll-err { flex: 1 0 100%; color: var(--fail-text); font-size: 11px; }
+.live-lane button {
+  margin-left: auto; padding: 2px 8px; font: 11px var(--sans); background: transparent;
+  border: 1px solid var(--control-border); border-radius: var(--r-control); color: var(--ink-2); cursor: pointer;
+}
+.live-lane button + button { margin-left: 0; }
+.live-lane button:hover:not(:disabled) { color: var(--ink); border-color: var(--ink-2); }
+
+.tally { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-2); }
+.new-fails { list-style: none; margin: var(--s-2) 0 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.new-fails li { display: flex; gap: var(--s-3); flex-wrap: wrap; }
+.look-list { list-style: none; margin: 0; padding: 0; border: 1px solid var(--rule); border-radius: var(--r-control); background: var(--surface); }
+.look-item { display: grid; grid-template-columns: 150px minmax(0, 1fr) minmax(0, 1.4fr); align-items: baseline; gap: var(--s-3); padding: 5px var(--s-3); }
+.look-item + .look-item { border-top: 1px solid var(--rule); }
+.look-kind { color: var(--ink-2); font-size: 12px; white-space: nowrap; }
+.look-item a, .look-why { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.exp-line { margin: var(--s-3) 0 0; }
+
+/* tasks x pairings heatmap: one sequential ramp, sunken to pass-fill, 6 steps */
+.hm {
+  --hm-bg: var(--sunken);
+  display: flex; align-items: center; justify-content: center; gap: 6px; min-height: 30px; padding: 4px;
+  border-radius: 3px; background-color: var(--hm-bg); color: var(--ink);
+  font: 600 11px var(--mono); text-decoration: none;
+}
+.hm:hover { text-decoration: none; }
+.hm-0 { --hm-bg: var(--sunken); }
+.hm-1 { --hm-bg: color-mix(in srgb, var(--pass-fill) 14%, var(--sunken)); }
+.hm-2 { --hm-bg: color-mix(in srgb, var(--pass-fill) 32%, var(--sunken)); }
+.hm-3 { --hm-bg: color-mix(in srgb, var(--pass-fill) 52%, var(--sunken)); }
+.hm-4 { --hm-bg: color-mix(in srgb, var(--pass-fill) 76%, var(--sunken)); color: var(--on-fill); }
+.hm-5 { --hm-bg: var(--pass-fill); color: var(--on-fill); }
+.hm-3 { color: light-dark(var(--on-fill), var(--ink)); }
+.hm-0, .hm-1, .hm-2 { color: var(--ink); }
+.hm .ln { font: 500 9px var(--sans); letter-spacing: .04em; text-transform: none; }
+/* low n: hatch over a paler fill, plus the words "low n" (never a hue) */
+.hm.low-n {
+  background-color: color-mix(in srgb, var(--hm-bg) 55%, var(--surface));
+  background-image: repeating-linear-gradient(45deg, transparent 0 3px, color-mix(in srgb, var(--ink-2) 50%, transparent) 3px 4px);
+  color: var(--ink);
+}
+.hm-none {
+  display: block; min-height: 30px; border-radius: 3px;
+  background: linear-gradient(to top right, transparent calc(50% - .5px), var(--rule) calc(50% - .5px) calc(50% + .5px), transparent calc(50% + .5px));
+}
+
+/* ---------- Experiments (U10) ---------- */
+
+.ledger-chips { display: flex; flex-wrap: wrap; gap: var(--s-2); }
+.exp-picker { display: flex; gap: var(--s-3); margin: 0 0 var(--s-2); flex-wrap: wrap; }
+.exp-picker a[aria-current="page"] { color: var(--ink); font-weight: 650; }
+.gauge { display: flex; align-items: baseline; gap: var(--s-2); margin: var(--s-3) 0; flex-wrap: wrap; }
+.gauge-label { color: var(--ink-3); font: 600 10px var(--sans); letter-spacing: .09em; text-transform: uppercase; }
+.gauge-track { display: inline-block; width: 160px; height: 4px; background: var(--rule); align-self: center; }
+.gauge-fill { display: block; height: 100%; background: var(--ink-2); }
+.ledger-group { margin: var(--s-3) 0; }
+.ledger-group > summary { cursor: pointer; padding: 4px 0; list-style-position: inside; }
+.ledger-group > summary .chip { margin-right: var(--s-2); }
+.ledger-group .panel { overflow-x: auto; }
+.ledger td:first-child { min-width: 150px; }
+.db-cell { width: 180px; }
+svg.dumbbell { display: block; overflow: visible; }
+.db-tick { stroke: var(--rule-strong); stroke-width: 1; }
+.db-axis { stroke: var(--rule-strong); stroke-width: 1; }
+.db-link { stroke: var(--ink-3); stroke-width: 1; }
+.db-whisker { stroke: var(--ink-2); stroke-width: 1.5; }
+.db-whisker.low-n { stroke-dasharray: 2 2; }
+.db-baseline { fill: var(--surface); stroke: var(--ink); stroke-width: 1.5; }
+.db-jev { fill: var(--ink); }
+
 /* ---------- breakpoints (DESIGN 6.6) ---------- */
 
 /* icon rail */
@@ -1157,6 +1251,8 @@ td > .state { margin: 0; }
   .filters > * { flex: 1 1 140px; min-width: 0; }
   input[type=search] { min-width: 0; }
   .keymap dt { width: 110px; }
+  .look-item { grid-template-columns: minmax(0, 1fr); gap: 0; }
+  .look-item a, .look-why { white-space: normal; }
 }
 
 @media (prefers-reduced-motion: reduce) {

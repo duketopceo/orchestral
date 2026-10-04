@@ -3214,7 +3214,7 @@ def _jev_interventions(metas: list[Any]) -> dict[str, int]:
 
 def _arm_block(runs: list[Any]) -> dict[str, Any]:
     """Per-arm BI block for one experiment cell."""
-    from orchestral.experiment import arm_stats
+    from orchestral.experiment import arm_stats, status_counts
     passes, n, errors = arm_stats(runs)
     ci = _wilson(passes, n)
     cost = sum(r.display_cost_usd or 0.0 for r in runs)
@@ -3224,6 +3224,9 @@ def _arm_block(runs: list[Any]) -> dict[str, Any]:
         "rate": passes / n if n else None,
         "ci": ci,
         "errors": errors,
+        "status": status_counts(runs),
+        # same concept as CoverageRow.to_dict's failed_as_zero — one name
+        "failed_as_zero": passes / len(runs) if runs else None,
         "cost": round(cost, 6),
         "cost_per_pass": round(cost / passes, 6) if passes else None,
         "delegated": sum(1 for r in runs if r.delegated),

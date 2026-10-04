@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import base64
-import hashlib
 import json
 import os
 import tempfile
@@ -83,7 +82,8 @@ class TestJudgeCacheInRun(unittest.TestCase):
         )
 
     def _sha(self, task: TaskSpec, artifact_text: str) -> str:
-        return hashlib.sha256(task.prompt.encode() + b"\0" + artifact_text.encode()).hexdigest()
+        from orchestral.judge import judge_cache_key
+        return judge_cache_key(task, artifact_text.encode())
 
     @patch.dict(os.environ, {"OPENROUTER_API_KEY": "fake"})
     def test_cache_hit_serves_same_result(self):

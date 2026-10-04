@@ -1,11 +1,24 @@
 ---
 title: Cloudflare-hosted observatory — payload-mirror sync, R2 artifacts, Access-gated Worker, AI Gateway inference telemetry
 created: 2026-10-02
-status: draft (deepened 2026-10-02)
+status: shipped (U0-U5 merged in #123; deployed 2026-10-04; snapshot re-push pending)
 plan_kind: feature
 ---
 
 # Cloudflare-hosted observatory + AI Gateway telemetry
+
+## Status as of 2026-10-04 (evening)
+
+Verified against `git log origin/main` (main at `516af58`) and files present on main. All six tasks (U0 to U5) are done: they merged to main in PR #123 (`7e5dc06`, "obs.shippedit.dev live"). The Score redesign addendum (snapshot keys, `meta.mode`, shared `snapshot.py` writer) landed with PR #145 (hosted deploy parity) and `6bf9f3e`; preview-build fixes landed in #144 and #146.
+
+- U0 provision: done (#123; `infra/cloudflare/resources.md`).
+- U1 push client and `sync`: done (#123; `orchestral/cf.py`, `harness.py sync`).
+- U2 post-run hook: done (#123; `Runner.on_run_finished`, wired in `harness.py`).
+- U3 Worker: done (#123; lives at `infra/cloudflare/observatory/`, not `cf-observatory/`). Deployed to obs.shippedit.dev on 2026-10-04 (version 35204e4a).
+- U4 gateway path: done (#123; `providers.py`, `openrouter.py`, per-run labels in `runner.py`).
+- U5 hardening and docs: done (#123; canary egress test lives in `tests/test_sync.py`, runbook is `docs/hosted-observatory.md`).
+
+**Pending:** the hosted snapshot re-push (the sync ran from the wrong cwd; the script is fixed).
 
 ## Problem frame
 

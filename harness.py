@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 import sys
+import time
 import uuid
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -57,6 +58,7 @@ from orchestral.experiment import (
     rep_target,
     resolve_matrix_tasks,
     run_experiment,
+    run_is_stale,
 )
 from orchestral.export import leaderboard_csv, run_audit_markdown, runs_csv
 from orchestral.fileset import expected_paths, required_content
@@ -93,7 +95,7 @@ def _model_map(models_dir: str) -> dict[str, ModelConfig]:
 
 def _model_from_arg(slug: str, models_dir: str = "models", known: dict[str, ModelConfig] | None = None) -> ModelConfig:
     # If the slug is not in the config, treat it as an ad-hoc model with
-    # cheap defaults — the shared resolver every launch surface uses.
+    # cheap defaults - the shared resolver every launch surface uses.
     return resolve_model(slug, models_dir, known)
 
 
@@ -107,7 +109,7 @@ def _eligible_workers(pool: list[ModelConfig], task: TaskSpec) -> list[ModelConf
     ``requires_executor`` tasks pair only with executor workers declaring
     the task type in ``metadata.capabilities``; ordinary tasks pair with
     chat workers by modality (media tasks need the modality declared).
-    Executor workers are excluded from undeclared tasks — the dispatch
+    Executor workers are excluded from undeclared tasks - the dispatch
     conjunction would reject every cell anyway.
     """
     if (task.metadata or {}).get("requires_executor"):
@@ -196,7 +198,7 @@ def _scoped_mean(store: RunStore, orchestrator: str | None, worker: str | None) 
 
 
 def _grid_estimate(store: RunStore, cells: list[tuple[ModelConfig, ModelConfig, int]]) -> float:
-    """Aggregate launch estimate honoring per-pairing cost history — a
+    """Aggregate launch estimate honoring per-pairing cost history - a
     cheap pairing shouldn't be priced at the grid's expensive mean."""
     counts: dict[tuple[str, str], int] = {}
     for o, w, _i in cells:
@@ -246,7 +248,7 @@ def _budget_check(
 
 def _spend_recheck(args: argparse.Namespace, store: RunStore) -> None:
     """Mid-flight spend guard for grids/batches: the aggregate pre-check
-    can't see spend that lands between sequential cell launches — re-check
+    can't see spend that lands between sequential cell launches - re-check
     before each one so in-flight overshoot stays bounded."""
     if getattr(args, "dry_run", False):
         return
@@ -262,7 +264,7 @@ def _spend_recheck(args: argparse.Namespace, store: RunStore) -> None:
 
 def _check_provider_envs(args: argparse.Namespace, *models: ModelConfig | None) -> None:
     """Fail fast naming every API-key env var the selected models' providers
-    need — and, for executor workers, the launch opt-in + adapter binary +
+    need - and, for executor workers, the launch opt-in + adapter binary +
     dedicated credential env keys (the same gate web/TUI launches enforce)."""
     if args.dry_run:
         return
@@ -284,7 +286,7 @@ def _check_provider_envs(args: argparse.Namespace, *models: ModelConfig | None) 
         if env and not os.environ.get(env):
             missing_env.add(env)
     # The isolated code runtime fails closed mid-run if its endpoint contract
-    # is absent — catch it here, before any model spend. `harness.py doctor`
+    # is absent - catch it here, before any model spend. `harness.py doctor`
     # probes the endpoint itself.
     if os.environ.get(CODE_RUNTIME_ENV, "").strip().lower() == ISOLATED_CODE_RUNTIME:
         for env in ("E2B_DOMAIN", "E2B_API_KEY"):
@@ -306,7 +308,7 @@ _CF_HOOK_CLIENT: Any = None
 
 def _cf_sync_hook(store: RunStore) -> Any:
     """Runner.on_run_finished: push the terminal row + calls ledger to the
-    hosted observatory when ORCH_CF_SYNC is set (1/true/yes). Best-effort —
+    hosted observatory when ORCH_CF_SYNC is set (1/true/yes). Best-effort -
     Runner suppresses callback errors, and the sync_dirty journal records the
     run regardless, so `harness.py sync` catches anything the hook misses.
     Holdouts are skipped here too; their journal entries clear as terminal on
@@ -367,7 +369,7 @@ def _attempt_budget(worker: ModelConfig) -> str:
 def _fail_line(label: str, rep: int, n_reps: int, budget: str, exc: Exception) -> str:
     """One failure line, shared by every harness command.
 
-    `rep` names a replicate, not an attempt — saying so explicitly is the point.
+    `rep` names a replicate, not an attempt - saying so explicitly is the point.
     With one replicate the bare `rep 1` of the previous format was
     indistinguishable from a retry counter.
     """
@@ -387,7 +389,7 @@ def _resolve_replicates(args: argparse.Namespace) -> tuple[str | None, int]:
 
 def _rep_kwargs(args: argparse.Namespace, store: RunStore, group: str | None, i: int | None) -> dict[str, Any]:
     """Runner kwargs for replicate `i` (None when not replicating). When
-    --seed S is set, replicate i records seed S+i-1 — varying seeds measure
+    --seed S is set, replicate i records seed S+i-1 - varying seeds measure
     variance; identical-seed reruns need separate invocations."""
     kwargs = _runner_kwargs(args, store, run_group=group, replicate=i)
     seed = getattr(args, "seed", None)
@@ -402,7 +404,7 @@ def cmd_init(args: argparse.Namespace) -> None:
     print(f"Index at {store.db}")
 
 
-# metadata keys each task type cannot function without — checked by `validate`
+# metadata keys each task type cannot function without - checked by `validate`
 _REQUIRED_META: dict[str, tuple[str, ...]] = {
     "api": ("stub", "calls"),
     "sql": ("schema", "reference_sql"),
@@ -414,7 +416,7 @@ _REQUIRED_META: dict[str, tuple[str, ...]] = {
     "code": ("module", "tests"),
     "multi-file": ("expected_paths",),
 }
-# validation names that read a metadata key — requesting the check without
+# validation names that read a metadata key - requesting the check without
 # the metadata silently no-ops or errors at run time
 _VALIDATION_META = {
     "has_required": "required",
@@ -424,7 +426,7 @@ _VALIDATION_META = {
     "matches_pattern": "pattern",
     "within_budget": ("min_chars", "max_chars", "min_words", "max_words"),
 }
-# check names each validator actually implements — a typo'd name fails the run
+# check names each validator actually implements - a typo'd name fails the run
 # at validation time (validators fail closed on unknowns) but validate should
 # catch it before a grid spends money on it. Execution-graded types
 # (code/bugfix/swe-patch/sql/extract/api/terminal) ignore validation: by design.
@@ -445,7 +447,7 @@ _CHECK_NAMES = {
 
 
 def cmd_validate(args: argparse.Namespace) -> None:
-    """Parse every spec and check per-type contracts — catches the silent
+    """Parse every spec and check per-type contracts - catches the silent
     failures that otherwise only surface mid-run (missing metadata, a
     validation name with no backing key, unparseable YAML)."""
     failures = 0
@@ -508,7 +510,7 @@ def cmd_run(args: argparse.Namespace) -> None:
     _check_provider_envs(args, orchestrator, worker, judge)
 
     group, n_reps = _resolve_replicates(args)
-    # the preamble checked n=1 before the replicate count was known —
+    # the preamble checked n=1 before the replicate count was known -
     # re-check now so --replicates 10 --max-cost 0.05 prices ten launches
     _budget_check(args, store, n_reps, orchestrator=orchestrator.slug, worker=worker.slug)
     metas = []
@@ -548,6 +550,115 @@ def cmd_run(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
+def cmd_recover(args: argparse.Namespace) -> None:
+    """Relaunch the slot an orphaned 'running' run left behind.
+
+    Marks the corpse ``aborted`` and launches a fresh run carrying the
+    same task, pairing, group, replicate, and seed - the orphan keeps
+    its row (its billed calls stay attributed) while the new run
+    completes the replicate. Refuses terminal runs (their slot is
+    complete by policy) and fresh 'running' rows (possibly live
+    elsewhere) unless --force.
+    """
+    store, known, judge = _run_preamble(args)
+    meta = store.get_run(args.run_id)
+    if meta is None:
+        print(f"recover: no run {args.run_id!r} in the index", file=sys.stderr)
+        sys.exit(1)
+    if meta.status != "running":
+        print(
+            f"recover: run {meta.run_id} is {meta.status} - only orphaned "
+            "'running' rows recover; a terminal run's slot is complete",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    # a corpse keeps status="running" - the aborted annotation is the
+    # record that recovery already ran; a second recover would launch a
+    # second replacement into the same slot
+    already_aborted = any(
+        a["kind"] == "run" and a["target"] == meta.run_id and a["flag"] == "aborted"
+        for a in store.annotations()
+    )
+    if already_aborted:
+        print(
+            f"recover: run {meta.run_id} was already marked aborted - "
+            "its slot was already relaunched or reopened",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    if not args.force and not run_is_stale(meta, time.time()):
+        print(
+            f"recover: run {meta.run_id} shows recent activity - refusing to "
+            "race a possibly-live owner (retry later or pass --force)",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    task_path = find_task(meta.task_id, Path(args.tasks_dir))
+    if task_path is None:
+        print(
+            f"recover: task spec {meta.task_id!r} not under {args.tasks_dir}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    task = load_task(task_path)
+    orchestrator = replace(_model_from_arg(meta.orchestrator, args.models_dir, known), role="orchestrator")
+    worker = _apply_retry_limit(replace(_model_from_arg(meta.worker, args.models_dir, known), role="worker"), args)
+    _check_provider_envs(args, orchestrator, worker, judge)
+    cfg = meta.config or {}
+    dry_run = bool(meta.dry_run) or bool(getattr(args, "dry_run", False))
+    claimed = False
+    if not dry_run:
+        # the aborted flag is the atomic cross-process claim on the slot -
+        # claim before the (long) replacement launch, not after
+        try:
+            claimed = store.claim_aborted(
+                meta.run_id, "orphaned 'running' row - relaunching replacement",
+            )
+        except Exception:
+            claimed = False
+        if not claimed:
+            print(
+                f"recover: run {meta.run_id} was already claimed for "
+                "recovery - another driver or recover owns the slot",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        # hydrate the corpse's billed calls into runs.* - killed runs
+        # would otherwise meter $0 to coverage and spend reports
+        store.repair_orphan_costs(meta.run_id)
+    kwargs = _runner_kwargs(
+        args, store,
+        run_group=meta.run_group,
+        replicate=meta.replicate,
+        seed=cfg.get("seed"),
+        jev_assist=cfg.get("jev_assist", False),
+        planner=cfg.get("planner") or getattr(args, "planner", None),
+        prompt_variant=cfg.get("prompt_variant") or getattr(args, "prompt_variant", None),
+        dry_run=dry_run,
+    )
+    try:
+        new_meta = Runner(**kwargs).run(task, orchestrator, worker, judge)
+    except Exception:
+        # a failed relaunch must not brick the slot - release the claim so
+        # a later recover or driver pass can try again
+        if claimed:
+            store.set_annotation(
+                "run", meta.run_id, "",
+                note="recovery launch failed - slot reopened for retry",
+            )
+        raise
+    if claimed:
+        store.set_annotation(
+            "run", meta.run_id, "aborted",
+            note=f"orphaned 'running' row - superseded by {new_meta.run_id}",
+        )
+    print(f"Recovered {meta.run_id} → {new_meta.run_id} [{new_meta.status}]")
+    print(f"  Directory: {new_meta.run_dir}")
+    print(f"  Cost: ${new_meta.total_cost_usd:.6f} | Passes: {new_meta.passes} | Score: {new_meta.score}")
+    if new_meta.status != "finished":
+        sys.exit(1)
+
+
 def cmd_grid(args: argparse.Namespace) -> None:
     store, known, judge = _run_preamble(args)
     task = load_task(_task_from_arg(args.task, args.tasks_dir))
@@ -576,7 +687,7 @@ def cmd_grid(args: argparse.Namespace) -> None:
 
     def _one(orchestrator: ModelConfig, worker: ModelConfig, rep: int) -> dict[str, Any]:
         _spend_recheck(args, store)
-        # copy per pairing — ModelConfig objects from `known` are shared across threads
+        # copy per pairing - ModelConfig objects from `known` are shared across threads
         orchestrator = replace(orchestrator, role="orchestrator")
         worker = _apply_retry_limit(replace(worker, role="worker"), args)
         kwargs = _rep_kwargs(args, store, group, rep if n_reps > 1 else getattr(args, "replicate", None))
@@ -1132,7 +1243,7 @@ def _print_leaderboard(
     metas: list[Any] | None = None,
     reports_dir: str = "reports",
 ) -> None:
-    """Pairing leaderboard — one row per (orchestrator, worker)."""
+    """Pairing leaderboard - one row per (orchestrator, worker)."""
     if not rows:
         print("No runs match.")
         return
@@ -1251,7 +1362,7 @@ def _print_groups_table(cells: list[Any]) -> None:
 
 
 def _print_group_delta(store: RunStore, spec: str, *, json_out: bool = False) -> None:
-    """Compare two run groups cell-by-cell — the v1→v2 evidence question.
+    """Compare two run groups cell-by-cell - the v1→v2 evidence question.
 
     Cells join on (task, orchestrator, worker); each side keeps its own n so
     drift in grid shape is visible rather than silently interpolated."""
@@ -1358,7 +1469,7 @@ def cmd_export(args: argparse.Namespace) -> None:
 
 
 def cmd_dataset(args: argparse.Namespace) -> None:
-    """Export an RL-ready dataset — one JSONL record per LLM call (or per run
+    """Export an RL-ready dataset - one JSONL record per LLM call (or per run
     with --episodes), each carrying the run's outcome and reward.
 
     --backfill rebuilds `calls` payloads from events.jsonl first so runs that
@@ -1414,7 +1525,7 @@ def cmd_prices(args: argparse.Namespace) -> None:
         print(f"\n{len(drifted)} model(s) beyond {args.threshold:.0%} drift: update models/*.yaml or check for silent rerouting.")
 
 def cmd_models(args: argparse.Namespace) -> None:
-    """Provider model catalog — sync the remote list for the observatory."""
+    """Provider model catalog - sync the remote list for the observatory."""
     from orchestral import remotecatalog
 
     if args.models_cmd == "sync":
@@ -1494,6 +1605,32 @@ def cmd_fixtures(args: argparse.Namespace) -> None:
                 print(f"drift: {p}")
             sys.exit(1)
         print(f"{len(registry)} fixture(s) consistent with registry")
+
+
+def cmd_harbor(args: argparse.Namespace) -> None:
+    """Harbor task-package export - spec → dist/harbor/<task_id>/."""
+    from orchestral.harbor_export import export_task
+
+    if args.harbor_cmd == "export":
+        spec = load_task(_task_from_arg(args.task, args.tasks_dir))
+        try:
+            package = export_task(
+                spec,
+                args.out_dir,
+                publish_keys=args.publish_keys,
+                fixtures_dir=args.fixtures_dir,
+            )
+        except ValueError as exc:
+            print(f"harbor export: {exc}", file=sys.stderr)
+            sys.exit(1)
+        print(f"exported {spec.id} -> {package}")
+        for rel in sorted(p.relative_to(package) for p in package.rglob("*") if p.is_file()):
+            print(f"  {rel}")
+        print(
+            "\nReview the package before sharing it: tests/oracle/ and "
+            "checks.json carry the answer key by design (that's what "
+            "--publish-keys acknowledged)."
+        )
 
 
 def cmd_calibrate(args: argparse.Namespace) -> None:
@@ -1632,7 +1769,7 @@ def cmd_judge(args: argparse.Namespace) -> None:
 
 
 def cmd_revalidate(args: argparse.Namespace) -> None:
-    """Replay mechanical validators on stored artifacts — repairs the score axis."""
+    """Replay mechanical validators on stored artifacts - repairs the score axis."""
     from orchestral.revalidate import revalidate_runs
 
     result = revalidate_runs(
@@ -1660,7 +1797,7 @@ def cmd_revalidate(args: argparse.Namespace) -> None:
 
 
 def cmd_specaudit(args: argparse.Namespace) -> None:
-    """jev-style audit of the task suite itself — does the benchmark low-ball?"""
+    """jev-style audit of the task suite itself - does the benchmark low-ball?"""
     from orchestral.judge import audit_specs
 
     judge = _judge_from_arg(args)
@@ -1697,7 +1834,7 @@ def cmd_specaudit(args: argparse.Namespace) -> None:
 
 
 def _group_evidence(store: RunStore, groups: list[str]) -> dict[str, Any]:
-    """Live stats for named run groups — evidence attached to claims must be
+    """Live stats for named run groups - evidence attached to claims must be
     computed from the index, never hand-typed numbers that can drift."""
     out: dict[str, Any] = {}
     for g in groups:
@@ -1720,7 +1857,7 @@ def _group_evidence(store: RunStore, groups: list[str]) -> dict[str, Any]:
 
 
 def cmd_claimsaudit(args: argparse.Namespace) -> None:
-    """Decisions-engine audit of our own claims — scorch the ideas."""
+    """Decisions-engine audit of our own claims - scorch the ideas."""
     import yaml
 
     from orchestral.judge import audit_claims
@@ -1770,7 +1907,7 @@ def cmd_scrub(args: argparse.Namespace) -> int:
 
     `scrub_all` withholds files it cannot redact and records each one in the
     manifest. A withheld file is a hole in the published record, so a caller
-    that only reads the exit status — a CI publish step, a shell pipeline —
+    that only reads the exit status - a CI publish step, a shell pipeline -
     must be able to tell a complete publication from an incomplete one. It
     cannot from the exit status alone, so it exits non-zero when the manifest
     records any blocked file.
@@ -1955,7 +2092,7 @@ def cmd_serve(args: argparse.Namespace) -> None:
 
 def cmd_cards(args: argparse.Namespace) -> None:
     """Batch-export X-ready PNGs: overview, leaderboard, and every
-    group/pairing card — the SPA's own markup, rendered headless."""
+    group/pairing card - the SPA's own markup, rendered headless."""
     import hashlib
     import threading
     from http.server import ThreadingHTTPServer
@@ -1993,7 +2130,7 @@ def cmd_cards(args: argparse.Namespace) -> None:
     for g in groups:
         targets.append((f"/card?kind=group&target={quote(g, safe='')}", ".xcard"))
     if args.group:
-        # leaderboard_rows carries no group field — take the pairings the
+        # leaderboard_rows carries no group field - take the pairings the
         # group card itself aggregates, and scope each pairing card to it.
         seen: set[str] = set()
         for g in groups:
@@ -2031,7 +2168,7 @@ def cmd_cards(args: argparse.Namespace) -> None:
                 name = shot_name(route)
                 stem, stamp = name.rsplit("-", 1)
                 if name in used:
-                    # distinct routes that slug-collide must not overwrite —
+                    # distinct routes that slug-collide must not overwrite -
                     # resolve the digest name BEFORE cleanup so a colliding
                     # route can't delete the file its rival just wrote
                     digest = hashlib.sha1(route.encode()).hexdigest()[:6]
@@ -2162,6 +2299,20 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--worker", required=True, help="OpenRouter model slug for the worker")
     _add_run_flags(run)
     run.set_defaults(func=cmd_run)
+
+    recover = sub.add_parser(
+        "recover",
+        help="Relaunch the slot an orphaned 'running' run left behind "
+        "(marks the corpse aborted, launches a fresh run with the same "
+        "task, pairing, group, replicate, and seed)",
+    )
+    recover.add_argument("run_id", help="Orphaned run id to recover")
+    recover.add_argument(
+        "--force", action="store_true",
+        help="Relaunch even if the orphan shows recent activity",
+    )
+    _add_run_flags(recover)
+    recover.set_defaults(func=cmd_recover)
 
     grid = sub.add_parser("grid", help="Run a matrix of orchestrators × workers")
     grid.add_argument("--task", required=True, help="Task id or path")
@@ -2418,6 +2569,26 @@ def build_parser() -> argparse.ArgumentParser:
     ff.add_argument("ids", nargs="*", help="Fixture ids (default: all registered)")
     fsub.add_parser("check", help="Verify fetched tarballs match registry pins + locks")
     fixtures.set_defaults(func=cmd_fixtures)
+
+    harbor = sub.add_parser(
+        "harbor",
+        help="Export task specs as self-contained Harbor packages (instruction + environment + verifier)",
+    )
+    hsub = harbor.add_subparsers(dest="harbor_cmd", required=True)
+    hexp = hsub.add_parser(
+        "export",
+        help="Package one task - embeds the answer key by design; holdout specs refuse",
+    )
+    hexp.add_argument("task", help="Task spec id")
+    hexp.add_argument(
+        "--publish-keys",
+        action="store_true",
+        help="Acknowledge that the package publishes this spec's expected answers (required)",
+    )
+    hexp.add_argument("--out-dir", default="dist/harbor", help="Package output root")
+    _add_global_dir_flag(hexp, "--tasks-dir", "Task spec directory")
+    hexp.add_argument("--fixtures-dir", default="fixtures", help="Fixture directory")
+    harbor.set_defaults(func=cmd_harbor)
 
     models = sub.add_parser(
         "models",

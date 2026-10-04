@@ -65,6 +65,12 @@ def _outcome(meta: RunMeta, report: dict[str, Any]) -> dict[str, Any]:
             "inconclusive": judge.get("inconclusive"),
             "noul": judge.get("noul"),
             "confidence": judge.get("confidence"),
+            # the v1/v2 discriminator — score is a scalar claim under v1
+            # and a criteria-derived value under v2; claimed_* preserves
+            # the judge's raw claim for disagreement analysis
+            "judge_contract": judge.get("judge_contract"),
+            "claimed_score": judge.get("claimed_score"),
+            "claimed_passed": judge.get("claimed_passed"),
         } if judge else None,
         "judge_scores": judge_scores,
     }

@@ -39,6 +39,7 @@ class CorpusServer:
     def __init__(self, shape: str = "full") -> None:
         self.tmp = Path(tempfile.mkdtemp())
         self.root = self.tmp / "runs"
+        self._stop = threading.Event()
         with patch.dict(os.environ, {}, clear=True):
             self.manifest = corpus.build_corpus(self.root, shape)
         if shape == "full":
@@ -49,16 +50,29 @@ class CorpusServer:
         threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
 
     def _add_live_cli_run(self) -> None:
-        """One CLI-launched run that is alive right now (last event 20s ago)."""
+        """One CLI-launched run that stays live for the server's lifetime.
+
+        A fixed "20s ago" timestamp drifts past STALL_AFTER_S while the shared
+        corpus is reused across test classes, flipping the row to `stalled`;
+        a heartbeat thread appends a fresh event so idle_s stays small."""
         now = datetime.now(UTC)
         run_dir = self.root / "cli-live0001"
         run_dir.mkdir()
-        (run_dir / "events.jsonl").write_text(json.dumps({
+        events = run_dir / "events.jsonl"
+        events.write_text(json.dumps({
             "type": "run.started", "timestamp": (now - timedelta(seconds=20)).isoformat()}) + "\n")
         RunStore(self.root).index_meta(RunMeta(
             run_id="cli-live0001", orchestrator="corpus/orch-a", task_id="corpus-landing-page",
             worker="corpus/worker-cheap", status="running",
             started_at=(now - timedelta(minutes=5)).isoformat(), run_dir=str(run_dir)))
+
+        def beat() -> None:
+            while not self._stop.wait(30):
+                with events.open("a") as fh:
+                    fh.write(json.dumps({"type": "run.heartbeat",
+                                         "timestamp": datetime.now(UTC).isoformat()}) + "\n")
+
+        threading.Thread(target=beat, daemon=True).start()
 
     @property
     def base(self) -> str:
@@ -69,6 +83,7 @@ class CorpusServer:
             return json.loads(r.read())
 
     def close(self) -> None:
+        self._stop.set()
         self.httpd.shutdown()
         self.httpd.server_close()
         shutil.rmtree(self.tmp, ignore_errors=True)

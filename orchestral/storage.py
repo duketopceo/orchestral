@@ -34,8 +34,10 @@ DB_NAME = "index.db"
 
 # Judge-cache payload version — bump when the result shape or the input
 # contract changes so stale records go cold on read instead of being
-# trusted. v1 was the bare result dict (pre-inconclusive rule).
-JUDGE_CACHE_SCHEMA = 2
+# trusted. v1 was the bare result dict (pre-inconclusive rule); v2 added
+# the inconclusive rule; v3 is judge_contract v2 — per-criterion
+# {satisfied, supported, evidence} triples (wandr pattern).
+JUDGE_CACHE_SCHEMA = 3
 
 # Byte cap on a call's prompt/completion body when a caller wants a *preview*
 # (the web observatory) rather than the ledger (dataset export, the TUI).
@@ -108,6 +110,12 @@ class BilledEstimate:
     high_usd: float | None
     n: int
     basis: str  # task_pairing | pairing | unknown
+
+
+def _like_escape(prefix: str) -> str:
+    """Escape ``%``/``_``/``\\`` for a ``LIKE … ESCAPE '\\'`` prefix match —
+    a matrix named ``jev_ab`` must not match ``jevxab`` groups."""
+    return prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 def _bounded_body(raw: Any, total: Any) -> tuple[str, int, bool]:
@@ -878,7 +886,7 @@ class RunStore:
         ``%``/``_`` in the prefix are escaped — a matrix named ``jev_ab``
         must not meter ``jevxab`` groups.
         """
-        esc = group_prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        esc = _like_escape(group_prefix)
         cal = self.cost_calibration()
         with self._connect() as conn:
             rows = conn.execute(
@@ -894,6 +902,89 @@ class RunStore:
             ratio = cal.ratio_for(model).ratio
             total += float(api_sum) + float(unpriced) * (ratio if ratio is not None else 1.0)
         return total
+
+    def repair_orphan_costs(self, run_id: str) -> bool:
+        """Recompute a run's cost/token totals from its ``calls`` rows.
+
+        A run killed mid-flight meters ``total_cost_usd = 0`` forever —
+        finalize never ran, so ``coverage_rows``, ``spend_today`` and
+        ``mean_cell_cost`` all undercount it while its billed calls sit
+        in the ledger. Recompute from the ledger; returns True when the
+        row actually changed.
+        """
+        with self._connect() as conn:
+            sums = conn.execute(
+                "SELECT COALESCE(SUM(cost_usd), 0), "
+                "COALESCE(SUM(input_tokens), 0), "
+                "COALESCE(SUM(output_tokens), 0) "
+                "FROM calls WHERE run_id = ?",
+                (run_id,),
+            ).fetchone()
+            n = conn.execute(
+                "UPDATE runs SET total_cost_usd = ?, total_input_tokens = ?, "
+                "total_output_tokens = ? WHERE run_id = ? "
+                "AND (total_cost_usd IS NULL OR total_cost_usd != ? "
+                "OR total_input_tokens IS NULL OR total_input_tokens != ? "
+                "OR total_output_tokens IS NULL OR total_output_tokens != ?)",
+                (sums[0], sums[1], sums[2], run_id, sums[0], sums[1], sums[2]),
+            ).rowcount
+        if n:
+            meta = self.get_run(run_id)
+            # run_dir can be empty on rows that predate the column —
+            # update_meta would write run.json into the caller's cwd
+            if meta is not None and meta.run_dir:
+                self.update_meta(meta)
+        return bool(n)
+
+    def missing_cost_count(
+        self, *, run_id: str | None = None, group_prefix: str | None = None
+    ) -> int:
+        """Calls with no provider-reported cost.
+
+        Keyed on ``api_cost_usd IS NULL`` against the pricing vocabulary:
+        ``flat_estimate``/``configured_estimate`` are estimates by
+        definition, ``cli_reported``/``api`` count when the provider
+        returned no usage cost; ``unmetered``/``none`` are legitimately
+        $0 and excluded. Dry-run rows excluded.
+        """
+        where = (
+            "api_cost_usd IS NULL "
+            "AND COALESCE(pricing_source, '') NOT IN ('unmetered', 'none') "
+            "AND COALESCE(dry_run, 0) = 0"
+        )
+        params: tuple = ()
+        if run_id is not None:
+            where += " AND run_id = ?"
+            params = (run_id,)
+        elif group_prefix is not None:
+            esc = _like_escape(group_prefix)
+            where += (
+                " AND run_id IN (SELECT run_id FROM runs "
+                "WHERE run_group LIKE ? ESCAPE '\\')"
+            )
+            params = (f"{esc}%",)
+        with self._connect() as conn:
+            row = conn.execute(
+                f"SELECT COUNT(*) FROM calls WHERE {where}", params
+            ).fetchone()
+        return int(row[0])
+
+    def missing_cost_counts_by_group(self, group_prefix: str) -> dict[str, int]:
+        """``missing_cost_count`` grouped by ``run_group`` — one pass for
+        a whole matrix instead of a per-cell LIKE scan."""
+        esc = _like_escape(group_prefix)
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT r.run_group, COUNT(*) FROM calls c "
+                "JOIN runs r ON c.run_id = r.run_id "
+                "WHERE r.run_group LIKE ? ESCAPE '\\' "
+                "AND c.api_cost_usd IS NULL "
+                "AND COALESCE(c.pricing_source, '') NOT IN ('unmetered', 'none') "
+                "AND COALESCE(c.dry_run, 0) = 0 "
+                "GROUP BY r.run_group",
+                (f"{esc}%",),
+            ).fetchall()
+        return {str(r[0]): int(r[1]) for r in rows}
 
     def set_annotation(
         self, kind: str, target: str, flag: str, note: str = ""
@@ -943,6 +1034,37 @@ class RunStore:
                 "SELECT kind, target, flag, note, updated_at FROM annotations"
             ).fetchall()
         return [dict(r) for r in rows]
+
+    def claim_aborted(self, run_id: str, note: str) -> bool:
+        """Atomically mark a run ``aborted`` unless it already is —
+        returns True only for the caller that won the claim.
+
+        The aborted flag is the cross-process claim on an orphaned
+        ``running`` row's replicate slot. set_annotation is a blind
+        upsert, so two relaunchers can both observe "not aborted" and
+        both write it; this form returns False for the loser instead of
+        silently succeeding."""
+        with self._connect() as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO annotations (kind, target, flag, note, updated_at)
+                VALUES ('run', ?, 'aborted', ?, ?)
+                ON CONFLICT (kind, target) DO UPDATE SET
+                    flag = 'aborted',
+                    note = excluded.note,
+                    updated_at = excluded.updated_at
+                WHERE annotations.flag != 'aborted'
+                """,
+                (run_id, note, datetime.now(UTC).isoformat()),
+            )
+            won = cur.rowcount == 1
+            if won:
+                conn.execute(
+                    "INSERT OR REPLACE INTO sync_dirty (run_id, reason, dirty_at)"
+                    " VALUES (?, 'annotation', ?)",
+                    (run_id, datetime.now(UTC).isoformat()),
+                )
+        return won
 
     def debug_log(self, component: str, message: str, **fields: Any) -> None:
         """Append to the root-level runs/debug.jsonl for events that happen

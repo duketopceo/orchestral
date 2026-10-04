@@ -191,6 +191,20 @@ def collect_pairs(store: RunStore, labels: list[dict[str, Any]]) -> dict[str, An
                 "human_passed": _coerce_verdict(label.get("passed")),
                 "judge_passed": _coerce_verdict(judge.get("passed")),
                 "judge_model": judge.get("model"),
+                # v2 contract: the judge's scalar claim vs the verdict
+                # derived from its criteria — old-vs-new disagreement is
+                # the calibration signal the contract gate compares
+                "judge_claimed_passed": _coerce_verdict(judge.get("claimed_passed")),
+                "judge_claimed_score": _coerce_score(judge.get("claimed_score")),
+                "judge_contract": judge.get("judge_contract"),
+                "criteria": {
+                    str(c["id"]): {
+                        "satisfied": c.get("satisfied"),
+                        "supported": c.get("supported"),
+                    }
+                    for c in judge.get("criteria") or []
+                    if isinstance(c, dict) and c.get("id") is not None
+                },
             }
         )
     coverage = {
@@ -295,8 +309,68 @@ def _metrics_block(pairs: list[dict[str, Any]]) -> dict[str, Any]:
     return metrics
 
 
+def _criterion_rates(pairs: list[dict[str, Any]]) -> dict[str, Any]:
+    """Per-criterion rates across pairs, sliced task:criterion.
+
+    Human labels carry no per-criterion verdicts, so this reports the
+    judge's own criterion behavior — satisfaction/support/assessment
+    rates — not agreement. That is still the useful calibration view:
+    a criterion that is never supported or never assessed is the one
+    silently driving (or not driving) the derived headline verdict.
+    """
+    slices: dict[str, dict[str, Any]] = {}
+    for p in pairs:
+        task = str(p.get("task_id") or "")
+        for cid, c in (p.get("criteria") or {}).items():
+            key = f"{task}:{cid}"
+            slot = slices.setdefault(
+                key, {"n": 0, "satisfied": 0, "supported": 0,
+                      "unsupported": 0, "unassessed": 0}
+            )
+            slot["n"] += 1
+            if c.get("satisfied") is True:
+                slot["satisfied"] += 1
+            elif c.get("satisfied") is None:
+                slot["unassessed"] += 1
+            if c.get("supported") is True:
+                slot["supported"] += 1
+            elif c.get("supported") is False:
+                slot["unsupported"] += 1
+    for slot in slices.values():
+        for k in ("satisfied", "supported", "unsupported", "unassessed"):
+            slot[f"{k}_rate"] = round(slot[k] / slot["n"], 4)
+    return slices
+
+
+def _contract_block(pairs: list[dict[str, Any]]) -> dict[str, Any]:
+    """Claimed-vs-derived disagreement — the old-vs-new gate metric.
+
+    v2 results keep the judge's scalar claim under ``claimed_*`` while
+    ``passed``/``score`` derive from criteria. When they disagree, the
+    contract changed the verdict — that rate is what the calibration
+    gate measures before the contract becomes load-bearing.
+    """
+    compared = [
+        p for p in pairs
+        if p.get("judge_claimed_passed") is not None
+        and p.get("judge_passed") is not None
+    ]
+    disagreed = [
+        p for p in compared
+        if p["judge_claimed_passed"] != p["judge_passed"]
+    ]
+    return {
+        "n": len(compared),
+        "disagreements": len(disagreed),
+        "disagreement_rate": (
+            round(len(disagreed) / len(compared), 4) if compared else None
+        ),
+        "runs": [p["run_id"] for p in disagreed],
+    }
+
+
 def agreement_metrics(pairs: list[dict[str, Any]]) -> dict[str, Any]:
-    """Overall agreement plus per-judge and per-task slices."""
+    """Overall agreement plus per-judge, per-task, and contract slices."""
     metrics = _metrics_block(pairs)
     for axis, key in (("by_judge", "judge_model"), ("by_task", "task_id")):
         slices: dict[str, Any] = {}
@@ -305,6 +379,8 @@ def agreement_metrics(pairs: list[dict[str, Any]]) -> dict[str, Any]:
                 [p for p in pairs if p.get(key) == value]
             )
         metrics[axis] = slices
+    metrics["by_criterion"] = _criterion_rates(pairs)
+    metrics["contract"] = _contract_block(pairs)
     return metrics
 
 

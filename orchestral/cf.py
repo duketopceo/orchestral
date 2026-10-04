@@ -223,6 +223,8 @@ def push_run(client: httpx.Client, store: RunStore, meta: Any,
              tasks_dir: Path, groups_file: Path) -> dict[str, Any]:
     """Scrub + payload + ledger for one run → POST /ingest/run."""
     run_dir = Path(meta.run_dir)
+    if privacy.run_is_holdout(run_dir, meta.config):  # the index row alone can mark it
+        raise HoldoutRunError(f"{meta.run_id} is a holdout run")
     with tempfile.TemporaryDirectory(prefix="orch-scrub-") as tmp:
         scrubbed = scrub_to_dir(run_dir, Path(tmp))
         files = _collect_files(scrubbed)
@@ -279,13 +281,13 @@ def d1_projection(store: RunStore, run_ids: list[str] | None = None) -> dict[str
         if run_ids is not None else store.list_runs(limit=None)
     )
     for m in metas:
-        if privacy.run_is_holdout(Path(m.run_dir)):
+        if privacy.run_is_holdout(Path(m.run_dir), m.config):
             continue  # holdout runs never leave the machine, even as rows
         row = m.to_public_dict()
         runs.append({k: row.get(k) for k in RUN_COLUMNS} | {"holdout": 0})
     calls: list[dict[str, Any]] = []
     for m in metas:
-        if privacy.run_is_holdout(Path(m.run_dir)):
+        if privacy.run_is_holdout(Path(m.run_dir), m.config):
             continue
         calls.extend(_ledger_calls(store, m.run_id))
     # Every field goes through scrub_dict, not just note — `post`
@@ -385,7 +387,7 @@ def sync(store: RunStore, tasks_dir: Path, models_dir: Path, groups_file: Path,
     with httpx.Client(headers=_ingest_headers() if push else {}) as client:
         for meta in metas:
             try:
-                if privacy.run_is_holdout(Path(meta.run_dir)):
+                if privacy.run_is_holdout(Path(meta.run_dir), meta.config):
                     result.skipped_holdout.append(meta.run_id)
                     continue
                 if not Path(meta.run_dir).is_dir():

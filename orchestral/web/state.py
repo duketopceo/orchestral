@@ -1370,7 +1370,7 @@ def run_detail_payload(
     tm = _task_meta(store, tasks_dir).get(meta.task_id) or {}
     gm = _groups_meta(groups_file).get(meta.run_group or "") or {}
     jstate, jreason = judge_state(meta)
-    holdout = bool((meta.config or {}).get("holdout")) or run_is_holdout(run_dir)
+    holdout = run_is_holdout(run_dir, meta.config)
     out: dict[str, Any] = {
         "meta": _public_run(meta),
         "judge_state": jstate,

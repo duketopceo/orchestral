@@ -7,6 +7,7 @@ export function statusChip(r) {
   if (r.status === "running") return `<span class="chip chip-warn">${liveGlyph()}Running</span>`;
   if (r.status === "failed") return `<span class="chip chip-fail">${icon("fail")}Failed</span>`;
   if (r.status === "cancelled") return `<span class="chip chip-dim">${icon("cancelled")}Cancelled</span>`;
+  if (r.holdout && r.status === "finished") return `<span class="chip chip-dim" title="Holdout arm: the outcome is not published">Withheld</span>`;
   if (r.passes === true || r.passes === 1) return `<span class="chip chip-pass">${icon("pass")}Pass</span>`;
   if (r.passes === false || r.passes === 0) return `<span class="chip chip-fail">${icon("fail")}Fail</span>`;
   return `<span class="chip chip-dim">${esc(r.status)}</span>`;

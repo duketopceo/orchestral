@@ -29,7 +29,7 @@ from typing import Any, cast
 from urllib.parse import quote
 
 from orchestral import cf
-from orchestral.privacy import HoldoutRunError
+from orchestral.privacy import HoldoutRunError, run_is_holdout
 from orchestral.storage import RunStore
 from orchestral.web import catalog, state
 
@@ -48,6 +48,51 @@ def _plain(value: Any) -> Any:
     return json.loads(json.dumps(value, default=str))
 
 
+class _PublishedStore:
+    """The store as the hosted mirror may see it: holdout runs are not listed.
+
+    Every aggregate (groups, matrix, pairings, compare, cards, overview,
+    experiments) reads runs through ``list_runs``, so hiding them here keeps a
+    holdout run's outcome out of every rate and cell. Per-run keys and the runs
+    list still read the real store: the withheld page has to stay reachable."""
+
+    def __init__(self, store: RunStore) -> None:
+        self._store = store
+
+    def list_runs(self, *args: Any, limit: int | None = None, **kwargs: Any) -> list[Any]:
+        rows = [m for m in self._store.list_runs(*args, limit=None, **kwargs)
+                if not _is_holdout_meta(m)]
+        return rows if limit is None else rows[:limit]
+
+    def annotations(self) -> list[dict[str, Any]]:
+        held = {m.run_id for m in self._store.list_runs(limit=None) if _is_holdout_meta(m)}
+        return [a for a in self._store.annotations()
+                if not (a.get("kind") == "run" and a.get("target") in held)]
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._store, name)
+
+
+def _is_holdout_meta(meta: Any) -> bool:
+    return run_is_holdout(Path(meta.run_dir), meta.config) if meta.run_dir else bool(
+        (meta.config or {}).get("holdout"))
+
+
+# What a run row says about how it went. The withheld row keeps the identity the
+# publication manifest also keeps (id, task id, models, group, cost).
+_OUTCOME_FIELDS = ("passes", "score", "judge_score", "judge_passed", "failure_reason")
+
+
+def _runs_rows(store: RunStore, tasks_dir: Path, groups_file: Path | None) -> list[dict[str, Any]]:
+    held = {m.run_id for m in store.list_runs(limit=None) if _is_holdout_meta(m)}
+    rows = state.runs_payload(store, tasks_dir=tasks_dir, groups_file=groups_file)
+    for row in rows:
+        if row["run_id"] in held:
+            row.update(dict.fromkeys(_OUTCOME_FIELDS), holdout=True)
+            row["judge_state"], row["judge_reason"] = "not_judged", "Withheld: holdout arm."
+    return rows
+
+
 def build_snapshot(
     store: RunStore,
     tasks_dir: Path,
@@ -61,12 +106,14 @@ def build_snapshot(
     """Render the key tree for ``store``. ``run_ids`` limits the per-run keys
     (None means every run in the index)."""
     tasks_dir, models_dir = Path(tasks_dir), Path(models_dir)
+    full_store = store
+    store = cast(RunStore, _PublishedStore(full_store))
     registry = state.JobRegistry(Path(store.root), tasks_dir, models_dir, store)
     out: dict[str, Any] = {
         "meta.json": state.meta_payload("hosted", synced_at, source_commit or ""),
         "overview.json": state.overview_payload(
             store, registry, tasks_dir=tasks_dir, groups_file=groups_file),
-        "runs.json": state.runs_payload(store, tasks_dir=tasks_dir, groups_file=groups_file),
+        "runs.json": _runs_rows(full_store, tasks_dir, groups_file),
         "groups.json": state.groups_payload(store, groups_file),
         "matrix.json": state.task_matrix_payload(store, tasks_dir),
         "leaderboard.json": state.leaderboard_rows(store),
@@ -99,9 +146,9 @@ def build_snapshot(
             kind, target = card.get("kind"), card.get("target")
             if kind and target:
                 out[f"card/{kind}/{enc(target)}.{lens_id}.json"] = card
-    ids = run_ids if run_ids is not None else [r.run_id for r in store.list_runs(limit=None)]
+    ids = run_ids if run_ids is not None else [r.run_id for r in full_store.list_runs(limit=None)]
     for rid in ids:
-        out.update(run_payloads(store, rid, tasks_dir, groups_file))
+        out.update(run_payloads(full_store, rid, tasks_dir, groups_file))
     return _plain(out)
 
 
@@ -116,6 +163,8 @@ def run_payloads(
         return {}
     gf = groups_file or Path(tasks_dir).parent / "groups.yaml"
     try:
+        if _is_holdout_meta(meta):  # the index row alone can mark it
+            raise HoldoutRunError(run_id)
         with tempfile.TemporaryDirectory(prefix="orch-snap-") as tmp:
             scrubbed = cf.scrub_to_dir(Path(meta.run_dir), Path(tmp))
             detail = cf._hosted_detail(store, run_id, scrubbed, Path(tasks_dir), gf)

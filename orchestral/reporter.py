@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from orchestral import design_tokens
+from orchestral.format import NULL_GLYPH
 from orchestral.storage import RunStore
 
 _CSS = """
@@ -55,7 +56,6 @@ _CSS = """
 # Reports are paper only and single-file: the token block is read from
 # ui/tokens.css at import and inlined, so nothing is fetched.
 STYLE = "<style>\n" + design_tokens.css_block(("paper",), categorical=True) + "\n" + _CSS + "</style>"
-NULL = "<span class='nullglyph' role='img' aria-label='no data'></span>"
 
 
 def _load_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -400,7 +400,7 @@ def generate_gallery(runs: list[Any], reports_dir: Path, task_id: str | None = N
 </head>
 <body>
   <h1>Orchestral: Gallery</h1>
-  <a href="index.html">All runs</a> &middot; <a href="dashboard.html">Dashboard</a>
+  <a href="index.html">&larr; All runs</a> &middot; <a href="dashboard.html">Dashboard</a>
   {sections}
 </body>
 </html>
@@ -467,7 +467,7 @@ def _dashboard_html(runs: list[Any], summary: dict[str, Any], *, experiment: str
 </head>
 <body>
   <h1>Orchestral: Dashboard</h1>
-  <a href="index.html">Per-run drill-down</a> &middot; <a href="gallery.html">Gallery</a>
+  <a href="index.html">&larr; Per-run drill-down</a> &middot; <a href="gallery.html">Gallery</a>
 
   <div class="summary">
     <div class="card"><div class="metric">{total}</div><small>Runs</small></div>
@@ -701,9 +701,9 @@ def _experiment_html(store: Any, matrix_path: Path) -> str:
         return ""
     body = "".join(
         f"<tr><td>{_esc(r.task_id)}<br><small>{_esc(r.orchestrator)} → {_esc(r.worker)}</small></td>"
-        f"<td>{f'{r.baseline_passes}/{r.baseline_n}' if r.baseline_n else NULL}</td>"
-        f"<td>{f'{r.jev_passes}/{r.jev_n}' if r.jev_n else NULL}</td>"
-        f"<td>{f'[{r.diff[0]:+.2f}, {r.diff[1]:+.2f}]' if r.diff else NULL}</td>"
+        f"<td>{f'{r.baseline_passes}/{r.baseline_n}' if r.baseline_n else NULL_GLYPH}</td>"
+        f"<td>{f'{r.jev_passes}/{r.jev_n}' if r.jev_n else NULL_GLYPH}</td>"
+        f"<td>{f'[{r.diff[0]:+.2f}, {r.diff[1]:+.2f}]' if r.diff else NULL_GLYPH}</td>"
         f"<td>{_esc(r.verdict)}</td><td>{_esc(r.state)}</td>"
         f"<td>{'posted' if r.posted else ''}</td></tr>"
         for r in rows

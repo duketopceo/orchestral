@@ -66,7 +66,7 @@ def _page(status: int, title: str, rest: str, heading: str, body: str,
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="color-scheme" content="light dark" />
-  <title>{esc(title)} | orchestral</title>
+  <title>orchestral: {esc(title)}</title>
   <style>
 {design_tokens.css_block()}
 {_CSS}

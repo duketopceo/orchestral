@@ -365,11 +365,11 @@ class TestPureLayer(unittest.TestCase):
         self.assertGreater(hi, 0.25)
         self.assertIsNone(state._wilson(0, 0))
         v = state._verdict_line
-        self.assertEqual(v(True, True, "finished"), "passes both axes — structure and semantics")
+        self.assertEqual(v(True, True, "finished"), "passes both axes: structure and semantics")
         self.assertEqual(v(True, False, "finished"), "well-formed but semantically rejected")
-        self.assertEqual(v(False, True, "finished"), "mechanical reject, semantic rescue — inspect")
+        self.assertEqual(v(False, True, "finished"), "mechanical reject, semantic rescue: inspect")
         self.assertEqual(v(False, False, "finished"), "rejected on both axes")
-        self.assertEqual(v(True, None, "finished"), "mechanical pass — unjudged")
+        self.assertEqual(v(True, None, "finished"), "mechanical pass, unjudged")
         self.assertIn("no verdict", v(None, None, "running"))
 
     def test_escaping_in_error_pages(self):

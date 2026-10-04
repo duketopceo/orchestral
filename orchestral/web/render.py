@@ -23,7 +23,7 @@ def _page(title: str, body: str) -> str:
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>orchestral — {esc(title)}</title>
+  <title>orchestral: {esc(title)}</title>
   <style>
     body {{ background:#0b0d10; color:#d7dee7; font:14px system-ui,sans-serif; padding:3rem; }}
     a {{ color:#22d3ee; }}

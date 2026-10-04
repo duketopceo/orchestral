@@ -87,7 +87,9 @@ class TestFormatters(unittest.TestCase):
         self.assertEqual(fmt_ms(None), "-")
         self.assertEqual(fmt_ms(500), "500ms")
         self.assertEqual(fmt_ms(12_000), "12.0s")
-        self.assertEqual(fmt_cost(0.01234), "$0.0123")
+        self.assertEqual(fmt_cost(0.01234), "$0.012")  # tiers: $0.0072 / $0.187 / $12.40
+        self.assertEqual(fmt_cost(0.0072), "$0.0072")
+        self.assertEqual(fmt_cost(None), "-")
         self.assertEqual(fmt_tokens(999), "999")
         self.assertEqual(fmt_tokens(1500), "1.5k")
         self.assertEqual(pass_label(True), ("pass", "ok"))

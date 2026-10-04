@@ -340,7 +340,7 @@ Each asset has a creative brief, a production method, and an owner file.
   built from the same staff-line geometry as A1:
   1. No runs yet: an empty three-line staff with a whole-rest block.
   2. Filter matched nothing: staff with a magnifier-shaped fermata.
-  3. Run still starting: staff with a single tick and a rising baton.
+  3. Run still starting: staff with a baton tick landing on the top line (the ictus of A1; nothing crosses).
   4. Evidence missing (no artifact/transcript): staff with a broken middle line.
   5. Server/API error: staff with a double bar line.
 - Each state ships with a one-line explanation and one action (a command to copy

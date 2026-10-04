@@ -925,3 +925,6 @@ button:focus-visible, .btn:focus-visible, input:focus-visible, select:focus-visi
 }
 label.f.check-line { flex-direction: row; align-items: center; font-size: 13px; color: var(--text-2); }
 .spend-dialog h2 { text-transform: none; letter-spacing: normal; color: var(--text); }
+
+/* null glyph (U5): a short rule, never a dash character; aria-label carries "no data" */
+.nil { display: inline-block; width: 10px; height: 1px; background: var(--ink-3, currentColor); vertical-align: middle; }

@@ -31,6 +31,14 @@ from orchestral.config import (
     resolve_judge,
     resolve_model,
 )
+from orchestral.format import (
+    NULL_GLYPH,
+    fmt_duration_ms,
+    fmt_money,
+    fmt_percent,
+    fmt_range_pct,
+    fmt_score,
+)
 from orchestral.judge import DEFAULT_JUDGE
 from orchestral.runner import Runner
 from orchestral.stats import aggregate, mean, pairing_leaderboard, wilson_interval
@@ -265,7 +273,7 @@ def _unreadable_caveat(unreadable_n: int) -> str:
     """Trailing qualifier so a partial judge axis is not read as a full one."""
     if not unreadable_n:
         return ""
-    return f" · {unreadable_n} judge report(s) unreadable — semantic axis incomplete"
+    return f" · {unreadable_n} judge report(s) unreadable, semantic axis incomplete"
 
 
 def live_payload(run_dir: Path, after: int, started_at: str | None = None,
@@ -711,9 +719,9 @@ def judge_state(meta) -> tuple[str, str]:
     if not any(Path(meta.run_dir).glob("artifact.*")):
         return "not_judgeable", "no artifact survives to judge"
     if meta.dry_run:
-        return "not_judged", "dry run — nothing real to judge"
+        return "not_judged", "dry run: nothing real to judge"
     if read_why:
-        return "unreadable", f"judge verdict unknown — {read_why}"
+        return "unreadable", f"judge verdict unknown: {read_why}"
     return "not_judged", "judge wasn't run for this run"
 
 
@@ -1173,16 +1181,16 @@ def _verdict_line(mech_pass: bool | None, judge_passed: bool | None,
                   status: str | None) -> str:
     """One-line verdict in plain words — the card's subtitle hook."""
     if status != "finished":
-        return f"run {status or 'unknown'} — no verdict yet"
+        return f"run {status or 'unknown'}: no verdict yet"
     if judge_passed is None:
-        return ("mechanical pass — unjudged" if mech_pass
-                else "mechanical fail — unjudged")
+        return ("mechanical pass, unjudged" if mech_pass
+                else "mechanical fail, unjudged")
     if mech_pass and judge_passed:
-        return "passes both axes — structure and semantics"
+        return "passes both axes: structure and semantics"
     if mech_pass:
         return "well-formed but semantically rejected"
     if judge_passed:
-        return "mechanical reject, semantic rescue — inspect"
+        return "mechanical reject, semantic rescue: inspect"
     return "rejected on both axes"
 
 
@@ -1191,21 +1199,21 @@ def _explainer(kind: str, card: dict[str, Any]) -> str:
     sentence, no jargon."""
     if kind == "group":
         return (
-            "Each run: a planner AI breaks a real task into steps, worker AIs "
+            "Each run: a planner model breaks a real task into steps, worker models "
             "execute them in parallel, and the final result is graded two "
-            "ways — automated checks that actually run/verify the output, "
-            "plus a second AI that reviews whether it's genuinely good."
+            "ways: automated checks that actually run and verify the output, "
+            "plus a second model that reviews whether it's genuinely good."
         )
     if kind == "pairing":
         return (
-            f"One AI pairing: {str(card.get('orchestrator','?')).split('/')[-1]} plans the work, "
+            f"One pairing: {str(card.get('orchestrator','?')).split('/')[-1]} plans the work, "
             f"{str(card.get('worker','?')).split('/')[-1]} executes it. Every run is graded by "
-            "automated checks and an independent AI reviewer."
+            "automated checks and an independent judge model."
         )
     return (
-        "One eval run: a planner AI broke the task into steps, a worker AI "
+        "One eval run: a planner model broke the task into steps, a worker model "
         "executed them, and the result was graded by automated checks plus "
-        "an AI reviewer."
+        "a judge model."
     )
 
 
@@ -1214,7 +1222,7 @@ def _eval_description(d: dict[str, Any], kind: str) -> str:
     from the card's real numbers, so a card never needs a model call to
     carry a one-sentence summary."""
     def pct(x: float | None) -> str:
-        return f"{round(x * 100)}%" if x is not None else "—"
+        return fmt_percent(x)
     if kind == "group":
         bits = [
             f"{d['finished']}/{d['runs']} runs finished",
@@ -1227,13 +1235,13 @@ def _eval_description(d: dict[str, Any], kind: str) -> str:
             bits.append("unjudged")
         cost = d.get("cost_usd")
         if cost is not None:
-            bits.append(f"${cost:.4f} total")
+            bits.append(f"{fmt_money(cost)} total")
         pr, jr = d.get("pass_rate"), d.get("judge_pass_rate")
         note = ""
         if pr is not None and jr is not None and pr - jr > 0.15:
-            note = " — the judge is stricter than the checks"
+            note = ": the judge is stricter than the checks"
         elif jr is not None and pr is not None and jr - pr > 0.05:
-            note = " — the judge rescues runs the checks reject"
+            note = ": the judge rescues runs the checks reject"
         return f"{d['tasks']} tasks, {len(d.get('pairings') or [])} pairing(s): " + ", ".join(bits) + note + "."
     if kind == "pairing":
         o = str(d.get("orchestrator", "?")).split("/")[-1]
@@ -1246,11 +1254,11 @@ def _eval_description(d: dict[str, Any], kind: str) -> str:
             bits.append(f"judge mean {d.get('judge_score_mean')}")
         cost = d.get("cost_usd")
         if cost is not None:
-            bits.append(f"${cost:.4f} total")
+            bits.append(f"{fmt_money(cost)} total")
         tail = ""
         best, worst = d.get("best_type"), d.get("worst_type")
         if best and worst and best != worst:
-            tail = f" — strongest on {best}, weakest on {worst}"
+            tail = f": strongest on {best}, weakest on {worst}"
         return f"{o} plans, {w} executes, {d['tasks']} tasks: " + ", ".join(bits) + tail + "."
     return ""
 
@@ -1616,7 +1624,7 @@ def _story_signals(
                 "label": "Judge axis unknown",
                 "tone": "warn",
                 "claim": ("The judge verdict could not be read, so whether the judge ran "
-                          "is unknown — not absent."),
+                          "is unknown, not absent."),
                 "evidence": {"judge_state": "unreadable"},
             })
         elif payload.get("judge_state") != "judged":
@@ -1684,7 +1692,7 @@ def _story_signals(
                 "id": "cost_frontier",
                 "label": "Cost frontier",
                 "tone": "pass",
-                "claim": f"The selected setup is at ${selected_cost:.4f} per successful finish.",
+                "claim": f"The selected setup is at {fmt_money(selected_cost)} per successful finish.",
                 "evidence": {"cost_per_pass": selected_cost, "pass_rate": selected_pass},
             })
 
@@ -1725,12 +1733,12 @@ def _story_signals(
 
 def _story_caption(payload: dict[str, Any], claim: str) -> str:
     if payload.get("kind") == "run":
-        context = f"Status {payload.get('status') or 'unknown'} · ${float(payload.get('cost_usd') or 0):.4f} · {payload.get('latency_ms') or 0:.0f}ms"
+        context = f"Status {payload.get('status') or 'unknown'} · {fmt_money(float(payload.get('cost_usd') or 0))} · {fmt_duration_ms(payload.get('latency_ms') or 0)}"
     else:
         ci = payload.get("pass_ci")
         context = f"{payload.get('finished', 0)}/{payload.get('runs', 0)} finished"
         if ci:
-            context += f" · 95% CI {round(float(ci[0]) * 100)}–{round(float(ci[1]) * 100)}%"
+            context += f" · 95% CI {fmt_range_pct(ci[0], ci[1])}"
         unreadable = int(payload.get("judge_reports_unreadable") or 0)
         context += (f" · {payload.get('judged', 0)} judge-reviewed"
                     + (f", {unreadable} report(s) unreadable" if unreadable else ""))
@@ -1827,25 +1835,25 @@ def _attach_story(
 
 def _story_metrics(payload: dict[str, Any]) -> list[dict[str, Any]]:
     if payload.get("kind") == "run":
-        verdict = "PASS" if payload.get("passes") else "FAIL" if payload.get("passes") is False else "—"
+        verdict = "PASS" if payload.get("passes") else "FAIL" if payload.get("passes") is False else NULL_GLYPH
         judge_value = (
-            f"{float(payload['judge_noul']):.2f}" if payload.get("judge_noul") is not None
-            else f"{float(payload['judge_score']):.2f}" if payload.get("judge_score") is not None
-            else "—"
+            fmt_score(float(payload["judge_noul"])) if payload.get("judge_noul") is not None
+            else fmt_score(float(payload["judge_score"])) if payload.get("judge_score") is not None
+            else NULL_GLYPH
         )
         return [
             {"id": "mechanical", "label": "Mechanical", "value": verdict, "detail": payload.get("failure_reason") or "Execution gate", "tone": "mech"},
             {"id": "judge", "label": "Judge", "value": judge_value, "detail": payload.get("judge_state") or "Not judged", "tone": "judge"},
-            {"id": "cost", "label": "Cost", "value": f"${float(payload.get('cost_usd') or 0):.4f}", "detail": f"{payload.get('latency_ms') or 0:.0f}ms", "tone": "cost"},
+            {"id": "cost", "label": "Cost", "value": fmt_money(float(payload.get('cost_usd') or 0)), "detail": fmt_duration_ms(payload.get('latency_ms') or 0), "tone": "cost"},
         ]
     judged = int(payload.get("judged") or 0)
-    judge_value = f"{payload.get('judge_approved', 0)}/{judged}" if judged else "—"
+    judge_value = f"{payload.get('judge_approved', 0)}/{judged}" if judged else NULL_GLYPH
     return [
         {
             "id": "mechanical",
             "label": "Mechanical pass",
             "value": f"{payload.get('passed', 0)}/{payload.get('finished', 0)}",
-            "detail": f"{round(float(payload['pass_rate']) * 100) if payload.get('pass_rate') is not None else '—'}% observed",
+            "detail": f"{fmt_percent(payload.get('pass_rate'))} observed",
             "tone": "mech",
         },
         {
@@ -1858,7 +1866,7 @@ def _story_metrics(payload: dict[str, Any]) -> list[dict[str, Any]]:
         {
             "id": "cost",
             "label": "Metered spend",
-            "value": f"${float(payload.get('cost_usd') or 0):.4f}",
+            "value": fmt_money(float(payload.get('cost_usd') or 0)),
             "detail": "observed provider cost",
             "tone": "cost",
         },
@@ -1937,22 +1945,22 @@ def card_payload(
         best, worst = (strong[0] if strong else None), (strong[-1] if strong else None)
         if unreadable_n and not judged_n:
             # The semantic axis is unknown, not absent. "nothing judged yet"
-            # would assert the judge never ran — a claim the data cannot make.
+            # would assert the judge never ran, a claim the data cannot make.
             line = (f"judge verdict unknown for {unreadable_n} of {len(finished)} "
-                    "finished run(s) — report.json could not be read")
+                    "finished run(s): report.json could not be read")
         else:
             if judged_n and pr is not None:
                 jp = judge_passed_n / judged_n
                 if pr - jp > 0.15:
                     line = f"{round(pr * 100)}% pass structure, {round(jp * 100)}% survive semantic review"
                 elif jp - pr > 0.05:
-                    line = f"{round(pr * 100)}% clear the full gate — judge alone approves {round(jp * 100)}%"
+                    line = f"{round(pr * 100)}% clear the full gate, judge alone approves {round(jp * 100)}%"
                 else:
                     line = "mechanical and judge axes agree"
             elif judged_n:
-                line = f"{judged_n} runs judged — semantic axis active"
+                line = f"{judged_n} runs judged, semantic axis active"
             else:
-                line = "mechanical grading only — nothing judged yet"
+                line = "mechanical grading only, nothing judged yet"
             line += _unreadable_caveat(unreadable_n)
         payload = {
             "kind": "pairing", "target": target, "suite": SUITE_VERSION,
@@ -2058,22 +2066,22 @@ def card_payload(
             card_judge_models = set(store.judge_slugs({m.task_id for m in metas}))
         if unreadable_n and not judged_n:
             # The semantic axis is unknown, not absent. "nothing judged yet"
-            # would assert the judge never ran — a claim the data cannot make.
+            # would assert the judge never ran, a claim the data cannot make.
             line = (f"judge verdict unknown for {unreadable_n} of {g['finished']} "
-                    "finished run(s) — report.json could not be read")
+                    "finished run(s): report.json could not be read")
         else:
             if judged_n and jp_rate is not None and g["pass_rate"] is not None:
                 mech_pct, jp_pct = round(g["pass_rate"] * 100), round(jp_rate * 100)
                 if g["pass_rate"] - jp_rate > 0.15:
                     line = f"{mech_pct}% pass structure, {jp_pct}% survive semantic review"
                 elif jp_rate - g["pass_rate"] > 0.05:
-                    line = f"{mech_pct}% clear the full gate — judge alone approves {jp_pct}%"
+                    line = f"{mech_pct}% clear the full gate, judge alone approves {jp_pct}%"
                 else:
                     line = "mechanical and judge axes agree"
             elif judged_n:
-                line = f"{judged_n} runs judged — semantic axis active"
+                line = f"{judged_n} runs judged, semantic axis active"
             else:
-                line = "mechanical grading only — nothing judged yet"
+                line = "mechanical grading only, nothing judged yet"
             line += _unreadable_caveat(unreadable_n)
         payload = {
             "kind": "group", "target": target, "suite": SUITE_VERSION,
@@ -2462,9 +2470,9 @@ def experiment_payload(
         "cells": cells,
         "primary_axis": "mechanical pass",
         "caveats": [
-            "judge-score deltas are self-referential — the decisions engine "
+            "judge-score deltas are self-referential: the decisions engine "
             "assists the jev arm and scores both arms",
-            "arms are unpaired statistically — no seed reaches chat "
+            "arms are unpaired statistically, since no seed reaches chat "
             "providers; pairing is spec + replicate-index + interleave",
             "difference intervals at 95% will miss on roughly 1-in-20 cells",
         ],

@@ -551,8 +551,8 @@ def make_handler(obs: Observatory) -> type[BaseHTTPRequestHandler]:
                 unreadable = max(unreadable, 1)
             if unreadable:
                 return self._json({
-                    "error": (f"{unreadable} judge report(s) could not be read — this card's "
-                              "judge numbers are incomplete, so it is not publishable"),
+                    "error": (f"{unreadable} judge report(s) could not be read, so this card's "
+                              "judge numbers are incomplete and it is not publishable"),
                     "judge_reports_unreadable": unreadable,
                     "recoverable": "restore or re-run the affected run(s), then draft again",
                 }, 409)

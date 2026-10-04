@@ -122,11 +122,14 @@ function confirmSpend({ title, rows, note, confirmLabel }) {
 
 function fmtEstimate(usd) {
   if (usd == null) return "Unknown";
-  if (usd === 0) return "$0.00";
-  return usd < 0.01 ? `about $${Number(usd).toFixed(4)}` : `about $${Number(usd).toFixed(2)}`;
+  return usd === 0 ? F.money(0) : `about ${F.money(usd)}`;
 }
 
-function fmtMoney(v) { return v == null ? "—" : `$${Number(v).toFixed(4)}`; }
+// Shared formatter contract (U5): ui/js/format.js, loaded as window.OrchFormat by app.html.
+const F = window.OrchFormat;
+// Designed null glyph for HTML cells (text surfaces use F.NULL_GLYPH).
+const NIL = '<span class="nil" role="img" aria-label="no data"></span>';
+function fmtMoney(v) { return F.money(v); }
 // Billed spend (failed runs included). `cost_basis` says whether every call was
 // priced by the provider ("billed") or some were scaled from the rate card.
 function billedOf(r) { return r.billed_cost_usd ?? r.total_cost_usd; }
@@ -136,8 +139,7 @@ function basisNote(r) {
 }
 function fmtUsdRange(lo, hi) {
   if (lo == null || hi == null) return "Unknown";
-  const f = v => (v < 0.01 ? v.toFixed(4) : v.toFixed(2));
-  return `$${f(lo)} to $${f(hi)}`;
+  return `${F.money(lo)} to ${F.money(hi)}`;
 }
 // One key per confirmed action, reused by its retries so a dropped
 // connection can never start a second paid run.
@@ -151,24 +153,17 @@ function spendContextRows(est) {
   if (est.month_to_date_billed_usd == null) return [];
   return [["Spent this month", `$${Number(est.month_to_date_billed_usd).toFixed(2)} of $${Number(est.monthly_cap_usd).toFixed(0)} eval cap (billed spend recorded in this index)`]];
 }
-function fmtPct(v) { return v == null ? "—" : `${Math.round(v * 100)}%`; }
-function fmtScore(v) { return v == null ? "—" : Number(v).toFixed(2); }
-function fmtMs(v) {
-  if (v == null) return "—";
-  const s = v / 1000;
-  return s < 60 ? `${s.toFixed(1)}s` : `${(s / 60).toFixed(1)}m`;
-}
-function fmtTok(v) {
-  if (v == null) return "—";
-  return v >= 1000 ? `${(v / 1000).toFixed(1)}k` : String(v);
-}
+function fmtPct(v) { return F.percent(v); }
+function fmtScore(v) { return F.score(v); }
+function fmtMs(v) { return F.duration(v); }
+function fmtTok(v) { return F.tokens(v); }
 function fmtWhen(iso) {
-  if (!iso) return "—";
+  if (!iso) return F.NULL_GLYPH;
   const d = new Date(iso);
   return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) +
     " " + d.toLocaleDateString([], { month: "short", day: "numeric" });
 }
-function slug(s) { return String(s || "").split("/").pop(); }
+function slug(s) { return s ? F.shortSlug(s) : ""; }
 // Judge-axis caveat text: calibrated judges earn "calibrated" language,
 // everything else stays advisory — provenance over thresholds.
 function calAxis(d) {
@@ -207,7 +202,7 @@ function judgeChip(r) {
   if (st === "inconclusive")
     return `<span class="chip chip-warn" title="${why}">Judge inconclusive</span>`;
   if (st === "unreadable")
-    return `<span class="chip chip-warn" title="${why || "report.json could not be read — whether the judge ran is unknown"}">Judge unknown</span>`;
+    return `<span class="chip chip-warn" title="${why || "report.json could not be read, so whether the judge ran is unknown"}">Judge unknown</span>`;
   if (st === "not_judgeable")
     return `<span class="chip chip-dim" title="${why}">Not judgeable</span>`;
   return `<span class="chip chip-dim" title="${why || "The judge was not run for this run"}">Not judged</span>`;
@@ -222,7 +217,7 @@ function runRow(r) {
     <td class="t-num" title="${esc(basisNote(r))}">${fmtMoney(billedOf(r))}${r.cost_basis && r.cost_basis !== "billed" ? ' <span class="dim sm">est.</span>' : ""}</td>
     <td class="t-num">${fmtTok((r.total_input_tokens || 0) + (r.total_output_tokens || 0))}</td>
     <td class="t-num">${fmtMs(r.latency_ms)}</td>
-    <td class="dim">${esc(r.run_group || "—")}</td>
+    <td class="dim">${esc(r.run_group || F.NULL_GLYPH)}</td>
     <td class="dim">${fmtWhen(r.started_at)}</td>
   </tr>`;
 }
@@ -264,12 +259,12 @@ async function viewOverview() {
     pending: "chip-dim", skipped: "chip-dim",
   }[s] || "chip-dim");
   const armCell = a => a && a.n
-    ? `${a.passes}/${a.n} <span class="dim sm">${fmtPct(a.rate)}${a.ci ? ` [${Math.round(a.ci[0]*100)}–${Math.round(a.ci[1]*100)}]` : ""}</span>`
+    ? `${a.passes}/${a.n} <span class="dim sm">${fmtPct(a.rate)}${a.ci ? ` [${F.rangePct(a.ci[0], a.ci[1])}]` : ""}</span>`
     : `<span class="dim">·</span>`;
 
   $view.innerHTML = `
     <h1>Overview</h1>
-    <p class="page-sub">Live experiment observatory — mechanical verdicts and judge scores are separate axes.</p>
+    <p class="page-sub">Live experiment observatory. Mechanical verdicts and judge scores are separate axes.</p>
 
     ${live.length ? `<div class="live-strip">${live.map(j => `
       <div class="live-card"><span class="dot dot-run pulse"></span>
@@ -297,7 +292,7 @@ async function viewOverview() {
         </div></a>`;
     }).join("") || `<div class="empty">No run groups yet</div>`}</div>
 
-    ${exp && (exp.cells || []).length ? `<h2>Experiment — ${esc(exp.matrix)}</h2>
+    ${exp && (exp.cells || []).length ? `<h2>Experiment: ${esc(exp.matrix)}</h2>
     <p class="page-sub">Baseline vs jev-assist, paired replicates. Primary axis: ${esc(exp.primary_axis)}.
     ${esc((exp.caveats || [])[0] || "")}</p>
     <div class="m">${Object.entries((exp.summary || {}).states || {}).map(([k, n]) =>
@@ -313,11 +308,11 @@ async function viewOverview() {
       <td>${esc(c.task)}<div class="dim sm">${esc(slug(c.orchestrator))} → ${esc(slug(c.worker))}${c.difficulty ? ` · ${esc(c.difficulty)}` : ""}${c.archetype ? ` ${esc(c.archetype)}` : ""}${c.jev && c.jev.interventions && (c.jev.interventions.replan + c.jev.interventions.rework) ? ` · jev intervened ${c.jev.interventions.replan + c.jev.interventions.rework}×` : ""}</div></td>
       <td class="t-num">${armCell(c.baseline)}</td>
       <td class="t-num">${armCell(c.jev)}</td>
-      <td class="t-num">${c.diff_ci ? `[${c.diff_ci[0] >= 0 ? "+" : ""}${c.diff_ci[0].toFixed(2)}, ${c.diff_ci[1] >= 0 ? "+" : ""}${c.diff_ci[1].toFixed(2)}]` : "—"}</td>
+      <td class="t-num">${c.diff_ci ? `[${c.diff_ci[0] >= 0 ? "+" : ""}${c.diff_ci[0].toFixed(2)}, ${c.diff_ci[1] >= 0 ? "+" : ""}${c.diff_ci[1].toFixed(2)}]` : NIL}</td>
       <td><span class="chip ${{ lift: "chip-pass", harm: "chip-fail", resolved: "chip-pass", inconclusive: "chip-warn" }[c.verdict] || "chip-dim"}">${esc(c.verdict)}</span></td>
       <td class="t-num">${c.target}</td>
       <td><span class="chip ${stateChip(c.state)}">${esc(c.state)}</span></td>
-      <td>${c.posted ? `<span title="${esc(c.posted_note)}">✓</span>` : '<span class="dim">·</span>'}</td>
+      <td>${c.posted ? `<span title="${esc(c.posted_note)}">posted</span>` : '<span class="dim">·</span>'}</td>
     </tr>`).join("") + `</tbody></table></div>` : ""}
 
     ${Object.keys(tax).length ? `<h2>Failure Taxonomy</h2>
@@ -327,7 +322,7 @@ async function viewOverview() {
         <span class="tx-n">${n}</span></div>`).join("")}</div>` : ""}
 
     ${(mx.tasks || []).length ? `<h2>Tasks × Pairings</h2>
-    <p class="page-sub">Mechanical pass rate per cell. Click a cell to drill into its runs — a dash means the pairing never attempted that task.</p>
+    <p class="page-sub">Mechanical pass rate per cell. Click a cell to drill into its runs. An empty cell means the pairing never attempted that task.</p>
     <div class="panel heat-wrap"><table class="data heat">
       <tr><th class="heat-task">Task</th>${mx.pairings.map(p =>
         `<th class="heat-col"><div>${esc(slug(p.split(" → ")[0]))}</div><div class="dim">→ ${esc(slug(p.split(" → ")[1] || ""))}</div></th>`).join("")}</tr>
@@ -341,8 +336,8 @@ async function viewOverview() {
           const a = v == null ? 0.06 : 0.08 + 0.72 * v;
           const jm = c.judge_mean != null ? ` · judge ${fmtScore(c.judge_mean)}` : "";
           return `<td class="heat-cell${c.n < 3 ? " thin" : ""}" data-go="#/runs?task=${encodeURIComponent(t.task_id)}"
-            title="${esc(t.task_id)} · ${esc(p)} — pass ${v == null ? "—" : fmtPct(v)} over ${c.n} run${c.n === 1 ? "" : "s"}${jm}${c.n < 3 ? " · Low n" : ""}">
-            <span class="heat-fill" style="opacity:${a.toFixed(2)}">${v == null ? "—" : fmtPct(v)}</span>
+            title="${esc(t.task_id)} · ${esc(p)}: pass ${v == null ? F.NULL_GLYPH : fmtPct(v)} over ${c.n} run${c.n === 1 ? "" : "s"}${jm}${c.n < 3 ? " · Low n" : ""}">
+            <span class="heat-fill" style="opacity:${a.toFixed(2)}">${v == null ? NIL : fmtPct(v)}</span>
           </td>`;
         }).join("")}</tr>`).join("")}
     </table></div>` : ""}
@@ -415,7 +410,7 @@ function timelineHtml(tl, livePhase) {
     const cls = n.errors ? "ph-err" : live ? "ph-live" : "ph-done";
     const share = Math.min(100, Math.round(100 * (n.latency_ms || 0) / totalMs));
     return `<div class="ph-seg ${cls}" title="${esc(n.phase)}: ${n.events} events, ${fmtMoney(n.cost_usd)}, ${fmtMs(n.latency_ms)}${n.errors ? `, ${n.errors} errors` : ""}">
-      <div class="ph-name">${esc(n.phase)}${live ? ' <span class="dot dot-run pulse"></span>' : ""}${n.errors ? ` <span class="e">${n.errors}✕</span>` : ""}</div>
+      <div class="ph-name">${esc(n.phase)}${live ? ' <span class="dot dot-run pulse"></span>' : ""}${n.errors ? ` <span class="e">${n.errors} err</span>` : ""}</div>
       <div class="ph-meta">${n.events} events · ${fmtMoney(n.cost_usd)} · ${fmtMs(n.latency_ms)}</div>
       <div class="ph-share"><i style="width:${share}%"></i></div>
     </div>`;
@@ -441,7 +436,7 @@ async function viewRun(runId, params) {
       <div class="rh-title">
         ${crumb("#/runs", "Runs")}
         <h1>${esc(d.task_title || m.task_id)}</h1>
-        ${d.task_title ? `<div class="rh-pair dim">${esc(m.task_id)}${d.task_blurb ? ` — ${esc(d.task_blurb)}` : ""}</div>` : ""}
+        ${d.task_title ? `<div class="rh-pair dim">${esc(m.task_id)}${d.task_blurb ? `: ${esc(d.task_blurb)}` : ""}</div>` : ""}
         <div class="rh-pair">${esc(m.orchestrator)} <span class="arrow">→</span> ${esc(m.worker)}</div>
         <div class="rh-pair dim">${esc(d.group_label || m.run_group || "")}${d.group_label ? ` <span class="dim">(${esc(m.run_group)})</span>` : ""} ${m.replicate ? `· replicate ${m.replicate}` : ""} · run ${esc(runId.slice(0, 12))}</div>
       </div>
@@ -450,7 +445,7 @@ async function viewRun(runId, params) {
         ${(() => {
           const js = (d.report && d.report.judges) || {};
           const extra = Object.entries(js).filter(([s]) => s !== (d.report.judge || {}).model);
-          return extra.length ? `<span class="chip chip-dim" title="Secondary judge verdicts — the primary axis is ${esc((d.report.judge || {}).model || "unknown")}">${extra.map(([s, j]) => `${esc(slug(s))} ${j && j.score != null ? Number(j.score).toFixed(2) : "—"}`).join(" · ")}</span>` : "";
+          return extra.length ? `<span class="chip chip-dim" title="Secondary judge verdicts. The primary axis is ${esc((d.report.judge || {}).model || "unknown")}">${extra.map(([s, j]) => `${esc(slug(s))} ${fmtScore(j && j.score)}`).join(" · ")}</span>` : "";
         })()}
         ${kv("Cost", `${fmtMoney(billedOf(m))}${m.cost_basis ? ` <span class="dim sm">${esc(basisNote(m))}</span>` : ""}`)}
         ${kv("Tokens", fmtTok((m.total_input_tokens || 0) + (m.total_output_tokens || 0)))}
@@ -634,7 +629,7 @@ async function viewCompare(params) {
 
   $view.innerHTML = `
     <h1>Compare</h1>
-    <p class="page-sub">Cell-by-cell delta between two run groups — task × orchestrator × worker.</p>
+    <p class="page-sub">Cell-by-cell delta between two run groups, by task, orchestrator and worker.</p>
     <div class="compare-controls">
       <label class="f">Baseline<select id="cmp-a">${groups.map(g =>
         `<option ${g.group === a ? "selected" : ""}>${esc(g.group)}</option>`).join("")}</select></label>
@@ -673,15 +668,14 @@ async function renderCompare(a, b) {
       <th class="t-num">${esc(a)}</th><th class="t-num">${esc(b)}</th><th class="t-num">Δ</th><th>Verdict</th>
     </tr><tbody>` +
     (d.cells || []).map(c => {
-      const delta = c.verdict === "one-sided" ? "—" : `${((c.pass_b - c.pass_a) * 100).toFixed(0)}pp`;
-      const sign = c.verdict === "one-sided" ? "" : (c.pass_b - c.pass_a >= 0 ? "+" : "");
+      const delta = c.verdict === "one-sided" ? NIL : F.delta(c.pass_b - c.pass_a, "pp");
       return `<tr>
         <td><a href="#/runs?task=${encodeURIComponent(c.task_id)}">${esc(c.task_id)}</a></td>
         <td class="mono">${esc(slug(c.orchestrator))} <span class="dim">→</span> ${esc(slug(c.worker))}</td>
         <td class="t-num">${c.n_a}/${c.n_b}</td>
         <td class="t-num">${fmtPct(c.pass_a)}</td>
         <td class="t-num">${fmtPct(c.pass_b)}</td>
-        <td class="t-num cell-delta">${sign}${delta}</td>
+        <td class="t-num cell-delta">${delta}</td>
         <td><span class="chip ${chipFor(c.verdict)}">${verdictLabel(c.verdict)}</span></td>
       </tr>`;
     }).join("") + `</tbody></table></div>`;
@@ -720,7 +714,7 @@ function lbScatter(rows, cardHref, selectedTarget) {
         if (!showLabel) return `<circle cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="${rr.toFixed(1)}"
           class="sc-pt${r.low_sample ? " thin" : ""}${selected ? " selected" : ""}"
           data-go="${cardHref("pairing", r.orchestrator + "|" + r.worker)}">
-          <title>${esc(r.orchestrator)} → ${esc(r.worker)} — pass ${fmtPct(r.pass_rate)}, ${fmtMoney(r.cost_per_pass)}/pass, n=${r.finished}</title></circle>`;
+          <title>${esc(r.orchestrator)} → ${esc(r.worker)}: pass ${fmtPct(r.pass_rate)}, ${fmtMoney(r.cost_per_pass)}/pass, n=${r.finished}</title></circle>`;
         const lx = Math.min(Math.max(cx, padL + label.length * LW / 2), W - padR - label.length * LW / 2);
         let ty = cy - rr - 4;
         // nudge down until the label box clears everything placed so far
@@ -733,7 +727,7 @@ function lbScatter(rows, cardHref, selectedTarget) {
         return `<circle cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="${rr.toFixed(1)}"
           class="sc-pt${r.low_sample ? " thin" : ""}${selected ? " selected" : ""}"
           data-go="${cardHref("pairing", r.orchestrator + "|" + r.worker)}">
-          <title>${esc(r.orchestrator)} → ${esc(r.worker)} — pass ${fmtPct(r.pass_rate)}, ${fmtMoney(r.cost_per_pass)}/pass, n=${r.finished}</title></circle>
+          <title>${esc(r.orchestrator)} → ${esc(r.worker)}: pass ${fmtPct(r.pass_rate)}, ${fmtMoney(r.cost_per_pass)}/pass, n=${r.finished}</title></circle>
         <text x="${lx.toFixed(1)}" y="${ty.toFixed(1)}" class="sc-pt-lab" text-anchor="middle">${esc(label)}</text>`;
       }).join("");
     })()}
@@ -835,10 +829,10 @@ async function viewLeaderboard(params) {
     </table></div>
 
     <h2>Cost vs Outcome</h2>
-    <p class="page-sub">One dot per pairing — upper-left is cheap and reliable. Dot size = finished runs; faded dots are low-n. Unmetered pairings do not plot.</p>
+    <p class="page-sub">One dot per pairing. Upper-left is cheap and reliable. Dot size is finished runs; faded dots are low-n. Unmetered pairings do not plot.</p>
     <div class="panel panel-pad">${lbScatter(rows, cardHref, lens.selected_target)}</div>
 
-    <h2>Pairings — ${esc(lens.label)}</h2>
+    <h2>Pairings: ${esc(lens.label)}</h2>
     <div class="panel"><table class="data"><tr>
       <th>#</th><th>Pairing</th><th class="t-num">Runs</th>
       <th class="t-num">Pass</th><th class="t-num">95% CI</th><th class="t-num">Judge</th>
@@ -849,19 +843,19 @@ async function viewLeaderboard(params) {
     rows.map(r => {
       const rowRank = !r.low_sample && order.has(r.target) ? ++rank : null;
       return `<tr class="${r.low_sample ? "row-thin" : ""}${r.target === lens.selected_target ? "story-selected" : ""}">
-        <td class="dim">${rowRank == null ? "—" : `${rowRank}<span class="dim sm"> / ${ranked}</span>`}</td>
+        <td class="dim">${rowRank == null ? NIL : `${rowRank}<span class="dim sm"> / ${ranked}</span>`}</td>
         <td class="mono">${esc(slug(r.orchestrator))} <span class="dim">→</span> ${esc(slug(r.worker))}
           ${r.low_sample ? ' <span class="chip chip-dim">Low n</span>' : ""}${r.target === lens.selected_target ? ' <span class="chip chip-acc">Selected</span>' : ""}</td>
         <td class="t-num">${r.finished ?? 0}/${r.runs ?? 0}</td>
         <td class="t-num mech-axis">${fmtPct(r.pass_rate)}</td>
-        <td class="t-num dim">${r.pass_ci ? `${Math.round(r.pass_ci[0] * 100)}–${Math.round(r.pass_ci[1] * 100)}%` : "—"}</td>
+        <td class="t-num dim">${r.pass_ci ? F.rangePct(r.pass_ci[0], r.pass_ci[1]) : NIL}</td>
         <td class="t-num judge-axis" title="${r.judged ? `${r.judged} judged run${r.judged === 1 ? "" : "s"}` : "No judged runs"}">${fmtScore(r.judge_score_median)}${r.judged ? `<span class="dim sm">·${r.judged}</span>` : ""}</td>
-        <td class="t-num${(r.failure_rate ?? 0) > 0.15 ? ' e' : ''}">${r.failure_rate != null ? fmtPct(r.failure_rate) : "—"}</td>
-        <td class="t-num">${r.cost_per_pass != null ? fmtMoney(r.cost_per_pass) : "—"}</td>
+        <td class="t-num${(r.failure_rate ?? 0) > 0.15 ? ' e' : ''}">${r.failure_rate != null ? fmtPct(r.failure_rate) : NIL}</td>
+        <td class="t-num">${r.cost_per_pass != null ? fmtMoney(r.cost_per_pass) : NIL}</td>
         <td class="t-num">${fmtMoney(r.cost_total)}</td>
         <td class="t-num">${fmtMs(r.duration_median_ms)}</td>
         <td class="t-num">${fmtMs(r.duration_p90_ms)}</td>
-        <td class="dim why-cell">${esc(r.why || "—")}</td>
+        <td class="dim why-cell">${esc(r.why || F.NULL_GLYPH)}</td>
         <td><a class="btn" href="${cardHref("pairing", r.target)}">Card</a>
           ${flagWidget("pairing", r.target)}</td>
       </tr>`;
@@ -955,7 +949,7 @@ async function viewNew() {
         ["Runs", String(est.replicates ?? body.get("replicates") ?? 1)],
         ["Estimated cost", est.total_usd == null ? "Unknown" : fmtEstimate(est.total_usd)],
         ["Range", fmtUsdRange(est.total_low_usd, est.total_high_usd)],
-        ["Estimate basis", est.basis_label || "—"],
+        ["Estimate basis", est.basis_label || F.NULL_GLYPH],
         ...spendContextRows(est),
       ],
       note: est.caveat || "",
@@ -1005,7 +999,7 @@ function flagOf(kind, target) { return FLAGS[`${kind}:${target}`]?.flag || ""; }
 function flagWidget(kind, target) {
   const cur = flagOf(kind, target);
   return `<span class="flag-pair" data-kind="${esc(kind)}" data-target="${esc(target)}">
-    <button class="flag-btn ${cur === "interesting" ? "f-interesting" : ""}" data-f="interesting" title="Flag as interesting">★</button>
+    <button class="flag-btn ${cur === "interesting" ? "f-interesting" : ""}" data-f="interesting" title="Flag as interesting">+</button>
     <button class="flag-btn ${cur === "not" ? "f-not" : ""}" data-f="not" title="Flag as not interesting">∅</button>
   </span>`;
 }
@@ -1153,7 +1147,7 @@ function cardProof(proof, evidence) {
   const runId = resolved.run_id || proof?.run_id;
   const left = transcriptText
     ? `<pre class="xc-proof-code">${esc(transcriptText)}</pre>`
-    : `<div class="xc-proof-empty"><span class="proof-mark">—</span><p>No terminal or test transcript stored for this run.</p></div>`;
+    : `<div class="xc-proof-empty"><span class="proof-mark">${NIL}</span><p>No terminal or test transcript stored for this run.</p></div>`;
   let right;
   if (!hasArtifact) {
     right = `<div class="xc-proof-empty"><span class="proof-mark">∅</span><p>No artifact survives in this run. The transcript is the available proof.</p></div>`;
@@ -1177,7 +1171,7 @@ function cardProof(proof, evidence) {
       <div class="xc-proof-head"><span>Code / Artifact</span><span class="proof-status ${hasArtifact ? "stored" : "unavailable"}">${hasArtifact ? esc(artifact.name) : "Unavailable"}</span></div>
       ${right}
     </section>
-  </div>${runId ? `<div class="xc-proof-foot">Representative evidence — <a href="#/run/${esc(runId)}">inspect run ${esc(runId.slice(0, 12))}</a></div>` : ""}`;
+  </div>${runId ? `<div class="xc-proof-foot">Representative evidence: <a href="#/run/${esc(runId)}">inspect run ${esc(runId.slice(0, 12))}</a></div>` : ""}`;
 }
 
 function cardTitle(d, kind) {
@@ -1235,7 +1229,7 @@ async function viewCard(params) {
     caveats: [],
   };
   const metrics = story.metrics?.length ? story.metrics : [
-    { id: "mechanical", label: "Mechanical", value: d.passes == null ? "—" : d.passes ? "PASS" : "FAIL", detail: "Execution gate", tone: "mech" },
+    { id: "mechanical", label: "Mechanical", value: d.passes == null ? F.NULL_GLYPH : d.passes ? "PASS" : "FAIL", detail: "Execution gate", tone: "mech" },
     { id: "judge", label: "Judge", value: fmtScore(d.judge_score), detail: d.judge_state || "not judged", tone: "judge" },
     { id: "cost", label: "Cost", value: fmtMoney(d.cost_usd), detail: "Observed spend", tone: "cost" },
   ];
@@ -1270,7 +1264,7 @@ async function viewCard(params) {
     <div class="xcard" data-card-scope="${esc(kind)}" data-card-lens="${esc(story.lens?.id || lens)}">
       <div class="xc-top">
         <div class="xc-brand"><span class="mark">◆</span><span class="word">orchestral</span><span class="sub">observatory</span></div>
-        <div class="xc-suite">${esc(kind[0].toUpperCase() + kind.slice(1))} card · suite ${esc(d.suite || "—")}</div>
+        <div class="xc-suite">${esc(kind[0].toUpperCase() + kind.slice(1))} card · suite ${esc(d.suite || F.NULL_GLYPH)}</div>
       </div>
       <div class="xc-story-head">
         <div class="xc-story-title">
@@ -1286,7 +1280,7 @@ async function viewCard(params) {
       ${cardProof(proof, evidence)}
       <div class="xc-footer">
         <span>${esc(caveats || "Mechanical and judge axes remain separate")}</span>
-        <span>${esc(d.suite || "suite —")} · ${esc((story.provenance?.source || "orchestral observatory"))}</span>
+        <span>${esc(d.suite ? d.suite : "no suite")} · ${esc((story.provenance?.source || "orchestral observatory"))}</span>
       </div>
     </div>
     <div id="thread-panel"></div>
@@ -1311,7 +1305,7 @@ async function viewCard(params) {
         ["Writer model", est.model || model],
         ["Estimated cost", est.max_usd == null ? "Unknown (model not in models/)" : `up to ${fmtEstimate(est.high_usd ?? est.max_usd).replace("about ", "")}`],
         ["Range", est.max_usd == null ? "Unknown" : fmtUsdRange(0, est.high_usd ?? est.max_usd)],
-        ["Estimate basis", est.basis_label || "—"],
+        ["Estimate basis", est.basis_label || F.NULL_GLYPH],
         ...spendContextRows(est),
       ],
       note: est.caveat || "",
@@ -1370,18 +1364,18 @@ async function viewModels() {
   const d = await api("/api/models-catalog");
   const roleCell = (m, r) => {
     const u = (m.usage || {})[r] || {};
-    if (!u.runs && !u.calls) return `<td class="t-num dim" title="${esc(m.slug)} has not run as ${r}">—</td>`;
+    if (!u.runs && !u.calls) return `<td class="t-num dim" title="${esc(m.slug)} has not run as ${r}">${NIL}</td>`;
     const err = u.errors ? ` · ${u.errors} error${u.errors === 1 ? "" : "s"}` : "";
-    return `<td class="t-num${u.errors ? " warn" : ""}" title="${u.calls} call(s) as ${r} · ${fmtMoney(u.cost_usd)}${err}">${u.runs || u.calls}${u.errors ? ` <span class="dim sm">⚠${u.errors}</span>` : ""}</td>`;
+    return `<td class="t-num${u.errors ? " warn" : ""}" title="${u.calls} call(s) as ${r} · ${fmtMoney(u.cost_usd)}${err}">${u.runs || u.calls}${u.errors ? ` <span class="dim sm">${u.errors} err</span>` : ""}</td>`;
   };
   const qualChips = m => (m.qualified || []).map(r =>
-    `<span class="chip${r === m.declared_role ? "" : " chip-dim"}" title="${r === m.declared_role ? "Declared role" : "Qualified — inferred from capabilities or demonstrated in a run"}">${esc(r)}</span>`).join(" ");
+    `<span class="chip${r === m.declared_role ? "" : " chip-dim"}" title="${r === m.declared_role ? "Declared role" : "Qualified: inferred from capabilities or demonstrated in a run"}">${esc(r)}</span>`).join(" ");
   const capChips = m => [
-    m.vision ? '<span class="chip chip-info" title="Image input — can judge image artifacts">vision</span>' : "",
+    m.vision ? '<span class="chip chip-info" title="Image input: can judge image artifacts">vision</span>' : "",
     m.executor ? '<span class="chip chip-info" title="Executor agent, not a chat model">exec</span>' : "",
     m.free ? '<span class="chip chip-info" title="$0 pricing">free</span>' : "",
     m.structured ? '<span class="chip chip-dim" title="Declares tools/structured-output support">struct</span>' : "",
-    m.expires ? `<span class="chip chip-dim" title="Listed expiry — preview/stealth entry">exp ${esc(m.expires)}</span>` : "",
+    m.expires ? `<span class="chip chip-dim" title="Listed expiry: preview/stealth entry">exp ${esc(m.expires)}</span>` : "",
   ].filter(Boolean).join(" ");
   const srcLabel = d.source_labels || {};
   const row = m => {
@@ -1390,11 +1384,11 @@ async function viewModels() {
     const sub = m.source === "configured" ? m.slug : `${m.slug} · ${srcLabel[m.source] || m.source}`;
     return `<tr class="cat-row" data-q="${esc((m.slug + " " + (m.name || "")).toLowerCase())}">
       <td>${esc(m.name || m.slug)}<div class="dim sm">${esc(sub)}</div></td>
-      <td><span class="chip">${esc(m.declared_role || "—")}</span>${m.default ? ' <span class="chip chip-dim">default</span>' : ""}</td>
+      <td><span class="chip">${esc(m.declared_role || F.NULL_GLYPH)}</span>${m.default ? ' <span class="chip chip-dim">default</span>' : ""}</td>
       <td>${qualChips(m)}${capChips(m) ? " " + capChips(m) : ""}</td>
-      <td class="dim sm">${(m.modalities || []).map(esc).join(", ") || "—"}</td>
+      <td class="dim sm">${(m.modalities || []).map(esc).join(", ") || F.NULL_GLYPH}</td>
       ${d.roles.map(r => roleCell(m, r)).join("")}
-      <td class="t-num">${spend ? fmtMoney(spend) : '<span class="dim">—</span>'}${errs ? ` <span class="dim sm" title="calls that returned an error">⚠${errs}</span>` : ""}</td>
+      <td class="t-num">${spend ? fmtMoney(spend) : NIL}${errs ? ` <span class="dim sm" title="calls that returned an error">${errs} err</span>` : ""}</td>
     </tr>`;
   };
   const body = (d.sources || []).map(src => {
@@ -1405,12 +1399,12 @@ async function viewModels() {
   }).join("");
   const synced = d.provider_synced_at
     ? `provider list synced ${esc(fmtWhen(d.provider_synced_at))} · ${esc(d.provider_source || "")}`
-    : `provider list not synced — run <code>harness.py models sync</code>`;
+    : `provider list not synced. Run <code>harness.py models sync</code>`;
   $view.innerHTML = `
     <h1>Model catalog</h1>
-    <p class="page-sub">Configured roster, decisions engines, and the synced provider list — what qualifies for
-    each role and what has actually run in it. Role cells count distinct runs (calls when no run row); ⚠ marks
-    errored calls — a provider-blocked model surfaces there. Dry runs don't count. ${synced}.</p>
+    <p class="page-sub">Configured roster, decisions engines, and the synced provider list: what qualifies for
+    each role and what has actually run in it. Role cells count distinct runs (calls when no run row); "err" marks
+    errored calls, and a provider-blocked model surfaces there. Dry runs don't count. ${synced}.</p>
     <div class="panel panel-pad"><input type="search" id="cat-q" placeholder="Filter models…" style="width:100%"></div>
     <div class="panel"><table class="data"><thead><tr>
       <th>Model</th><th>Declared</th><th>Qualified for</th><th>Out modalities</th>
@@ -1431,9 +1425,9 @@ async function viewModels() {
 async function viewAbout() {
   $view.innerHTML = `
     <h1>What am I looking at?</h1>
-    <p class="page-sub">orchestral runs the same task through two models — an
+    <p class="page-sub">orchestral runs the same task through two models: an
     <b>orchestrator</b> that plans and delegates, and a <b>worker</b> that
-    executes — then grades the result twice, on two independent axes.</p>
+    executes. It then grades the result twice, on two independent axes.</p>
 
     <div class="panel panel-pad">
       <h2>The Two Axes</h2>
@@ -1444,12 +1438,12 @@ async function viewAbout() {
             <td>Code runs its own tests · SQL output is diffed against a
             reference · pages are checked for required elements.</td></tr>
         <tr><td><b>Judge</b></td>
-            <td>Is it good? A separate model scores quality 0–1.</td>
+            <td>Is it good? A separate model scores quality from 0 to 1.</td>
             <td>A judge model reads the actual artifact (code, HTML, SQL)
             and scores it. <span class="dim">Score ≥ the configured bar
             counts as judge-approved.</span></td></tr>
       </table>
-      <p class="dim">They can disagree — a run can pass every check and still
+      <p class="dim">They can disagree: a run can pass every check and still
       be mediocre work. Divergence between the axes is the interesting part,
       not noise.</p>
     </div>
@@ -1459,15 +1453,15 @@ async function viewAbout() {
       <table class="data">
         <tr><th>State</th><th>Meaning</th></tr>
         <tr><td><span class="chip chip-info">Judge 0.83</span></td>
-            <td>Scored — the number is the judge's verdict.</td></tr>
+            <td>Scored. The number is the judge's verdict.</td></tr>
         <tr><td><span class="chip chip-dim">Not judged</span></td>
             <td>No judge was run for this run (older batches predate the
             judge axis, or it wasn't configured).</td></tr>
         <tr><td><span class="chip chip-warn">Judge inconclusive</span></td>
-            <td>A verdict was attempted but couldn't be parsed — retryable,
+            <td>A verdict was attempted but couldn't be parsed. Retryable,
             never counts as a rejection.</td></tr>
         <tr><td><span class="chip chip-dim">Not judgeable</span></td>
-            <td>No artifact survives to score — nothing to show the judge.</td></tr>
+            <td>No artifact survives to score, so there is nothing to show the judge.</td></tr>
         <tr><td><span class="chip chip-warn">Judge unknown</span></td>
             <td>report.json could not be read, so whether the judge ran is
             unknown. The verdict may have been lost, not never produced.</td></tr>
@@ -1483,10 +1477,10 @@ async function viewAbout() {
             what's being graded (code, sql, html…), the slug names the
             exercise. Titles like "Expression parser" are the same task.</td></tr>
         <tr><td class="mono">grok47-eval</td>
-            <td>A run group — one experiment batch. Runs launched together
+            <td>A run group: one experiment batch. Runs launched together
             share it so they can be compared as a set.</td></tr>
         <tr><td class="mono">0013278fbaa0</td>
-            <td>A run id — hash prefix identifying one single attempt.</td></tr>
+            <td>A run id: a hash prefix identifying one single attempt.</td></tr>
         <tr><td class="mono">deepseek-v4-pro → gemma-4-31b-it</td>
             <td>A pairing: orchestrator plans → worker executes. The
             leaderboard ranks pairings, not individual models.</td></tr>
@@ -1497,7 +1491,7 @@ async function viewAbout() {
       <h2>Reading the Numbers</h2>
       <p><b>Pass %</b> is the mechanical pass rate. <b>Judge</b> is the mean
       judge score or the count approved. <b>CI</b> is the Wilson 95%
-      interval — wide on small samples, by design. Rows under the minimum
+      interval, wide on small samples by design. Rows under the minimum
       sample size are dimmed and sorted below full-evidence rows.
       <b>Cost</b> is metered provider spend for that cell.</p>
     </div>`;

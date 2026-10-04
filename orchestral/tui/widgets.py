@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from textual.widgets import Static
 
+from orchestral.format import fmt_money
 from orchestral.tui.state import Job
 
 
@@ -13,9 +14,10 @@ class StatusBar(Static):
     DEFAULT_CSS = """
     StatusBar {
         dock: bottom;
+        margin-bottom: 1;  /* sits above the Footer, which docks to the same edge */
         height: 1;
         padding: 0 1;
-        background: $surface-darken-1;
+        background: $panel;
         color: $text-muted;
     }
     """
@@ -44,7 +46,7 @@ class StatusBar(Static):
         self._render_text()
 
     def _render_text(self) -> None:
-        parts = [f"{self._runs} runs", f"${self._cost:.4f}"]
+        parts = [f"{self._runs} runs", fmt_money(self._cost)]  # billed total, as the web headline
         active = [j for j in self._jobs if j.active]
         if active:
             labels = ", ".join(f"{j.label} ({j.status.value})" for j in active[:3])
@@ -53,4 +55,4 @@ class StatusBar(Static):
             parts.append(f"jobs: {labels}")
         if self._note:
             parts.append(self._note)
-        self.update("  ·  ".join(parts))
+        self.update(", ".join(parts))

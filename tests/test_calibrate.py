@@ -7,6 +7,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import yaml
+
 from orchestral.calibrate import (
     agreement_metrics,
     calibration_status,
@@ -275,7 +277,11 @@ class TestEmitSkeleton(unittest.TestCase):
                 _model("o/x", "orchestrator"), _model("w/y", "worker"),
                 judge=_model("j/j", "judge"))
             yaml_text = emit_label_skeleton(RunStore(tmp), run_group="g1")
-            self.assertIn(f"run_id: {meta.run_id}", yaml_text)
+            # ids are always single-quoted: an all-digit uuid prefix would
+            # otherwise be quoted (or not) at the dumper's whim
+            self.assertIn(f"run_id: '{meta.run_id}'", yaml_text)
+            self.assertEqual(
+                yaml.safe_load(yaml_text)["labels"][0]["run_id"], meta.run_id)
             self.assertIn("task_id: cal-test", yaml_text)
             self.assertIn("artifact:", yaml_text)
             self.assertIn("passed:", yaml_text)  # blank for the human
@@ -306,6 +312,91 @@ class TestEmitSkeleton(unittest.TestCase):
             self.assertNotIn(m1.run_id, yaml_text)
             self.assertIn(m2.run_id,
                           emit_label_skeleton(RunStore(tmp), run_group="g2"))
+
+
+EDGE_IDS = [
+    "123456789012",    # all digits -> int
+    "012345678901",    # leading zero
+    "0123",            # YAML 1.1 octal
+    "1e10", "1e1000000000", "123e456789ab",
+    "true", "false", "yes", "no", "on", "off", "y", "n",
+    "null", "~", "2026-10-03", "1_000", "0x1f", "0o17", ".inf", ".nan",
+]
+
+
+class TestRunIdEdgeCases(unittest.TestCase):
+    """Run ids are uuid4 hex prefixes: ~0.4% are all digits, and many more
+    look like numbers/dates. They must survive emit -> edit -> load."""
+
+    def test_skeleton_roundtrips_every_edge_id(self):
+        import orchestral.calibrate as cal
+
+        class _M:
+            def __init__(self, rid: str, d: str) -> None:
+                self.run_id, self.task_id, self.status = rid, "t", "finished"
+                self.run_dir = d
+
+        class _S:
+            def __init__(self, metas): self._m = metas
+            def list_runs(self, run_group=None): return self._m
+
+        with tempfile.TemporaryDirectory() as tmp:
+            metas = []
+            for i, rid in enumerate(EDGE_IDS):
+                d = Path(tmp) / str(i)
+                d.mkdir()
+                (d / "report.json").write_text(json.dumps({"judge": {"model": "j"}}))
+                metas.append(_M(rid, str(d)))
+            text = cal.emit_label_skeleton(_S(metas))  # type: ignore[arg-type]
+            loaded = yaml.safe_load(text)["labels"]
+            self.assertEqual([e["run_id"] for e in loaded], EDGE_IDS)
+            for rid in EDGE_IDS:
+                self.assertIn(f"run_id: '{rid}'", text)
+
+    def test_loader_keeps_unquoted_hand_edited_ids_as_text(self):
+        for rid in EDGE_IDS:
+            if rid in ("null", "~"):
+                continue  # unquoted null is "no id", covered below
+            with self.subTest(rid=rid), tempfile.TemporaryDirectory() as tmp:
+                p = Path(tmp) / "labels.yaml"
+                p.write_text(f"labels:\n  - run_id: {rid}\n    passed: true\n")
+                labels = load_labels(p)
+                self.assertEqual(labels[0]["run_id"], rid)
+                self.assertIsInstance(labels[0]["run_id"], str)
+                self.assertIs(labels[0]["passed"], True)
+
+    def test_loader_quoted_ids_and_missing_id(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "labels.yaml"
+            p.write_text("labels:\n  - run_id: 'null'\n  - run_id: \"~\"\n")
+            self.assertEqual([x["run_id"] for x in load_labels(p)], ["null", "~"])
+            for bad in ("run_id:", "run_id: ~", "run_id: null", "passed: true"):
+                p.write_text(f"labels:\n  - {bad}\n")
+                with self.subTest(bad=bad), self.assertRaises(ValueError):
+                    load_labels(p)
+
+    def test_all_digit_run_id_end_to_end(self):
+        """Seeded regression for the original flake: force an all-digit id."""
+        import uuid as _uuid
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch("orchestral.storage.uuid.uuid4",
+                           return_value=_uuid.UUID("12345678-9012-3456-7890-123456789012")):
+            runner = Runner(
+                runs_dir=tmp, planner="raw", run_group="g1",
+                clients={"orchestrator": _JudgeClient(), "worker": _JudgeClient(),
+                         "judge": _JudgeClient()})
+            meta = runner.run(
+                TaskSpec(id="cal-test", type="html", prompt="p",
+                         validation=["non_empty"]),
+                _model("o/x", "orchestrator"), _model("w/y", "worker"),
+                judge=_model("j/j", "judge"))
+            self.assertTrue(meta.run_id.isdigit(), meta.run_id)
+            text = emit_label_skeleton(RunStore(tmp), run_group="g1")
+            self.assertIn(f"run_id: '{meta.run_id}'", text)
+            p = Path(tmp) / "l.yaml"
+            p.write_text(text)
+            self.assertEqual(load_labels(p)[0]["run_id"], meta.run_id)
 
 
 class TestCalibrationPersistence(unittest.TestCase):

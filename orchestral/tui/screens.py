@@ -4,6 +4,7 @@ only — all data access goes through loader functions and RunStore."""
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -27,21 +28,27 @@ from textual.widgets import (
 
 from orchestral.calibrate import calibration_status
 from orchestral.export import leaderboard_csv, run_audit_markdown
+from orchestral.format import NULL_GLYPH, fmt_money, fmt_percent, fmt_score
 from orchestral.judge import DEFAULT_JUDGE
 from orchestral.stats import aggregate, pairing_leaderboard
 from orchestral.storage import RunStore
 from orchestral.tui.state import (
     LB_SORTS,
     TERMINAL_PHASES,
+    _label,
     event_detail,
     event_row,
     fmt_cost,
     fmt_elapsed,
     fmt_ms,
     fmt_tokens,
+    format_spend_estimate,
+    label_plain,
     live_totals,
+    pass_label,
     run_phase,
     sort_leaderboard,
+    status_label,
     tail_events,
     worker_states,
 )
@@ -89,7 +96,7 @@ class RunDetailScreen(Screen):
         self._reports_dir = reports_dir or Path("reports")
 
     def compose(self) -> ComposeResult:
-        yield Static(f"run {self._run_id} — loading…", id="detail-summary")
+        yield Static(f"run {self._run_id}: loading…", id="detail-summary")
         with TabbedContent():
             with TabPane("Events"):
                 yield RichLog(id="detail-events", highlight=False, markup=False)
@@ -117,11 +124,11 @@ class RunDetailScreen(Screen):
             self.query_one("#detail-summary", Static).update(f"run {self._run_id} not found in index")
             return
         lines = [
-            f"[b]{meta.run_id}[/b]  {meta.status}  ·  {meta.task_id}",
-            f"{meta.orchestrator} → {meta.worker}",
-            f"cost {fmt_cost(meta.total_cost_usd)} · tokens {fmt_tokens(meta.total_input_tokens + meta.total_output_tokens)} · latency {fmt_ms(meta.latency_ms)}",
-            f"pass {meta.passes} · score {meta.score} · failure {meta.failure_reason or '-'}",
-            f"group {meta.run_group or '-'} · rep {meta.replicate or '-'} · {meta.started_at}",
+            f"[b]{meta.run_id}[/b]  {label_plain(status_label(meta.status))}, {meta.task_id}",
+            f"{meta.orchestrator} to {meta.worker}",
+            f"cost {fmt_cost(meta.display_cost_usd)}, tokens {fmt_tokens(meta.total_input_tokens + meta.total_output_tokens)}, latency {fmt_ms(meta.latency_ms)}",
+            f"verdict {label_plain(pass_label(meta.passes))}, score {fmt_score(meta.score)}, failure {meta.failure_reason or NULL_GLYPH}",
+            f"group {meta.run_group or NULL_GLYPH}, rep {meta.replicate or NULL_GLYPH}, {meta.started_at}",
             f"[dim]{meta.run_dir}[/dim]",
         ]
         self.query_one("#detail-summary", Static).update("\n".join(lines))
@@ -178,7 +185,7 @@ class GroupsScreen(Screen):
         self._store = store
 
     def compose(self) -> ComposeResult:
-        yield Static("Replicate groups — variance per (group, task, orchestrator, worker) cell")
+        yield Static("Replicate groups: variance per (group, task, orchestrator, worker) cell")
         yield DataTable(id="groups-table", cursor_type="row")
         yield Footer()
 
@@ -187,7 +194,7 @@ class GroupsScreen(Screen):
         table.add_columns("Group", "Task", "Orchestrator", "Worker", "n", "Pass %", "Score ± SD", "Cost ± SD", "p50", "p95", "Pass / $", "Failures")
         for c in aggregate(self._store.list_runs(limit=None)):
             score = f"{c.score_mean:.2f}±{c.score_sd:.2f}" if c.score_mean is not None else "-"
-            cost = f"{c.cost_mean:.4f}±{c.cost_sd:.4f}"
+            cost = f"{fmt_money(c.cost_mean)}±{fmt_money(c.cost_sd)}"
             spd = f"{c.successes_per_dollar:.0f}" if c.successes_per_dollar is not None else "-"
             fails = ",".join(f"{k.split(':')[-1]}×{v}" for k, v in sorted(c.failures.items()))[:24]
             table.add_row(
@@ -235,10 +242,10 @@ class LiveRunScreen(Screen):
         self._meta: Any = None
 
     def compose(self) -> ComposeResult:
-        yield Static(f"run {self._run_id} — loading…", id="live-info")
+        yield Static(f"run {self._run_id}: loading…", id="live-info")
         with Horizontal(id="live-main"):
             with Vertical(id="live-left"):
-                yield Static("workers: —", id="live-workers")
+                yield Static("workers: none yet", id="live-workers")
                 yield Static("select an event to inspect", id="live-detail")
             yield DataTable(id="live-events", cursor_type="row", zebra_stripes=True)
         yield Footer()
@@ -307,29 +314,29 @@ class LiveRunScreen(Screen):
         self._finished_at = (run_json or {}).get("finished_at") or (manifest or {}).get("finished_at")
         elapsed = fmt_elapsed(started, self._finished_at)
         info = [
-            f"[b]{self._run_id}[/b]  phase {phase}  ·  {meta.task_id}",
-            f"{meta.orchestrator} → {meta.worker}",
-            f"cost {fmt_cost(cost)} · tokens {fmt_tokens(toks)} · elapsed {elapsed}",
+            f"[b]{self._run_id}[/b]  phase {phase}, {meta.task_id}",
+            f"{meta.orchestrator} to {meta.worker}",
+            f"cost {fmt_cost(cost)}, tokens {fmt_tokens(toks)}, elapsed {elapsed}",
         ]
         if manifest:
-            info.append(f"task hash {manifest.get('task_hash', '-')[:16]} · config {manifest.get('config_hash', '-')[:16]}")
+            info.append(f"task hash {manifest.get('task_hash', '-')[:16]}, config {manifest.get('config_hash', '-')[:16]}")
         self.query_one("#live-info", Static).update("\n".join(info))
 
         states = worker_states(self._events)
-        chips = "  ".join(f"{wid} {st}" for wid, st in sorted(states.items())) or "—"
+        chips = "  ".join(f"{wid} {st}" for wid, st in sorted(states.items())) or NULL_GLYPH
         if phase in ("planning",):
-            chips = f"orchestrator running · {chips}"
+            chips = f"orchestrator running, {chips}"
         elif phase in ("assembling",):
-            chips += " · synthesizer"
+            chips += ", synthesizer"
         elif phase in ("evaluating",):
-            chips += " · evaluator"
+            chips += ", evaluator"
         self.query_one("#live-workers", Static).update(f"workers: {chips}")
 
         if phase in TERMINAL_PHASES or meta.status != "running":
             self._done = True
             self._timer.stop()
             self.query_one("#live-info", Static).update(
-                "\n".join(info) + f"\n[dim]run {meta.status} — Esc back, e export[/dim]"
+                "\n".join(info) + f"\n[dim]run {meta.status}. Esc back, e export[/dim]"
             )
 
     def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
@@ -351,7 +358,7 @@ class LiveRunScreen(Screen):
             self.app.notify("only runs launched from this TUI can be cancelled", severity="warning")
             return
         if job.cancel():
-            self.app.notify(f"cancelling {self._run_id} — stops between subtasks")
+            self.app.notify(f"cancelling {self._run_id}, stops between subtasks")
         else:
             self.app.notify("run already finished", severity="warning")
 
@@ -387,7 +394,7 @@ class LeaderboardScreen(Screen):
         self._judge_bits: list[str] = []
 
     def compose(self) -> ComposeResult:
-        yield Static("Leaderboard — loading…", id="lb-header")
+        yield Static("Leaderboard: loading…", id="lb-header")
         yield DataTable(id="lb-table", cursor_type="row", zebra_stripes=True)
         yield Footer()
 
@@ -417,10 +424,10 @@ class LeaderboardScreen(Screen):
         key = LB_SORTS[self._sort_i]
         header = self.query_one("#lb-header", Static)
         low = sum(1 for r in rows if r.low_sample)
-        judge_note = f" · judge {'; '.join(judge_bits)}" if judge_bits else ""
+        judge_note = f", judge {'; '.join(judge_bits)}" if judge_bits else ""
         header.update(
-            f"Pairing leaderboard — sort {key} (s cycles) · "
-            f"{len(rows)} pairings · {low} below {self._min_samples} samples "
+            f"Pairing leaderboard, sort {key} (s cycles), "
+            f"{len(rows)} pairings, {low} below {self._min_samples} samples "
             "[dim](low-sample ranks are anecdote, not evidence)[/dim]"
             f"{judge_note}"
         )
@@ -429,13 +436,13 @@ class LeaderboardScreen(Screen):
         for r in sort_leaderboard(rows, key):
             table.add_row(
                 r.orchestrator, r.worker, str(r.runs), str(r.tasks_covered),
-                f"{(r.pass_rate or 0) * 100:.0f}%",
-                f"{r.judge_score_median:.2f}" if r.judge_score_median is not None else "-",
+                fmt_percent(r.pass_rate or 0),
+                fmt_score(r.judge_score_median),
                 fmt_cost(r.cost_median),
                 fmt_ms(r.duration_median_ms),
-                f"{(r.failure_rate or 0) * 100:.0f}%",
+                fmt_percent(r.failure_rate or 0),
                 fmt_cost(r.cost_per_pass),
-                "low-n" if r.low_sample else "ok",
+                label_plain(_label("low-n", None, None)) if r.low_sample else "ok",
             )
 
     def action_cycle_sort(self) -> None:
@@ -457,26 +464,27 @@ class LeaderboardScreen(Screen):
 
 
 HELP_TEXT = """\
-[b]orchestral tui[/b] — experiment observatory
+[b]orchestral tui[/b]: experiment observatory
 
   1              live run (tails events.jsonl for the newest running run)
   2              run history (this table)
   3              pairing leaderboard (s cycles sort, e exports CSV)
   j / ↓, k / ↑   move selection
-  Enter          open run — live view while running, detail once finished
+  Enter          open run: live view while running, detail once finished
   /              filter runs (task, model, group, status, failure)
   g              replicate-group variance table
   n              launch a run (or replicate batch)
   x              cancel the active job
   c              cancel the run being watched (live view)
-  e              export — audit markdown (detail/live), CSV (history/board)
+  e              export: audit markdown (detail/live), CSV (history/board)
+  t              toggle theme: stage (dark, default) and paper (light)
   r              refresh run list
   ?              this help
   Esc            back / close
   q              quit
 
 Detail tabs: events stream, per-call index, metrics, report, plan, manifest.
-Jobs run on background threads — the UI stays responsive; cancelling
+Jobs run on background threads, so the UI stays responsive; cancelling
 stops between subtasks and records status=cancelled.
 """
 
@@ -499,8 +507,11 @@ class LaunchScreen(ModalScreen):
         orchestrators: list[str],
         workers: list[str],
         judges: list[str],
+        estimate_fn: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
     ) -> None:
         super().__init__()
+        # spec -> launch-estimate payload; None only in tests of the bare form
+        self._estimate_fn = estimate_fn
         self._task_ids = task_ids
         self._orchestrators = orchestrators
         self._workers = workers
@@ -515,7 +526,7 @@ class LaunchScreen(ModalScreen):
             yield Select([(m, m) for m in self._orchestrators], id="launch-orch", allow_blank=not self._orchestrators)
             yield Label("Worker")
             yield Select([(m, m) for m in self._workers], id="launch-worker", allow_blank=not self._workers)
-            yield Label("Judge (optional — default is the decisions engine)")
+            yield Label("Judge (optional, default is the decisions engine)")
             yield Select(
                 [("(none)", ""), *[(m, m) for m in self._judges]],
                 id="launch-judge",
@@ -526,34 +537,37 @@ class LaunchScreen(ModalScreen):
             yield Label("Seed (optional)")
             yield Input(placeholder="e.g. 42", id="launch-seed", type="integer")
             yield Checkbox("Dry run (no API calls)", value=True, id="launch-dry")
+            yield Static("", id="launch-estimate")
+            confirm = Input(placeholder='type "run" to spend', id="launch-confirm")
+            confirm.display = False
+            yield confirm
             with Vertical():
                 yield Button("Launch", id="launch-go", variant="primary")
                 yield Button("Cancel", id="launch-cancel")
 
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "launch-cancel":
-            self.dismiss(None)
-            return
+    def _spec(self) -> dict[str, Any] | None:
+        """The launch spec from the form, or None (with a notification) when
+        it is incomplete or malformed."""
         task = self.query_one("#launch-task", Select).value
         orch = self.query_one("#launch-orch", Select).value
         worker = self.query_one("#launch-worker", Select).value
         judge = self.query_one("#launch-judge", Select).value or None
         if task is Select.BLANK or orch is Select.BLANK or worker is Select.BLANK:
             self.app.notify("task, orchestrator and worker are required", severity="error")
-            return
+            return None
         reps_raw = self.query_one("#launch-reps", Input).value
         seed_raw = self.query_one("#launch-seed", Input).value
         try:
             reps = max(1, int(reps_raw)) if reps_raw else 1
         except ValueError:
             self.app.notify("replicates must be an integer", severity="error")
-            return
+            return None
         try:
             seed = int(seed_raw) if seed_raw else None
         except ValueError:
             self.app.notify("seed must be an integer", severity="error")
-            return
-        self.dismiss({
+            return None
+        return {
             "task": task,
             "orchestrator": orch,
             "worker": worker,
@@ -561,7 +575,64 @@ class LaunchScreen(ModalScreen):
             "replicates": reps,
             "seed": seed,
             "dry_run": self.query_one("#launch-dry", Checkbox).value,
-        })
+        }
+
+    def _refresh_estimate(self) -> None:
+        """Show the same estimate the web confirm dialog shows whenever the
+        run would spend, and the typed-confirm field with it."""
+        dry = self.query_one("#launch-dry", Checkbox).value
+        confirm = self.query_one("#launch-confirm", Input)
+        panel = self.query_one("#launch-estimate", Static)
+        confirm.display = not dry
+        if dry or self._estimate_fn is None:
+            panel.update("")
+            return
+        task = self.query_one("#launch-task", Select).value
+        orch = self.query_one("#launch-orch", Select).value
+        worker = self.query_one("#launch-worker", Select).value
+        spec = {"task": "" if task is Select.BLANK else task,
+                "orchestrator": "" if orch is Select.BLANK else orch,
+                "worker": "" if worker is Select.BLANK else worker,
+                "judge": self.query_one("#launch-judge", Select).value or None,
+                "replicates": self.query_one("#launch-reps", Input).value or "1",
+                "dry_run": False}
+        try:
+            panel.update(format_spend_estimate(self._estimate_fn(spec)))
+        except Exception as exc:
+            panel.update(f"Could not estimate the cost: {exc}")
+
+    def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
+        self._refresh_estimate()
+
+    def on_select_changed(self, event: Select.Changed) -> None:
+        self._refresh_estimate()
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if event.input.id == "launch-reps":
+            self._refresh_estimate()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id == "launch-confirm":
+            self._launch()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "launch-cancel":
+            self.dismiss(None)
+            return
+        self._launch()
+
+    def _launch(self) -> None:
+        spec = self._spec()
+        if spec is None:
+            return
+        # A paid run needs the estimate on screen and the word typed.
+        # Enter on a field or a bare button press never spends.
+        if not spec["dry_run"] and self.query_one("#launch-confirm", Input).value.strip() != "run":
+            self._refresh_estimate()
+            self.app.notify('this run is paid: type "run" in the confirm field to spend',
+                            severity="warning")
+            return
+        self.dismiss(spec)
 
     def action_cancel(self) -> None:
         self.dismiss(None)

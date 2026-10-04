@@ -346,5 +346,159 @@ class TestExport(unittest.TestCase):
             self.assertIn("Run audit", md)
 
 
+class TestChartPayloads(unittest.TestCase):
+    """U13: payloads the Pairings and Compare charts draw from."""
+
+    def _store(self, tmp: str, metas: list[RunMeta]) -> RunStore:
+        store = RunStore(Path(tmp))
+        for m in metas:
+            store.index_meta(m)
+        return store
+
+    @staticmethod
+    def _runs(group: str, orch: str, worker: str, task: str, passes: int, fails: int,
+              cost: float = 0.01, start: str = "2026-10-01T00:00:00+00:00") -> list[RunMeta]:
+        out = []
+        for i in range(passes + fails):
+            ok = i < passes
+            out.append(_meta(run_id=f"{group}-{orch}-{worker}-{task}-{i}", run_group=group,
+                             orchestrator=orch, worker=worker, task_id=task, passes=ok,
+                             total_cost_usd=cost, started_at=start))
+        return out
+
+    def test_default_scope_is_all_groups_when_no_group_holds_three_pairings(self):
+        from orchestral.web import state
+        with tempfile.TemporaryDirectory() as tmp:
+            metas = (self._runs("g1", "o1", "w1", "t", 3, 0) + self._runs("g1", "o1", "w2", "t", 3, 0)
+                     + self._runs("g2", "o2", "w1", "t", 3, 0))
+            payload = state.pairings_payload(self._store(tmp, metas))
+        self.assertEqual(payload["default_group"], "")
+
+    def test_default_scope_is_the_latest_group_with_three_pairings(self):
+        from orchestral.web import state
+        with tempfile.TemporaryDirectory() as tmp:
+            metas = (self._runs("old", "o1", "w1", "t", 3, 0, start="2026-09-01T00:00:00+00:00")
+                     + self._runs("big", "o1", "w1", "t", 3, 0, start="2026-10-01T00:00:00+00:00")
+                     + self._runs("big", "o1", "w2", "t", 3, 0, start="2026-10-01T00:00:00+00:00")
+                     + self._runs("big", "o2", "w2", "t", 3, 0, start="2026-10-01T00:00:00+00:00")
+                     + self._runs("solo", "o1", "w1", "t", 3, 0, start="2026-10-02T00:00:00+00:00"))
+            payload = state.pairings_payload(self._store(tmp, metas))
+        self.assertEqual(payload["default_group"], "big")
+
+    def test_default_scope_helper_ignores_ungrouped_runs(self):
+        from orchestral.web import state
+
+        class R:
+            def __init__(self, group, o, w, started):
+                self.run_group, self.orchestrator, self.worker, self.started_at = group, o, w, started
+
+        runs = [R("", "o", f"w{i}", "2026-10-03") for i in range(4)]
+        runs += [R("b", "o", "w1", "2026-10-01"), R("b", "o", "w2", "2026-10-01")]
+        self.assertEqual(state.default_pairing_group(runs), "")
+        runs += [R("b", "o", "w3", "2026-10-01")]
+        self.assertEqual(state.default_pairing_group(runs), "b")
+
+    def test_pairings_summary_counts_the_degenerate_cohorts(self):
+        from orchestral.web import state
+        with tempfile.TemporaryDirectory() as tmp:
+            metas = (self._runs("g", "o", "wbig", "t", 8, 4)          # n=12, metered
+                     + self._runs("g", "o", "wzero", "t", 0, 3)       # no passes
+                     + self._runs("g", "o", "wfree", "t", 3, 0, cost=0.0))  # unmetered
+            payload = state.pairings_payload(self._store(tmp, metas), group="g")
+        summary = payload["summary"]
+        self.assertEqual(summary["pairings"], 3)
+        self.assertEqual(summary["metered"], 2)
+        self.assertEqual(summary["unmetered"], 1)
+        self.assertEqual(summary["best_eligible"], 1)
+        self.assertEqual(summary["no_pass"], 1)
+        flags = {r["worker"]: r["low_n_best"] for r in payload["rows"]}
+        self.assertEqual(flags, {"wbig": False, "wzero": True, "wfree": True})
+
+    def _cmp(self, specs):
+        """specs: task -> (a_pass, a_fail, b_pass, b_fail); one-sided via None."""
+        from orchestral.web import state
+        with tempfile.TemporaryDirectory() as tmp:
+            metas = []
+            for task, (ap, af, bp, bf) in specs.items():
+                if ap is not None:
+                    metas += self._runs("A", "o", "w", task, ap, af)
+                if bp is not None:
+                    metas += self._runs("B", "o", "w", task, bp, bf)
+            payload = state.compare_payload(self._store(tmp, metas), "A", "B")
+        return payload, {c["task_id"]: c for c in payload["cells"]}
+
+    def test_separated_intervals_are_improved_or_regressed(self):
+        _, cells = self._cmp({"up": (4, 16, 16, 4), "down": (18, 2, 4, 16)})
+        self.assertEqual(cells["up"]["verdict"], "improved")
+        self.assertEqual(cells["down"]["verdict"], "regressed")
+
+    def test_overlapping_intervals_are_no_clear_difference_but_keep_the_delta(self):
+        _, cells = self._cmp({"noise": (10, 10, 12, 8), "same": (10, 10, 10, 10)})
+        self.assertEqual(cells["noise"]["verdict"], "no-clear-difference")
+        self.assertAlmostEqual(cells["noise"]["delta"], 0.1)
+        self.assertEqual(cells["same"]["verdict"], "no-clear-difference")
+
+    def test_low_n_cells_never_get_improved_or_regressed(self):
+        _, cells = self._cmp({"thin-a": (0, 2, 20, 0), "thin-b": (20, 0, 0, 2)})
+        self.assertEqual(cells["thin-a"]["verdict"], "no-clear-difference")
+        self.assertEqual(cells["thin-b"]["verdict"], "no-clear-difference")
+        self.assertTrue(cells["thin-a"]["low_n"])
+
+    def test_one_sided_keeps_its_label(self):
+        _, cells = self._cmp({"only-a": (5, 5, None, None)})
+        self.assertEqual(cells["only-a"]["verdict"], "one-sided")
+
+    def test_compare_sorts_regressions_then_improvements_then_noise_then_one_sided(self):
+        payload, _ = self._cmp({
+            "t-noise": (10, 10, 12, 8), "t-up": (4, 16, 16, 4), "t-down": (18, 2, 4, 16),
+            "t-only-a": (5, 5, None, None), "t-up2": (2, 18, 18, 2)})
+        self.assertEqual([c["task_id"] for c in payload["cells"]],
+                         ["t-down", "t-up2", "t-up", "t-noise", "t-only-a"])
+        self.assertEqual(payload["verdicts"], {"regressed": 1, "improved": 2,
+                                               "no-clear-difference": 1, "one-sided": 1})
+        self.assertEqual(payload["shared"], 4)
+        self.assertEqual(payload["one_sided"], 1)
+
+    def test_compare_cells_carry_intervals_and_counts(self):
+        _, cells = self._cmp({"down": (18, 2, 4, 16)})
+        down = cells["down"]
+        self.assertEqual((down["passed_a"], down["finished_a"], down["passed_b"], down["finished_b"]), (18, 20, 4, 20))
+        self.assertAlmostEqual(down["delta"], -0.7)
+        self.assertEqual(len(down["ci_a"]), 2)
+        self.assertEqual(len(down["ci_b"]), 2)
+
+    def test_compare_reports_a_cost_delta(self):
+        from orchestral.web import state
+        with tempfile.TemporaryDirectory() as tmp:
+            metas = (self._runs("A", "o", "w", "t", 4, 0, cost=0.01) + self._runs("B", "o", "w", "t", 4, 0, cost=0.03))
+            payload = state.compare_payload(self._store(tmp, metas), "A", "B")
+        self.assertAlmostEqual(payload["cost_delta"], 0.08)
+        self.assertAlmostEqual(payload["cells"][0]["cost_delta"], 0.08)
+
+    def test_compare_with_disjoint_task_sets_has_zero_shared_cells(self):
+        from orchestral.web import state
+        with tempfile.TemporaryDirectory() as tmp:
+            metas = self._runs("A", "o", "w", "t1", 3, 0) + self._runs("B", "o", "w", "t2", 3, 0)
+            payload = state.compare_payload(self._store(tmp, metas), "A", "B")
+        self.assertEqual(payload["shared"], 0)
+        self.assertEqual(payload["one_sided"], 2)
+        self.assertEqual({c["side"] for c in payload["cells"]}, {"baseline", "candidate"})
+
+    def test_compare_blocks_a_group_against_itself(self):
+        from orchestral.web import state
+        with tempfile.TemporaryDirectory() as tmp:
+            payload = state.compare_payload(
+                self._store(tmp, self._runs("A", "o", "w", "t", 3, 0)), "A", "A")
+        self.assertEqual(payload["cells"], [])
+        self.assertIn("different", payload["blocked"])
+
+    def test_compare_resolves_the_ungrouped_bucket(self):
+        from orchestral.web import state
+        with tempfile.TemporaryDirectory() as tmp:
+            metas = self._runs("", "o", "w", "t", 3, 0) + self._runs("B", "o", "w", "t", 3, 0)
+            payload = state.compare_payload(self._store(tmp, metas), "(ungrouped)", "B")
+        self.assertEqual(payload["shared"], 1)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,0 +1,222 @@
+/* orchestral design tokens -- "The Score" (DESIGN.md section 6).
+   The only token source: app.css consumes it, orchestral/design_tokens.py
+   parses it for Python surfaces. Role-first names, never hue.
+
+   Themes: paper (default) and stage. The stage block is written twice, once
+   for the OS dark preference and once for an explicit choice; a test keeps
+   the copies identical. data-theme is set before first paint (app.html). */
+
+:root {
+  color-scheme: light;
+
+  /* neutrals */
+  --canvas: #F7F8F8;
+  --surface: #FFFFFF;
+  --sunken: #EEF0F1;
+  --raised: #FFFFFF;
+  --rule: #E2E5E8;
+  --rule-strong: #C9CED3;
+  --control-border: #858C94;
+  --ink: #121417;
+  --ink-2: #4A5159;
+  --ink-3: #69717A;
+  --on-ink: #FFFFFF;
+  --white: #FFFFFF;
+
+  /* evidence: fill for marks and bars, text for words, wash for 8-12% fields */
+  --pass-fill: #009E73;
+  --pass-text: #00775A;
+  --pass-wash: color-mix(in srgb, var(--pass-fill) 10%, transparent);
+  --fail-fill: #D55E00;
+  --fail-text: #B04A00;
+  --fail-wash: color-mix(in srgb, var(--fail-fill) 10%, transparent);
+  --judge-fill: #0072B2;
+  --judge-text: #005A8F;
+  --judge-wash: color-mix(in srgb, var(--judge-fill) 10%, transparent);
+  --live-fill: #E69F00;
+  --live-text: #8A5F00;
+  --live-wash: color-mix(in srgb, var(--live-fill) 12%, transparent);
+  --on-fill: #121417;
+  --on-judge: #FFFFFF;
+
+  /* focus: ring plus halo, 2px + 2px offset */
+  --focus-ring: #121417;
+  --focus-halo: #FFFFFF;
+
+  /* elevation: two raised layers only */
+  --shadow-pop: 0 8px 24px rgb(18 20 23 / .10);
+  --scrim: rgb(14 16 18 / .4);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="paper"]) {
+    color-scheme: dark;
+
+    --canvas: #0E1012;
+    --surface: #15181B;
+    --sunken: #0A0C0E;
+    --raised: #1C2024;
+    --rule: #262B30;
+    --rule-strong: #394047;
+    --control-border: #5F6770;
+    --ink: #ECEEF0;
+    --ink-2: #A9B0B8;
+    --ink-3: #838B94;
+    --on-ink: #0E1012;
+    --white: #FFFFFF;
+
+    --pass-fill: #2EC495;
+    --pass-text: #2EC495;
+    --pass-wash: color-mix(in srgb, var(--pass-fill) 12%, transparent);
+    --fail-fill: #F2813F;
+    --fail-text: #F2813F;
+    --fail-wash: color-mix(in srgb, var(--fail-fill) 12%, transparent);
+    --judge-fill: #6CC0EE;
+    --judge-text: #6CC0EE;
+    --judge-wash: color-mix(in srgb, var(--judge-fill) 12%, transparent);
+    --live-fill: #F0B429;
+    --live-text: #F0B429;
+    --live-wash: color-mix(in srgb, var(--live-fill) 12%, transparent);
+    --on-fill: #0E1012;
+    --on-judge: #0E1012;
+
+    --focus-ring: #ECEEF0;
+    --focus-halo: #0E1012;
+
+    --shadow-pop: 0 8px 24px rgb(0 0 0 / .45);
+    --scrim: rgb(14 16 18 / .4);
+  }
+}
+
+:root[data-theme="stage"] {
+  color-scheme: dark;
+
+  --canvas: #0E1012;
+  --surface: #15181B;
+  --sunken: #0A0C0E;
+  --raised: #1C2024;
+  --rule: #262B30;
+  --rule-strong: #394047;
+  --control-border: #5F6770;
+  --ink: #ECEEF0;
+  --ink-2: #A9B0B8;
+  --ink-3: #838B94;
+  --on-ink: #0E1012;
+  --white: #FFFFFF;
+
+  --pass-fill: #2EC495;
+  --pass-text: #2EC495;
+  --pass-wash: color-mix(in srgb, var(--pass-fill) 12%, transparent);
+  --fail-fill: #F2813F;
+  --fail-text: #F2813F;
+  --fail-wash: color-mix(in srgb, var(--fail-fill) 12%, transparent);
+  --judge-fill: #6CC0EE;
+  --judge-text: #6CC0EE;
+  --judge-wash: color-mix(in srgb, var(--judge-fill) 12%, transparent);
+  --live-fill: #F0B429;
+  --live-text: #F0B429;
+  --live-wash: color-mix(in srgb, var(--live-fill) 12%, transparent);
+  --on-fill: #0E1012;
+  --on-judge: #0E1012;
+
+  --focus-ring: #ECEEF0;
+  --focus-halo: #0E1012;
+
+  --shadow-pop: 0 8px 24px rgb(0 0 0 / .45);
+  --scrim: rgb(14 16 18 / .4);
+}
+
+/* Self-hosted faces (U2, DESIGN.md 6.2). Files live in ui/fonts/ with their
+   OFL texts; scripts/subset-fonts.sh regenerates them. The "Fallback" faces
+   are local() aliases of system fonts, resized so the swap to the real face
+   causes no layout shift (metrics measured against Liberation Sans/Mono,
+   which are metric-compatible with Arial and Courier New). */
+@font-face {
+  font-family: "Instrument Sans";
+  src: url("fonts/InstrumentSans-latin-var.woff2") format("woff2");
+  font-weight: 400 600;
+  font-stretch: 80% 100%;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "IBM Plex Mono";
+  src: url("fonts/IBMPlexMono-Regular-latin.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "IBM Plex Mono";
+  src: url("fonts/IBMPlexMono-Medium-latin.woff2") format("woff2");
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "IBM Plex Mono";
+  src: url("fonts/IBMPlexMono-SemiBold-latin.woff2") format("woff2");
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Instrument Sans Fallback";
+  src: local("Arial"), local("Liberation Sans"), local("Helvetica"), local("Arimo");
+  size-adjust: 102.4%;
+  ascent-override: 94.7%;
+  descent-override: 24.4%;
+  line-gap-override: 0%;
+}
+@font-face {
+  font-family: "Plex Mono Fallback";
+  src: local("Courier New"), local("Liberation Mono"), local("Cousine");
+  size-adjust: 100%;
+  ascent-override: 102.5%;
+  descent-override: 27.5%;
+  line-gap-override: 0%;
+}
+
+/* theme-invariant: typography, spacing, radius, motion. */
+html {
+  --font-sans: "Instrument Sans", "Instrument Sans Fallback", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", "Plex Mono Fallback", ui-monospace, monospace;
+
+  /* type scale (DESIGN.md 6.2): size, line height, weight, tracking, width.
+     Width is a font-stretch percentage on the Instrument Sans wdth axis. */
+  --fs-display-l: 56px;  --lh-display-l: 60px;  --fw-display-l: 600;  --tr-display-l: -.02em;  --wd-display-l: 90%;
+  --fs-display-m: 36px;  --lh-display-m: 40px;  --fw-display-m: 600;  --tr-display-m: -.015em; --wd-display-m: 92%;
+  --fs-title-l: 22px;    --lh-title-l: 28px;    --fw-title-l: 600;    --tr-title-l: -.01em;
+  --fs-title-m: 17px;    --lh-title-m: 24px;    --fw-title-m: 600;
+  --fs-title-s: 14px;    --lh-title-s: 20px;    --fw-title-s: 600;
+  --fs-body: 13px;       --lh-body: 20px;       --fw-body: 400;
+  --fs-body-l: 15px;     --lh-body-l: 24px;     --fw-body-l: 400;
+  --fs-label: 12px;      --lh-label: 16px;      --fw-label: 500;
+  --fs-col-head: 11px;   --lh-col-head: 14px;   --fw-col-head: 600;  --tr-col-head: .04em;   --wd-col-head: 80%;
+  --fs-data: 12.5px;     --lh-data: 18px;       --fw-data: 400;
+  --fs-data-strong: 12.5px; --lh-data-strong: 18px; --fw-data-strong: 600;
+  --fs-metric: 28px;     --lh-metric: 32px;     --fw-metric: 500;     --tr-metric: -.02em;
+  --fs-micro: 11px;      --lh-micro: 14px;      --fw-micro: 400;
+
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-5: 24px;
+  --s-6: 32px;
+  --s-7: 48px;
+  --s-8: 64px;
+
+  --r-0: 0;
+  --r-control: 2px;
+
+  --dur-micro: 120ms;
+  --dur-panel: 200ms;
+  --dur-route: 320ms;
+  --ease-out: cubic-bezier(.2, 0, 0, 1);
+  --ease-in: cubic-bezier(.4, 0, 1, 1);
+}
+
+/* Numerals line up everywhere; Plex Mono ids and hashes get the slashed zero. */
+html { font-variant-numeric: tabular-nums; }
+code, .mono, .num { font-feature-settings: "zero"; }

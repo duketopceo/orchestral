@@ -27,6 +27,16 @@ from orchestral.calibrate import (
     load_labels,
     persist_calibration,
 )
+from orchestral.cli_table import (
+    Column,
+    Note,
+    detect_style,
+    fmt_duration_compact,
+    format_error,
+    n_cell,
+    print_table,
+    verdict_cell,
+)
 from orchestral.codeexec import CODE_RUNTIME_ENV, ISOLATED_CODE_RUNTIME
 from orchestral.config import (
     ConfigError,
@@ -52,6 +62,15 @@ from orchestral.experiment import (
 )
 from orchestral.export import leaderboard_csv, run_audit_markdown, runs_csv
 from orchestral.fileset import expected_paths, required_content
+from orchestral.format import (
+    NULL_GLYPH,
+    fmt_delta,
+    fmt_money,
+    fmt_percent,
+    fmt_score,
+    fmt_tokens,
+    short_slug,
+)
 from orchestral.holdout import DEFAULT_ARM_SIZE, DEFAULT_SEED, generate_arm, materialize
 from orchestral.judge import DEFAULT_JUDGE
 from orchestral.planners import available_prompt_variants, load_prompt_variant
@@ -239,7 +258,7 @@ def _spend_recheck(args: argparse.Namespace, store: RunStore) -> None:
     spent = store.spend_today()
     if spent >= daily_cap:
         print(f"Daily cap reached mid-run: ${spent:.2f} spent today >= "
-              f"${daily_cap:.2f} cap — aborting remaining cells.", file=sys.stderr)
+              f"${daily_cap:.2f} cap, aborting remaining cells.", file=sys.stderr)
         sys.exit(1)
 
 
@@ -304,7 +323,7 @@ def _cf_sync_hook(store: RunStore) -> Any:
     client = _CF_HOOK_CLIENT
 
     def _push(meta: Any) -> None:
-        if privacy.run_is_holdout(Path(meta.run_dir)):
+        if privacy.run_is_holdout(Path(meta.run_dir), meta.config):
             return
         cf.push_run_events_only(client, store, meta)
 
@@ -456,7 +475,7 @@ def cmd_validate(args: argparse.Namespace) -> None:
             if want and not any(task.metadata.get(k) for k in want):
                 missing.append(f"{want[0]} (required by validation '{check}')")
         if not task.title or not task.blurb:
-            print(f"  warn {path.name}: no title/blurb — observatory shows the raw slug")
+            print(f"  warn {path.name}: no title/blurb, observatory shows the raw slug")
         if missing:
             failures += 1
             print(f"  FAIL {path.name}: missing metadata {', '.join(missing)}")
@@ -474,6 +493,13 @@ def cmd_validate(args: argparse.Namespace) -> None:
         print(f"  FAIL {args.models_dir}: {exc}")
     print(f"{failures} spec problem(s)" if failures else "All specs valid")
     sys.exit(1 if failures else 0)
+
+
+def _billed(store: RunStore, meta: Any) -> float:
+    """A just-finished run's billed cost (the runner's own meta only carries
+    the rate-card total)."""
+    fresh = store.get_run(meta.run_id)
+    return (fresh or meta).display_cost_usd
 
 
 def cmd_run(args: argparse.Namespace) -> None:
@@ -510,7 +536,7 @@ def cmd_run(args: argparse.Namespace) -> None:
                 label += f"  [rep {meta.replicate}/{n_reps}]"
             print(label)
             print(f"  Directory: {meta.run_dir}")
-            print(f"  Cost: ${meta.total_cost_usd:.6f} | Tokens: {meta.total_input_tokens + meta.total_output_tokens} | Latency: {meta.latency_ms:.0f}ms")
+            print(f"  Cost: ${_billed(store, meta):.6f} | Tokens: {meta.total_input_tokens + meta.total_output_tokens} | Latency: {meta.latency_ms:.0f}ms")
             print(f"  Passes: {meta.passes} | Score: {meta.score} | Failure: {meta.failure_reason or '-'}")
         if n_reps > 1:
             cells = aggregate(store.list_runs(run_group=group, task_id=task.id))
@@ -698,12 +724,9 @@ def cmd_grid(args: argparse.Namespace) -> None:
                 print(_fail_line(f"{o.slug} × {w.slug}", i, n_reps, _attempt_budget(w), exc), file=sys.stderr)
 
     print("\nGrid summary")
-    rep_col = f"{'rep':>4} " if n_reps > 1 else ""
-    print(f"{'Orchestrator':<40} {'Worker':<40} {rep_col}{'Cost':>10} {'Tokens':>8} {'Pass':>6} {'Score':>6}")
-    for r in results:
-        score = f"{r['score']:.2f}" if r['score'] is not None else "-"
-        rep = f"{r['replicate']:>4} " if n_reps > 1 else ""
-        print(f"{r['orchestrator']:<40} {r['worker']:<40} {rep}${r['cost']:.6f} {r['tokens']:>8} {r['passes']!s:>6} {score:>6}")
+    _print_result_grid(
+        [Column("Orchestrator", max_width=36), Column("Worker", max_width=36)], results,
+        lambda r: [short_slug(r["orchestrator"]), short_slug(r["worker"])], n_reps)
 
     if n_reps > 1:
         for cell in aggregate(store.list_runs(run_group=group, task_id=task.id)):
@@ -797,12 +820,7 @@ def cmd_batch(args: argparse.Namespace) -> None:
                 print(_fail_line(f"{path}", i, n_reps, budget, exc), file=sys.stderr)
 
     print(f"\nBatch summary ({len(results)} runs across {len(paths)} tasks)")
-    rep_col = f"{'rep':>4} " if n_reps > 1 else ""
-    print(f"{'Task':<30} {rep_col}{'Cost':>10} {'Tokens':>8} {'Pass':>6} {'Score':>6}")
-    for r in results:
-        score = f"{r['score']:.2f}" if r['score'] is not None else "-"
-        rep = f"{r['replicate']:>4} " if n_reps > 1 else ""
-        print(f"{r['task_id']:<30} {rep}${r['cost']:.6f} {r['tokens']:>8} {r['passes']!s:>6} {score:>6}")
+    _print_result_grid([Column("Task", max_width=30)], results, lambda r: [r["task_id"]], n_reps)
 
     total_cost = sum(r["cost"] for r in results)
     n_pass = sum(1 for r in results if r["passes"])
@@ -876,11 +894,23 @@ def cmd_experiment(args: argparse.Namespace) -> None:
     if args.json:
         print(json.dumps(result, indent=2, default=str))
     else:
-        print(f"\nExperiment {result['matrix']!r} — spend ${result['spend']:.4f}"
+        print(f"\nExperiment {result['matrix']!r}: spend ${result['spend']:.4f}"
               + (f" (stopped: {result['stopped']})" if result["stopped"] else ""))
         for key, cell in result["cells"].items():
             note = cell.get("reason") or cell.get("note") or ""
             print(f"  {cell['state']:<8} {key}  {note}")
+
+
+def _print_result_grid(lead: list[Column], results: list[dict[str, Any]], lead_cells: Any, n_reps: int) -> None:
+    """The cost/tokens/pass/score summary shared by grid, batch and ablate."""
+    st = detect_style()
+    cols = [*lead, *([Column("rep", "r", priority=3)] if n_reps > 1 else []),
+            Column("Cost", "r"), Column("Tokens", "r", priority=8),
+            Column("Pass"), Column("Score", "r", priority=2)]
+    rows = [[*lead_cells(r), *([str(r["replicate"])] if n_reps > 1 else []),
+             fmt_money(r["cost"]), fmt_tokens(r["tokens"]), verdict_cell(r["passes"], st),
+             fmt_score(r["score"])] for r in results]
+    print_table(cols, rows, st)
 
 
 def cmd_coverage(args: argparse.Namespace) -> None:
@@ -898,25 +928,28 @@ def cmd_coverage(args: argparse.Namespace) -> None:
             indent=2, default=str))
         return
     summ = coverage_summary(rows)
-    print(f"Coverage {matrix.name!r}: {summ['cells']} cell(s) — "
+    print(f"Coverage {matrix.name!r}: {summ['cells']} cell(s): "
           + ", ".join(f"{k} {v}" for k, v in sorted(summ["states"].items()))
           + f" | posted {summ['posted']} | spend ${summ['spend']:.4f}")
-    print(f"{'Cell':<62} {'State':<9} {'Base':>7} {'Jev':>7} {'Diff CI':>17} {'Verdict':>13} {'Posted':>6}")
+    st = detect_style()
+    cols = [Column("Cell", max_width=62), Column("State"), Column("Base", "r"), Column("Jev", "r"),
+            Column("Diff CI", "r", priority=2), Column("Verdict", "r"), Column("Posted", "r", priority=1)]
+    table: list[Any] = []
     for r in rows:
-        base = f"{r.baseline_passes}/{r.baseline_n}" if r.baseline_n else "-"
-        jev = f"{r.jev_passes}/{r.jev_n}" if r.jev_n else "-"
-        ci = f"[{r.diff[0]:+.2f},{r.diff[1]:+.2f}]" if r.diff else "-"
-        print(f"{r.cell_key:<62} {r.state:<9} {base:>7} {jev:>7} {ci:>17} "
-              f"{r.verdict:>13} {'✓' if r.posted else '·':>6}")
+        base = f"{r.baseline_passes}/{r.baseline_n}" if r.baseline_n else None
+        jev = f"{r.jev_passes}/{r.jev_n}" if r.jev_n else None
+        ci = f"[{r.diff[0]:+.2f},{r.diff[1]:+.2f}]" if r.diff else None
+        table.append([r.cell_key, r.state, base, jev, ci, r.verdict, "posted" if r.posted else None])
         if r.note:
-            print(f"    {'':>62} ↳ {r.note}")
+            table.append(Note(f"  {'>' if not st.unicode else '↳'} {r.note}"))
+    print_table(cols, table, st)
 
 
 def cmd_publish_mark(args: argparse.Namespace) -> None:
     """Check-off surface: 'did this cell/run get published' lives in the
     annotations table, so coverage and the observatory read the same mark."""
     store = RunStore(args.runs_dir)
-    note = " — ".join(p for p in (args.url, args.note) if p)
+    note = ": ".join(p for p in (args.url, args.note) if p)
     if args.clear:
         store.set_annotation("post", args.target, "", note="")
         print(f"Cleared publish mark on {args.target}")
@@ -1009,12 +1042,7 @@ def cmd_ablate(args: argparse.Namespace) -> None:
     results.sort(key=lambda r: (order[r["value"]], r["replicate"] or 0))
 
     print(f"\nAblation: {knob} on {task.id} ({orchestrator.slug} → {base_worker.slug})")
-    rep_col = f"{'rep':>4} " if n_reps > 1 else ""
-    print(f"{knob:<16} {rep_col}{'Cost':>10} {'Tokens':>8} {'Pass':>6} {'Score':>6}")
-    for r in results:
-        score = f"{r['score']:.2f}" if r['score'] is not None else "-"
-        rep = f"{r['replicate']:>4} " if n_reps > 1 else ""
-        print(f"{r['value']!s:<16} {rep}${r['cost']:.6f} {r['tokens']:>8} {r['passes']!s:>6} {score:>6}")
+    _print_result_grid([Column(knob, max_width=16)], results, lambda r: [str(r["value"])], n_reps)
 
     if args.json:
         print(json.dumps(results, indent=2, default=str))
@@ -1035,11 +1063,13 @@ def cmd_history(args: argparse.Namespace) -> None:
         if not table:
             continue
         print(f"\n{role.capitalize()} history")
-        print(f"{'Model':<45} {'Runs':>5} {'Pass %':>7} {'Avg score':>9} {'Avg cost':>11} {'Total cost':>11}")
-        for name, s in sorted(table.items(), key=lambda kv: -kv[1]["total_cost"]):
-            pass_pct = f"{s['pass_rate'] * 100:.1f}%" if s["pass_rate"] is not None else "-"
-            score = f"{s['avg_score']:.2f}" if s["avg_score"] is not None else "-"
-            print(f"{name:<45} {s['runs']:>5} {pass_pct:>7} {score:>9} ${s['avg_cost']:>10.6f} ${s['total_cost']:>10.4f}")
+        print_table(
+            [Column("Model", max_width=36), Column("Runs", "r"), Column("Pass", "r"),
+             Column("Avg score", "r", priority=2), Column("Avg cost", "r", priority=1),
+             Column("Total cost", "r")],
+            [[short_slug(name), str(s["runs"]), fmt_percent(s["pass_rate"]), fmt_score(s["avg_score"]),
+              fmt_money(s["avg_cost"]), fmt_money(s["total_cost"])]
+             for name, s in sorted(table.items(), key=lambda kv: -kv[1]["total_cost"])])
 
 
 def cmd_holdout(args: argparse.Namespace) -> None:
@@ -1087,15 +1117,16 @@ def cmd_report(args: argparse.Namespace) -> None:
                               "cells": [r.to_dict() for r in cov_rows]},
                              indent=2, default=str))
             return
-        print(f"Experiment {matrix.name!r} — baseline vs jev-assist "
+        print(f"Experiment {matrix.name!r}: baseline vs jev-assist "
               "(mechanical pass is primary; judge deltas are self-referential)")
-        print(f"{'Cell':<62} {'Baseline':>10} {'Jev':>10} {'Diff CI':>17} {'Verdict':>13}")
-        for row in cov_rows:
-            ci = f"[{row.diff[0]:+.2f},{row.diff[1]:+.2f}]" if row.diff else "-"
-            print(f"{row.cell_key:<62} "
-                  f"{f'{row.baseline_passes}/{row.baseline_n}' if row.baseline_n else '-':>10} "
-                  f"{f'{row.jev_passes}/{row.jev_n}' if row.jev_n else '-':>10} "
-                  f"{ci:>17} {row.verdict:>13}")
+        print_table(
+            [Column("Cell", max_width=62), Column("Baseline", "r"), Column("Jev", "r"),
+             Column("Diff CI", "r", priority=2), Column("Verdict", "r")],
+            [[row.cell_key,
+              f"{row.baseline_passes}/{row.baseline_n}" if row.baseline_n else None,
+              f"{row.jev_passes}/{row.jev_n}" if row.jev_n else None,
+              f"[{row.diff[0]:+.2f},{row.diff[1]:+.2f}]" if row.diff else None,
+              row.verdict] for row in cov_rows])
         return
     runs = store.list_runs(
         orchestrator=args.orchestrator,
@@ -1117,7 +1148,8 @@ def cmd_report(args: argparse.Namespace) -> None:
 
     if getattr(args, "leaderboard", False):
         min_samples = getattr(args, "min_samples", None) or MIN_LEADERBOARD_SAMPLES
-        rows = pairing_leaderboard(runs, min_samples=min_samples)
+        rows = pairing_leaderboard(runs, min_samples=min_samples,
+                                   cost_basis="rate_card" if args.json else "billed")
         if args.json:
             print(json.dumps([r.to_dict() for r in rows], indent=2, default=str))
             return
@@ -1130,7 +1162,7 @@ def cmd_report(args: argparse.Namespace) -> None:
         return
 
     if args.groups:
-        cells = aggregate(runs)
+        cells = aggregate(runs, cost_basis="rate_card" if args.json else "billed")
         if args.json:
             print(json.dumps([c.to_dict() for c in cells], indent=2, default=str))
             return
@@ -1159,17 +1191,19 @@ def cmd_report(args: argparse.Namespace) -> None:
         print(json.dumps(out, indent=2, default=str))
         return
 
-    print(f"{'run_id':<13} {'planner':<10} {'orchestrator':<30} {'task':<20} {'worker':<35} {'cost':>10} {'tokens':>7} {'pass':>5}")
-    print("-" * 145)
-    for r in runs:
-        planner = r.config.get("planner", "raw") if r.config else "raw"
-        pass_label = str(r.passes) if r.passes is not None else "-"
-        tokens = r.total_input_tokens + r.total_output_tokens
-        print(f"{r.run_id:<13} {planner:<10} {r.orchestrator:<30} {r.task_id:<20} {r.worker:<35} ${r.total_cost_usd:>8.4f} {tokens:>7} {pass_label:>5}")
+    st = detect_style()
+    print_table(
+        [Column("run_id"), Column("planner", priority=5), Column("orchestrator", max_width=30),
+         Column("task", max_width=24), Column("worker", max_width=30), Column("cost", "r"),
+         Column("tokens", "r", priority=8), Column("pass")],
+        [[r.run_id, r.config.get("planner", "raw") if r.config else "raw", short_slug(r.orchestrator),
+          r.task_id, short_slug(r.worker), fmt_money(r.display_cost_usd),
+          fmt_tokens(r.total_input_tokens + r.total_output_tokens), verdict_cell(r.passes, st)]
+         for r in runs], st)
 
     print()
     summary = store.summary()
-    print(f"Total runs: {summary['runs']} | Total cost: ${summary['total_cost_usd']:.4f} | Total tokens: {summary['total_tokens']}")
+    print(f"Total runs: {summary['runs']} | Total billed cost: {fmt_money(store.billed_total_usd())} | Total tokens: {fmt_tokens(summary['total_tokens'])}")
 
 
 def _print_pairing_table(runs: list[Any]) -> None:
@@ -1182,7 +1216,7 @@ def _print_pairing_table(runs: list[Any]) -> None:
 
     rows = []
     for (orch, work), group in groups.items():
-        cost = sum(r.total_cost_usd for r in group)
+        cost = sum(r.display_cost_usd for r in group)
         tokens = sum(r.total_input_tokens + r.total_output_tokens for r in group)
         passed = sum(1 for r in group if r.passes)
         scored = [r.score for r in group if r.score is not None]
@@ -1194,11 +1228,12 @@ def _print_pairing_table(runs: list[Any]) -> None:
         rows.append((orch, work, len(group), passed, avg_score, cost, tokens, qpd))
 
     rows.sort(key=lambda r: -r[7])
-    print(f"{'orchestrator':<35} {'worker':<35} {'runs':>5} {'pass':>5} {'avg score':>9} {'total cost':>11} {'tokens':>8} {'quality/$':>10}")
-    print("-" * 135)
-    for orch, work, n, passed, avg_score, cost, tokens, qpd in rows:
-        score = f"{avg_score:.2f}" if avg_score is not None else "-"
-        print(f"{orch:<35} {work:<35} {n:>5} {passed:>5} {score:>9} ${cost:>10.4f} {tokens:>8} {qpd:>10.1f}")
+    print_table(
+        [Column("orchestrator", max_width=30), Column("worker", max_width=30), Column("runs", "r"),
+         Column("pass", "r", priority=1), Column("avg score", "r", priority=3),
+         Column("total cost", "r"), Column("tokens", "r", priority=8), Column("quality/$", "r", priority=2)],
+        [[short_slug(orch), short_slug(work), str(n), str(passed), fmt_score(avg_score), fmt_money(cost),
+          fmt_tokens(tokens), f"{qpd:.1f}"] for orch, work, n, passed, avg_score, cost, tokens, qpd in rows])
 
 
 def _print_leaderboard(
@@ -1215,28 +1250,32 @@ def _print_leaderboard(
     ranked = [p for p in rows if not p.holdout_only]
     held = [p for p in rows if p.holdout_only]
     if ranked:
-        print(f"{'orchestrator':<30} {'worker':<30} {'n':>3} {'tasks':>5} {'pass%':>6} {'med score':>9} {'med judge':>9} {'med cost':>9} {'med ms':>8} {'fail%':>6} {'$/pass':>9} {'holdout':>7}")
-        print("-" * 140)
+        st = detect_style()
+        rule = "\u2500\u2500" if st.unicode else "--"
+        table: list[Any] = []
         rank = 0
         divided = False
         for p in ranked:
             if p.low_sample and not divided:
                 divided = True
-                print(f"{'':<4}── unranked: fewer than {min_samples} runs — anecdote, not evidence ──")
+                table.append(Note(f"{rule} unranked: fewer than {min_samples} runs, anecdote not evidence {rule}"))
             rank += 0 if p.low_sample else 1
-            score = f"{p.score_median:.2f}" if p.score_median is not None else "-"
-            judge_score = f"{p.judge_score_median:.2f}" if p.judge_score_median is not None else "-"
-            cpp = f"${p.cost_per_pass:.4f}" if p.cost_per_pass is not None else "-"
-            rank_txt = "—" if p.low_sample else str(rank)
-            print(
-                f"{rank_txt:>3} {p.orchestrator:<30} {p.worker:<30} {p.runs:>3} {p.tasks_covered:>5} "
-                f"{(p.pass_rate or 0) * 100:>5.0f}% {score:>9} {judge_score:>9} ${p.cost_median:>8.4f} "
-                f"{p.duration_median_ms:>8.0f} {(p.failure_rate or 0) * 100:>5.0f}% {cpp:>9} "
-                f"{p.holdout_runs:>7}"
-            )
+            table.append([
+                None if p.low_sample else str(rank), short_slug(p.orchestrator), short_slug(p.worker),
+                n_cell(p.runs, p.low_sample, st), str(p.tasks_covered), fmt_percent(p.pass_rate or 0),
+                fmt_score(p.score_median), fmt_score(p.judge_score_median), fmt_money(p.cost_median),
+                fmt_duration_compact(p.duration_median_ms), fmt_percent(p.failure_rate or 0),
+                fmt_money(p.cost_per_pass), str(p.holdout_runs)])
+        print_table(
+            [Column("#", "r"), Column("orchestrator", max_width=30), Column("worker", max_width=30),
+             Column("n", "r"), Column("tasks", "r", priority=6), Column("pass%", "r"),
+             Column("med score", "r", priority=4), Column("med judge", "r", priority=5),
+             Column("med cost", "r"), Column("latency", "r", priority=9),
+             Column("fail%", "r", priority=3), Column("$/pass", "r", priority=2),
+             Column("holdout", "r", priority=7)], table, st)
     if held:
         print(
-            f"\n{len(held)} pairing(s) have holdout runs only and are unranked — they have no "
+            f"\n{len(held)} pairing(s) have holdout runs only and are unranked, so they have no "
             "published evidence to rank on. They are listed here so a measured pairing is not "
             "mistaken for an unmeasured one:"
         )
@@ -1250,28 +1289,26 @@ def _print_leaderboard(
         )
     if store is not None and metas:
         for slug in store.judge_slugs({m.task_id for m in metas}):
-            st = calibration_status(reports_dir, slug)
-            if st["calibrated"]:
-                detail = f"kappa {st['kappa']:.2f} over {st['verdict_pairs']} pairs"
+            cal = calibration_status(reports_dir, slug)
+            if cal["calibrated"]:
+                detail = f"kappa {cal['kappa']:.2f} over {cal['verdict_pairs']} pairs"
             else:
-                detail = (f"uncalibrated — {st['verdict_pairs']} verdict pairs "
+                detail = (f"uncalibrated: {cal['verdict_pairs']} verdict pairs "
                           f"(need {MIN_CALIBRATION_PAIRS}+ labeled, kappa >= 0.7)")
-            print(f"judge: {slug} — {detail}")
+            print(f"judge: {slug}: {detail}")
 
 def _print_contamination(rows: list[Any]) -> None:
     """Published vs holdout means per task type, with the gap between them."""
     if not rows:
-        print("No scored runs match — nothing to compare between arms.")
+        print("No scored runs match, so there is nothing to compare between arms.")
         return
-    print("contamination estimate — mean score by arm, per task type")
+    print("contamination estimate: mean score by arm, per task type")
     print()
-    print(f"{'task type':<14} {'pub n':>5} {'pub mean':>9} {'hold n':>6} {'hold mean':>10} {'gap':>8}")
-    print("-" * 60)
-    for r in rows:
-        pub = f"{r.published_mean:.2f}" if r.published_mean is not None else "-"
-        hold = f"{r.holdout_mean:.2f}" if r.holdout_mean is not None else "-"
-        gap = f"{r.gap:+.2f}" if r.gap is not None else "n/a"
-        print(f"{r.task_type:<14} {r.published_n:>5} {pub:>9} {r.holdout_n:>6} {hold:>10} {gap:>8}")
+    print_table(
+        [Column("task type", max_width=24), Column("pub n", "r"), Column("pub mean", "r"),
+         Column("hold n", "r"), Column("hold mean", "r"), Column("gap", "r")],
+        [[r.task_type, str(r.published_n), fmt_score(r.published_mean), str(r.holdout_n),
+          fmt_score(r.holdout_mean), fmt_delta(r.gap, "score")] for r in rows])
     print()
     comparable = [r for r in rows if r.comparable]
     if not comparable:
@@ -1295,7 +1332,7 @@ def _print_contamination(rows: list[Any]) -> None:
         print(
             "Under-powered (fewer than 5 runs on a side): "
             + ", ".join(f"{r.task_type} ({r.published_n}/{r.holdout_n})" for r in thin)
-            + " — read these as anecdote."
+            + "; read these as anecdote."
         )
 
 
@@ -1304,14 +1341,24 @@ def _print_groups_table(cells: list[Any]) -> None:
     if not cells:
         print("No runs match.")
         return
-    print(f"{'group':<18} {'task':<18} {'orchestrator':<26} {'worker':<26} {'n':>3} {'pass%':>6} {'score±sd':>12} {'cost±sd':>16} {'p50ms':>8} {'p95ms':>8} {'succ/$':>9} {'failures':<20}")
-    print("-" * 175)
+    st = detect_style()
+    pm, times = ("\u00b1", "\u00d7") if st.unicode else ("+-", "x")
+    table: list[Any] = []
     for c in cells:
-        score = f"{c.score_mean:.2f}±{c.score_sd:.2f}" if c.score_mean is not None else "-"
-        cost = f"${c.cost_mean:.4f}±${c.cost_sd:.4f}"
-        spd = f"{c.successes_per_dollar:.0f}" if c.successes_per_dollar is not None else "-"
-        fails = ",".join(f"{k.split(':')[-1]}×{v}" for k, v in sorted(c.failures.items()))[:20]
-        print(f"{c.run_group or '-':<18} {c.task_id:<18} {c.orchestrator:<26} {c.worker:<26} {c.runs:>3} {c.pass_rate * 100:>5.0f}% {score:>12} {cost:>16} {c.latency_p50:>8.0f} {c.latency_p95:>8.0f} {spd:>9} {fails:<20}")
+        score = f"{fmt_score(c.score_mean)}{pm}{fmt_score(c.score_sd)}" if c.score_mean is not None else None
+        fails = ",".join(f"{k.split(':')[-1]}{times}{v}" for k, v in sorted(c.failures.items())) or None
+        table.append([
+            c.run_group, c.task_id, short_slug(c.orchestrator), short_slug(c.worker), str(c.runs),
+            fmt_percent(c.pass_rate), score, f"{fmt_money(c.cost_mean)}{pm}{fmt_money(c.cost_sd)}",
+            fmt_duration_compact(c.latency_p50), fmt_duration_compact(c.latency_p95),
+            f"{c.successes_per_dollar:.0f}" if c.successes_per_dollar is not None else None, fails])
+    print_table(
+        [Column("group", max_width=24), Column("task", max_width=28),
+         Column("orchestrator", max_width=26), Column("worker", max_width=26), Column("n", "r"),
+         Column("pass%", "r"), Column("score" + pm + "sd", "r", priority=4),
+         Column("cost" + pm + "sd", "r", priority=2), Column("p50", "r", priority=8),
+         Column("p95", "r", priority=9), Column("succ/$", "r", priority=6),
+         Column("failures", priority=7, max_width=20)], table, st)
 
 
 def _print_group_delta(store: RunStore, spec: str, *, json_out: bool = False) -> None:
@@ -1321,14 +1368,18 @@ def _print_group_delta(store: RunStore, spec: str, *, json_out: bool = False) ->
     drift in grid shape is visible rather than silently interpolated."""
     names = _slugs_from_arg(spec)
     if len(names) != 2:
-        print("--compare takes exactly two comma-separated run_group names", file=sys.stderr)
+        print(format_error(
+            "--compare takes exactly two comma-separated run_group names",
+            f"got {len(names)}: {spec!r}",
+            "python harness.py report --compare <group-a>,<group-b>"), file=sys.stderr)
         sys.exit(1)
     group_a, group_b = names
 
     def cells(group: str) -> dict[tuple[str, str, str], Any]:
         return {
             (c.task_id, c.orchestrator, c.worker): c
-            for c in aggregate(store.list_runs(run_group=group))
+            for c in aggregate(store.list_runs(run_group=group),
+                               cost_basis="rate_card" if json_out else "billed")
         }
 
     cells_a, cells_b = cells(group_a), cells(group_b)
@@ -1360,20 +1411,22 @@ def _print_group_delta(store: RunStore, spec: str, *, json_out: bool = False) ->
         print(json.dumps({"group_a": group_a, "group_b": group_b, "cells": rows}, indent=2, default=str))
         return
     print(f"Delta {group_a} -> {group_b}  (cells joined on task x orchestrator x worker)")
-    print(f"{'task':<22} {'orchestrator':<24} {'worker':<24} {'n':>7} {'pass':>11} {'delta':>7} {'verdict':<10}")
-    print("-" * 115)
+    table = []
     for r in rows:
-        n = f"{r['n_a']}/{r['n_b']}"
-        pass_a = f"{r['pass_a'] * 100:.0f}%" if r['pass_a'] is not None else "-"
-        pass_b = f"{r['pass_b'] * 100:.0f}%" if r['pass_b'] is not None else "-"
-        delta = "-" if r["verdict"] == "one-sided" else f"{(r['pass_b'] - r['pass_a']) * 100:+.0f}pp"
-        print(f"{r['task_id']:<22} {r['orchestrator']:<24} {r['worker']:<24} {n:>7} {pass_a:>5}->{pass_b:<5} {delta:>7} {r['verdict']:<10}")
+        one_sided = r["verdict"] == "one-sided"
+        table.append([
+            r["task_id"], short_slug(r["orchestrator"]), short_slug(r["worker"]),
+            f"{r['n_a']}/{r['n_b']}", fmt_percent(r["pass_a"]), fmt_percent(r["pass_b"]),
+            None if one_sided else fmt_delta(r["pass_b"] - r["pass_a"], "pp"), r["verdict"]])
+    print_table(
+        [Column("task", max_width=22), Column("orchestrator", max_width=24), Column("worker", max_width=24),
+         Column("n", "r", priority=3), Column("pass a", "r"), Column("pass b", "r"),
+         Column("delta", "r"), Column("verdict")], table)
     counts = Counter(r["verdict"] for r in rows)
     total_a = sum(r["cost_a"] or 0 for r in rows)
     total_b = sum(r["cost_b"] or 0 for r in rows)
-    print("-" * 115)
     print("Verdicts: " + ", ".join(f"{k}={v}" for k, v in sorted(counts.items())))
-    print(f"Cost: {group_a}=${total_a:.4f}  {group_b}=${total_b:.4f}")
+    print(f"Cost: {group_a}={fmt_money(total_a)}  {group_b}={fmt_money(total_b)}")
 
 
 def cmd_export(args: argparse.Namespace) -> None:
@@ -1401,7 +1454,8 @@ def cmd_export(args: argparse.Namespace) -> None:
         print("error: --format md/jsonl require --run; plain exports are CSV only", file=sys.stderr)
         sys.exit(2)
     elif args.leaderboard:
-        rows = pairing_leaderboard(store.list_runs(limit=None), min_samples=args.min_samples)
+        rows = pairing_leaderboard(store.list_runs(limit=None), min_samples=args.min_samples,
+                                   cost_basis="rate_card")  # exports keep the rate-card basis
         content = leaderboard_csv(rows)
     else:
         content = runs_csv(store.list_runs(limit=None))
@@ -1460,16 +1514,15 @@ def cmd_prices(args: argparse.Namespace) -> None:
     if not rows:
         print("No calls indexed yet.")
         return
-    print(f"{'model':<38} {'calls':>5} {'api':>4} {'api $':>10} {'cfg $':>10} {'ratio':>7}  drift")
-    print("-" * 90)
-    for r in rows:
-        cfg = f"${r.configured_cost_usd:.4f}" if r.configured_cost_usd is not None else "-"
-        ratio = f"{r.ratio:.2f}x" if r.ratio is not None else "-"
-        flag = "STALE?" if r.drifted else (r.note or "ok")
-        print(f"{r.model:<38} {r.calls:>5} {r.api_calls:>4} ${r.api_cost_usd:>9.4f} {cfg:>10} {ratio:>7}  {flag}")
+    print_table(
+        [Column("model", max_width=36), Column("calls", "r"), Column("api", "r", priority=2),
+         Column("api $", "r"), Column("cfg $", "r"), Column("ratio", "r"), Column("drift")],
+        [[short_slug(r.model), str(r.calls), str(r.api_calls), fmt_money(r.api_cost_usd),
+          fmt_money(r.configured_cost_usd), f"{r.ratio:.2f}x" if r.ratio is not None else None,
+          "STALE?" if r.drifted else (r.note or "ok")] for r in rows])
     drifted = [r for r in rows if r.drifted]
     if drifted:
-        print(f"\n{len(drifted)} model(s) beyond {args.threshold:.0%} drift — update models/*.yaml or check for silent rerouting.")
+        print(f"\n{len(drifted)} model(s) beyond {args.threshold:.0%} drift: update models/*.yaml or check for silent rerouting.")
 
 def cmd_models(args: argparse.Namespace) -> None:
     """Provider model catalog — sync the remote list for the observatory."""
@@ -1491,7 +1544,7 @@ def cmd_models(args: argparse.Namespace) -> None:
         )
         print(
             "note: the provider list says what exists, not what your account "
-            "can reach — provider blocks show up as call errors, not here."
+            "can reach; provider blocks show up as call errors, not here."
         )
         return
 
@@ -1539,7 +1592,7 @@ def cmd_fixtures(args: argparse.Namespace) -> None:
             if res.previous_sha256 and res.previous_sha256 != res.sha256:
                 print(
                     f"  WARNING: content changed vs previous lock "
-                    f"({res.previous_sha256[:16]}… -> {res.sha256[:16]}…) — "
+                    f"({res.previous_sha256[:16]}… -> {res.sha256[:16]}…): "
                     "upstream repo bytes or resolved wheels differ; verify "
                     "the registry pin and dep versions are what you intended."
                 )
@@ -1592,7 +1645,7 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
         ts = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
         out_path = reports_dir / f"labels-{args.emit}-{ts}.yaml"
         out_path.write_text(yaml_text)
-        print(f"wrote {out_path} — fill in score/passed, then:")
+        print(f"wrote {out_path}. Fill in score/passed, then:")
         print(f"  python3 harness.py calibrate --labels {out_path}")
         return
     if not args.labels:
@@ -1642,7 +1695,7 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
                     line += f"score-only n={s['n']} mae {s['mae']:.3f}"
                 print(line)
     if not score and not verdict:
-        print("\nNo overlapping pairs — label runs that have judge scores/verdicts.")
+        print("\nNo overlapping pairs. Label runs that have judge scores/verdicts.")
         print("Labels file format:")
         print("  labels:\n    - run_id: <prefix>\n      score: 0.8\n      passed: true")
         print("\nOr emit a skeleton:  python3 harness.py calibrate --emit <group>")
@@ -1676,10 +1729,10 @@ def cmd_review(args: argparse.Namespace) -> None:
         print(json.dumps(result, indent=2, default=str))
         return
     syn = result["corpus"]["synthesis"]
-    print(f"reviewed {result['reviewed']} runs ({result['skipped']} already reviewed) — ${result['cost_usd']:.4f}")
+    print(f"reviewed {result['reviewed']} runs ({result['skipped']} already reviewed), ${result['cost_usd']:.4f}")
     print(f"quality: {result['corpus']['stats']['run_quality']}")
     for iss in syn.get("systemic_issues") or []:
-        print(f"  [{iss.get('severity')}] {iss.get('issue')} ({iss.get('run_count')} runs) — {iss.get('fix')}")
+        print(f"  [{iss.get('severity')}] {iss.get('issue')} ({iss.get('run_count')} runs): {iss.get('fix')}")
     print(f"\nverdict: {syn.get('verdict', '')}")
     print("full report: reports/review-*.md | per-run: <run_dir>/review.json")
 
@@ -1768,14 +1821,14 @@ def cmd_specaudit(args: argparse.Namespace) -> None:
     if args.json:
         print(json.dumps(rows, indent=2, default=str))
         return
-    print(f"spec audit — {len(rows)} specs · judge {judge.slug} · wrote {out_path}")
+    print(f"spec audit: {len(rows)} specs · judge {judge.slug} · wrote {out_path}")
     print(f"{'task':<30} {'type':<12} {'lowball':>8} {'sound':>6} {'diff':>5} {'adv':>5}")
     for r in rows:
         if "error" in r or "skipped" in r:
-            print(f"{r['task_id']:<30} {r['type']:<12} {'—':>8} {'—':>6} {'—':>5} {'—':>5}  {r.get('error', 'dry-run')[:40]}")
+            print(f"{r['task_id']:<30} {r['type']:<12} {NULL_GLYPH:>8} {NULL_GLYPH:>6} {NULL_GLYPH:>5} {NULL_GLYPH:>5}  {r.get('error', 'dry-run')[:40]}")
             continue
         low = r["lowballs"]
-        flag = " ⚠" if isinstance(low, float) and low >= 0.5 else ""
+        flag = " !" if isinstance(low, float) and low >= 0.5 else ""
         print(f"{r['task_id']:<30} {r['type']:<12} {low:>8.2f} {r['sound']:>6.2f} "
               f"{r['difficulty']:>5.1f} {r['adversarial']:>5.1f}{flag}")
 
@@ -1837,14 +1890,14 @@ def cmd_claimsaudit(args: argparse.Namespace) -> None:
     if args.json:
         print(json.dumps(rows, indent=2, default=str))
         return
-    print(f"claims audit — {len(rows)} claims · judge {judge.slug} · wrote {out_path}")
+    print(f"claims audit: {len(rows)} claims · judge {judge.slug} · wrote {out_path}")
     print(f"{'claim':<28} {'supported':>10} {'fatal?':>7} {'severity':>9} {'strength':>9}")
     for r in rows:
         if "error" in r or "skipped" in r:
-            print(f"{r.get('claim_id','?'):<28} {'—':>10} {'—':>7} {'—':>9} {'—':>9}  {r.get('error','dry-run')[:40]}")
+            print(f"{r.get('claim_id','?'):<28} {NULL_GLYPH:>10} {NULL_GLYPH:>7} {NULL_GLYPH:>9} {NULL_GLYPH:>9}  {r.get('error','dry-run')[:40]}")
             continue
         sev = r.get("severity")
-        verdict = " ☠" if isinstance(sev, (int, float)) and sev >= 3.5 else ""
+        verdict = " !!" if isinstance(sev, (int, float)) and sev >= 3.5 else ""
         print(f"{r['claim_id']:<28} {r['supported']:>10.2f} {r['fatal_flaw']:>7.2f} "
               f"{sev:>9.1f} {r['strength']:>9.1f}{verdict}")
 
@@ -1873,7 +1926,7 @@ def cmd_scrub(args: argparse.Namespace) -> int:
     if not any(source.rglob("run.json")):
         print(
             f"error: no runs found under {source} (no run.json). Nothing was written. "
-            "Check --runs-dir — an empty source must not be published as a success.",
+            "Check --runs-dir: an empty source must not be published as a success.",
             file=sys.stderr,
         )
         return 1
@@ -1946,7 +1999,7 @@ def cmd_sync(args: argparse.Namespace) -> int:
     for err in result.errors:
         print(f"  error: {err}", file=sys.stderr)
     if not args.push and result.pushed:
-        print("dry run — pass --push to upload")
+        print("dry run: pass --push to upload")
     return 1 if result.errors else 0
 
 
@@ -1966,10 +2019,10 @@ def cmd_selfcheck(args: argparse.Namespace) -> None:
         by_rule: dict[str, list] = {}
         for f in findings:
             by_rule.setdefault(f.rule, []).append(f)
-        print(f"orchestral selfcheck — {len(findings)} finding(s)")
+        print(f"orchestral selfcheck: {len(findings)} finding(s)")
         for rule in sorted(by_rule):
             group = by_rule[rule]
-            print(f"\n{rule} ({group[0].severity}) — {len(group)}")
+            print(f"\n{rule} ({group[0].severity}): {len(group)}")
             for f in group[:20]:
                 ident = f.task_id or "suite"
                 print(f"  {ident}: {f.detail[:180]}")
@@ -2164,7 +2217,7 @@ def _add_global_dir_flag(sp: argparse.ArgumentParser, flag: str, help_text: str)
     """Re-declare a top-level directory flag on a subparser without shadowing it.
 
     SUPPRESS leaves the top-level value in place when the flag is absent, and
-    overrides it when given — so both spellings work and the subcommand-local
+    overrides it when given: so both spellings work and the subcommand-local
     one wins.
     """
     if flag not in GLOBAL_DIR_FLAGS:
@@ -2191,11 +2244,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     def _add_run_flags(sp: argparse.ArgumentParser) -> None:
         sp.add_argument("--planner", default="raw", choices=["raw", "ce-plan"], help="Orchestrator planning strategy: raw or ce-plan")
-        sp.add_argument("--judge", default=None, help=f"Judge model slug (default {DEFAULT_JUDGE} — the decisions engine; vision-capable slugs for image tasks)")
-        sp.add_argument("--no-judge", action="store_true", help="Skip the judge pass entirely — mechanical verdict only")
+        sp.add_argument("--judge", default=None, help=f"Judge model slug (default {DEFAULT_JUDGE}, the decisions engine; vision-capable slugs for image tasks)")
+        sp.add_argument("--no-judge", action="store_true", help="Skip the judge pass entirely: mechanical verdict only")
         sp.add_argument("--no-judge-cache", action="store_true", help="Bypass judge result cache reads (still writes)")
         sp.add_argument("--jev-assist", action="store_true",
-                        help="Consult the decisions-engine judge inside the run loop — plan audit before delegation, output audit before assembly (one replan / one rework max). No-op without a decisions-model judge.")
+                        help="Consult the decisions-engine judge inside the run loop: plan audit before delegation, output audit before assembly (one replan / one rework max). No-op without a decisions-model judge.")
         sp.add_argument("--retry-limit", type=int, default=None, help="Override the worker's retry_limit for this invocation")
         sp.add_argument("--prompt-variant", default=None, help="Orchestrator prompt variant from prompts/orchestrator-<name>.md")
         sp.add_argument("--dry-run", action="store_true", help="Do not call OpenRouter; generate sample data for storage testing")
@@ -2267,14 +2320,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     experiment.add_argument("--matrix", required=True, help="Experiment matrix YAML (orchestrators × workers × tasks)")
     experiment.add_argument("--budget", type=float, default=_env_float("ORCHESTRAL_EXPERIMENT_BUDGET", 0.0),
-                            help="Total experiment spend bound in USD — sizes per-cell rep targets and aborts on the live calls meter (0=unbounded rep sizing; the daily cap still brakes)")
+                            help="Total experiment spend bound in USD: sizes per-cell rep targets and aborts on the live calls meter (0=unbounded rep sizing; the daily cap still brakes)")
     experiment.add_argument("--batch-size", type=int, default=5, help="Replicate indexes per batch between gate checks")
     experiment.add_argument("--diff-eps", type=float, default=0.15, help="Early-stop threshold: difference-CI half-width at which a cell counts as resolved")
     experiment.add_argument("--jobs", type=int, default=1, help="Cells in parallel (reps stay serial inside a cell)")
     experiment.add_argument("--planner", default="raw", choices=["raw", "ce-plan"], help="Orchestrator planning strategy")
     experiment.add_argument("--prompt-variant", default=None, help="Orchestrator prompt variant from prompts/orchestrator-<name>.md")
     experiment.add_argument("--retry-limit", type=int, default=None, help="Override workers' retry_limit")
-    experiment.add_argument("--seed", type=int, default=None, help="Base seed recorded on run configs (replicate i records seed+i-1; bookkeeping only — chat providers take no seed)")
+    experiment.add_argument("--seed", type=int, default=None, help="Base seed recorded on run configs (replicate i records seed+i-1; bookkeeping only; chat providers take no seed)")
     experiment.add_argument("--no-judge-cache", action="store_true", help="Bypass judge result cache reads (still writes)")
     experiment.add_argument("--dry-run", action="store_true", help="Print the priced plan table; write nothing, launch nothing")
     experiment.add_argument("--json", action="store_true", help="Output the summary as JSON")
@@ -2295,14 +2348,14 @@ def build_parser() -> argparse.ArgumentParser:
     _add_run_flags(ablate)
     ablate.set_defaults(func=cmd_ablate)
 
-    coverage = sub.add_parser("coverage", help="Experiment coverage ledger: matrix cells vs stored runs — done/pending/aborted/posted")
+    coverage = sub.add_parser("coverage", help="Experiment coverage ledger: matrix cells vs stored runs: done/pending/aborted/posted")
     coverage.add_argument("--matrix", required=True, help="Experiment matrix YAML the ledger is keyed to")
-    coverage.add_argument("--budget", type=float, default=0.0, help="Same semantics as experiment --budget — needed to reproduce the rep targets the driver used")
+    coverage.add_argument("--budget", type=float, default=0.0, help="Same semantics as experiment --budget: needed to reproduce the rep targets the driver used")
     coverage.add_argument("--diff-eps", type=float, default=0.15, help="Difference-CI half-width at which a cell counts as resolved")
     coverage.add_argument("--json", action="store_true", help="Emit JSON")
     coverage.set_defaults(func=cmd_coverage)
 
-    publish = sub.add_parser("publish-mark", help="Mark a cell or run as published — the 'did we post this' check-off")
+    publish = sub.add_parser("publish-mark", help="Mark a cell or run as published: the 'did we post this' check-off")
     publish.add_argument("--target", required=True, help="Cell key (task:orchestrator:worker) or run id")
     publish.add_argument("--url", default=None, help="Where it was published (post/thread/issue URL)")
     publish.add_argument("--note", default="", help="Free-text note")
@@ -2336,7 +2389,7 @@ def build_parser() -> argparse.ArgumentParser:
     report.add_argument("--json", action="store_true", help="Output as JSON")
     report.set_defaults(func=cmd_report)
 
-    prices = sub.add_parser("prices", help="Pricing drift check — provider-reported cost vs configured rate card")
+    prices = sub.add_parser("prices", help="Pricing drift check: provider-reported cost vs configured rate card")
     prices.add_argument("--threshold", type=float, default=DEFAULT_DRIFT_THRESHOLD, help="Drift fraction that flags a model (default 0.15)")
     prices.add_argument("--json", action="store_true", help="Emit JSON")
     prices.set_defaults(func=cmd_prices)
@@ -2350,7 +2403,7 @@ def build_parser() -> argparse.ArgumentParser:
     export.add_argument("--out", default=None, help="Write to this file instead of stdout")
     export.set_defaults(func=cmd_export)
 
-    dataset = sub.add_parser("dataset", help="Export an RL-ready JSONL dataset — one record per LLM call joined to run outcome and judge rewards")
+    dataset = sub.add_parser("dataset", help="Export an RL-ready JSONL dataset: one record per LLM call joined to run outcome and judge rewards")
     _add_global_dir_flag(dataset, "--runs-dir", "Root directory for run data")
     dataset.add_argument("--out", default=None, help="Steps JSONL path (default reports/dataset-steps-<ts>.jsonl)")
     dataset.add_argument("--group", default=None, help="Limit to a run group")
@@ -2361,7 +2414,7 @@ def build_parser() -> argparse.ArgumentParser:
                          help="Which signal lands in outcome.reward (judge=primary judge score, mechanical=test score, best=judge else mechanical)")
     dataset.add_argument("--episodes", action="store_true", help="Also write one record per run (bandit view)")
     dataset.add_argument("--episodes-out", default=None, help="Episodes JSONL path (implies --episodes)")
-    dataset.add_argument("--no-payloads", action="store_true", help="Metadata-only steps — omit prompt/completion text")
+    dataset.add_argument("--no-payloads", action="store_true", help="Metadata-only steps: omit prompt/completion text")
     dataset.add_argument("--include-dry", action="store_true", help="Include dry-run rows (default excludes: synthetic artifacts)")
     dataset.add_argument("--backfill", action="store_true", help="Rebuild calls payloads from events.jsonl for all stored runs first")
     dataset.set_defaults(func=cmd_dataset)
@@ -2401,7 +2454,7 @@ def build_parser() -> argparse.ArgumentParser:
     shots.add_argument("--all", action="store_true", help="Re-capture even when screenshots are current")
 
     cards = sub.add_parser("cards", help="Batch-export X-ready PNGs (leaderboard + every group/pairing card) via playwright")
-    cards.add_argument("--reports-dir", default="reports", help="Output root — writes <reports>/cards/")
+    cards.add_argument("--reports-dir", default="reports", help="Output root: writes <reports>/cards/")
     cards.add_argument("--group", default=None, help="Only export cards scoped to this run_group")
     cards.set_defaults(func=cmd_cards)
     shots.set_defaults(func=cmd_shots)
@@ -2418,7 +2471,7 @@ def build_parser() -> argparse.ArgumentParser:
     calibrate.set_defaults(func=cmd_calibrate)
 
     review = sub.add_parser("review", help="Frontier-model audit of archived run evidence (writes review.json per run + reports/review-*.md)")
-    review.add_argument("--model", default="x-ai/grok-4.3", help="Reviewer model slug (default: x-ai/grok-4.3 — reasoning tier)")
+    review.add_argument("--model", default="x-ai/grok-4.3", help="Reviewer model slug (default: x-ai/grok-4.3, reasoning tier)")
     review.add_argument("--group", default=None, help="Only review runs in this run_group")
     review.add_argument("--task", default=None, help="Only review runs for this task")
     review.add_argument("--orchestrator", default=None)
@@ -2443,7 +2496,7 @@ def build_parser() -> argparse.ArgumentParser:
     judge.add_argument("--json", action="store_true", help="Emit the full result as JSON")
     judge.set_defaults(func=cmd_judge)
 
-    reval = sub.add_parser("revalidate", help="Replay mechanical validators on stored artifacts — repairs score/passes on report.json + index (no model calls)")
+    reval = sub.add_parser("revalidate", help="Replay mechanical validators on stored artifacts: repairs score/passes on report.json + index (no model calls)")
     reval.add_argument("--group", default=None, help="Only revalidate runs in this run_group")
     reval.add_argument("--task", default=None, help="Only revalidate runs for this task")
     reval.add_argument("--orchestrator", default=None)
@@ -2453,16 +2506,16 @@ def build_parser() -> argparse.ArgumentParser:
     reval.add_argument("--json", action="store_true", help="Emit the full result as JSON")
     reval.set_defaults(func=cmd_revalidate)
 
-    specaudit = sub.add_parser("specaudit", help="Decisions-engine audit of the task suite — lowball/sound/difficulty/adversarial per spec")
-    specaudit.add_argument("--judge", required=True, help="Decisions-model slug (e.g. '~typesafe/jev-latest' — quote it)")
+    specaudit = sub.add_parser("specaudit", help="Decisions-engine audit of the task suite: lowball/sound/difficulty/adversarial per spec")
+    specaudit.add_argument("--judge", required=True, help="Decisions-model slug (e.g. '~typesafe/jev-latest'; quote it)")
     specaudit.add_argument("--jobs", type=int, default=8, help="Parallel audit calls")
     specaudit.add_argument("--reports-dir", default="reports", help="Output directory for spec-audit.json")
     specaudit.add_argument("--dry-run", action="store_true")
     specaudit.add_argument("--json", action="store_true")
     specaudit.set_defaults(func=cmd_specaudit)
 
-    claimsaudit = sub.add_parser("claimsaudit", help="Decisions-engine audit of claims in audit/claims.yaml — scorch our own ideas")
-    claimsaudit.add_argument("--judge", required=True, help="Decisions-model slug (e.g. '~typesafe/jev-latest' — quote it)")
+    claimsaudit = sub.add_parser("claimsaudit", help="Decisions-engine audit of claims in audit/claims.yaml: scorch our own ideas")
+    claimsaudit.add_argument("--judge", required=True, help="Decisions-model slug (e.g. '~typesafe/jev-latest'; quote it)")
     claimsaudit.add_argument("--claims", default="audit/claims.yaml", help="Claims battery file")
     claimsaudit.add_argument("--jobs", type=int, default=4, help="Parallel audit calls")
     claimsaudit.add_argument("--reports-dir", default="reports", help="Output directory for claims-audit.json")
@@ -2472,7 +2525,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     audit = sub.add_parser(
         "audit",
-        help="Static task-spec audit — fail-open checks, structural-only graders, contamination risk",
+        help="Static task-spec audit: fail-open checks, structural-only graders, contamination risk",
     )
     audit.add_argument("--tasks-dir", default=argparse.SUPPRESS, help="Task spec directory")
     audit.add_argument("--min-family", type=int, default=5, help="Specs sharing one prompt before it is a family")
@@ -2482,13 +2535,13 @@ def build_parser() -> argparse.ArgumentParser:
     audit.add_argument(
         "--no-holdout-arm",
         action="store_true",
-        help="Do not count a generatable holdout arm — reports no_holdout_arm whenever no spec sets metadata.holdout",
+        help="Do not count a generatable holdout arm: reports no_holdout_arm whenever no spec sets metadata.holdout",
     )
     audit.set_defaults(func=cmd_audit)
 
     fixtures = sub.add_parser(
         "fixtures",
-        help="Repo fixtures for v3 real-repo tasks — fetch/check the gitignored tarballs pinned in fixtures/registry.yaml",
+        help="Repo fixtures for v3 real-repo tasks: fetch/check the gitignored tarballs pinned in fixtures/registry.yaml",
     )
     fixtures.add_argument("--fixtures-dir", default="fixtures", help="Fixture directory")
     fsub = fixtures.add_subparsers(dest="fixtures_cmd", required=True)
@@ -2520,7 +2573,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     models = sub.add_parser(
         "models",
-        help="Model catalog — sync the provider's full model list for the observatory catalog view",
+        help="Model catalog: sync the provider's full model list for the observatory catalog view",
     )
     msub = models.add_subparsers(dest="models_cmd", required=True)
     msync = msub.add_parser(
@@ -2530,7 +2583,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     msync.add_argument("--url", default=None,
                        help="Catalog endpoint (default: OpenRouter /api/v1/models)")
-    # leaf needs its own copy — argparse hands post-`sync` args to msync,
+    # leaf needs its own copy: argparse hands post-`sync` args to msync,
     # so `models sync --models-dir X` would otherwise be unrecognized
     _add_global_dir_flag(msync, "--models-dir", "Model config directory")
     _add_global_dir_flag(models, "--models-dir", "Model config directory")
@@ -2538,7 +2591,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     selfcheck = sub.add_parser(
         "selfcheck",
-        help="Spec self-verification — replay each spec's reference through its own grading (no model calls)",
+        help="Spec self-verification: replay each spec's reference through its own grading (no model calls)",
     )
     selfcheck.add_argument("--tasks-dir", default=argparse.SUPPRESS, help="Task spec directory")
     selfcheck.add_argument("--runs-dir", default=argparse.SUPPRESS, help="Root directory for run data")
@@ -2547,7 +2600,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--execute",
         action="store_true",
         help="Also run metadata.tests against spec references in a host subprocess "
-             "(repo-authored content only — never run artifacts)",
+             "(repo-authored content only: never run artifacts)",
     )
     selfcheck.add_argument(
         "--runs",
@@ -2557,17 +2610,17 @@ def build_parser() -> argparse.ArgumentParser:
     selfcheck.add_argument("--json", action="store_true", help="Machine-readable output")
     selfcheck.set_defaults(func=cmd_selfcheck)
 
-    serve = sub.add_parser("serve", help="Local web observatory — browse, launch, and cancel runs in a browser (localhost only)")
+    serve = sub.add_parser("serve", help="Local web observatory: browse, launch, and cancel runs in a browser (localhost only)")
     serve.add_argument("--port", type=int, default=8787, help="Port to bind on 127.0.0.1 (default 8787)")
     serve.add_argument("--open", action="store_true", help="Open the observatory in a browser")
     serve.add_argument("--allow-agent-exec", action="store_true",
                        default=_env_flag("ORCHESTRAL_ALLOW_AGENT_EXEC"),
-                       help="Opt in to executor workers at server start — never a per-request field (env ORCHESTRAL_ALLOW_AGENT_EXEC)")
+                       help="Opt in to executor workers at server start: never a per-request field (env ORCHESTRAL_ALLOW_AGENT_EXEC)")
     serve.set_defaults(func=cmd_serve)
 
     doctor = sub.add_parser(
         "doctor",
-        help="Preflight the isolated code runtime — env contract, SDK surface, "
+        help="Preflight the isolated code runtime: env contract, SDK surface, "
              "api.<domain> DNS/TLS, and a real sandbox create/exec/destroy probe",
     )
     doctor.add_argument(

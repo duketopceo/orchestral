@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" fill="none">
+  <title>orchestral</title>
+  <!-- Optical size for 24-32px: every stroke is 2u. Staff lines sit on whole pixel
+       rows (y=12-14, 18-20); the baton is a 45-degree 2u band cut flat where it lands,
+       so its foot is exactly on the top edge of the staff (y=12) and never dips in. -->
+  <path fill="currentColor" d="M2 12h20v2H2zM2 18h20v2H2zM4.7 3.3L3.3 4.7L10.6 12h2.8z"/>
+</svg>

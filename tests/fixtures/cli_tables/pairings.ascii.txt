@@ -1,0 +1,9 @@
+orchestrator  worker        runs  pass  avg score  total cost  tokens  quality/$
+--------------------------------------------------------------------------------
+orch-b        worker-fresh     2     2       0.81      $0.039   22.8k       21.1
+orch-a        worker-local     4     2       0.78      $0.042   42.6k       18.7
+orch-a        worker-fresh     2     2       0.47      $0.026   16.7k       18.1
+orch-a        worker-cheap   281   207       0.66       $2.12    3.1M        0.3
+orch-b        worker-cheap   236   172       0.65       $2.58    2.6M        0.3
+orch-a        worker-mid     228   138       0.65       $3.61    2.6M        0.2
+orch-b        worker-hot     221   119       0.67       $4.36    2.6M        0.2

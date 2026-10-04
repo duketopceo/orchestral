@@ -1,0 +1,555 @@
+{
+ "thresholds": {
+  "lowNCell": 3,
+  "lowNBest": 10
+ },
+ "nullGlyph": "-",
+ "cases": [
+  {
+   "fn": "money",
+   "in": [
+    null
+   ],
+   "out": "-"
+  },
+  {
+   "fn": "money",
+   "in": [
+    0
+   ],
+   "out": "$0.00"
+  },
+  {
+   "fn": "money",
+   "in": [
+    4e-07
+   ],
+   "out": "<$0.0001"
+  },
+  {
+   "fn": "money",
+   "in": [
+    0.0001
+   ],
+   "out": "$0.0001"
+  },
+  {
+   "fn": "money",
+   "in": [
+    0.0072
+   ],
+   "out": "$0.0072"
+  },
+  {
+   "fn": "money",
+   "in": [
+    0.00999
+   ],
+   "out": "$0.010"
+  },
+  {
+   "fn": "money",
+   "in": [
+    0.01
+   ],
+   "out": "$0.010"
+  },
+  {
+   "fn": "money",
+   "in": [
+    0.187
+   ],
+   "out": "$0.187"
+  },
+  {
+   "fn": "money",
+   "in": [
+    0.9996
+   ],
+   "out": "$1.00"
+  },
+  {
+   "fn": "money",
+   "in": [
+    1
+   ],
+   "out": "$1.00"
+  },
+  {
+   "fn": "money",
+   "in": [
+    12.4
+   ],
+   "out": "$12.40"
+  },
+  {
+   "fn": "money",
+   "in": [
+    1234.5
+   ],
+   "out": "$1,234.50"
+  },
+  {
+   "fn": "money",
+   "in": [
+    -0.0045
+   ],
+   "out": "-$0.0045"
+  },
+  {
+   "fn": "money",
+   "in": [
+    -12.4
+   ],
+   "out": "-$12.40"
+  },
+  {
+   "fn": "percent",
+   "in": [
+    null
+   ],
+   "out": "-"
+  },
+  {
+   "fn": "percent",
+   "in": [
+    0
+   ],
+   "out": "0%"
+  },
+  {
+   "fn": "percent",
+   "in": [
+    0.004
+   ],
+   "out": "0%"
+  },
+  {
+   "fn": "percent",
+   "in": [
+    0.126
+   ],
+   "out": "13%"
+  },
+  {
+   "fn": "percent",
+   "in": [
+    0.5
+   ],
+   "out": "50%"
+  },
+  {
+   "fn": "percent",
+   "in": [
+    0.9
+   ],
+   "out": "90%"
+  },
+  {
+   "fn": "percent",
+   "in": [
+    1
+   ],
+   "out": "100%"
+  },
+  {
+   "fn": "score",
+   "in": [
+    null
+   ],
+   "out": "-"
+  },
+  {
+   "fn": "score",
+   "in": [
+    0
+   ],
+   "out": "0.00"
+  },
+  {
+   "fn": "score",
+   "in": [
+    0.8
+   ],
+   "out": "0.80"
+  },
+  {
+   "fn": "score",
+   "in": [
+    0.83333
+   ],
+   "out": "0.83"
+  },
+  {
+   "fn": "score",
+   "in": [
+    1
+   ],
+   "out": "1.00"
+  },
+  {
+   "fn": "duration",
+   "in": [
+    null
+   ],
+   "out": "-"
+  },
+  {
+   "fn": "duration",
+   "in": [
+    -5
+   ],
+   "out": "-"
+  },
+  {
+   "fn": "duration",
+   "in": [
+    0
+   ],
+   "out": "0ms"
+  },
+  {
+   "fn": "duration",
+   "in": [
+    450
+   ],
+   "out": "450ms"
+  },
+  {
+   "fn": "duration",
+   "in": [
+    999
+   ],
+   "out": "999ms"
+  },
+  {
+   "fn": "duration",
+   "in": [
+    1000
+   ],
+   "out": "1.0s"
+  },
+  {
+   "fn": "duration",
+   "in": [
+    12340
+   ],
+   "out": "12.3s"
+  },
+  {
+   "fn": "duration",
+   "in": [
+    59960
+   ],
+   "out": "1m 00s"
+  },
+  {
+   "fn": "duration",
+   "in": [
+    65000
+   ],
+   "out": "1m 05s"
+  },
+  {
+   "fn": "duration",
+   "in": [
+    3599400
+   ],
+   "out": "59m 59s"
+  },
+  {
+   "fn": "duration",
+   "in": [
+    3600000
+   ],
+   "out": "1h 00m"
+  },
+  {
+   "fn": "duration",
+   "in": [
+    7384000
+   ],
+   "out": "2h 03m"
+  },
+  {
+   "fn": "duration",
+   "in": [
+    90000000
+   ],
+   "out": "25h 00m"
+  },
+  {
+   "fn": "tokens",
+   "in": [
+    null
+   ],
+   "out": "-"
+  },
+  {
+   "fn": "tokens",
+   "in": [
+    0
+   ],
+   "out": "0"
+  },
+  {
+   "fn": "tokens",
+   "in": [
+    999
+   ],
+   "out": "999"
+  },
+  {
+   "fn": "tokens",
+   "in": [
+    1000
+   ],
+   "out": "1.0k"
+  },
+  {
+   "fn": "tokens",
+   "in": [
+    12345
+   ],
+   "out": "12.3k"
+  },
+  {
+   "fn": "tokens",
+   "in": [
+    999950
+   ],
+   "out": "1.0M"
+  },
+  {
+   "fn": "tokens",
+   "in": [
+    1500000
+   ],
+   "out": "1.5M"
+  },
+  {
+   "fn": "delta",
+   "in": [
+    null,
+    "pp"
+   ],
+   "out": "-"
+  },
+  {
+   "fn": "delta",
+   "in": [
+    0.12,
+    "pp"
+   ],
+   "out": "+12pp"
+  },
+  {
+   "fn": "delta",
+   "in": [
+    -0.08,
+    "pp"
+   ],
+   "out": "-8pp"
+  },
+  {
+   "fn": "delta",
+   "in": [
+    0,
+    "pp"
+   ],
+   "out": "0pp"
+  },
+  {
+   "fn": "delta",
+   "in": [
+    0.123,
+    "score"
+   ],
+   "out": "+0.12"
+  },
+  {
+   "fn": "delta",
+   "in": [
+    -0.5,
+    "score"
+   ],
+   "out": "-0.50"
+  },
+  {
+   "fn": "delta",
+   "in": [
+    0,
+    "score"
+   ],
+   "out": "0.00"
+  },
+  {
+   "fn": "delta",
+   "in": [
+    0.187,
+    "money"
+   ],
+   "out": "+$0.187"
+  },
+  {
+   "fn": "delta",
+   "in": [
+    -0.0045,
+    "money"
+   ],
+   "out": "-$0.0045"
+  },
+  {
+   "fn": "delta",
+   "in": [
+    0,
+    "money"
+   ],
+   "out": "$0.00"
+  },
+  {
+   "fn": "rangePct",
+   "in": [
+    0.49,
+    0.94
+   ],
+   "out": "49-94%"
+  },
+  {
+   "fn": "rangePct",
+   "in": [
+    0,
+    1
+   ],
+   "out": "0-100%"
+  },
+  {
+   "fn": "rangePct",
+   "in": [
+    null,
+    0.5
+   ],
+   "out": "-"
+  },
+  {
+   "fn": "rangePct",
+   "in": [
+    0.5,
+    null
+   ],
+   "out": "-"
+  },
+  {
+   "fn": "shortSlug",
+   "in": [
+    null
+   ],
+   "out": "-"
+  },
+  {
+   "fn": "shortSlug",
+   "in": [
+    ""
+   ],
+   "out": "-"
+  },
+  {
+   "fn": "shortSlug",
+   "in": [
+    "gpt-4o"
+   ],
+   "out": "gpt-4o"
+  },
+  {
+   "fn": "shortSlug",
+   "in": [
+    "deepseek/deepseek-v4-flash-0731"
+   ],
+   "out": "deepseek-v4-flash-0731"
+  },
+  {
+   "fn": "shortSlug",
+   "in": [
+    "a/b/c"
+   ],
+   "out": "c"
+  },
+  {
+   "fn": "shortSlug",
+   "in": [
+    "~typesafe/jev-latest"
+   ],
+   "out": "jev-latest"
+  },
+  {
+   "fn": "shortSlug",
+   "in": [
+    "anthropic-experimental/claude-sonnet-long-context-preview-2026-09-30-reasoning-high-thinking"
+   ],
+   "out": "claude-sonnet-long-co…-high-thinking"
+  },
+  {
+   "fn": "lowNCell",
+   "in": [
+    null
+   ],
+   "out": true
+  },
+  {
+   "fn": "lowNCell",
+   "in": [
+    0
+   ],
+   "out": true
+  },
+  {
+   "fn": "lowNCell",
+   "in": [
+    2
+   ],
+   "out": true
+  },
+  {
+   "fn": "lowNCell",
+   "in": [
+    3
+   ],
+   "out": false
+  },
+  {
+   "fn": "lowNCell",
+   "in": [
+    50
+   ],
+   "out": false
+  },
+  {
+   "fn": "lowNBest",
+   "in": [
+    null
+   ],
+   "out": true
+  },
+  {
+   "fn": "lowNBest",
+   "in": [
+    9
+   ],
+   "out": true
+  },
+  {
+   "fn": "lowNBest",
+   "in": [
+    10
+   ],
+   "out": false
+  },
+  {
+   "fn": "lowNBest",
+   "in": [
+    50
+   ],
+   "out": false
+  }
+ ]
+}

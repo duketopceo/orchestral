@@ -1,0 +1,12 @@
+model         calls   api   api $    cfg $   ratio  drift
+──────────────────────────────────────────────────────────────────────────────
+judge           319   296  $0.348   $0.347   1.00x  ok
+orch-a          974   865   $3.09    $1.47   2.10x  STALE?
+orch-b          946   844   $4.27    $2.83   1.51x  STALE?
+worker-cheap   1470  1333  $0.598   $0.605   0.99x  ok
+worker-fresh     12    10  $0.027  $0.0066   4.05x  STALE?
+worker-hot      703   635   $2.43   $0.150  16.17x  STALE?
+worker-local     12     0   $0.00        -       -  no provider-reported costs
+worker-mid      708   634   $1.76   $0.586   3.01x  STALE?
+
+5 model(s) beyond 15% drift: update models/*.yaml or check for silent rerouting.

@@ -72,10 +72,11 @@ class FakeLaunch:
     the driver's own store queries see it — no patched seams."""
 
     def __init__(self, store: RunStore, *, passes: bool = True, cost: float = 0.01,
-                 fail: set[tuple[str, int]] | None = None):
+                 fail: set[tuple[str, int]] | None = None, api_cost: float | None = None):
         self.store = store
         self.passes = passes
         self.cost = cost
+        self.api_cost = api_cost  # what the provider billed, when it differs from the rate card
         self.fail = fail or set()  # {(arm, rep)} that raise
         self.launches: list[tuple[str, str, int, str, int | None]] = []
 
@@ -98,7 +99,8 @@ class FakeLaunch:
             config={"jev_assist": arm == "jev"},
         ))
         self.store.record_call(run_id=rid, phase="plan", step=1,
-                               role="orchestrator", model="o/m", cost_usd=self.cost)
+                               role="orchestrator", model="o/m", cost_usd=self.cost,
+                               api_cost_usd=self.api_cost)
         return self.store.get_run(rid)
 
 
@@ -221,6 +223,16 @@ class TestDriver(unittest.TestCase):
         self.assertIsNotNone(out["stopped"])
         self.assertEqual(len(launch.launches), 2)
         self.assertAlmostEqual(out["spend"], 0.04)
+
+    def test_budget_aborts_when_only_billed_spend_crosses_it(self):
+        # rate card says $0.01 per call (under the $0.03 budget after a pair),
+        # the provider billed $0.05: the stop must follow the bill
+        launch = FakeLaunch(self.store, cost=0.01, api_cost=0.05)
+        out = self._run(launch, budget=0.03, daily_cap=0.0, batch_size=5,
+                        diff_eps=0.0)
+        self.assertIsNotNone(out["stopped"])
+        self.assertEqual(len(launch.launches), 2)
+        self.assertAlmostEqual(out["spend"], 0.10)
 
     def test_resume_skips_done_cells(self):
         # priced target must be reached — expensive history keeps the

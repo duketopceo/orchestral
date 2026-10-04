@@ -7,6 +7,7 @@ so a pairing comparison carries variance instead of single runs.
 
 from __future__ import annotations
 
+import math
 import statistics
 from collections.abc import Iterable
 from dataclasses import dataclass, field
@@ -89,8 +90,22 @@ class CellAggregate:
         }
 
 
-def aggregate(runs: Iterable[RunMeta], *, by_group: bool = True) -> list[CellAggregate]:
+def run_cost(run: RunMeta, cost_basis: str = "billed") -> float:
+    """One run's cost under `cost_basis`: ``billed`` (the provider's bill,
+    failed runs included, falling back to the rate card for in-memory metas
+    that were never read from a store) or ``rate_card`` (the recorded
+    `total_cost_usd`, which `--json` outputs keep for compatibility)."""
+    if cost_basis == "rate_card":
+        return run.total_cost_usd
+    return run.display_cost_usd
+
+
+def aggregate(runs: Iterable[RunMeta], *, by_group: bool = True,
+              cost_basis: str = "billed") -> list[CellAggregate]:
     """Group runs into cells and summarize each.
+
+    Costs read billed spend by default; `cost_basis="rate_card"` keeps the
+    recorded rate-card totals.
 
     `by_group=True` keys cells on (run_group, task, orchestrator, worker)
     so separate experiments stay separate; `False` drops the group key for
@@ -113,10 +128,10 @@ def aggregate(runs: Iterable[RunMeta], *, by_group: bool = True) -> list[CellAgg
         passed = sum(1 for r in cell if r.passes)
         scored = [r.score for r in finished if r.score is not None]
         judged = [r.judge_score for r in finished if r.judge_score is not None]
-        costs = [r.total_cost_usd for r in cell]
+        costs = [run_cost(r, cost_basis) for r in cell]
         latencies = [r.latency_ms for r in cell if r.latency_ms]
         tokens = [r.total_input_tokens + r.total_output_tokens for r in cell]
-        cost_total = sum(costs)
+        cost_total = math.fsum(costs)
         failures: dict[str, int] = {}
         for r in cell:
             if r.failure_reason:
@@ -225,6 +240,7 @@ def pairing_leaderboard(
     *,
     min_samples: int = MIN_LEADERBOARD_SAMPLES,
     unmetered_workers: Iterable[str] | None = None,
+    cost_basis: str = "billed",
 ) -> list[PairingAggregate]:
     """Aggregate runs into leaderboard rows keyed on (orchestrator, worker).
 
@@ -282,9 +298,9 @@ def pairing_leaderboard(
                 judge_scores.append(r.judge_score)
         judged = [r for r in finished if r.judge_score is not None or r.judge_passed is not None]
         judge_approved = sum(1 for r in judged if r.judge_passed is True)
-        costs = [r.total_cost_usd for r in finished]
+        costs = [run_cost(r, cost_basis) for r in finished]
         latencies = [r.latency_ms for r in finished if r.latency_ms]
-        cost_total = sum(r.total_cost_usd for r in cell)
+        cost_total = math.fsum(run_cost(r, cost_basis) for r in cell)
         failures: dict[str, int] = {}
         for r in cell:
             if r.failure_reason:

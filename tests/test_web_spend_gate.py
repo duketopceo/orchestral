@@ -22,6 +22,7 @@ from types import SimpleNamespace
 from typing import ClassVar
 from unittest.mock import patch
 
+from orchestral import design_tokens
 from orchestral.config import ModelConfig, TaskSpec
 from orchestral.runner import Runner
 from orchestral.storage import RunStore
@@ -75,10 +76,10 @@ class _Server(unittest.TestCase):
     def _get(self, path: str) -> tuple[int, str, str]:
         try:
             with urllib.request.urlopen(f"http://127.0.0.1:{self.port}{path}") as r:
-                return r.status, r.headers.get("Content-Type", ""), r.read().decode()
+                return r.status, r.headers.get("Content-Type", ""), r.read().decode(errors="replace")
         except urllib.error.HTTPError as e:
             with e:
-                return e.code, e.headers.get("Content-Type", ""), e.read().decode()
+                return e.code, e.headers.get("Content-Type", ""), e.read().decode(errors="replace")
 
     def _post(self, path: str, fields: dict[str, str]) -> tuple[int, dict]:
         req = urllib.request.Request(
@@ -107,6 +108,9 @@ class TestLaunchConfirmGate(_Server):
         self.assertEqual(body["estimate"]["replicates"], 2)
         self.assertIsNone(body["estimate"]["total_usd"])  # no paid history: unknown, not $0
         self.assertEqual(body["estimate"]["basis"], "unknown")
+        for key in ("low_usd", "high_usd", "per_run_usd", "basis_label",
+                    "month_to_date_billed_usd", "monthly_cap_usd"):
+            self.assertIn(key, body["estimate"])
         self.assertEqual(len(self.obs.registry.jobs), before)
 
     def test_legacy_form_route_is_gated_too(self):
@@ -143,18 +147,26 @@ class TestEstimates(_Server):
         self.assertTrue(est["caveat"])
 
     def test_launch_estimate_uses_history(self):
-        store = SimpleNamespace(mean_cell_cost=lambda *a, **k: 0.05,
-                                mean_run_cost=lambda **k: 9.0)
+        calls: list[tuple] = []
+
+        def estimate(task, orch, worker, *, exclude_task_id=None):
+            calls.append((task, orch, worker))
+            return SimpleNamespace(per_run_usd=0.05, low_usd=0.03, high_usd=0.08, n=4,
+                                   basis="task_pairing")
+
+        store = SimpleNamespace(
+            billed_estimate=estimate,
+            cost_calibration=lambda: SimpleNamespace(
+                ratio_for=lambda m: SimpleNamespace(ratio=2.0, source="own", n=30)),
+            month_to_date_billed_usd=lambda now=None: 1.5)
         est = state.launch_estimate(store, self.models, {
             "task": "t-task", "orchestrator": "o/model", "worker": "w/model", "replicates": "2"})
         self.assertAlmostEqual(est["total_usd"], 0.10)
+        self.assertAlmostEqual(est["total_low_usd"], 0.06)
+        self.assertAlmostEqual(est["total_high_usd"], 0.16)
         self.assertEqual(est["basis"], "task_pairing")
-        store = SimpleNamespace(mean_cell_cost=lambda *a, **k: None,
-                                mean_run_cost=lambda **k: 0.2)
-        est = state.launch_estimate(store, self.models, {
-            "task": "t-task", "orchestrator": "o/model", "worker": "w/model"})
-        self.assertEqual(est["basis"], "pairing")
-        self.assertAlmostEqual(est["total_usd"], 0.2)
+        self.assertEqual(est["month_to_date_billed_usd"], 1.5)
+        self.assertEqual(calls, [("t-task", "o/model", "w/model")])
 
     def test_thread_estimate(self):
         est = state.thread_estimate(self.models, "paid/writer", provider_ready=True)
@@ -185,13 +197,110 @@ class TestThreadConfirmGate(_Server):
         self.assertTrue(body["templated"])
 
 
+class TestIdempotency(_Server):
+    PAID: ClassVar[dict[str, str]] = {"task": "t-task", "orchestrator": "o/model",
+                                      "worker": "w/model", "confirm_spend": "1"}
+
+    def _fake_launch(self):
+        started: list[state.Job] = []
+
+        def launch(spec):
+            job = state.Job(label=f"job{len(started)}")
+            job.run_ids.append(f"run{len(started)}")
+            started.append(job)
+            return job
+        return started, launch
+
+    def test_same_key_starts_one_job_and_both_return_its_id(self):
+        started, launch = self._fake_launch()
+        with patch.object(self.obs.registry, "launch", side_effect=launch):
+            c1, b1 = self._post("/api/run", {**self.PAID, "idempotency_key": "k-same"})
+            c2, b2 = self._post("/api/run", {**self.PAID, "idempotency_key": "k-same"})
+        self.assertEqual((c1, c2), (200, 200))
+        self.assertEqual(len(started), 1)
+        self.assertEqual(b1["run_id"], b2["run_id"])
+
+    def test_different_key_starts_a_second_job_only_after_confirm(self):
+        started, launch = self._fake_launch()
+        with patch.object(self.obs.registry, "launch", side_effect=launch):
+            self._post("/api/run", {**self.PAID, "idempotency_key": "k-a"})
+            unconfirmed = {k: v for k, v in self.PAID.items() if k != "confirm_spend"}
+            code, body = self._post("/api/run", {**unconfirmed, "idempotency_key": "k-b"})
+            self.assertEqual(code, 409)
+            self.assertTrue(body["needs_confirm"])
+            self.assertEqual(len(started), 1)
+            code, body = self._post("/api/run", {**self.PAID, "idempotency_key": "k-b"})
+        self.assertEqual(code, 200)
+        self.assertEqual(len(started), 2)
+        self.assertNotEqual(body["run_id"], "run0")
+
+    def test_a_key_never_bypasses_the_confirm_gate(self):
+        started, launch = self._fake_launch()
+        unconfirmed = {k: v for k, v in self.PAID.items() if k != "confirm_spend"}
+        with patch.object(self.obs.registry, "launch", side_effect=launch):
+            self._post("/api/run", {**self.PAID, "idempotency_key": "k-gate"})
+            code, _ = self._post("/api/run", {**unconfirmed, "idempotency_key": "k-gate"})
+        self.assertEqual(code, 409)
+        self.assertEqual(len(started), 1)
+
+    def test_failed_launch_does_not_poison_the_key(self):
+        started, launch = self._fake_launch()
+        attempts = iter([ValueError("no such task")])
+
+        def flaky(spec):
+            exc = next(attempts, None)
+            if exc:
+                raise exc
+            return launch(spec)
+
+        with patch.object(self.obs.registry, "launch", side_effect=flaky):
+            code, _ = self._post("/api/run", {**self.PAID, "idempotency_key": "k-flaky"})
+            self.assertEqual(code, 400)
+            code, _ = self._post("/api/run", {**self.PAID, "idempotency_key": "k-flaky"})
+        self.assertEqual(code, 200)
+        self.assertEqual(len(started), 1)
+
+    def test_thread_draft_retried_with_same_key_is_one_paid_call(self):
+        calls: list[int] = []
+
+        def draft(**kw):
+            calls.append(1)
+            return {"posts": ["a", "b"], "templated": False, "model": "paid/writer"}
+
+        fake_client = SimpleNamespace(close=lambda: None)
+        form = {"kind": "group", "target": "g1", "model": "paid/writer", "n": "3",
+                "confirm_spend": "1", "idempotency_key": "k-thread"}
+        with patch.object(server, "_provider_ready", return_value=True), \
+                patch("orchestral.providers.provider_for", return_value=fake_client), \
+                patch("orchestral.judge.draft_thread", side_effect=draft):
+            c1, b1 = self._post("/api/thread", form)
+            c2, b2 = self._post("/api/thread", form)
+        self.assertEqual((c1, c2), (200, 200))
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(b1, b2)
+
+    def test_cache_entries_expire_after_ten_minutes(self):
+        now = [1000.0]
+        cache = server.IdempotencyCache(clock=lambda: now[0])
+        runs: list[int] = []
+        first = cache.run("k", lambda: runs.append(1) or ("ok", 1))
+        now[0] += server.IDEMPOTENCY_TTL_S - 1
+        cache.run("k", lambda: runs.append(1) or ("ok", 2))
+        self.assertEqual(len(runs), 1)
+        now[0] += 2
+        again = cache.run("k", lambda: runs.append(1) or ("ok", 3))
+        self.assertEqual((first, again, len(runs)), (("ok", 1), ("ok", 3), 2))
+
+
 class TestFaviconAndErrors(_Server):
     def test_favicon(self):
-        for path in ("/favicon.ico", "/static/favicon.svg"):
-            code, ctype, body = self._get(path)
-            self.assertEqual(code, 200, path)
-            self.assertEqual(ctype, "image/svg+xml")
-            self.assertIn("<svg", body)
+        code, ctype, body = self._get("/static/favicon.svg")
+        self.assertEqual(code, 200)
+        self.assertEqual(ctype, "image/svg+xml")
+        self.assertIn("<svg", body)
+        code, ctype, _ = self._get("/favicon.ico")
+        self.assertEqual(code, 200)
+        self.assertEqual(ctype, "image/x-icon")
         _, _, html = self._get("/")
         self.assertIn('rel="icon"', html)
 
@@ -205,7 +314,24 @@ class TestFaviconAndErrors(_Server):
 class TestUiDefaults(unittest.TestCase):
     """Static contract on the SPA source — the browser suite covers behavior."""
 
-    js = (UI / "app.js").read_text()
+    js = "\n".join(p.read_text() for p in sorted((UI / "js").rglob("*.js")))
+
+    def test_no_unconditional_timers_remain(self):
+        # Every live surface goes through ui/js/poller.js, which pauses while hidden.
+        for path in (UI / "js").rglob("*.js"):
+            text = path.read_text()
+            self.assertNotIn("setInterval", text, path.name)
+            if path.name not in {"poller.js", "router.js"}:
+                self.assertNotIn("setTimeout", text, path.name)
+
+    def test_import_map_versions_every_module(self):
+        # Nested imports bust the cache through the map in app.html, so a module
+        # missing from it would be served stale forever.
+        html = (UI / "app.html").read_text()
+        mapped = set(re.findall(r'"(/static/js/[^"]+\.js)": "\1\?v=__V__"', html))
+        modules = {"/static/" + p.relative_to(UI).as_posix() for p in (UI / "js").rglob("*.js")}
+        self.assertEqual(modules - mapped - {"/static/js/main.js"}, set())
+        self.assertEqual(mapped - modules, set())
 
     def test_new_run_defaults_to_dry_run(self):
         tag = re.search(r'<input type="checkbox" name="dry_run"[^>]*>', self.js)
@@ -223,6 +349,19 @@ class TestUiDefaults(unittest.TestCase):
         # every confirm_spend=1 is set right after an awaited confirm
         self.assertEqual(self.js.count('body.set("confirm_spend", "1")'), 4)
 
+    def test_paid_posts_carry_an_idempotency_key_and_estimate_rows(self):
+        self.assertIn("crypto.randomUUID", self.js)
+        # the launch confirm routes both of its attempts through keyed()
+        self.assertEqual(self.js.count("keyed();"), 2)
+        self.assertEqual(self.js.count('body.set("idempotency_key"'), 3)
+        for row in ("Range", "Spent this month"):
+            self.assertIn(row, self.js)
+
+    def test_spend_button_is_disabled_while_the_estimate_loads(self):
+        # the price segment is disabled while "loading" (components/spend.js) and new.js enters that state
+        self.assertIn('btn.disabled = !dry && status === "loading"', self.js)
+        self.assertIn('setSpendButton(btn, { dry: false, status: "loading" });\n    line.textContent = "Paid run. Estimating cost', self.js)
+
 
 def _lum(hex_color: str) -> float:
     rgb = [int(hex_color[i:i + 2], 16) / 255 for i in (1, 3, 5)]
@@ -236,12 +375,16 @@ def _contrast(a: str, b: str) -> float:
 
 
 class TestMutedTextContrast(unittest.TestCase):
+    """The full DESIGN.md 6.1 table lives in tests/test_design_tokens.py; this
+    keeps the original regression (muted text readable) against the new
+    token source in both themes."""
+
     def test_text_3_meets_aa_on_every_surface(self):
-        css = (UI / "app.css").read_text()
-        tokens = dict(re.findall(r"--([a-z0-9-]+):\s*(#[0-9a-fA-F]{6})", css))
-        for surface in ("bg", "bg-raised", "bg-inset", "bg-hover"):
-            ratio = _contrast(tokens["text-3"], tokens[surface])
-            self.assertGreaterEqual(ratio, 4.5, f"--text-3 on --{surface}: {ratio:.2f}")
+        toks = design_tokens.load(UI)
+        for theme in ("paper", "stage"):
+            for surface in ("canvas", "surface"):
+                ratio = _contrast(toks[theme]["--ink-3"], toks[theme][f"--{surface}"])
+                self.assertGreaterEqual(ratio, 4.5, f"{theme} --ink-3 on --{surface}: {ratio:.2f}")
 
 
 try:
@@ -264,13 +407,16 @@ class TestNewRunBrowser(_Server):
                 pg.goto(f"http://127.0.0.1:{self.port}/#/new")
                 pg.wait_for_selector("#launch-btn")
                 self.assertTrue(pg.is_checked("input[name=dry_run]"))
-                self.assertEqual(pg.inner_text("#launch-btn"), "Launch dry run")
+                self.assertEqual(pg.inner_text("#launch-btn .spend-label"), "Launch dry run")
 
+                pg.fill("#launch-task", "t-task")
+                pg.keyboard.press("ArrowDown")
+                pg.keyboard.press("Enter")
                 pg.uncheck("input[name=dry_run]")
                 pg.wait_for_function(
                     "document.getElementById('spend-line').textContent.includes('Estimated cost')")
                 self.assertIn("unknown", pg.inner_text("#spend-line"))
-                self.assertEqual(pg.inner_text("#launch-btn"), "Launch paid run")
+                self.assertEqual(pg.inner_text("#launch-btn .spend-label"), "Launch paid run")
 
                 pg.click("#launch-btn")
                 pg.wait_for_selector("dialog.spend-dialog[open]")

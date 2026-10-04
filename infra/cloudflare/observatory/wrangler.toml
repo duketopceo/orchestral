@@ -11,10 +11,22 @@ routes = [
   { pattern = "obs.shippedit.dev", custom_domain = true },
 ]
 
-# The SPA (ui/) is static — pushed snapshots live in R2, not here.
+# The SPA is static — pushed snapshots live in R2, not here. The assets are the
+# staged copy of ui/ with app.html's ?v= token resolved (see [build]); never
+# point this at ../../../ui directly or the page ships a literal "__V__".
+# Required so Workers Builds PR previews (`npx wrangler preview`) work;
+# the block may be empty — assets/bindings inherit from the top level.
+previews = {}
+
+[build]
+command = "python3 ../../../scripts/build-hosted-assets.py"
+cwd = "."
+watch_dir = "../../../ui"
+
 [assets]
-directory = "../../../ui"
+directory = ".build/ui"
 binding = "ASSETS"
+html_handling = "none"
 
 [[r2_buckets]]
 binding = "BUCKET"

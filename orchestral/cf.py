@@ -29,19 +29,20 @@ import base64
 import hashlib
 import json
 import os
+import subprocess
 import tempfile
 import zipfile
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
-from urllib.parse import quote
 
 import httpx
 
 from orchestral import privacy
 from orchestral.privacy import HoldoutRunError
 from orchestral.storage import RunStore
-from orchestral.web import catalog, state
+from orchestral.web import state
 
 OBS_URL = os.environ.get("ORCHESTRAL_OBS_URL", "https://obs.shippedit.dev").rstrip("/")
 
@@ -89,44 +90,35 @@ class SyncError(RuntimeError):
 # ---------------------------------------------------------------------------
 
 def global_payloads(store: RunStore, tasks_dir: Path, models_dir: Path,
-                    groups_file: Path) -> dict[str, Any]:
-    """The api/*.json snapshot tree minus per-run payloads."""
-    registry = state.JobRegistry(Path(store.root), tasks_dir, models_dir, store)
-    experiments_dir = Path(tasks_dir).parent / "experiments"
-    out: dict[str, Any] = {
-        "api/overview.json": state.overview_payload(
-            store, registry, tasks_dir=tasks_dir, groups_file=groups_file),
-        "api/runs.json": state.runs_payload(store, tasks_dir=tasks_dir),
-        "api/groups.json": state.groups_payload(store, groups_file),
-        "api/matrix.json": state.task_matrix_payload(store, tasks_dir),
-        "api/leaderboard.json": state.leaderboard_rows(store),
-        "api/pairings.json": state.pairings_payload(store, tasks_dir=tasks_dir),
-        "api/flags.json": store.annotations(),
-        "api/cards.json": state.card_catalog_payload(
-            store, tasks_dir=tasks_dir, groups_file=groups_file),
-        "api/models-catalog.json": catalog.models_catalog_payload(store, models_dir),
-        "api/tasks.json": state.task_choices(tasks_dir),
-        "api/models.json": state.model_choices(models_dir, None),
-    }
-    if experiments_dir.is_dir():
-        for spec in sorted(experiments_dir.glob("*.yaml")):
-            payload = state.experiment_payload(store, spec, tasks_dir=tasks_dir)
-            if payload is not None:
-                out[f"api/experiment.{spec.stem}.json"] = payload
-    # /api/compare?a=&b= and /api/card?kind=&target= are query-param routes —
-    # enumerate every pair/card the catalog can name so the hosted mirror
-    # serves the same surface.
-    groups = [g["group"] for g in out["api/groups.json"]]
-    for a in groups:
-        for b in groups:
-            if a != b:
-                out[f"api/compare.{quote(a, safe='')}.vs.{quote(b, safe='')}.json"] = (
-                    state.compare_payload(store, a, b))
-    for card in out["api/cards.json"]["cards"]:
-        kind, target = card.get("kind"), card.get("target")
-        if kind and target:
-            out[f"api/card.{kind}.{quote(target, safe='')}.json"] = card
-    return out
+                    groups_file: Path, *, synced_at: str | None = None,
+                    source_commit: str | None = None) -> dict[str, Any]:
+    """The ``api/<key>`` tree minus per-run payloads of published runs.
+
+    ``orchestral.web.snapshot`` is the single writer of the key tree (its
+    docstring lists the shapes; the Worker's keys.js accepts exactly those).
+    The only per-run keys rendered here are the withheld stubs of holdout runs,
+    so their pages say why every tab is empty; every other run's keys travel
+    with its own ``/ingest/run`` push, over the scrubbed tree.
+    """
+    from orchestral.web import snapshot
+
+    snap = snapshot.build_snapshot(
+        store, tasks_dir, models_dir, groups_file,
+        run_ids=snapshot.holdout_run_ids(store),
+        synced_at=synced_at or datetime.now(UTC).isoformat(timespec="seconds"),
+        source_commit=source_commit if source_commit is not None else _source_commit())
+    return {f"api/{key}": payload for key, payload in snap.items()}
+
+
+def _source_commit() -> str:
+    """Short git commit of the checkout the snapshot was rendered from."""
+    try:
+        out = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"], cwd=Path(__file__).resolve().parent,
+            capture_output=True, text=True, check=False, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return out.stdout.strip() if out.returncode == 0 else ""
 
 
 def _ledger_calls(store: RunStore, run_id: str) -> list[dict[str, Any]]:
@@ -168,8 +160,10 @@ def _hosted_detail(store: RunStore, run_id: str, scrubbed: Path, tasks_dir: Path
                    groups_file: Path) -> dict[str, Any] | None:
     """run_detail_payload over the scrubbed tree + body-free calls ledger."""
     shim = cast(RunStore, _ScrubbedStore(store, run_id, scrubbed))
+    meta = store.get_run(run_id)
     payload = state.run_detail_payload(
-        shim, run_id, tasks_dir=tasks_dir, groups_file=groups_file)
+        shim, run_id, tasks_dir=tasks_dir, groups_file=groups_file, hosted=True,
+        raw_dir=state.resolve_run_dir(store, meta) if meta else None)
     if payload is None:
         return None
     payload["calls"] = _ledger_calls(store, run_id)
@@ -221,30 +215,22 @@ def push_run(client: httpx.Client, store: RunStore, meta: Any,
              tasks_dir: Path, groups_file: Path) -> dict[str, Any]:
     """Scrub + payload + ledger for one run → POST /ingest/run."""
     run_dir = Path(meta.run_dir)
+    if privacy.run_is_holdout(run_dir, meta.config):  # the index row alone can mark it
+        raise HoldoutRunError(f"{meta.run_id} is a holdout run")
+    from orchestral.web import snapshot
+
     with tempfile.TemporaryDirectory(prefix="orch-scrub-") as tmp:
         scrubbed = scrub_to_dir(run_dir, Path(tmp))
         files = _collect_files(scrubbed)
-        detail = _hosted_detail(store, meta.run_id, scrubbed, tasks_dir, groups_file)
-        evidence = state.run_evidence_payload(
-            cast(RunStore, _ScrubbedStore(store, meta.run_id, scrubbed)),
-            meta.run_id)
-        live = state.live_payload(
-            scrubbed, 0, started_at=meta.started_at, meta=meta)
-        live["cancellable"] = False
+        payloads = snapshot.scrubbed_run_payloads(store, meta, scrubbed, tasks_dir, groups_file)
     body: dict[str, Any] = {
         "run_id": meta.run_id,
-        "payloads": {
-            f"api/run/{meta.run_id}/live.json": live,
-        },
+        "payloads": {f"api/{key}": payload for key, payload in payloads.items()},
         "d1": d1_projection(store, [meta.run_id]),
         "files": {f"runs/{meta.run_id}/{name}": b64
                   for name, b64 in files.items()},
         "manifest_hash": manifest_hash(run_dir),
     }
-    if detail is not None:
-        body["payloads"][f"api/run/{meta.run_id}.json"] = detail
-    if evidence is not None:
-        body["payloads"][f"api/run/{meta.run_id}/evidence.json"] = evidence
     return _post(client, "/ingest/run", body)
 
 
@@ -277,21 +263,25 @@ def d1_projection(store: RunStore, run_ids: list[str] | None = None) -> dict[str
         if run_ids is not None else store.list_runs(limit=None)
     )
     for m in metas:
-        if privacy.run_is_holdout(Path(m.run_dir)):
+        if privacy.run_is_holdout(Path(m.run_dir), m.config):
             continue  # holdout runs never leave the machine, even as rows
         row = m.to_public_dict()
         runs.append({k: row.get(k) for k in RUN_COLUMNS} | {"holdout": 0})
     calls: list[dict[str, Any]] = []
     for m in metas:
-        if privacy.run_is_holdout(Path(m.run_dir)):
+        if privacy.run_is_holdout(Path(m.run_dir), m.config):
             continue
         calls.extend(_ledger_calls(store, m.run_id))
     # Every field goes through scrub_dict, not just note — `post`
     # annotations put free-text URLs in target.
+    # A flag or note on a holdout run is withheld with the run.
+    held = {m.run_id for m in store.list_runs(limit=None)
+            if privacy.run_is_holdout(Path(m.run_dir), m.config)}
     annotations = [
         {k: privacy.scrub_dict(v) for k, v in row.items()
          if k in ANNOTATION_COLUMNS}
         for row in store.annotations()
+        if not (row.get("kind") == "run" and row.get("target") in held)
     ]
     return {"runs": runs, "calls": calls, "annotations": annotations}
 
@@ -338,13 +328,42 @@ def _post(client: httpx.Client, path: str, body: dict[str, Any]) -> dict[str, An
         return {}
 
 
+STATE_CHUNK_KEYS = 100
+STATE_CHUNK_BYTES = 6 * 1024 * 1024
+
+
+def _state_chunks(payloads: dict[str, Any]) -> list[dict[str, Any]]:
+    """Split the key tree into POST-sized bodies; meta.json goes last so the
+    advertised ``synced_at`` only moves once the data it describes has landed."""
+    meta_key = "api/meta.json"
+    chunks: list[dict[str, Any]] = [{}]
+    size = 0
+    for key, payload in payloads.items():
+        if key == meta_key:
+            continue
+        n = len(json.dumps(payload, default=str))
+        if chunks[-1] and (len(chunks[-1]) >= STATE_CHUNK_KEYS or size + n > STATE_CHUNK_BYTES):
+            chunks.append({})
+            size = 0
+        chunks[-1][key] = payload
+        size += n
+    if meta_key in payloads:
+        chunks.append({meta_key: payloads[meta_key]})
+    return [c for c in chunks if c]
+
+
 def push_state(client: httpx.Client, store: RunStore, tasks_dir: Path,
                models_dir: Path, groups_file: Path) -> dict[str, Any]:
-    """Global payload snapshot + full ledger projection → POST /ingest/state."""
-    return _post(client, "/ingest/state", {
-        "payloads": global_payloads(store, tasks_dir, models_dir, groups_file),
-        "d1": d1_projection(store),
-    })
+    """Global key tree + full ledger projection → POST /ingest/state (chunked;
+    the D1 rows ride with the first chunk)."""
+    chunks = _state_chunks(global_payloads(store, tasks_dir, models_dir, groups_file))
+    d1 = d1_projection(store)
+    written = 0
+    for i, chunk in enumerate(chunks):
+        out = _post(client, "/ingest/state", {
+            "payloads": chunk, "d1": d1 if i == 0 else {}})
+        written += int(out.get("written", len(chunk)))
+    return {"ok": True, "written": written}
 
 
 def push_run_events_only(client: httpx.Client, store: RunStore, meta: Any) -> dict[str, Any]:
@@ -383,7 +402,7 @@ def sync(store: RunStore, tasks_dir: Path, models_dir: Path, groups_file: Path,
     with httpx.Client(headers=_ingest_headers() if push else {}) as client:
         for meta in metas:
             try:
-                if privacy.run_is_holdout(Path(meta.run_dir)):
+                if privacy.run_is_holdout(Path(meta.run_dir), meta.config):
                     result.skipped_holdout.append(meta.run_id)
                     continue
                 if not Path(meta.run_dir).is_dir():

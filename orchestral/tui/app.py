@@ -28,6 +28,7 @@ from orchestral.config import (
     resolve_model,
 )
 from orchestral.export import runs_csv
+from orchestral.format import NULL_GLYPH, fmt_score
 from orchestral.judge import judge_choices
 from orchestral.runner import Runner
 from orchestral.storage import RunStore
@@ -39,8 +40,25 @@ from orchestral.tui.screens import (
     LiveRunScreen,
     RunDetailScreen,
 )
-from orchestral.tui.state import Job, JobStatus, filter_runs, fmt_cost, fmt_tokens, pass_label, status_label
+from orchestral.tui.state import (
+    Job,
+    JobStatus,
+    filter_runs,
+    fmt_cost,
+    fmt_tokens,
+    pass_label,
+    status_label,
+    verdict_cell,
+)
+from orchestral.tui.theme import DEFAULT_THEME, THEME_NAMES, build_theme, other, tokens_for
 from orchestral.tui.widgets import StatusBar
+
+# Full history table; below COMPACT_BELOW columns the verdict must stay on screen,
+# so the secondary columns drop instead of pushing Pass and Status off the edge.
+FULL_COLUMNS = ("Run", "Group", "Rep", "Task", "Orchestrator", "Worker", "Cost",
+                "Tokens", "Score", "Pass", "Status", "Started")
+COMPACT_COLUMNS = ("Run", "Task", "Worker", "Cost", "Pass", "Status")
+COMPACT_BELOW = 110
 
 
 def _task_ids(tasks_dir: Path) -> list[str]:
@@ -75,6 +93,12 @@ class OrchestralApp(App):
     .err { color: $error; }
     .warn { color: $warning; }
     .muted { color: $text-muted; }
+    Screen { background: $background; color: $foreground; }
+    DataTable { background: $background; color: $foreground; }
+    DataTable > .datatable--header { background: $panel; color: $foreground; }
+    DataTable > .datatable--odd-row { background: $surface; }
+    DataTable > .datatable--even-row { background: $background; }
+    * { scrollbar-background: $panel; scrollbar-color: $secondary; }
     #help-box, #launch-box {
         width: 60%;
         max-width: 90;
@@ -101,6 +125,7 @@ class OrchestralApp(App):
         Binding("n", "new_run", "New run"),
         Binding("x", "cancel_job", "Cancel job"),
         Binding("e", "export", "Export"),
+        Binding("t", "toggle_theme", "Theme"),
         Binding("?", "help", "Help"),
     ]
 
@@ -123,10 +148,14 @@ class OrchestralApp(App):
         self._runs: list[Any] = []
         self._query = ""
         self._auto_live_done = False
+        self._last_summary: dict[str, Any] = {}
+        for name in THEME_NAMES:
+            self.register_theme(build_theme(name))
+        self.theme = DEFAULT_THEME
 
     def compose(self) -> ComposeResult:
         yield Header()
-        yield Input(placeholder="filter runs — task, model, group, status, failure (esc to close)", id="filter-box")
+        yield Input(placeholder="filter runs by task, model, group, status or failure (esc to close)", id="filter-box")
         yield DataTable(id="runs-table", cursor_type="row", zebra_stripes=True)
         yield StatusBar()
         yield Footer()
@@ -136,11 +165,24 @@ class OrchestralApp(App):
         self.query_one("#runs-table", DataTable).focus()
         self.action_refresh()
         self.set_interval(5.0, self._tick)
+        self.theme_changed_signal.subscribe(self, self._on_theme_changed)
+
+    def action_toggle_theme(self) -> None:
+        self.theme = other(self.theme)
+
+    def _on_theme_changed(self, _theme: Any) -> None:
+        # Cells carry token colours, so a theme switch redraws them.
+        if self._runs and self.screen_stack:
+            self._populate(self._runs, self._last_summary)
 
     # -- data loading (thread worker → call_from_thread to touch UI) --
 
+    def _summary(self) -> dict[str, Any]:
+        """Index summary with the headline cost read from the provider's bill."""
+        return {**self.store.summary(), "total_cost_usd": self.store.billed_total_usd()}
+
     def _fetch(self) -> tuple[list[Any], dict[str, Any]]:
-        return self.store.list_runs(limit=None), self.store.summary()
+        return self.store.list_runs(limit=None), self._summary()
 
     def _reload(self) -> None:
         def work() -> None:
@@ -150,6 +192,7 @@ class OrchestralApp(App):
 
     def _populate(self, runs: list[Any], summary: dict[str, Any]) -> None:
         self._runs = runs
+        self._last_summary = summary
         table = self.query_one("#runs-table", DataTable)
         selected_id = None
         if table.row_count and table.cursor_row is not None:
@@ -157,26 +200,27 @@ class OrchestralApp(App):
                 selected_id = str(table.coordinate_to_cell_key(table.cursor_coordinate).row_key.value)
             except Exception:
                 selected_id = None
+        tokens = tokens_for(self.theme)
         table.clear(columns=True)
-        table.add_columns("Run", "Group", "Rep", "Task", "Orchestrator", "Worker", "Cost", "Tokens", "Score", "Pass", "Status", "Started")
+        compact = self.size.width < COMPACT_BELOW
+        columns = COMPACT_COLUMNS if compact else FULL_COLUMNS
+        table.add_columns(*columns)
         for r in filter_runs(runs, self._query):
-            pl, _pc = pass_label(r.passes)
-            sl, _sc = status_label(r.status)
-            table.add_row(
-                r.run_id,
-                r.run_group or "-",
-                str(r.replicate) if r.replicate is not None else "-",
-                r.task_id,
-                r.orchestrator,
-                r.worker,
-                fmt_cost(r.total_cost_usd),
-                fmt_tokens(r.total_input_tokens + r.total_output_tokens),
-                f"{r.score:.2f}" if r.score is not None else "-",
-                pl,
-                sl,
-                (r.started_at or "")[:19],
-                key=r.run_id,
-            )
+            cells: dict[str, Any] = {
+                "Run": r.run_id,
+                "Group": r.run_group or NULL_GLYPH,
+                "Rep": str(r.replicate) if r.replicate is not None else NULL_GLYPH,
+                "Task": r.task_id,
+                "Orchestrator": r.orchestrator,
+                "Worker": r.worker,
+                "Cost": fmt_cost(r.display_cost_usd),
+                "Tokens": fmt_tokens(r.total_input_tokens + r.total_output_tokens),
+                "Score": fmt_score(r.score),
+                "Pass": verdict_cell(pass_label(r.passes), tokens),
+                "Status": verdict_cell(status_label(r.status), tokens),
+                "Started": (r.started_at or "")[:19],
+            }
+            table.add_row(*[cells[c] for c in columns], key=r.run_id)
         if selected_id:
             with contextlib.suppress(Exception):
                 for i, r in enumerate(filter_runs(runs, self._query)):
@@ -209,10 +253,14 @@ class OrchestralApp(App):
         box.display = True
         box.focus()
 
+    def on_resize(self) -> None:
+        if self._runs:
+            self._populate(self._runs, self._last_summary)
+
     def on_input_changed(self, event: Input.Changed) -> None:
         if event.input.id == "filter-box":
             self._query = event.value
-            self._populate(self._runs, self.store.summary())
+            self._populate(self._runs, self._summary())
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id == "filter-box":
@@ -244,7 +292,7 @@ class OrchestralApp(App):
             return
         running = [r for r in self._runs if r.status == "running"]
         if not running:
-            self.notify("no run in flight — press n to launch one", severity="warning")
+            self.notify("no run in flight, press n to launch one", severity="warning")
             return
         self.push_screen(LiveRunScreen(self.store, running[-1].run_id, self.reports_dir))
 
@@ -290,9 +338,15 @@ class OrchestralApp(App):
             self.notify("need at least one task, orchestrator, and worker configured", severity="error")
             return
         self.push_screen(
-            LaunchScreen(tasks, orchestrators, workers, judges),
+            LaunchScreen(tasks, orchestrators, workers, judges,
+                         estimate_fn=self._launch_estimate),
             self._start_job,
         )
+
+    def _launch_estimate(self, spec: dict[str, Any]) -> dict[str, Any]:
+        """The web confirm dialog's estimate payload, so both surfaces show one number."""
+        from orchestral.web.state import launch_estimate
+        return launch_estimate(self.store, self.models_dir, spec)
 
     def _all_models(self) -> list[ModelConfig]:
         try:
@@ -318,9 +372,9 @@ class OrchestralApp(App):
         except ExecutorPreflightError as exc:
             self.notify(str(exc), severity="error")
             return
-        label = f"{spec['task']}·{spec['worker'].split('/')[-1]}"
+        label = f"{spec['task']} on {spec['worker'].split('/')[-1]}"
         if spec["replicates"] > 1:
-            label += f"×{spec['replicates']}"
+            label += f" x{spec['replicates']}"
         job = Job(label=label)
         self.jobs.append(job)
         self.query_one(StatusBar).set_jobs(self.jobs)

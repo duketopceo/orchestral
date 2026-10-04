@@ -10,15 +10,19 @@ doing.
 from __future__ import annotations
 
 import contextlib
+import functools
 import json
 import statistics
+import subprocess
 import threading
 import uuid
 import zipfile
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
 from urllib.parse import quote
+
+import yaml
 
 from orchestral.agentexec import ExecutorPreflightError, launch_gate
 from orchestral.calibrate import calibration_status
@@ -31,7 +35,20 @@ from orchestral.config import (
     resolve_judge,
     resolve_model,
 )
+from orchestral.format import (
+    LOW_N_BEST,
+    LOW_N_CELL,
+    NULL_GLYPH,
+    fmt_duration_ms,
+    fmt_money,
+    fmt_percent,
+    fmt_range_pct,
+    fmt_score,
+    is_low_n_best,
+    is_low_n_cell,
+)
 from orchestral.judge import DEFAULT_JUDGE
+from orchestral.privacy import run_is_holdout
 from orchestral.runner import Runner
 from orchestral.stats import aggregate, mean, pairing_leaderboard, wilson_interval
 from orchestral.storage import RunStore
@@ -159,6 +176,11 @@ class JobRegistry:
         job = self.job_for_run(run_id)
         return job.cancel() if job else False
 
+    def owns(self, run_id: str) -> bool:
+        """True when this process started run_id and its job is still active."""
+        job = self.job_for_run(run_id)
+        return bool(job and job.active)
+
     def job_for_run(self, run_id: str) -> Job | None:
         for job in self.jobs:
             if run_id in job.run_ids:
@@ -265,7 +287,7 @@ def _unreadable_caveat(unreadable_n: int) -> str:
     """Trailing qualifier so a partial judge axis is not read as a full one."""
     if not unreadable_n:
         return ""
-    return f" · {unreadable_n} judge report(s) unreadable — semantic axis incomplete"
+    return f" · {unreadable_n} judge report(s) unreadable, semantic axis incomplete"
 
 
 def live_payload(run_dir: Path, after: int, started_at: str | None = None,
@@ -310,6 +332,18 @@ def run_sections(run_dir: Path) -> dict[str, Any]:
         "plan": plan_path.read_text(encoding="utf-8", errors="replace") if plan_path.exists() else None,
         "manifest": read_json(run_dir / "manifest.json"),
     }
+
+
+def _public_run(r: Any) -> dict[str, Any]:
+    """`RunMeta.to_public_dict()` plus the billed cost and how it was derived.
+
+    `total_cost_usd` stays (it is the recorded rate-card total); readers show
+    `billed_cost_usd`, which includes failed runs' spend.
+    """
+    d = r.to_public_dict()
+    d["billed_cost_usd"] = r.display_cost_usd
+    d["cost_basis"] = r.cost_basis or "calibrated"
+    return d
 
 
 def leaderboard_rows(store: RunStore, sort: str = "cost_per_pass") -> list[dict[str, Any]]:
@@ -415,6 +449,160 @@ def thread_context(store: RunStore, kind: str, target: str,
     return ctx
 
 
+# KTD8: live is derived, not registered. A `running` index row is live while its
+# last event is younger than this; past it the row is `stalled`. Stalled is a
+# display state and is never written to the index.
+STALL_AFTER_S = 600
+_HEARTBEAT_TAIL_BYTES = 16 * 1024
+
+
+class LivenessRefusal(Exception):
+    """A liveness action that must not happen; carries the HTTP status to answer."""
+
+    def __init__(self, message: str, status: int = 409):
+        super().__init__(message)
+        self.status = status
+
+
+def _now() -> datetime:
+    return datetime.now(UTC)
+
+
+def _parse_ts(value: Any) -> datetime | None:
+    try:
+        ts = datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return None
+    return ts if ts.tzinfo else ts.replace(tzinfo=UTC)
+
+
+def liveness_state(idle_s: float | None) -> str:
+    """live while the heartbeat is at most STALL_AFTER_S old; stalled past it or unknown."""
+    return "live" if idle_s is not None and idle_s <= STALL_AFTER_S else "stalled"
+
+
+def last_heartbeat(run_dir: Path | str, started_at: str | None = None) -> datetime | None:
+    """Time of the last event in events.jsonl, else the file's mtime, else started_at."""
+    path = Path(run_dir) / "events.jsonl"
+    try:
+        size = path.stat().st_size
+        with path.open("rb") as fh:
+            fh.seek(max(0, size - _HEARTBEAT_TAIL_BYTES))
+            tail = fh.read().decode("utf-8", errors="replace")
+        for line in reversed(tail.splitlines()):
+            try:
+                ev = json.loads(line)
+            except ValueError:
+                continue
+            ts = _parse_ts(ev.get("timestamp")) if isinstance(ev, dict) else None
+            if ts:
+                return ts
+        return datetime.fromtimestamp(path.stat().st_mtime, UTC)
+    except OSError:
+        return _parse_ts(started_at) if started_at else None
+
+
+def _abandoned_runs(store: RunStore) -> set[str]:
+    return {a["target"] for a in store.annotations()
+            if a["kind"] == "run" and a["flag"] == "aborted"}
+
+
+def _event_spend(events: list[dict[str, Any]]) -> float:
+    total = 0.0
+    for ev in events:
+        if ev.get("type") == "llm_call":
+            c = ev.get("cost") or {}
+            billed = c.get("api_cost_usd")
+            total += float(billed if billed is not None else (c.get("usd") or 0))
+    return total
+
+
+def live_runs(store: RunStore, registry: JobRegistry, now: datetime | None = None) -> list[dict[str, Any]]:
+    """Everything running right now: index `running` rows (CLI-launched included)
+    plus this server's active jobs, each exactly once. Rows the operator marked
+    abandoned are terminal and absent. `owned` means this process can cancel it."""
+    now = now or _now()
+    abandoned = _abandoned_runs(store)
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for r in store.list_runs(limit=None):
+        if r.status != "running" or r.run_id in abandoned:
+            continue
+        seen.add(r.run_id)
+        beat = last_heartbeat(r.run_dir, r.started_at) if r.run_dir else _parse_ts(r.started_at)
+        idle = max(0.0, (now - beat).total_seconds()) if beat else None
+        events, _ = tail_events(Path(r.run_dir) / "events.jsonl", 0) if r.run_dir else ([], 0)
+        started = _parse_ts(r.started_at)
+        job = registry.job_for_run(r.run_id)
+        owned = bool(job and job.active)
+        state_ = liveness_state(idle)
+        spend = r.display_cost_usd or _event_spend(events)
+        rows.append({
+            "run_id": r.run_id,
+            "label": f"{r.task_id}·{r.worker.split('/')[-1]}",
+            "task_id": r.task_id, "orchestrator": r.orchestrator, "worker": r.worker,
+            "run_group": r.run_group,
+            "phase": run_phase(events),
+            "started_at": r.started_at,
+            "elapsed_s": int((now - started).total_seconds()) if started else None,
+            "elapsed": fmt_elapsed(r.started_at),
+            "last_event_at": beat.isoformat() if beat else None,
+            "idle_s": int(idle) if idle is not None else None,
+            "spend_usd": spend,
+            "owned": owned,
+            "state": state_,
+            "stalled": state_ == "stalled",
+            "cancellable": owned,
+            "abandonable": state_ == "stalled" and not owned,
+            "detail": job.detail if job else "",
+        })
+    for job in registry.jobs:
+        if not job.active or any(rid in seen for rid in job.run_ids):
+            continue
+        rows.append({
+            "run_id": None, "label": job.label, "task_id": None, "orchestrator": None,
+            "worker": None, "run_group": None, "phase": "starting", "started_at": None,
+            "elapsed_s": None, "elapsed": NULL_GLYPH, "last_event_at": None, "idle_s": None,
+            "spend_usd": 0.0, "owned": True, "state": "live", "stalled": False,
+            "cancellable": True, "abandonable": False, "detail": job.detail,
+        })
+    rows.sort(key=lambda row: (row["stalled"], -(row["elapsed_s"] or 0)))
+    return rows
+
+
+def _job_row(row: dict[str, Any]) -> dict[str, Any]:
+    """A live_runs row in the overview `jobs` shape (old keys kept)."""
+    return {**row, "status": "running",
+            "run_ids": [row["run_id"]] if row["run_id"] else []}
+
+
+def abandon_run(store: RunStore, registry: JobRegistry, run_id: str,
+                now: datetime | None = None) -> dict[str, Any]:
+    """Retire an orphan by writing the `aborted` run annotation. The run's index
+    status and spend are untouched. Idempotent; refuses finished, owned and
+    recently active runs."""
+    meta = store.get_run(run_id)
+    if meta is None:
+        raise LivenessRefusal(f"There is no run {run_id}.", 404)
+    if meta.status != "running":
+        raise LivenessRefusal(
+            f"Run {run_id} is already {meta.status}, so there is nothing to abandon.")
+    if run_id in _abandoned_runs(store):
+        return {"run_id": run_id, "abandoned": True, "already": True}
+    if registry.owns(run_id):
+        raise LivenessRefusal(
+            f"Run {run_id} belongs to a job in this server. Cancel it instead of abandoning it.")
+    now = now or _now()
+    beat = last_heartbeat(meta.run_dir, meta.started_at) if meta.run_dir else None
+    idle = max(0.0, (now - beat).total_seconds()) if beat else None
+    if liveness_state(idle) == "live":
+        raise LivenessRefusal(
+            f"Run {run_id} has a recent event ({int(idle or 0)} seconds ago), so it may still be "
+            f"running. It can be abandoned after {STALL_AFTER_S // 60} minutes without events.")
+    store.set_annotation("run", run_id, "aborted", note="abandoned: no owner and no recent events")
+    return {"run_id": run_id, "abandoned": True, "already": False}
+
+
 def overview_payload(
     store: RunStore,
     registry: JobRegistry,
@@ -432,22 +620,147 @@ def overview_payload(
     tmeta = _task_meta(store, tasks_dir)
     recent = []
     for r in runs[:10]:
-        d = r.to_public_dict()
+        d = _public_run(r)
         d["task_title"] = (tmeta.get(r.task_id) or {}).get("title") or ""
         d["judge_state"], d["judge_reason"] = judge_state(r)
         recent.append(d)
+    now = _now()
+    live = live_runs(store, registry, now=now)
+    needs_look = needs_look_items(store, registry.models_dir, live)
     return {
-        "jobs": [
-            {
-                "label": j.label, "status": str(j.status), "detail": j.detail,
-                "run_ids": list(j.run_ids), "cancellable": j.active,
-            }
-            for j in registry.jobs
-        ],
+        "generated_at": now.isoformat(),
+        "jobs": [_job_row(r) for r in live],
+        "changes": changes_rows(runs, tmeta),
+        "needs_look": needs_look[:NEEDS_LOOK_CAP],
+        "needs_look_total": len(needs_look),
         "leaderboard": [r.to_dict() for r in lb[:10]],
         "recent": recent,
         "groups": groups_payload(store, groups_file)[:8],
         "taxonomy": dict(sorted(taxonomy.items(), key=lambda kv: -kv[1])),
+    }
+
+
+CHANGES_CAP = 500
+CHANGES_WINDOW = timedelta(days=30)
+NEEDS_LOOK_CAP = 50
+# Failure categories that say the environment failed, not the model's output.
+_INFRA_REASONS = frozenset({
+    "rate_limit", "auth", "timeout", "transport", "provider_error", "submitted_job",
+    "config", "executor_preflight", "executor_exit", "executor_timeout",
+    "executor_no_output", "spawn_failed", "workspace",
+})
+
+
+def _is_infra(reason: str | None) -> bool:
+    code = (reason or "").removeprefix("exception:")
+    return code in _INFRA_REASONS or code.endswith("_timeout")
+
+
+def changes_rows(runs: list[Any], tmeta: dict[str, dict[str, str]]) -> list[dict[str, Any]]:
+    """Terminal real runs, newest first, for the client-side "changed since you
+    last looked" band. The watermark lives on the device, so the server only
+    supplies a bounded window. Running rows belong to Live; dry runs are not
+    results."""
+    cutoff = _now() - CHANGES_WINDOW
+    rows: list[tuple[datetime, dict[str, Any]]] = []
+    for r in runs:
+        if r.status == "running" or r.dry_run or not r.finished_at:
+            continue
+        done = _parse_ts(r.finished_at)
+        if done is None or done < cutoff:
+            continue
+        rows.append((done, {
+            "run_id": r.run_id, "task_id": r.task_id,
+            "task_title": (tmeta.get(r.task_id) or {}).get("title") or "",
+            "status": r.status, "passes": r.passes, "failure_reason": r.failure_reason,
+            "cost_usd": r.display_cost_usd, "finished_at": r.finished_at,
+        }))
+    rows.sort(key=lambda t: t[0], reverse=True)
+    return [row for _, row in rows[:CHANGES_CAP]]
+
+
+def needs_look_items(store: RunStore, models_dir: Path | str,
+                     live: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """What deserves a human glance: stalled runs, infra errors, inconclusive
+    judges, flagged items and pricing drift. Each item names its target and
+    links to it; none of them is a verdict about the model."""
+    from orchestral.pricing import pricing_drift
+
+    items: list[dict[str, Any]] = []
+    for row in live:
+        if row["stalled"]:
+            items.append({
+                "kind": "stalled", "run_id": row["run_id"], "title": f"{row['label']} has gone quiet",
+                "detail": "No events for a while. Check whether it is still running.",
+                "href": f"#/run/{row['run_id']}" if row["run_id"] else "#/runs"})
+    for r in store.list_runs(limit=None):
+        if r.dry_run or r.status == "running":
+            continue
+        if r.status == "failed" and _is_infra(r.failure_reason):
+            items.append({
+                "kind": "infra_error", "run_id": r.run_id,
+                "title": f"{r.task_id} hit an infrastructure error",
+                "detail": f"{r.failure_reason}: the run did not get a fair attempt.",
+                "href": f"#/run/{r.run_id}"})
+        elif r.status == "finished" and r.judge_score is None and judge_state(r)[0] == "inconclusive":
+            items.append({
+                "kind": "inconclusive_judge", "run_id": r.run_id,
+                "title": f"The judge was inconclusive on {r.task_id}",
+                "detail": judge_state(r)[1], "href": f"#/run/{r.run_id}"})
+    for a in store.annotations():
+        if a["flag"] != "interesting":
+            continue
+        href = (f"#/runs?group={quote(a['target'], safe='')}" if a["kind"] == "group"
+                else f"#/run/{quote(a['target'], safe='')}" if a["kind"] == "run" else "#/runs")
+        items.append({
+            "kind": "flagged", "run_id": a["target"] if a["kind"] == "run" else None,
+            "title": f"You flagged {a['kind']} {a['target']}", "detail": a["note"] or "Flagged as interesting.",
+            "href": href})
+    models = _configured_models(Path(models_dir))
+    for d in pricing_drift(store.calls_pricing_summary(), models):
+        if d.drifted and d.ratio is not None:
+            items.append({
+                "kind": "pricing_drift", "run_id": None,
+                "title": f"{d.model} bills {d.ratio:.2f}x its rate card",
+                "detail": f"Across {d.api_calls} provider-reported calls. The configured price may be stale.",
+                "href": "#/models"})
+    return items
+
+
+# What the local observatory can do that the hosted mirror cannot (R13). The
+# SPA reads these flags; it never infers a capability from the HTTP status.
+CAPABILITY_FLAGS = ("launch", "cancel", "flag_write", "thread", "png_capture", "live_stream")
+
+
+@functools.cache
+def _source_commit() -> str | None:
+    """Short commit of the checkout serving the UI; None outside a git tree."""
+    try:
+        out = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"], cwd=Path(__file__).resolve().parent,
+            capture_output=True, text=True, timeout=2, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    sha = out.stdout.strip()
+    return sha if out.returncode == 0 and sha else None
+
+
+def meta_payload(
+    mode: str = "local",
+    synced_at: str | None = None,
+    source_commit: str | None = None,
+) -> dict[str, Any]:
+    """The capabilities document (KTD5): mode, freshness, capability flags and
+    the sample-size thresholds, so the SPA picks its adapter from one place."""
+    if mode not in {"local", "hosted"}:
+        raise ValueError(f"meta mode must be 'local' or 'hosted', got {mode!r}")
+    local = mode == "local"
+    return {
+        "mode": mode,
+        "synced_at": synced_at,
+        "source_commit": source_commit if source_commit is not None or not local else _source_commit(),
+        "capabilities": dict.fromkeys(CAPABILITY_FLAGS, local),
+        "low_n": {"cell": LOW_N_CELL, "best": LOW_N_BEST},
     }
 
 
@@ -466,6 +779,39 @@ def task_choices(tasks_dir: Path) -> list[str]:
         if isinstance(data, dict) and data.get("id"):
             ids.append(data["id"])
     return ids
+
+
+def task_picker_payload(store: RunStore, tasks_dir: Path | str) -> dict[str, Any]:
+    """Task rows for the New run combobox: type, family, difficulty and the
+    median billed cost of past real runs. A task with no billed history has
+    ``expected_cost_usd`` None, which the UI shows as unknown, never as $0."""
+    import statistics
+
+    from orchestral.config import load_task
+    root = Path(tasks_dir)
+    costs: dict[str, list[float]] = {}
+    for r in runs_payload(store, tasks_dir=root):
+        if r.get("dry_run") or r.get("status") not in {"finished", "failed"}:
+            continue
+        costs.setdefault(r["task_id"], []).append(float(r.get("billed_cost_usd") or 0.0))
+    rows: list[dict[str, Any]] = []
+    for path in sorted(root.rglob("*.yaml")):
+        try:
+            spec = load_task(path)
+        except Exception:
+            continue
+        md = spec.metadata or {}
+        folder = path.parent.relative_to(root).parts
+        history = costs.get(spec.id, [])
+        rows.append({
+            "id": spec.id, "title": spec.title or "", "type": spec.type,
+            "family": str(md.get("archetype") or (folder[0] if folder else "")),
+            "difficulty": str(md.get("difficulty") or ""),
+            "runs": len(history),
+            "expected_cost_usd": statistics.median(history) if history else None,
+        })
+    rows.sort(key=lambda r: (r["type"], r["id"]))
+    return {"tasks": rows, "types": sorted({r["type"] for r in rows})}
 
 
 def model_choices(models_dir: Path, role: str | None) -> list[dict[str, Any]]:
@@ -502,16 +848,26 @@ def model_choices(models_dir: Path, role: str | None) -> list[dict[str, Any]]:
 
 # ---------------------------------------------------------------------------
 # Spend estimates — shown before any paid action so a click never spends
-# blind. Estimates are deliberately labelled rough: on 2026-09-26 the rate-card
-# estimate understated billed spend by 5.3x (see orchestral/budget.py).
+# blind. They come from billed history (`calls.api_cost_usd`), with calls the
+# provider never priced scaled by a per-model billed/rate-card ratio, because
+# the configured rate card has run from 0.99x to 13.25x under the real bill
+# depending on the model (see orchestral/budget.py and KTD7).
 
 # POST /api/thread sends at most 12,000 characters of card JSON plus the
 # prompt template (~4 chars/token) and caps the reply at 6,000 tokens.
 THREAD_INPUT_TOKENS_MAX = 4_000
 THREAD_OUTPUT_TOKENS_MAX = 6_000
 
-SPEND_CAVEAT = ("Rough estimate. Real billed cost has run several times higher "
-                "than estimates, so treat it as a floor.")
+# The dedicated eval key's monthly cap, shown beside month-to-date spend. The
+# index only knows what this machine recorded, so the label says so.
+EVAL_MONTHLY_CAP_USD = 50.0
+
+SPEND_CAVEAT = ("Based on past billed runs, not a quote. The range is the middle 80% "
+                "of what those runs cost.")
+THREAD_CAVEAT = ("An upper bound for one call. The bill follows the length of the reply, "
+                 "which is capped.")
+SPEND_CAVEAT_UNKNOWN = ("No billed history for this pairing, so the cost is unknown, "
+                        "not zero. It can still bill.")
 
 
 def _configured_models(models_dir: Path) -> dict[str, Any]:
@@ -528,12 +884,42 @@ def _rate_card(cfg: Any) -> dict[str, float] | None:
             "output_per_mtok": float(cfg.output_price_per_mtok)}
 
 
-def launch_estimate(store: RunStore, models_dir: Path, spec: dict[str, Any]) -> dict[str, Any]:
-    """Estimated cost of a New run launch, from recorded past spend.
+def _ratio_rows(store: Any, slugs: list[str]) -> list[dict[str, Any]]:
+    """The billed/rate-card ratio chosen for each model and where it came from."""
+    cal = store.cost_calibration()
+    rows = []
+    for slug in dict.fromkeys(s for s in slugs if s):
+        choice = cal.ratio_for(slug)
+        rows.append({"model": slug, "ratio": choice.ratio, "source": choice.source, "n": choice.n})
+    return rows
 
-    Prefers the same task + pairing (``mean_cell_cost``), then the pairing on
-    any task (``mean_run_cost``). With no history the estimate is ``None``
-    and the UI must say "unknown" rather than imply $0. Dry runs are $0.
+
+def _ratio_sentence(rows: list[dict[str, Any]]) -> str:
+    parts = []
+    for r in rows:
+        if r["ratio"] is None:
+            parts.append(f"{r['model']}: no priced calls yet")
+        else:
+            parts.append(f"{r['model']} {r['ratio']:.2f}x ({r['source']}, n={r['n']})")
+    if not parts:
+        return ""
+    return ("Unpriced calls are scaled by billed/rate-card ratios: " + "; ".join(parts)
+            + ". Own means the model's priced calls, global means all priced calls.")
+
+
+def _spend_context(store: Any) -> dict[str, Any]:
+    return {"month_to_date_billed_usd": store.month_to_date_billed_usd(),
+            "monthly_cap_usd": EVAL_MONTHLY_CAP_USD,
+            "month_to_date_note": "Billed spend recorded in this index this month."}
+
+
+def launch_estimate(store: RunStore, models_dir: Path, spec: dict[str, Any]) -> dict[str, Any]:
+    """Estimated billed cost of a New run launch, with a range and its basis.
+
+    Prefers the same task + pairing, then the pairing on any task, from billed
+    history that includes failed runs (``RunStore.billed_estimate``). With no
+    history the estimate is ``None`` and the UI must say "unknown" rather than
+    imply $0. Dry runs are $0.
     """
     try:
         replicates = max(1, int(spec.get("replicates") or 1))
@@ -542,62 +928,90 @@ def launch_estimate(store: RunStore, models_dir: Path, spec: dict[str, Any]) -> 
     task = str(spec.get("task") or "")
     orch = str(spec.get("orchestrator") or "")
     worker = str(spec.get("worker") or "")
+    judge = str(spec.get("judge") or "")
     if spec.get("dry_run"):
-        return {"dry_run": True, "per_run_usd": 0.0, "total_usd": 0.0,
+        return {"dry_run": True, "per_run_usd": 0.0, "low_usd": 0.0, "high_usd": 0.0,
+                "total_usd": 0.0, "total_low_usd": 0.0, "total_high_usd": 0.0,
                 "replicates": replicates, "basis": "dry_run",
-                "basis_label": "Dry run: stub models, no API calls", "caveat": ""}
-    per_run: float | None = None
-    basis, basis_label = "unknown", "There are no past paid runs of this pairing to estimate from."
-    if task and orch and worker:
-        per_run = store.mean_cell_cost(task, orch, worker)
-        if per_run is not None:
-            basis, basis_label = "task_pairing", "Average of past paid runs of this task with this pairing."
-    if per_run is None and orch and worker:
-        per_run = store.mean_run_cost(orchestrator=orch, worker=worker)
-        if per_run is not None:
-            basis, basis_label = "pairing", "Average of past paid runs of this pairing on other tasks."
+                "basis_label": "Dry run: stub models, no API calls", "caveat": "",
+                "ratios": [], **_spend_context(store)}
+    est = store.billed_estimate(task, orch, worker) if orch and worker else None
+    ratios = _ratio_rows(store, [orch, worker, judge])
+    per_run = low = high = None
+    basis = "unknown"
+    label = "There are no past billed runs of this pairing to estimate from."
+    if est is not None and est.per_run_usd is not None:
+        per_run, low, high, basis = est.per_run_usd, est.low_usd, est.high_usd, est.basis
+        scope = ("of this task with this pairing" if basis == "task_pairing"
+                 else "of this pairing on other tasks")
+        label = (f"Mean billed cost of past runs {scope} (n={est.n}, failed runs included). "
+                 + _ratio_sentence(ratios))
     models = _configured_models(models_dir)
     rates = {role: _rate_card(models.get(slug))
-             for role, slug in (("orchestrator", orch), ("worker", worker),
-                                ("judge", str(spec.get("judge") or "")))
+             for role, slug in (("orchestrator", orch), ("worker", worker), ("judge", judge))
              if slug}
+
+    def times(v: float | None) -> float | None:
+        return v * replicates if v is not None else None
+
     return {
         "dry_run": False,
         "per_run_usd": per_run,
-        "total_usd": per_run * replicates if per_run is not None else None,
+        "low_usd": low,
+        "high_usd": high,
+        "total_usd": times(per_run),
+        "total_low_usd": times(low),
+        "total_high_usd": times(high),
         "replicates": replicates,
         "basis": basis,
-        "basis_label": basis_label,
+        "basis_label": label.strip(),
+        "ratios": ratios,
         "rates": rates,
-        "caveat": SPEND_CAVEAT,
+        "caveat": SPEND_CAVEAT if per_run is not None else SPEND_CAVEAT_UNKNOWN,
+        **_spend_context(store),
     }
 
 
-def thread_estimate(models_dir: Path, slug: str, *, provider_ready: bool) -> dict[str, Any]:
+def thread_estimate(models_dir: Path, slug: str, *, provider_ready: bool,
+                    store: RunStore | None = None) -> dict[str, Any]:
     """Upper-bound cost of one Write thread call with writer ``slug``.
 
-    No paid call happens without a configured provider key, so
-    ``will_spend`` is False then and the server falls back to templates.
+    ``max_usd`` is the rate-card bound; ``high_usd`` scales it by the model's
+    billed/rate-card ratio when the index has one. No paid call happens without
+    a configured provider key, so ``will_spend`` is False then and the server
+    falls back to templates.
     """
     slug = slug.strip()
+    ctx = _spend_context(store) if store is not None else {}
     if not slug:
-        return {"model": "", "will_spend": False, "max_usd": 0.0,
+        return {"model": "", "will_spend": False, "max_usd": 0.0, "high_usd": 0.0,
                 "basis_label": "No writer model: posts come from templates, no API call.",
-                "caveat": ""}
+                "caveat": "", **ctx}
     cfg = _configured_models(models_dir).get(slug)
     max_usd: float | None = None
+    high_usd: float | None = None
+    ratios: list[dict[str, Any]] = []
     if cfg is not None:
         max_usd = (THREAD_INPUT_TOKENS_MAX * cfg.input_price_per_mtok
                    + THREAD_OUTPUT_TOKENS_MAX * cfg.output_price_per_mtok) / 1_000_000
+        high_usd = max_usd
         label = (f"Up to {THREAD_INPUT_TOKENS_MAX:,} input and {THREAD_OUTPUT_TOKENS_MAX:,} "
                  "output tokens at the configured rate card.")
+        if store is not None:
+            ratios = _ratio_rows(store, [slug])
+            ratio = ratios[0]["ratio"]
+            if ratio is not None:
+                high_usd = max_usd * max(ratio, 1.0)
+                label += (f" Scaled by the billed/rate-card ratio {ratio:.2f}x "
+                          f"({ratios[0]['source']}, n={ratios[0]['n']}).")
     else:
         label = "This model is not in models/, so its price is unknown."
     if not provider_ready:
         label = "No API key is set for this model's provider: posts come from templates, no API call."
     return {"model": slug, "will_spend": provider_ready, "max_usd": max_usd,
+            "high_usd": high_usd, "ratios": ratios,
             "rates": _rate_card(cfg), "basis_label": label,
-            "caveat": SPEND_CAVEAT if provider_ready else ""}
+            "caveat": THREAD_CAVEAT if provider_ready else "", **ctx}
 
 
 # ---------------------------------------------------------------------------
@@ -631,10 +1045,31 @@ def judge_state(meta) -> tuple[str, str]:
     if not any(Path(meta.run_dir).glob("artifact.*")):
         return "not_judgeable", "no artifact survives to judge"
     if meta.dry_run:
-        return "not_judged", "dry run — nothing real to judge"
+        return "not_judged", "dry run: nothing real to judge"
     if read_why:
-        return "unreadable", f"judge verdict unknown — {read_why}"
+        return "unreadable", f"judge verdict unknown: {read_why}"
     return "not_judged", "judge wasn't run for this run"
+
+
+# Sortable Runs columns: query value -> (row key, default direction).
+RUN_SORTS: dict[str, tuple[str, str]] = {
+    "started": ("started_at", "desc"), "cost": ("billed_cost_usd", "desc"),
+    "duration": ("latency_ms", "desc"), "tokens": ("tokens", "desc"),
+    "task": ("task_id", "asc"), "status": ("status", "asc"),
+}
+
+
+def _sort_runs(rows: list[dict[str, Any]], sort: str | None, direction: str | None) -> list[dict[str, Any]]:
+    """Order rows by a named column. Unknown sort names keep the default (newest
+    first); a missing value sorts last in either direction."""
+    if sort not in RUN_SORTS:
+        return rows
+    key, default_dir = RUN_SORTS[sort]
+    desc = (direction if direction in ("asc", "desc") else default_dir) == "desc"
+    known = [r for r in rows if r.get(key) not in (None, "")]
+    unknown = [r for r in rows if r.get(key) in (None, "")]
+    known.sort(key=lambda r: r[key], reverse=desc)
+    return known + unknown
 
 
 def runs_payload(
@@ -644,27 +1079,72 @@ def runs_payload(
     status: str | None = None,
     q: str = "",
     tasks_dir: Path | str | None = None,
+    *,
+    pairing: str | None = None,
+    judge: str | None = None,
+    type: str | None = None,
+    difficulty: str | None = None,
+    sort: str | None = None,
+    direction: str | None = None,
+    groups_file: Path | str | None = None,
+    now: datetime | None = None,
 ) -> list[dict[str, Any]]:
-    """Run rows for the filterable table. `status` accepts a lifecycle status
-    or `passed`/`failed` (verdict filters)."""
+    """Run rows for the filterable table, newest first unless `sort` says otherwise.
+
+    `status` accepts a lifecycle status, `passed`/`failed` (verdict filters) or
+    `stalled` (a `running` row with no event for STALL_AFTER_S, KTD8; derived,
+    never stored). `pairing` is `orchestrator|worker` (the arrow form is a legacy alias). Every row carries
+    `stalled`, `type`, `difficulty`, `group_label` and `tokens`. Filtering,
+    sorting and paging are repeated client-side for the hosted snapshot
+    (`filterRuns` in ui/js/data.js); keep the two in step.
+    """
+    now = now or _now()
     rows = store.list_runs(run_group=group, task_id=task, limit=None)
     if q:
         rows = filter_runs(rows, q)
+    if pairing:
+        # canonical `orch|worker`; the matrix key `orch → worker` is a legacy alias
+        orch, _, worker = (pairing if "|" in pairing else pairing.replace(" \u2192 ", "|", 1)).partition("|")
+        rows = [r for r in rows if r.orchestrator == orch and r.worker == worker]
+    abandoned = _abandoned_runs(store) if any(r.status == "running" for r in rows) else set()
+
+    def is_stalled(r: Any) -> bool:
+        if r.status != "running" or r.run_id in abandoned:
+            return False
+        beat = last_heartbeat(r.run_dir, r.started_at) if r.run_dir else _parse_ts(r.started_at)
+        idle = max(0.0, (now - beat).total_seconds()) if beat else None
+        return liveness_state(idle) == "stalled"
+
+    stalled = {r.run_id for r in rows if is_stalled(r)}
     if status == "passed":
         rows = [r for r in rows if r.status == "finished" and r.passes]
     elif status == "failed":
         rows = [r for r in rows if r.status == "failed" or (r.status == "finished" and not r.passes)]
+    elif status == "stalled":
+        rows = [r for r in rows if r.run_id in stalled]
     elif status:
         rows = [r for r in rows if r.status == status]
     tmeta = _task_meta(store, tasks_dir)
+    if type:
+        rows = [r for r in rows if (tmeta.get(r.task_id) or {}).get("type") == type]
+    if difficulty:
+        rows = [r for r in rows if (tmeta.get(r.task_id) or {}).get("difficulty") == difficulty]
+    labels = _groups_meta(groups_file)
     out = []
     for r in rows:
-        d = r.to_public_dict()
+        d = _public_run(r)
         tm = tmeta.get(r.task_id) or {}
         d["task_title"] = tm.get("title") or ""
+        d["type"] = tm.get("type") or ""
+        d["difficulty"] = tm.get("difficulty") or ""
+        d["group_label"] = (labels.get(r.run_group or "") or {}).get("label") or ""
+        d["stalled"] = r.run_id in stalled
+        d["tokens"] = (r.total_input_tokens or 0) + (r.total_output_tokens or 0)
         d["judge_state"], d["judge_reason"] = judge_state(r)
+        if judge and d["judge_state"] != judge:
+            continue
         out.append(d)
-    return out
+    return _sort_runs(out, sort, direction)
 
 
 _TIMELINE_PHASE_ORDER = ("plan", "delegate", "assemble", "validate", "judge", "review")
@@ -728,37 +1208,309 @@ def artifact_info(run_dir: Path) -> dict[str, Any] | None:
     return info
 
 
+def resolve_run_dir(store: Any, meta: Any) -> Path:
+    """The directory a run's files live in.
+
+    The index records `run_dir` as it was when the run started, which is relative
+    to the working directory for any run launched with a relative runs path. Read
+    from another directory, or from a copied or moved runs dir, that path points
+    nowhere and every file looks missing. When it does not exist, the recorded
+    `orch/task/worker/run_id` tail is rebased under the store's root, the same
+    rule `RunStore.backfill_calls` uses."""
+    p = Path(meta.run_dir)
+    if p.exists():
+        return p
+    root = getattr(store, "root", None)
+    if root:
+        cand = Path(root).joinpath(*p.parts[-4:])
+        if cand.exists():
+            return cand
+    return p
+
+
+_ERROR_TYPE_MARKERS = (".failed", "_error", "worker_error")
+
+
+def _is_error_event(ev: dict[str, Any]) -> bool:
+    typ = str(ev.get("type") or "")
+    return bool(ev.get("error")) or typ.endswith(_ERROR_TYPE_MARKERS) or typ in ("error", "run.failed")
+
+
+def _first_failing_check(report: Any) -> str | None:
+    checks = report.get("checks") if isinstance(report, dict) else None
+    if isinstance(checks, dict):
+        for name, ok in checks.items():
+            if ok is False:
+                return str(name)
+    return None
+
+
+def _failure_summary(meta: Any, events: list[dict[str, Any]], report: Any,
+                     report_exists: bool) -> dict[str, Any] | None:
+    """Why a failed run failed, from what the run dir holds: the taxonomy reason,
+    the first failing check, and the event to read first (the first error event, or
+    the last event when none carries an error). With no events at all the run died
+    before it started recording, and the summary says so."""
+    if meta.status != "failed":
+        return None
+    idx: int | None = next((i for i, ev in enumerate(events) if _is_error_event(ev)), None)
+    kind = "error"
+    if idx is None and events:
+        idx, kind = len(events) - 1, "last"
+    event: dict[str, Any] | None = None
+    if idx is not None:
+        ev = events[idx]
+        event = {"index": idx, "kind": kind, "type": str(ev.get("type") or "?"),
+                 "phase": str(ev.get("phase") or ""),
+                 "summary": event_row(ev)[3] or str(ev.get("error") or "")[:160]}
+    errors = report.get("errors") if isinstance(report, dict) else None
+    return {
+        "reason": meta.failure_reason or "",
+        "failing_check": _first_failing_check(report),
+        "errors": [str(e)[:300] for e in errors[:3]] if isinstance(errors, list) else [],
+        "event": event,
+        "no_detail": not events,
+        "report_available": report_exists,
+    }
+
+
+def _lane_for(ev: dict[str, Any], worker: str | None) -> tuple[str, str] | None:
+    phase, role = ev.get("phase"), ev.get("role")
+    if role == "judge" or phase == "judge":
+        return "judge", "judge"
+    if phase == "assemble":
+        return "assemble", "assemble"
+    if phase == "validate":
+        return "validate", "validate"
+    if phase == "plan":
+        return "orchestrator", "orchestrator"
+    if phase == "delegate":
+        wid = ev.get("worker_id") or worker or "worker"
+        return str(wid), str(wid)
+    return None
+
+
+_LANE_ORDER = ("orchestrator", "worker", "assemble", "validate", "judge")
+
+
+def lanes_payload(events: list[dict[str, Any]], running: bool = False) -> dict[str, Any]:
+    """Lane timeline data (DESIGN 6.9 #7): one lane per orchestrator, worker, assemble,
+    validate and judge, one bar per call with its start offset, length (latency), cost
+    and a verdict tick. `event` is the index of the call's event in the stream."""
+    stamps = [t for t in (_parse_ts(e.get("timestamp")) for e in events) if t]
+    if not stamps:
+        return {"span_ms": 0, "lanes": [], "live": None}
+    t0, t1 = min(stamps), max(stamps)
+    lanes: dict[str, dict[str, Any]] = {}
+    worker: str | None = None
+    for i, ev in enumerate(events):
+        typ = ev.get("type")
+        if typ == "worker.started":
+            worker = ev.get("worker_id") or worker
+        lane = _lane_for(ev, worker)
+        timed = typ in ("llm_call", "worker_error") or (ev.get("latency_ms") or 0) > 0
+        end = _parse_ts(ev.get("timestamp"))
+        if lane is None or not timed or end is None:
+            continue
+        dur = float(ev.get("latency_ms") or 0.0)
+        start = max(0.0, (end - t0).total_seconds() * 1000 - dur)
+        bucket = lanes.setdefault(lane[0], {"id": lane[0], "label": lane[1], "bars": []})
+        cost = ev.get("cost") or {}
+        bucket["bars"].append({
+            "start_ms": start, "dur_ms": dur, "event": i, "type": str(typ),
+            "verdict": "fail" if _is_error_event(ev) else "ok",
+            "cost_usd": cost.get("api_cost_usd") if cost.get("api_cost_usd") is not None else cost.get("usd"),
+            "model": str(ev.get("model") or ""),
+        })
+
+    def order(item: dict[str, Any]) -> tuple[int, str]:
+        k = item["id"]
+        return (_LANE_ORDER.index(k) if k in _LANE_ORDER else 1, k)
+    ordered = sorted(lanes.values(), key=order)
+    live = None
+    if running and events:
+        live = (_lane_for(events[-1], worker) or (None, None))[0]
+    return {"span_ms": max((t1 - t0).total_seconds() * 1000, 1.0), "lanes": ordered, "live": live}
+
+
+def run_liveness(store: RunStore, registry: JobRegistry | None, meta: Any,
+                 now: datetime | None = None) -> dict[str, Any]:
+    """live, stalled, abandoned or done for one run, plus which action applies.
+    Cancel only for runs this server owns; abandon only for stalled unowned ones."""
+    if meta.status != "running":
+        return {"state": "done", "owned": False, "cancellable": False, "abandonable": False,
+                "idle_s": None}
+    if meta.run_id in _abandoned_runs(store):
+        return {"state": "abandoned", "owned": False, "cancellable": False, "abandonable": False,
+                "idle_s": None}
+    now = now or _now()
+    beat = last_heartbeat(resolve_run_dir(store, meta), meta.started_at)
+    idle = max(0.0, (now - beat).total_seconds()) if beat else None
+    owned = bool(registry and registry.owns(meta.run_id))
+    st = liveness_state(idle)
+    return {"state": st, "owned": owned, "cancellable": owned,
+            "abandonable": st == "stalled" and not owned,
+            "idle_s": int(idle) if idle is not None else None}
+
+
+_SECTION_TABS = ("artifact", "events", "calls", "report", "review", "plan", "manifest")
+_HOLDOUT_REASON = ("This run belongs to the holdout arm, so its task text, answer key and outputs "
+                   "are not published. Open it on the machine that ran it.")
+
+
+def _section(state_: str, reason: str = "", count: int | None = None) -> dict[str, Any]:
+    return {"state": state_, "reason": reason, "count": count}
+
+
+def _file_section(path: Path, running: bool, parsed: Any, what: str,
+                  dry: bool = False, stopped: bool = False) -> dict[str, Any]:
+    if parsed is not None:
+        return _section("ok")
+    if path.exists():
+        return _section("missing", f"{what} could not be read: it is unreadable or truncated.")
+    if stopped:
+        return _section("missing", f"This run stopped reporting before it wrote {what.lower()}.")
+    if running:
+        return _section("not_yet", f"The run is still working. {what} is written when it finishes.")
+    if dry:
+        return _section("empty_by_design", f"A dry run does not write {what.lower()}.")
+    return _section("missing", f"This run did not write {what.lower()}.")
+
+
 def run_detail_payload(
     store: RunStore,
     run_id: str,
     tasks_dir: Path | str | None = None,
     groups_file: Path | str | None = None,
+    *,
+    registry: JobRegistry | None = None,
+    hosted: bool = False,
+    raw_dir: Path | None = None,
+    now: datetime | None = None,
 ) -> dict[str, Any] | None:
-    """Everything the run detail view needs in one fetch."""
+    """Everything the run detail view needs in one fetch.
+
+    Beyond the stored files it derives, so the view never guesses: `failure` (the
+    summary for a failed run), `sections` (one evidence state per tab: ok, not_yet,
+    empty_by_design, missing or withheld), `lanes` (timeline bars), `plan_json`
+    (the subtask list) and `liveness` (state and which action applies). `hosted`
+    marks the public mirror: holdout runs are withheld whole, `plan.md` (found in
+    `raw_dir`, the unscrubbed run dir) and zip artifacts are withheld."""
     meta = store.get_run(run_id)
     if meta is None:
         return None
-    run_dir = Path(meta.run_dir)
-    plan_path = run_dir / "plan.md"
+    run_dir = resolve_run_dir(store, meta)
     tm = _task_meta(store, tasks_dir).get(meta.task_id) or {}
     gm = _groups_meta(groups_file).get(meta.run_group or "") or {}
     jstate, jreason = judge_state(meta)
-    return {
-        "meta": meta.to_public_dict(),
+    holdout = run_is_holdout(run_dir, meta.config)
+    out: dict[str, Any] = {
+        "meta": _public_run(meta),
         "judge_state": jstate,
         "judge_reason": jreason,
         "task_title": tm.get("title") or "",
         "task_blurb": tm.get("blurb") or "",
         "group_label": gm.get("label") or "",
         "group_description": gm.get("description") or "",
-        "calls": store.call_previews(run_id),
-        "report": read_json(run_dir / "report.json"),
-        "review": read_json(run_dir / "review.json"),
-        "manifest": read_json(run_dir / "manifest.json"),
-        "plan": plan_path.read_text(encoding="utf-8", errors="replace") if plan_path.exists() else None,
-        "timeline": timeline_payload(run_dir),
-        "artifact": artifact_info(run_dir),
+        "holdout": holdout,
+        "liveness": run_liveness(store, registry, meta, now),
     }
+    if hosted and holdout:
+        out.update(
+            calls=[], report=None, review=None, manifest=None, plan=None, plan_json=None,
+            timeline=[], artifact=None, failure=None,
+            lanes={"span_ms": 0, "lanes": [], "live": None},
+            sections={t: _section("withheld", _HOLDOUT_REASON) for t in _SECTION_TABS})
+        return out
+
+    # `running` means the run is live and may still write these; a run that is stalled or
+    # abandoned is not "not yet", it has stopped.
+    running = meta.status == "running" and out["liveness"]["state"] == "live"
+    stopped = meta.status == "running" and not running
+    dry = bool(meta.dry_run)
+    events, _ = tail_events(run_dir / "events.jsonl", 0)
+    calls = store.call_previews(run_id)
+    report = read_json(run_dir / "report.json")
+    review = read_json(run_dir / "review.json")
+    manifest = read_json(run_dir / "manifest.json")
+    plan_path = run_dir / "plan.md"
+    plan = plan_path.read_text(encoding="utf-8", errors="replace") if plan_path.exists() else None
+    plan_json = read_json(run_dir / "plan.json")
+    if not isinstance(plan_json, dict):
+        plan_json = None
+    artifact = artifact_info(run_dir)
+    if artifact:
+        # the run-relative path (orch/task/worker/run_id/name), never an absolute one
+        artifact["path"] = "/".join([*Path(meta.run_dir).parts[-4:], artifact["name"]])
+    out.update(
+        calls=calls, report=report, review=review, manifest=manifest, plan=plan, plan_json=plan_json,
+        timeline=timeline_payload(run_dir), artifact=artifact,
+        lanes=lanes_payload(events, running),
+        failure=_failure_summary(meta, events, report, (run_dir / "report.json").exists()))
+
+    sections: dict[str, dict[str, Any]] = {}
+    if artifact:
+        sections["artifact"] = _section("ok")
+    elif stopped:
+        sections["artifact"] = _section("missing", "This run stopped reporting before it stored an artifact.")
+    elif running:
+        sections["artifact"] = _section("not_yet", "The run is still working. The artifact is stored when it finishes.")
+    elif dry:
+        sections["artifact"] = _section("empty_by_design", "A dry run calls no model, so it stores no artifact.")
+    else:
+        why = meta.failure_reason or jreason or ""
+        sections["artifact"] = _section(
+            "missing", "This run did not store an artifact." + (f" Reason on record: {why}." if why else ""))
+    if events:
+        sections["events"] = _section("ok", count=len(events))
+    elif running:
+        sections["events"] = _section("not_yet", "No event has been written yet.")
+    elif stopped:
+        sections["events"] = _section("missing", "This run never wrote an event.", 0)
+    else:
+        sections["events"] = _section("missing", "This run recorded no events.", 0)
+    if calls:
+        sections["calls"] = _section("ok", count=len(calls))
+    elif running or stopped:
+        sections["calls"] = (_section("not_yet", "No model call has finished yet.", 0) if running
+                             else _section("missing", "This run stopped reporting before a call was recorded.", 0))
+    elif dry:
+        sections["calls"] = _section(
+            "empty_by_design", "This was a dry run: no model was called, so there are no calls to list.", 0)
+    else:
+        sections["calls"] = _section("missing", "No calls were recorded for this run.", 0)
+    sections["report"] = _file_section(run_dir / "report.json", running, report, "A report", stopped=stopped)
+    sections["review"] = _file_section(run_dir / "review.json", running, review, "A review", stopped=stopped)
+    sections["manifest"] = _file_section(run_dir / "manifest.json", running, manifest, "A manifest",
+                                         stopped=stopped)
+    if plan_json is not None or plan is not None:
+        subtasks = plan_json.get("subtasks") if plan_json else None
+        sections["plan"] = _section("ok", count=len(subtasks) if isinstance(subtasks, list) else None)
+    else:
+        sections["plan"] = _file_section(run_dir / "plan.json", running, None, "A plan", dry, stopped)
+    if hosted:
+        if plan_path.exists() or (raw_dir is not None and (Path(raw_dir) / "plan.md").exists()):
+            out["plan"] = None
+            sections["plan"] = _section("withheld", "The plan carries the task prompt, so it is not published on the hosted copy.")
+        if artifact and artifact.get("ext") == "zip":
+            sections["artifact"] = _section(
+                "withheld", "Archive contents are not published on the hosted copy. The member list is shown.")
+    out["sections"] = sections
+    return out
+
+
+_ARMS = ("baseline", "jev")
+
+
+def auto_group_label(group: str) -> str:
+    """Human label for an experiment driver's group key
+    (`matrix:task:orchestrator:worker:arm`) as `experiment · task · orch / worker · arm`.
+    Any other group has no auto-label (empty string)."""
+    parts = group.split(":")
+    if len(parts) != 5 or parts[4] not in _ARMS:
+        return ""
+    matrix, task, orch, worker, arm = parts
+    return f"{matrix} · {task} · {orch.split('/')[-1]} / {worker.split('/')[-1]} · {arm}"
 
 
 def groups_payload(
@@ -777,7 +1529,7 @@ def groups_payload(
         if r.status == "finished":
             g["finished"] += 1
             g["passed"] += 1 if r.passes else 0
-        g["cost_usd"] += r.total_cost_usd or 0.0
+        g["cost_usd"] += r.display_cost_usd or 0.0
         if r.score is not None:
             g["scores"].append(r.score)
         if r.judge_score is not None:
@@ -796,6 +1548,7 @@ def groups_payload(
         out.append({
             **g,
             "label": gm.get("label") or "",
+            "display_label": gm.get("label") or auto_group_label(g["group"]) or g["group"],
             "description": gm.get("description") or "",
             "tasks": len(g["tasks"]),
             "pairings": len(g["pairings"]),
@@ -1005,6 +1758,7 @@ def pairings_payload(
     metas = _runs_for_group(store, group)
     rows = pairing_leaderboard(metas, unmetered_workers=store.unmetered_workers())
     types = _task_types(store, tasks_dir)
+    default_group = None if group else default_pairing_group(metas)
 
     by_pair: dict[tuple[str, str], list[Any]] = {}
     for m in metas:
@@ -1039,6 +1793,7 @@ def pairings_payload(
             "best_type": best[0] if best else None,
             "worst_type": worst[0] if worst else None,
             "why": _pairing_why(r, best, worst, top_failure),
+            "low_n_best": is_low_n_best(r.finished),
         })
         enriched.append(d)
 
@@ -1053,6 +1808,7 @@ def pairings_payload(
                 "orchestrator": o, "worker": w,
                 "pass_rate": (c["pass_rate"] if c else None),
                 "runs": (c["runs"] if c else 0),
+                "finished": (c["finished"] if c else 0),
                 "score_mean": (c["score_mean"] if c else None),
                 "low_sample": (c["low_sample"] if c else False),
             }
@@ -1060,7 +1816,33 @@ def pairings_payload(
             for c in [by_key.get((o, w))]
         ],
     }
-    return {"rows": enriched, "matrix": matrix, "lenses": _lens_payloads(enriched)}
+    summary = {
+        "pairings": len(enriched),
+        "metered": sum(1 for d in enriched if (d.get("cost_total") or 0) > 0),
+        "unmetered": sum(1 for d in enriched if not (d.get("cost_total") or 0) > 0),
+        "best_eligible": sum(1 for d in enriched if not d["low_n_best"]),
+        "no_pass": sum(1 for d in enriched if d.get("finished") and not d.get("passed")),
+    }
+    return {"rows": enriched, "matrix": matrix, "lenses": _lens_payloads(enriched),
+            "summary": summary, "default_group": default_group}
+
+
+def default_pairing_group(metas: list[Any]) -> str:
+    """The run group Pairings opens on: the most recent labelled group holding
+    at least three pairings, else ``""`` (all groups). A one-pairing cohort is
+    never the default story."""
+    pairs: dict[str, set[tuple[str, str]]] = {}
+    latest: dict[str, str] = {}
+    for m in metas:
+        group = getattr(m, "run_group", "") or ""
+        if not group:
+            continue
+        pairs.setdefault(group, set()).add((m.orchestrator, m.worker))
+        started = getattr(m, "started_at", "") or ""
+        if started > latest.get(group, ""):
+            latest[group] = started
+    big = [g for g, p in pairs.items() if len(p) >= 3]
+    return max(big, key=lambda g: (latest.get(g, ""), g)) if big else ""
 
 
 def _pairing_why(r: Any, best: Any, worst: Any, top_failure: str | None) -> str:
@@ -1093,16 +1875,16 @@ def _verdict_line(mech_pass: bool | None, judge_passed: bool | None,
                   status: str | None) -> str:
     """One-line verdict in plain words — the card's subtitle hook."""
     if status != "finished":
-        return f"run {status or 'unknown'} — no verdict yet"
+        return f"run {status or 'unknown'}: no verdict yet"
     if judge_passed is None:
-        return ("mechanical pass — unjudged" if mech_pass
-                else "mechanical fail — unjudged")
+        return ("mechanical pass, unjudged" if mech_pass
+                else "mechanical fail, unjudged")
     if mech_pass and judge_passed:
-        return "passes both axes — structure and semantics"
+        return "passes both axes: structure and semantics"
     if mech_pass:
         return "well-formed but semantically rejected"
     if judge_passed:
-        return "mechanical reject, semantic rescue — inspect"
+        return "mechanical reject, semantic rescue: inspect"
     return "rejected on both axes"
 
 
@@ -1111,21 +1893,21 @@ def _explainer(kind: str, card: dict[str, Any]) -> str:
     sentence, no jargon."""
     if kind == "group":
         return (
-            "Each run: a planner AI breaks a real task into steps, worker AIs "
+            "Each run: a planner model breaks a real task into steps, worker models "
             "execute them in parallel, and the final result is graded two "
-            "ways — automated checks that actually run/verify the output, "
-            "plus a second AI that reviews whether it's genuinely good."
+            "ways: automated checks that actually run and verify the output, "
+            "plus a second model that reviews whether it's genuinely good."
         )
     if kind == "pairing":
         return (
-            f"One AI pairing: {str(card.get('orchestrator','?')).split('/')[-1]} plans the work, "
+            f"One pairing: {str(card.get('orchestrator','?')).split('/')[-1]} plans the work, "
             f"{str(card.get('worker','?')).split('/')[-1]} executes it. Every run is graded by "
-            "automated checks and an independent AI reviewer."
+            "automated checks and an independent judge model."
         )
     return (
-        "One eval run: a planner AI broke the task into steps, a worker AI "
+        "One eval run: a planner model broke the task into steps, a worker model "
         "executed them, and the result was graded by automated checks plus "
-        "an AI reviewer."
+        "a judge model."
     )
 
 
@@ -1134,7 +1916,7 @@ def _eval_description(d: dict[str, Any], kind: str) -> str:
     from the card's real numbers, so a card never needs a model call to
     carry a one-sentence summary."""
     def pct(x: float | None) -> str:
-        return f"{round(x * 100)}%" if x is not None else "—"
+        return fmt_percent(x)
     if kind == "group":
         bits = [
             f"{d['finished']}/{d['runs']} runs finished",
@@ -1147,13 +1929,13 @@ def _eval_description(d: dict[str, Any], kind: str) -> str:
             bits.append("unjudged")
         cost = d.get("cost_usd")
         if cost is not None:
-            bits.append(f"${cost:.4f} total")
+            bits.append(f"{fmt_money(cost)} total")
         pr, jr = d.get("pass_rate"), d.get("judge_pass_rate")
         note = ""
         if pr is not None and jr is not None and pr - jr > 0.15:
-            note = " — the judge is stricter than the checks"
+            note = ": the judge is stricter than the checks"
         elif jr is not None and pr is not None and jr - pr > 0.05:
-            note = " — the judge rescues runs the checks reject"
+            note = ": the judge rescues runs the checks reject"
         return f"{d['tasks']} tasks, {len(d.get('pairings') or [])} pairing(s): " + ", ".join(bits) + note + "."
     if kind == "pairing":
         o = str(d.get("orchestrator", "?")).split("/")[-1]
@@ -1166,11 +1948,11 @@ def _eval_description(d: dict[str, Any], kind: str) -> str:
             bits.append(f"judge mean {d.get('judge_score_mean')}")
         cost = d.get("cost_usd")
         if cost is not None:
-            bits.append(f"${cost:.4f} total")
+            bits.append(f"{fmt_money(cost)} total")
         tail = ""
         best, worst = d.get("best_type"), d.get("worst_type")
         if best and worst and best != worst:
-            tail = f" — strongest on {best}, weakest on {worst}"
+            tail = f": strongest on {best}, weakest on {worst}"
         return f"{o} plans, {w} executes, {d['tasks']} tasks: " + ", ".join(bits) + tail + "."
     return ""
 
@@ -1536,7 +2318,7 @@ def _story_signals(
                 "label": "Judge axis unknown",
                 "tone": "warn",
                 "claim": ("The judge verdict could not be read, so whether the judge ran "
-                          "is unknown — not absent."),
+                          "is unknown, not absent."),
                 "evidence": {"judge_state": "unreadable"},
             })
         elif payload.get("judge_state") != "judged":
@@ -1604,7 +2386,7 @@ def _story_signals(
                 "id": "cost_frontier",
                 "label": "Cost frontier",
                 "tone": "pass",
-                "claim": f"The selected setup is at ${selected_cost:.4f} per successful finish.",
+                "claim": f"The selected setup is at {fmt_money(selected_cost)} per successful finish.",
                 "evidence": {"cost_per_pass": selected_cost, "pass_rate": selected_pass},
             })
 
@@ -1645,12 +2427,12 @@ def _story_signals(
 
 def _story_caption(payload: dict[str, Any], claim: str) -> str:
     if payload.get("kind") == "run":
-        context = f"Status {payload.get('status') or 'unknown'} · ${float(payload.get('cost_usd') or 0):.4f} · {payload.get('latency_ms') or 0:.0f}ms"
+        context = f"Status {payload.get('status') or 'unknown'} · {fmt_money(float(payload.get('cost_usd') or 0))} · {fmt_duration_ms(payload.get('latency_ms') or 0)}"
     else:
         ci = payload.get("pass_ci")
         context = f"{payload.get('finished', 0)}/{payload.get('runs', 0)} finished"
         if ci:
-            context += f" · 95% CI {round(float(ci[0]) * 100)}–{round(float(ci[1]) * 100)}%"
+            context += f" · 95% CI {fmt_range_pct(ci[0], ci[1])}"
         unreadable = int(payload.get("judge_reports_unreadable") or 0)
         context += (f" · {payload.get('judged', 0)} judge-reviewed"
                     + (f", {unreadable} report(s) unreadable" if unreadable else ""))
@@ -1747,25 +2529,25 @@ def _attach_story(
 
 def _story_metrics(payload: dict[str, Any]) -> list[dict[str, Any]]:
     if payload.get("kind") == "run":
-        verdict = "PASS" if payload.get("passes") else "FAIL" if payload.get("passes") is False else "—"
+        verdict = "PASS" if payload.get("passes") else "FAIL" if payload.get("passes") is False else NULL_GLYPH
         judge_value = (
-            f"{float(payload['judge_noul']):.2f}" if payload.get("judge_noul") is not None
-            else f"{float(payload['judge_score']):.2f}" if payload.get("judge_score") is not None
-            else "—"
+            fmt_score(float(payload["judge_noul"])) if payload.get("judge_noul") is not None
+            else fmt_score(float(payload["judge_score"])) if payload.get("judge_score") is not None
+            else NULL_GLYPH
         )
         return [
             {"id": "mechanical", "label": "Mechanical", "value": verdict, "detail": payload.get("failure_reason") or "Execution gate", "tone": "mech"},
             {"id": "judge", "label": "Judge", "value": judge_value, "detail": payload.get("judge_state") or "Not judged", "tone": "judge"},
-            {"id": "cost", "label": "Cost", "value": f"${float(payload.get('cost_usd') or 0):.4f}", "detail": f"{payload.get('latency_ms') or 0:.0f}ms", "tone": "cost"},
+            {"id": "cost", "label": "Cost", "value": fmt_money(float(payload.get('cost_usd') or 0)), "detail": fmt_duration_ms(payload.get('latency_ms') or 0), "tone": "cost"},
         ]
     judged = int(payload.get("judged") or 0)
-    judge_value = f"{payload.get('judge_approved', 0)}/{judged}" if judged else "—"
+    judge_value = f"{payload.get('judge_approved', 0)}/{judged}" if judged else NULL_GLYPH
     return [
         {
             "id": "mechanical",
             "label": "Mechanical pass",
             "value": f"{payload.get('passed', 0)}/{payload.get('finished', 0)}",
-            "detail": f"{round(float(payload['pass_rate']) * 100) if payload.get('pass_rate') is not None else '—'}% observed",
+            "detail": f"{fmt_percent(payload.get('pass_rate'))} observed",
             "tone": "mech",
         },
         {
@@ -1778,7 +2560,7 @@ def _story_metrics(payload: dict[str, Any]) -> list[dict[str, Any]]:
         {
             "id": "cost",
             "label": "Metered spend",
-            "value": f"${float(payload.get('cost_usd') or 0):.4f}",
+            "value": fmt_money(float(payload.get('cost_usd') or 0)),
             "detail": "observed provider cost",
             "tone": "cost",
         },
@@ -1818,7 +2600,7 @@ def card_payload(
         finished = [m for m in cell if m.status == "finished"]
         passed = sum(1 for m in finished if m.passes)
         scores = [m.score for m in finished if m.score is not None]
-        costs = [m.total_cost_usd for m in finished]
+        costs = [m.display_cost_usd for m in finished]
         lat = [m.latency_ms for m in finished if m.latency_ms]
         types = _task_types(store, tasks_dir)
         per_type: dict[str, list[int]] = {}
@@ -1857,22 +2639,22 @@ def card_payload(
         best, worst = (strong[0] if strong else None), (strong[-1] if strong else None)
         if unreadable_n and not judged_n:
             # The semantic axis is unknown, not absent. "nothing judged yet"
-            # would assert the judge never ran — a claim the data cannot make.
+            # would assert the judge never ran, a claim the data cannot make.
             line = (f"judge verdict unknown for {unreadable_n} of {len(finished)} "
-                    "finished run(s) — report.json could not be read")
+                    "finished run(s): report.json could not be read")
         else:
             if judged_n and pr is not None:
                 jp = judge_passed_n / judged_n
                 if pr - jp > 0.15:
                     line = f"{round(pr * 100)}% pass structure, {round(jp * 100)}% survive semantic review"
                 elif jp - pr > 0.05:
-                    line = f"{round(pr * 100)}% clear the full gate — judge alone approves {round(jp * 100)}%"
+                    line = f"{round(pr * 100)}% clear the full gate, judge alone approves {round(jp * 100)}%"
                 else:
                     line = "mechanical and judge axes agree"
             elif judged_n:
-                line = f"{judged_n} runs judged — semantic axis active"
+                line = f"{judged_n} runs judged, semantic axis active"
             else:
-                line = "mechanical grading only — nothing judged yet"
+                line = "mechanical grading only, nothing judged yet"
             line += _unreadable_caveat(unreadable_n)
         payload = {
             "kind": "pairing", "target": target, "suite": SUITE_VERSION,
@@ -1951,7 +2733,7 @@ def card_payload(
             ps = per_pair.setdefault(key, [0, 0])
             ps[1] += 1
             ps[0] += 1 if m.passes else 0
-            pair_cost[key] = pair_cost.get(key, 0.0) + (m.total_cost_usd or 0.0)
+            pair_cost[key] = pair_cost.get(key, 0.0) + (m.display_cost_usd or 0.0)
             j, read_why = _judge_block(m.run_dir)
             if read_why:
                 unreadable_n += 1
@@ -1978,22 +2760,22 @@ def card_payload(
             card_judge_models = set(store.judge_slugs({m.task_id for m in metas}))
         if unreadable_n and not judged_n:
             # The semantic axis is unknown, not absent. "nothing judged yet"
-            # would assert the judge never ran — a claim the data cannot make.
+            # would assert the judge never ran, a claim the data cannot make.
             line = (f"judge verdict unknown for {unreadable_n} of {g['finished']} "
-                    "finished run(s) — report.json could not be read")
+                    "finished run(s): report.json could not be read")
         else:
             if judged_n and jp_rate is not None and g["pass_rate"] is not None:
                 mech_pct, jp_pct = round(g["pass_rate"] * 100), round(jp_rate * 100)
                 if g["pass_rate"] - jp_rate > 0.15:
                     line = f"{mech_pct}% pass structure, {jp_pct}% survive semantic review"
                 elif jp_rate - g["pass_rate"] > 0.05:
-                    line = f"{mech_pct}% clear the full gate — judge alone approves {jp_pct}%"
+                    line = f"{mech_pct}% clear the full gate, judge alone approves {jp_pct}%"
                 else:
                     line = "mechanical and judge axes agree"
             elif judged_n:
-                line = f"{judged_n} runs judged — semantic axis active"
+                line = f"{judged_n} runs judged, semantic axis active"
             else:
-                line = "mechanical grading only — nothing judged yet"
+                line = "mechanical grading only, nothing judged yet"
             line += _unreadable_caveat(unreadable_n)
         payload = {
             "kind": "group", "target": target, "suite": SUITE_VERSION,
@@ -2085,7 +2867,7 @@ def card_payload(
                 "passed": sum(1 for r in fin if r.passes),
                 "pass_rate": (sum(1 for r in fin if r.passes) / len(fin)) if fin else None,
                 "judge_score": mean(js) if js else None,
-                "cost_usd": sum(r.total_cost_usd or 0 for r in rs),
+                "cost_usd": sum(r.display_cost_usd or 0 for r in rs),
                 "self": (o, w) == (meta.orchestrator, meta.worker),
             })
         pair_rows.sort(key=lambda x: (-float(x["pass_rate"] or -1), x["orchestrator"]))
@@ -2097,7 +2879,8 @@ def card_payload(
             "judge_state": jstate, "judge_state_reason": jstate_reason,
             "worker": meta.worker, "status": meta.status,
             "passes": meta.passes, "score": meta.score,
-            "cost_usd": meta.total_cost_usd, "latency_ms": meta.latency_ms,
+            "cost_usd": meta.display_cost_usd, "cost_basis": meta.cost_basis,
+            "latency_ms": meta.latency_ms,
             "failure_reason": meta.failure_reason,
             "run_group": meta.run_group, "replicate": meta.replicate,
             "started_at": meta.started_at,
@@ -2263,12 +3046,24 @@ def card_catalog_payload(
 
 
 def compare_payload(store: RunStore, group_a: str, group_b: str) -> dict[str, Any]:
-    """Cell-by-cell group delta — the same join `report --compare` prints,
-    plus a pairing matrix the SPA renders as a grid."""
+    """Cell-by-cell group delta, baseline (a) first against candidate (b).
+
+    A cell is improved or regressed only when the two 95% Wilson intervals do
+    not overlap and both sides have at least LOW_N_CELL finished runs;
+    otherwise it is "no-clear-difference" (the point delta is still reported).
+
+    Each cell carries both Wilson intervals, the pass-rate delta and the cost
+    delta. Rows sort by regression (largest drop first), one-sided cells last.
+    ``a == b`` is blocked with a message instead of a vacuous all-stable table."""
+    if group_a == group_b:
+        return {"group_a": group_a, "group_b": group_b, "cells": [], "verdicts": {},
+                "shared": 0, "one_sided": 0, "cost_a": 0, "cost_b": 0, "cost_delta": None,
+                "blocked": "Pick two different run groups to compare."}
+
     def cells(group: str) -> dict[tuple[str, str, str], Any]:
         return {
             (c.task_id, c.orchestrator, c.worker): c
-            for c in aggregate(store.list_runs(run_group=group))
+            for c in aggregate(_runs_for_group(store, group) if group else [])
         }
 
     cells_a, cells_b = cells(group_a), cells(group_b)
@@ -2278,30 +3073,60 @@ def compare_payload(store: RunStore, group_a: str, group_b: str) -> dict[str, An
         a, b = cells_a.get((task_id, orch, worker)), cells_b.get((task_id, orch, worker))
         pa = a.pass_rate if a else None
         pb = b.pass_rate if b else None
+        side = ""
+        ci_a = _wilson(a.passed, a.finished) if a else None
+        ci_b = _wilson(b.passed, b.finished) if b else None
+        low_n = bool(a and b and (is_low_n_cell(a.finished) or is_low_n_cell(b.finished)))
         if pa is None or pb is None:
             verdict = "one-sided"
-        elif pb > pa:
+            side = "baseline" if pa is not None else "candidate" if pb is not None else "neither"
+        elif low_n or ci_a is None or ci_b is None:
+            verdict = "no-clear-difference"
+        elif ci_a[1] < ci_b[0]:
             verdict = "improved"
-        elif pb < pa:
+        elif ci_b[1] < ci_a[0]:
             verdict = "regressed"
         else:
-            verdict = "stable"
+            verdict = "no-clear-difference"
+        cost_a = a.cost_total if a else None
+        cost_b = b.cost_total if b else None
+        two_sided = verdict != "one-sided"
         rows.append({
             "task_id": task_id, "orchestrator": orch, "worker": worker,
-            "n_a": a.runs if a else 0, "pass_a": pa, "cost_a": a.cost_total if a else None,
-            "n_b": b.runs if b else 0, "pass_b": pb, "cost_b": b.cost_total if b else None,
+            "n_a": a.runs if a else 0, "pass_a": pa, "cost_a": cost_a,
+            "n_b": b.runs if b else 0, "pass_b": pb, "cost_b": cost_b,
+            "passed_a": a.passed if a else 0, "finished_a": a.finished if a else 0,
+            "passed_b": b.passed if b else 0, "finished_b": b.finished if b else 0,
+            "ci_a": ci_a, "ci_b": ci_b, "low_n": low_n,
+            "delta": (pb - pa) if two_sided and pa is not None and pb is not None else None,
+            "cost_delta": (cost_b or 0) - (cost_a or 0) if two_sided else None,
+            "side": side,
             "verdict": verdict,
             "failures_a": a.failures if a else {},
             "failures_b": b.failures if b else {},
         })
+    # regressions (largest drop first), improvements (largest gain first),
+    # no clear difference (largest point change first), one-sided last
+    rank = {"regressed": 0, "improved": 1, "no-clear-difference": 2, "one-sided": 3}
+    rows.sort(key=lambda r: (rank[r["verdict"]],
+                             {"regressed": r["delta"], "improved": -(r["delta"] or 0),
+                              "no-clear-difference": -abs(r["delta"] or 0)}.get(r["verdict"], 0.0),
+                             r["task_id"], r["orchestrator"], r["worker"]))
     verdicts: dict[str, int] = {}
     for r in rows:
         verdicts[r["verdict"]] = verdicts.get(r["verdict"], 0) + 1
+    cost_a_total = sum(r["cost_a"] or 0 for r in rows)
+    cost_b_total = sum(r["cost_b"] or 0 for r in rows)
+    one_sided = verdicts.get("one-sided", 0)
     return {
         "group_a": group_a, "group_b": group_b, "cells": rows,
         "verdicts": verdicts,
-        "cost_a": sum(r["cost_a"] or 0 for r in rows),
-        "cost_b": sum(r["cost_b"] or 0 for r in rows),
+        "shared": len(rows) - one_sided,
+        "one_sided": one_sided,
+        "cost_a": cost_a_total,
+        "cost_b": cost_b_total,
+        "cost_delta": cost_b_total - cost_a_total,
+        "blocked": "",
     }
 
 
@@ -2328,7 +3153,7 @@ def _arm_block(runs: list[Any]) -> dict[str, Any]:
     from orchestral.experiment import arm_stats, status_counts
     passes, n, errors = arm_stats(runs)
     ci = _wilson(passes, n)
-    cost = sum(r.total_cost_usd or 0.0 for r in runs)
+    cost = sum(r.display_cost_usd or 0.0 for r in runs)
     return {
         "passes": passes,
         "n": n,
@@ -2342,6 +3167,40 @@ def _arm_block(runs: list[Any]) -> dict[str, Any]:
         "cost_per_pass": round(cost / passes, 6) if passes else None,
         "delegated": sum(1 for r in runs if r.delegated),
     }
+
+
+def _matrix_budget(path: Path) -> dict[str, Any]:
+    """The driver takes --budget on the command line and does not record it, so
+    a spec only has one when its author wrote a `budget:` key. Unknown stays
+    unknown; the UI says so rather than inventing a ceiling."""
+    try:
+        raw = yaml.safe_load(path.read_text(encoding="utf-8")).get("budget")
+    except Exception:
+        raw = None
+    if isinstance(raw, (int, float)) and not isinstance(raw, bool) and raw > 0:
+        return {"usd": float(raw), "recorded": True}
+    return {"usd": None, "recorded": False}
+
+
+def experiments_list(store: RunStore, experiments_dir: Path | str,
+                     tasks_dir: Path | str | None = None) -> list[dict[str, Any]]:
+    """One summary row per matrix spec under `experiments/`, name-sorted."""
+    root = Path(experiments_dir)
+    if not root.is_dir():
+        return []
+    out: list[dict[str, Any]] = []
+    for spec in sorted(root.glob("*.yaml")):
+        try:
+            payload = experiment_payload(store, spec, tasks_dir=tasks_dir)
+        except Exception:
+            continue
+        if payload is None:
+            continue
+        summary = payload["summary"]
+        out.append({"name": spec.stem, "matrix": payload["matrix"], "cells": summary["cells"],
+                    "states": summary["states"], "posted": summary["posted"],
+                    "spend": summary["spend"], "budget": payload["budget"]})
+    return out
 
 
 def experiment_payload(
@@ -2380,13 +3239,14 @@ def experiment_payload(
         })
     return {
         "matrix": matrix.name,
+        "budget": _matrix_budget(p),
         "summary": coverage_summary(rows),
         "cells": cells,
         "primary_axis": "mechanical pass",
         "caveats": [
-            "judge-score deltas are self-referential — the decisions engine "
+            "judge-score deltas are self-referential: the decisions engine "
             "assists the jev arm and scores both arms",
-            "arms are unpaired statistically — no seed reaches chat "
+            "arms are unpaired statistically, since no seed reaches chat "
             "providers; pairing is spec + replicate-index + interleave",
             "difference intervals at 95% will miss on roughly 1-in-20 cells",
         ],

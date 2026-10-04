@@ -168,7 +168,8 @@ class TestReplicateRuns(unittest.TestCase):
             text = out.getvalue()
             self.assertIn("exp9", text)
             self.assertIn("landing-page-coffee", text)
-            self.assertIn("±", text.replace("&plusmn;", "±"))
+            # piped output is ASCII (U18): the spread marker is "+-" there, "±" on a UTF-8 TTY
+            self.assertRegex(text, r"score(\+-|±)sd")
 
     def test_failed_replicate_does_not_stop_rest(self):
         """Runner.run re-raises after recording the failure; a mid-loop

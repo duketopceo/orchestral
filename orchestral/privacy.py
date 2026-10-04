@@ -42,6 +42,7 @@ import json
 import re
 import shutil
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -253,21 +254,36 @@ def _remove_output(path: Path) -> None:
         path.unlink()
 
 
-def run_is_holdout(src: Path) -> bool:
+def _truthy_holdout(data: Any) -> bool:
+    return isinstance(data, dict) and bool(data.get("holdout"))
+
+
+def _read_json_object(path: Path) -> Any:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+        return None
+
+
+def run_is_holdout(src: Path, config: Mapping[str, Any] | None = None) -> bool:
     """Does this run belong to the unpublished holdout arm?
 
-    Answered from the run's own manifest, which records the flag the runner set
-    from the task's `metadata.holdout`. A run whose manifest is missing or
-    unreadable is *not* treated as holdout: withholding is the fail-closed
-    direction, and a malformed manifest is already a reason not to publish the
-    run's contents on trust.
+    The runner writes the flag in two places, and corpus or real holdout runs can
+    carry it in only one, so *any* marker withholds the run: `manifest.json`
+    `holdout` (or its `config.holdout`), the `config.holdout` of `run.json`, and
+    `config` when the caller already holds the index row (`RunMeta.config`) and
+    the on-disk files are missing. A file that is missing or unreadable adds no
+    marker, so a malformed manifest alone is not treated as holdout: it is already
+    a reason not to publish the run's contents on trust.
     """
-    manifest = src / "manifest.json"
-    try:
-        data = json.loads(manifest.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
-        return False
-    return bool(isinstance(data, dict) and data.get("holdout"))
+    if _truthy_holdout(config):
+        return True
+    manifest = _read_json_object(src / "manifest.json")
+    if _truthy_holdout(manifest) or (
+            isinstance(manifest, dict) and _truthy_holdout(manifest.get("config"))):
+        return True
+    run_json = _read_json_object(src / "run.json")
+    return isinstance(run_json, dict) and _truthy_holdout(run_json.get("config"))
 
 
 def _withhold_reason() -> str:

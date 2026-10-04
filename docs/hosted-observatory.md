@@ -57,7 +57,7 @@ GraphQL `aiGatewayLog` API.
 local                              Cloudflare
 ─────                              ──────────
 harness.py sync ──────────────►  /ingest/run|state  (Access service token)
-  global_payloads()                  │
+  snapshot.build_snapshot()          │
   scrub_run() per run                ▼
   d1_projection()              Worker (worker.js)
                                    ├─ R2: api/*.json snapshots,
@@ -80,14 +80,67 @@ Boundaries enforced at both ends:
 - `sync --verify` compares run counts and total cost; a deeper diff is
   `r2 object list orchestral-artifacts` vs `sync` dry-run output.
 
+## Key tree
+
+`orchestral/web/snapshot.py` is the only writer of `api/` keys; the Worker's
+`infra/cloudflare/observatory/keys.js` accepts exactly those shapes and nothing
+wider (a request `/api/<rest>` reads the object `api/<rest>.json`):
+
+| shape | example |
+| --- | --- |
+| `<name>` | `meta`, `overview`, `runs`, `groups`, `matrix`, `leaderboard`, `flags`, `pairings`, `models-catalog`, `experiments`, `experiment.<name>`, `pairings.<group>`, `cards.<lens>`, `compare.<a>.<b>` |
+| `run/<id>`, `run/<id>/live`, `run/<id>/evidence` | per-run payloads |
+| `card/<kind>/<target>.<lens>` | one report card |
+
+Every name inside a key is percent-encoded with the dot escaped as `%2E`
+(`snapshot.enc`, `keyEnc` in `ui/js/data.js`). Each segment is `[A-Za-z0-9._~-]`
+or `%XX`, never empty, never `.`/`..`, no `..` anywhere (also after decoding),
+at most 300 characters; whole key at most 400, no leading slash. Anything else
+is a 400 and never reaches R2. Ingest applies the same grammar plus
+`runs/<id>/<file>` for scrubbed artifact files. Filtering, sorting and
+pagination are client-side, so query strings never pick a key. `api/meta.json`
+carries `mode: "hosted"`, `synced_at`, `source_commit` and every capability
+false. `harness.py sync --push` sends the state tree in chunks with `meta.json`
+last, so `synced_at` only advances after the data it describes landed.
+
+Stale keys are not deleted: a group or experiment that disappears locally keeps
+its old keys in R2 until removed by hand (`wrangler r2 object delete`).
+
+## Asset version (`?v=`)
+
+The local server substitutes `__V__` in `app.html` per request. The Worker
+serves assets as stored, so `wrangler.toml` runs
+`scripts/build-hosted-assets.py` as its `[build] command`: it copies `ui/` to
+`infra/cloudflare/observatory/.build/ui` (gitignored) with `__V__` replaced by a
+content hash of the tree, and `[assets]` serves that copy. `wrangler deploy`,
+`wrangler dev` and `--dry-run` all run it, so there is no step to forget. Never
+point `[assets] directory` at `ui/` directly.
+
+## Local end to end (no Cloudflare)
+
+```bash
+BROWSER=1 scripts/bootstrap-venv.sh /tmp/orch-venv
+node --test infra/cloudflare/observatory/test/keys.test.mjs
+/tmp/orch-venv/bin/python scripts/e2e-hosted.py --shots <dir>
+```
+
+`e2e-hosted.py` builds the fixture corpus, renders what `sync --push` would send,
+loads it into `wrangler dev --local` (Miniflare R2) through the test-only
+`/__seed` route of `wrangler.e2e.toml`, and drives the SPA through every route.
+It never logs in to or contacts Cloudflare.
+
 ## Redeploying the Worker
 
 ```bash
 cd infra/cloudflare/observatory
 export CLOUDFLARE_API_TOKEN=$(omaseal get Cloudflare_duketopceo Personal)
+wrangler deploy --dry-run --outdir /tmp/obs-dry   # bundle check, no upload
 wrangler deploy
 # D1 schema (once, or after schema.sql changes):
 wrangler d1 execute orchestral-runs --file schema.sql --remote
+# then the data, keys and the new SPA together:
+ORCHESTRAL_OBS_TOKEN=$(omaseal get cloudflare obs-ingest) python3 harness.py sync --push --all
+ORCHESTRAL_OBS_TOKEN=$(omaseal get cloudflare obs-ingest) python3 harness.py sync --verify
 ```
 
 Provisioned resource IDs and the Access policy correction live in

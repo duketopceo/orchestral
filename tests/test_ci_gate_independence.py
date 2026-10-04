@@ -36,6 +36,13 @@ GATES = {
 # "one gate per job" rule, which would otherwise fail them for running zero.
 REPORTERS = {"test"}
 
+# Jobs that run on every PR but are deliberately outside the required `test`
+# context (KTD13). `browser` runs the Playwright suites that skip everywhere else.
+# It reports on its own and never gates a merge until the user decides it should;
+# promoting it means adding it to the reporter's needs and result check and to
+# `.github/required-checks.json` in one change, and deleting it from this set.
+ADVISORY = {"browser"}
+
 COUNT_WORDS = {"two": 2, "three": 3, "four": 4, "five": 5, "six": 6}
 
 
@@ -89,7 +96,7 @@ class TestCIGatesAreSeparateJobs(unittest.TestCase):
         others" — advice that is wrong, since the job runs exactly one gate.
         A guard whose failure message misdirects gets disabled.
         """
-        undeclared = {j for j in _jobs() if j not in GATES and j not in REPORTERS}
+        undeclared = {j for j in _jobs() if j not in GATES and j not in REPORTERS and j not in ADVISORY}
         self.assertEqual(
             undeclared, set(),
             f"job(s) {sorted(undeclared)} run in ci.yml but are not declared in "
@@ -100,6 +107,8 @@ class TestCIGatesAreSeparateJobs(unittest.TestCase):
     def test_no_job_bundles_two_gates(self):
         """A shared job re-couples the gates: a failing step skips the rest."""
         for job_id, job in _jobs().items():
+            if job_id in ADVISORY:
+                continue
             run_text = _run_text(job)
             found = [gate for gate, command in GATES.items() if command in run_text]
             if job_id in REPORTERS:
@@ -124,7 +133,7 @@ class TestCIGatesAreSeparateJobs(unittest.TestCase):
         `test` still reported green. A negative control caught exactly that.
         """
         jobs = _jobs()
-        expected = {job_id for job_id in jobs if job_id not in REPORTERS}
+        expected = {job_id for job_id in jobs if job_id not in REPORTERS and job_id not in ADVISORY}
         for job_id in REPORTERS:
             self.assertEqual(
                 set(_needs_list(jobs[job_id])), expected,
@@ -132,6 +141,21 @@ class TestCIGatesAreSeparateJobs(unittest.TestCase):
                 f"ci.yml defines {sorted(expected)}. Every job must be wired in, "
                 f"or one can fail while the required check reports success",
             )
+
+    def test_browser_job_installs_playwright_and_chromium_and_stays_non_required(self):
+        jobs = _jobs()
+        self.assertIn("browser", jobs)
+        text = _run_text(jobs["browser"])
+        self.assertIn("[dev,tui,shots]", text)
+        self.assertIn("playwright install", text)
+        self.assertIn("chromium", text)
+        self.assertIn("unittest discover", text)
+        for job_id in REPORTERS:
+            self.assertNotIn("browser", _needs_list(jobs[job_id]),
+                             "KTD13: the browser job is not part of the required `test` context")
+        self.assertNotIn("browser", jobs["browser"].get("needs", []))
+        contract = (REPO_ROOT / ".github" / "required-checks.json").read_text()
+        self.assertNotIn("browser", contract)
 
     def test_reporter_evaluates_every_dependency_result(self):
         """Wiring a job into `needs` does not let it fail this job.

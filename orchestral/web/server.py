@@ -17,6 +17,7 @@ import logging
 import mimetypes
 import os
 import re
+import threading
 import time
 import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -46,6 +47,60 @@ _ARTIFACT_TYPES = {
     "txt": "text/plain; charset=utf-8",
 }
 
+# Static SPA assets (KTD6). Explicit so CPython without /etc/mime.types still
+# serves woff2 as font/woff2 rather than application/octet-stream.
+_STATIC_TYPES = {
+    **_ARTIFACT_TYPES,
+    "mjs": "text/javascript; charset=utf-8",
+    "woff2": "font/woff2",
+    "woff": "font/woff",
+    "webmanifest": "application/manifest+json",
+    "ico": "image/x-icon",
+}
+_VERSION_TOKEN = "__V__"
+
+
+def _asset_version() -> str:
+    """Short cache-busting token for ``?v=``: newest mtime under ``ui/``."""
+    try:
+        newest = max(p.stat().st_mtime_ns for p in UI_DIR.rglob("*") if p.is_file())
+    except (OSError, ValueError):
+        return "0"
+    return format(newest // 1000 & 0xFFFFFFFFFF, "x")
+
+
+IDEMPOTENCY_TTL_S = 600.0
+
+
+class IdempotencyCache:
+    """In-memory replay cache for paid POSTs (KTD10).
+
+    A client-generated key maps to the response of the first request that
+    carried it, for ten minutes, so a retry after a dropped connection returns
+    the same job instead of starting (and billing) a second one. Only
+    successful results are kept: a refused or failed attempt leaves the key
+    free to be retried. The lock is held while the first request runs, so two
+    concurrent requests with one key also start one job.
+    """
+
+    def __init__(self, ttl: float = IDEMPOTENCY_TTL_S, clock: Any = time.monotonic):
+        self._ttl = ttl
+        self._clock = clock
+        self._mu = threading.Lock()
+        self._entries: dict[str, tuple[float, Any]] = {}
+
+    def run(self, key: str, fn: Any, cacheable: Any = lambda value: True) -> Any:
+        with self._mu:
+            now = self._clock()
+            self._entries = {k: v for k, v in self._entries.items() if v[0] >= now}
+            hit = self._entries.get(key)
+            if hit is not None:
+                return hit[1]
+            value = fn()
+            if cacheable(value):
+                self._entries[key] = (now + self._ttl, value)
+            return value
+
 
 class Observatory:
     """Bundles the server's dependencies so the handler stays thin."""
@@ -57,6 +112,7 @@ class Observatory:
             runs_dir, tasks_dir, models_dir, self.store,
             allow_agent_exec=allow_agent_exec,
         )
+        self.idempotency = IdempotencyCache()
         self.tasks_dir = Path(tasks_dir)
         self.models_dir = Path(models_dir)
         self.groups_file = Path(tasks_dir).parent / "groups.yaml"
@@ -65,7 +121,7 @@ class Observatory:
         meta = self.store.get_run(run_id)
         if meta is None:
             return None
-        return Path(meta.run_dir)
+        return state.resolve_run_dir(self.store, meta)
 
 
 def _provider_ready(slug: str) -> bool:
@@ -147,9 +203,10 @@ def make_handler(obs: Observatory) -> type[BaseHTTPRequestHandler]:
             path lands here and the client decides what to render."""
             app = UI_DIR / "app.html"
             if app.exists():
-                self._send(app.read_bytes())
+                html = app.read_text(encoding="utf-8").replace(_VERSION_TOKEN, _asset_version())
+                self._send(html.encode("utf-8"))
             else:
-                self._send(render.render_bad_request("ui/app.html missing"), 500)
+                self._send(render.render_server_error("ui/app.html is missing"), 500)
 
         def _static(self, path: str) -> None:
             name = path.removeprefix("/static/")
@@ -158,9 +215,9 @@ def make_handler(obs: Observatory) -> type[BaseHTTPRequestHandler]:
             f = UI_DIR / name
             if not f.is_file():
                 return self._not_found(path)
-            ctype = mimetypes.guess_type(name)[0] or "application/octet-stream"
-            if name.endswith(".svg"):
-                ctype = "image/svg+xml"
+            ext = f.suffix.lstrip(".").lower()
+            ctype = (_STATIC_TYPES.get(ext) or mimetypes.guess_type(name)[0]
+                     or "application/octet-stream")
             self._send(f.read_bytes(), 200, ctype)
 
         # -- GET ----------------------------------------------------------
@@ -174,7 +231,7 @@ def make_handler(obs: Observatory) -> type[BaseHTTPRequestHandler]:
                 if path.startswith("/api/"):
                     self._json({"error": _internal_error(exc)}, 500)
                 else:
-                    self._send(render.render_bad_request(_internal_error(exc)), 500)
+                    self._send(render.render_server_error(_internal_error(exc)), 500)
 
         def _route_get(self, path: str, qs: dict[str, list[str]]) -> None:
             if path.startswith("/api/"):
@@ -185,8 +242,8 @@ def make_handler(obs: Observatory) -> type[BaseHTTPRequestHandler]:
                 self._spa()
             elif path == "/favicon.ico":
                 # Browsers request /favicon.ico regardless of <link rel=icon>;
-                # answer with the neutral SVG placeholder instead of a 404.
-                self._static("/static/favicon.svg")
+                # answer with the real 16/32/48 ICO (ui/favicon.ico).
+                self._static("/static/favicon.ico")
             elif path in ("/runs", "/leaderboard", "/compare", "/new"):
                 # legacy bookmarks → hash equivalents (hash isn't sent to
                 # the server, so the SPA itself must own the target path)
@@ -206,7 +263,9 @@ def make_handler(obs: Observatory) -> type[BaseHTTPRequestHandler]:
             return vals[0] if vals else default
 
         def _api_get(self, path: str, qs: dict[str, list[str]]) -> None:
-            if path == "/api/overview":
+            if path == "/api/meta":
+                self._json(state.meta_payload())
+            elif path == "/api/overview":
                 self._json(state.overview_payload(
                     obs.store, obs.registry, tasks_dir=obs.tasks_dir,
                     groups_file=obs.groups_file))
@@ -218,6 +277,13 @@ def make_handler(obs: Observatory) -> type[BaseHTTPRequestHandler]:
                     status=self._q1(qs, "status"),
                     q=self._q1(qs, "q", "") or "",
                     tasks_dir=obs.tasks_dir,
+                    pairing=self._q1(qs, "pairing"),
+                    judge=self._q1(qs, "judge"),
+                    type=self._q1(qs, "type"),
+                    difficulty=self._q1(qs, "difficulty"),
+                    sort=self._q1(qs, "sort"),
+                    direction=self._q1(qs, "dir"),
+                    groups_file=obs.groups_file,
                 ))
             elif path == "/api/groups":
                 self._json(state.groups_payload(obs.store, obs.groups_file))
@@ -235,10 +301,14 @@ def make_handler(obs: Observatory) -> type[BaseHTTPRequestHandler]:
                 if not re.fullmatch(r"[A-Za-z0-9._-]+", name) or ".." in name:
                     return self._json({"error": "matrix must be a spec name under experiments/"}, 400)
                 payload = state.experiment_payload(
-                    obs.store, obs.tasks_dir.parent / "experiments" / f"{name}.yaml")
+                    obs.store, obs.tasks_dir.parent / "experiments" / f"{name}.yaml",
+                    tasks_dir=obs.tasks_dir)
                 if payload is None:
                     return self._json({"error": f"no experiment matrix '{name}'"}, 404)
                 self._json(payload)
+            elif path == "/api/experiments":
+                self._json(state.experiments_list(
+                    obs.store, obs.tasks_dir.parent / "experiments", tasks_dir=obs.tasks_dir))
             elif path == "/api/flags":
                 self._json(obs.store.annotations())
             elif path == "/api/cards":
@@ -275,6 +345,8 @@ def make_handler(obs: Observatory) -> type[BaseHTTPRequestHandler]:
                 self._shot_png(qs)
             elif path == "/api/tasks":
                 self._json(state.task_choices(obs.tasks_dir))
+            elif path == "/api/task-picker":
+                self._json(state.task_picker_payload(obs.store, obs.tasks_dir))
             elif path == "/api/models":
                 self._json(state.model_choices(obs.models_dir, self._q1(qs, "role")))
             elif path == "/api/estimate":
@@ -289,7 +361,8 @@ def make_handler(obs: Observatory) -> type[BaseHTTPRequestHandler]:
             elif path == "/api/thread-estimate":
                 model = (self._q1(qs, "model", "") or "").strip()
                 self._json(state.thread_estimate(
-                    obs.models_dir, model, provider_ready=bool(model) and _provider_ready(model)))
+                    obs.models_dir, model, provider_ready=bool(model) and _provider_ready(model),
+                    store=obs.store))
             elif path == "/api/models-catalog":
                 self._json(catalog.models_catalog_payload(obs.store, obs.models_dir))
             elif path.startswith("/api/run/"):
@@ -336,12 +409,11 @@ def make_handler(obs: Observatory) -> type[BaseHTTPRequestHandler]:
                 payload = state.run_detail_payload(
                     obs.store, run_id,
                     tasks_dir=obs.tasks_dir, groups_file=obs.groups_file,
+                    registry=obs.registry,
                 )
                 if payload is None:
                     return self._json({"error": f"unknown run {run_id}"}, 404)
-                payload["cancellable"] = bool(
-                    (j := obs.registry.job_for_run(run_id)) and j.active
-                )
+                payload["cancellable"] = payload["liveness"]["cancellable"]
                 return self._json(payload)
             if parts[3] == "live":
                 try:
@@ -451,8 +523,22 @@ def make_handler(obs: Observatory) -> type[BaseHTTPRequestHandler]:
                 obs.registry.cancel_run(parts[1])
                 return self._redirect(f"/#/run/{parts[1]}")
             if len(parts) == 4 and parts[3] == "cancel" and parts[0] == "api" and parts[1] == "run":
-                cancelled = obs.registry.cancel_run(parts[2])
-                return self._json({"cancelled": cancelled})
+                run_id = parts[2]
+                if obs.registry.job_for_run(run_id) is None:
+                    if obs.store.get_run(run_id) is None:
+                        return self._json({"error": f"unknown run {run_id}", "cancelled": False}, 404)
+                    return self._json({
+                        "error": (f"Run {run_id} was not started by this server, possibly by another "
+                                  "process, so it cannot be cancelled here. Stop it where it was "
+                                  "started, or abandon it if it has stalled."),
+                        "cancelled": False,
+                    }, 409)
+                return self._json({"cancelled": obs.registry.cancel_run(run_id)})
+            if len(parts) == 4 and parts[3] == "abandon" and parts[0] == "api" and parts[1] == "run":
+                try:
+                    return self._json(state.abandon_run(obs.store, obs.registry, parts[2]))
+                except state.LivenessRefusal as exc:
+                    return self._json({"error": str(exc), "abandoned": False}, exc.status)
             if path == "/api/flag":
                 form = self._form()
                 try:
@@ -493,8 +579,8 @@ def make_handler(obs: Observatory) -> type[BaseHTTPRequestHandler]:
                 unreadable = max(unreadable, 1)
             if unreadable:
                 return self._json({
-                    "error": (f"{unreadable} judge report(s) could not be read — this card's "
-                              "judge numbers are incomplete, so it is not publishable"),
+                    "error": (f"{unreadable} judge report(s) could not be read, so this card's "
+                              "judge numbers are incomplete and it is not publishable"),
                     "judge_reports_unreadable": unreadable,
                     "recoverable": "restore or re-run the affected run(s), then draft again",
                 }, 409)
@@ -508,7 +594,6 @@ def make_handler(obs: Observatory) -> type[BaseHTTPRequestHandler]:
                 lens=form.get("lens") or "overall",
             )
             writer = (form.get("model") or "").strip()
-            client = model = None
             if writer and _provider_ready(writer) and form.get("confirm_spend") != "1":
                 # A configured writer is a paid call: the client must show the
                 # estimate and send confirm_spend=1 after an explicit confirm.
@@ -516,24 +601,33 @@ def make_handler(obs: Observatory) -> type[BaseHTTPRequestHandler]:
                     "error": (f"Writing with {writer} is a paid API call. "
                               "Confirm the estimated cost to continue."),
                     "needs_confirm": True,
-                    "estimate": state.thread_estimate(obs.models_dir, writer, provider_ready=True),
+                    "estimate": state.thread_estimate(obs.models_dir, writer, provider_ready=True,
+                                                      store=obs.store),
                 }, 409)
-            if writer and _provider_ready(writer):
-                model = ModelConfig(slug=writer, name=writer, role="writer",
-                                    input_price_per_mtok=0.0, output_price_per_mtok=0.0)
-                client = provider_for(model)
-            try:
-                out = draft_thread(card=card, client=client, model=model, n=n)
-            finally:
-                if client is not None:
-                    client.close()
+
+            def draft() -> dict[str, Any]:
+                client = model = None
+                if writer and _provider_ready(writer):
+                    model = ModelConfig(slug=writer, name=writer, role="writer",
+                                        input_price_per_mtok=0.0, output_price_per_mtok=0.0)
+                    client = provider_for(model)
+                try:
+                    return draft_thread(card=card, client=client, model=model, n=n)
+                finally:
+                    if client is not None:
+                        client.close()
+
+            key = (form.get("idempotency_key") or "").strip()[:128]
+            out = obs.idempotency.run(f"thread:{key}", draft) if key and writer else draft()
             return self._json(out)
 
         def _post_run(self, json_out: bool) -> None:
             form = self._form()
-            # confirm_spend is a transport field, not a launch field — the
-            # TUI/web LAUNCH_FIELDS parity contract stays untouched.
+            # confirm_spend and idempotency_key are transport fields, not
+            # launch fields — the TUI/web LAUNCH_FIELDS parity contract stays
+            # untouched.
             confirmed = form.pop("confirm_spend", "") == "1"
+            key = (form.pop("idempotency_key", "") or "").strip()[:128]
             spec = {
                 "task": form.get("task", ""),
                 "orchestrator": form.get("orchestrator", ""),
@@ -548,26 +642,34 @@ def make_handler(obs: Observatory) -> type[BaseHTTPRequestHandler]:
                 return self._json({"error": f"unknown fields: {sorted(unknown)}"}, 400)
             if not spec["dry_run"] and not confirmed:
                 # Paid launches need an explicit confirm after the estimate
-                # is shown; a bare POST (or a stale form) cannot spend.
+                # is shown; a bare POST (or a stale form) cannot spend. A
+                # key never stands in for the confirm.
                 return self._json({
                     "error": ("This is a paid run (dry run is off). "
                               "Confirm the estimated cost to launch it."),
                     "needs_confirm": True,
                     "estimate": state.launch_estimate(obs.store, obs.models_dir, spec),
                 }, 409)
-            try:
-                job = obs.registry.launch(spec)
-            except ValueError as exc:
-                return self._json({"error": f"The run could not start: {exc}"}, 400)
-            # The run dir exists once on_run_created fires; poll briefly so
-            # the response can point at the live view instead of nothing.
-            run_id = self._wait_run_id(job)
-            if run_id is None and job.status == state.JobStatus.FAILED:
-                reason = job.detail or "setup failed before a run was created"
-                return self._json({"error": f"The run could not start: {reason}"}, 422)
-            if json_out:
-                self._json({"run_id": run_id, "label": job.label, "status": str(job.status)})
+
+            def launch() -> tuple[int, dict[str, Any]]:
+                try:
+                    job = obs.registry.launch(spec)
+                except ValueError as exc:
+                    return 400, {"error": f"The run could not start: {exc}"}
+                # The run dir exists once on_run_created fires; poll briefly so
+                # the response can point at the live view instead of nothing.
+                run_id = self._wait_run_id(job)
+                if run_id is None and job.status == state.JobStatus.FAILED:
+                    reason = job.detail or "setup failed before a run was created"
+                    return 422, {"error": f"The run could not start: {reason}"}
+                return 200, {"run_id": run_id, "label": job.label, "status": str(job.status)}
+
+            status, body = (obs.idempotency.run(f"run:{key}", launch, lambda r: r[0] < 400)
+                            if key else launch())
+            if status >= 400 or json_out:
+                self._json(body, status)
             else:
+                run_id = body.get("run_id")
                 self._redirect(f"/#/run/{run_id}" if run_id else "/")
 
         @staticmethod

@@ -354,7 +354,35 @@ function reportHtml(report) {
   const list = checks.length ? `<ul class="rd-checks" aria-label="Checks">${checks.map(([k, ok]) =>
     `<li data-check="${esc(k)}" data-ok="${ok === true}">${ok === true ? icon("pass") : icon("fail")} <code>${esc(k)}</code> <span class="dim">${ok === true ? "passed" : "failed"}</span></li>`).join("")}</ul>` : "";
   const errs = errors.length ? `<p class="rd-errs">${errors.map(e => esc(String(e))).join("<br>")}</p>` : "";
-  return `${list}${errs}${jsonViewerHtml(report, { label: "report" })}`;
+  const judge = report && typeof report.judge === "object" ? report.judge : null;
+  const crit = judge && Array.isArray(judge.criteria) && judge.criteria.length ? criteriaHtml(judge) : "";
+  return `${list}${errs}${crit}${jsonViewerHtml(report, { label: "report" })}`;
+}
+
+/* Per-criterion judge contract (v2): the verdict the judge claimed,
+   whether quoted evidence verifies it, and the grading engine. Secret
+   criteria withhold the rubric — render only what report.json carries. */
+
+function criteriaHtml(judge) {
+  const mark = (v) => v === true ? '<span class="chip chip-pass">yes</span>'
+    : v === false ? '<span class="chip chip-fail">no</span>'
+    : '<span class="chip chip-dim">-</span>';
+  const r = judge.criteria_rollup || {};
+  const head = `<div class="panel panel-pad"><h3>Criteria <span class="dim sm">${
+    judge.judge_contract || "v1"}${r.total != null ? ` · ${r.satisfied}/${r.total} satisfied` : ""}${
+    r.unsupported ? ` · ${r.unsupported} unsupported` : ""}${
+    r.unassessed ? ` · ${r.unassessed} unassessed` : ""}</span></h3>
+    <table class="data"><thead><tr>
+      <th>Criterion</th><th>Satisfied</th><th>Evidence</th><th>Engine</th><th>Note</th>
+    </tr></thead><tbody>`;
+  const rows = judge.criteria.map(c => `<tr>
+      <td>${esc(c.id || "")}${c.rubric ? `<div class="dim sm">${esc(c.rubric)}</div>` : ""}</td>
+      <td>${mark(c.satisfied)}${c.supported === false ? ` <span class="chip chip-warn" title="satisfied claim without verified artifact evidence">unverified</span>` : ""}</td>
+      <td class="dim sm">${(c.evidence || []).map(e => `<div class="mono">"${esc(e)}"</div>`).join("") || "-"}</td>
+      <td class="dim">${esc(c.engine || "")}</td>
+      <td class="dim sm">${esc(c.note || "")}</td>
+    </tr>`).join("");
+  return head + rows + `</tbody></table></div>`;
 }
 
 function reviewHtml(v) {

@@ -46,9 +46,11 @@ from orchestral.holdout import is_holdout, spec_seed
 from orchestral.jevassist import output_gate, plan_gate
 from orchestral.judge import (
     JUDGE_CHAT_ARTIFACT_CAP,
+    JUDGE_CONTRACT,
     JUDGE_DECISIONS_ARTIFACT_CAP,
     is_decisions_model,
     judge_artifact,
+    judge_cache_key,
 )
 from orchestral.logger import EventLogger
 from orchestral.manifest import build_manifest, finalize_manifest, write_manifest
@@ -306,6 +308,11 @@ class Runner:
             "seed": run_seed,
             "holdout": is_holdout(task),
             "task_type": task.type,
+            # staleness detection sizes its silence window off this —
+            # a run quiet for its whole exec timeout must not read stale
+            "timeout_seconds": float(
+                task.metadata.get("timeout_seconds") or DEFAULT_TIMEOUT_SECONDS
+            ),
             "orchestrator": orchestrator.to_dict(),
             "worker": worker.to_dict(),
         }
@@ -1161,6 +1168,7 @@ class Runner:
                     report["judge"] = {
                         "score": None, "passed": None, "inconclusive": True,
                         "model": judge.slug,
+                        "judge_contract": JUDGE_CONTRACT,
                         "reasoning": f"judge call failed: {str(exc)[:200]}",
                     }
                 else:
@@ -1179,6 +1187,11 @@ class Runner:
             )
             report["delegated"] = not self_executed
             report["subtasks"] = len(subtasks)
+            # calls that billed no provider-reported cost — estimates and
+            # unmetered-free unknowns must not read as $0 in evidence
+            report["missing_cost_count"] = self.store.missing_cost_count(
+                run_id=run_id
+            )
             (run_dir / "report.json").write_text(json.dumps(report, indent=2, default=str))
 
             # 5. Screenshot for HTML artifacts (optional, degrades cleanly)
@@ -1226,6 +1239,13 @@ class Runner:
             if not judge_result.get("inconclusive"):
                 meta.judge_score = judge_result.get("score")
                 meta.judge_passed = judge_result.get("passed")
+            # the contract marker makes indexed/aggregate judge_score values
+            # splittable: v2 scores are criteria-derived, v1 are scalar claims
+            if judge_result.get("judge_contract"):
+                meta.config["judge_contract"] = judge_result["judge_contract"]
+                for key in ("claimed_score", "claimed_passed"):
+                    if key in judge_result:
+                        meta.config[key] = judge_result[key]
             meta.latency_ms = (time.perf_counter() - t0) * 1000
             if passes is False:
                 # The judge no longer decides `passes`, so a failure here is a
@@ -1362,8 +1382,9 @@ class Runner:
             )
 
         payload = artifact_bytes if artifact_bytes is not None else (artifact_text or "").encode()
-        # task prompt is part of the key so a task edit under the same id invalidates
-        sha = hashlib.sha256(task.prompt.encode() + b"\0" + payload).hexdigest()
+        # task prompt and criteria are part of the key — a task edit or a
+        # metadata.criteria change under the same id must invalidate
+        sha = judge_cache_key(task, payload)
         with self.store.judge_lock((task.id, judge.slug, sha)):
             if self.use_judge_cache:
                 cached = self.store.get_judge_result(task.id, judge.slug, sha)

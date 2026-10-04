@@ -36,6 +36,7 @@ from typing import Any
 import yaml
 
 from orchestral.config import TaskSpec
+from orchestral.privacy import GRADED_KEYS, GRADED_METADATA_KEYS
 
 # Marker recorded in every generated spec's metadata. `holdout` is the field the
 # runner, the leaderboard, the scrubber, and the audit all key on; the rest is
@@ -585,6 +586,48 @@ def holdout_secrets(spec: TaskSpec) -> list[str]:
         *(meta.get("forbidden") or []),
     ]
     return [value for value in raw if isinstance(value, str) and value.strip()]
+
+
+def spec_secrets(spec: TaskSpec) -> set[str]:
+    """Every answer-key string a spec carries — holdout or not.
+
+    ``holdout_secrets`` covers the unpublished arm's keys; graded
+    metadata keys (``expected_answer``, ``reference_sql``,
+    ``required_content``, ``calls`` …) carry answer keys on *any* spec,
+    and generated specs add ``document``/``schema``-style task data.
+    Membership is by value, not key name — a criterion or export that
+    reproduces one of these strings is secret-bearing regardless of
+    where the value sat in the spec.
+    """
+    secrets = set(holdout_secrets(spec))
+
+    def _collect(node: Any) -> None:
+        if isinstance(node, str) and node.strip():
+            secrets.add(node)
+        elif isinstance(node, dict):
+            for v in node.values():
+                _collect(v)
+        elif isinstance(node, list | tuple):
+            for v in node:
+                _collect(v)
+
+    # GRADED_KEYS plus per-type answer keys: required/forbidden tokens (the
+    # has_required/no_forbidden checks), the hidden test bodies and
+    # reference solutions that grade code/repo specs, and the verifier
+    # metadata whose args/paths embed answer material (verify.command argv,
+    # setup_commands, expected_paths) — all of them are things a judge
+    # must never be shown on *any* spec, holdout or not.
+    for key in (
+        GRADED_KEYS | GRADED_METADATA_KEYS
+        | {"required", "forbidden", "forbidden_pattern", "forbidden_patterns",
+           "reference", "reference_files", "test_files", "tests", "patch",
+           "verify", "setup_commands", "expected_paths"}
+    ):
+        _collect(spec.metadata.get(key))
+    if is_holdout(spec):
+        for key in ("document", "schema", "seed"):
+            _collect(spec.metadata.get(key))
+    return secrets
 
 
 def materialize(specs: list[TaskSpec], out_dir: Path | str) -> list[Path]:

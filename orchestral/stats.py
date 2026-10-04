@@ -7,6 +7,7 @@ so a pairing comparison carries variance instead of single runs.
 
 from __future__ import annotations
 
+import math
 import statistics
 from collections.abc import Iterable
 from dataclasses import dataclass, field
@@ -130,7 +131,7 @@ def aggregate(runs: Iterable[RunMeta], *, by_group: bool = True,
         costs = [run_cost(r, cost_basis) for r in cell]
         latencies = [r.latency_ms for r in cell if r.latency_ms]
         tokens = [r.total_input_tokens + r.total_output_tokens for r in cell]
-        cost_total = sum(costs)
+        cost_total = math.fsum(costs)
         failures: dict[str, int] = {}
         for r in cell:
             if r.failure_reason:
@@ -299,7 +300,7 @@ def pairing_leaderboard(
         judge_approved = sum(1 for r in judged if r.judge_passed is True)
         costs = [run_cost(r, cost_basis) for r in finished]
         latencies = [r.latency_ms for r in finished if r.latency_ms]
-        cost_total = sum(run_cost(r, cost_basis) for r in cell)
+        cost_total = math.fsum(run_cost(r, cost_basis) for r in cell)
         failures: dict[str, int] = {}
         for r in cell:
             if r.failure_reason:

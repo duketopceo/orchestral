@@ -1,8 +1,8 @@
 import { $view } from "../dom.js";
-import { api } from "../api.js";
+import { can, data } from "../data.js";
 import { judgeChip, statusChip } from "../chips.js";
 import { bindFlags, flagWidget, loadFlags } from "../flags.js";
-import { poll, stopPolling } from "../poller.js";
+import { STOP, start, stop } from "../poller.js";
 import { basisNote, billedOf, crumb, esc, failureText, fmtMoney, fmtMs, fmtScore, fmtTok, slug } from "../util.js";
 
 let liveCursor = 0;
@@ -28,7 +28,7 @@ function kv(label, val, cls) {
 
 export async function viewRun(runId, params) {
   const tab = params.get("tab") || "artifact";
-  const d = await api(`/api/run/${runId}`);
+  const d = await data.run(runId);
   await loadFlags();
   const m = d.meta, rep = d.report || {};
   const running = m.status === "running";
@@ -58,7 +58,7 @@ export async function viewRun(runId, params) {
         ${m.failure_reason ? `<div class="stat" title="${esc(m.failure_reason)}"><span class="s-label">Failure</span><span class="s-val">${esc(failureText(m.failure_reason))}</span></div>` : ""}
         ${flagWidget("run", runId)}
         <a class="btn" href="#/card?kind=run&target=${esc(runId)}">View card</a>
-        ${d.cancellable ? `<button class="danger" id="cancel-btn">Cancel</button>` : ""}
+        ${d.cancellable && can("cancel") ? `<button class="danger" id="cancel-btn">Cancel</button>` : ""}
       </div>
     </div>
     <div class="panel ph-strip" id="tl">${timelineHtml(d.timeline, running ? "running" : null)}</div>
@@ -74,23 +74,25 @@ export async function viewRun(runId, params) {
   const cancelBtn = document.getElementById("cancel-btn");
   if (cancelBtn) cancelBtn.addEventListener("click", async () => {
     cancelBtn.disabled = true;
-    await api(`/api/run/${runId}/cancel`, { method: "POST" });
+    await data.cancelRun(runId);
     viewRun(runId, params);
   });
 
-  renderTab(runId, tab, d, running);
+  await renderTab(runId, tab, d, running);
   bindFlags($view);
-  if (running) poll(() => refreshRun(runId, tab), 3000);
+  // A live run is watched by one task that owns the header and the finish: it
+  // keeps going whichever tab is open, and a finished run re-renders the view.
+  if (running && can("live_stream")) start("run-head", signal => refreshRun(runId, tab, signal), { ms: 3000 });
 }
 
-async function refreshRun(runId, tab) {
-  try {
-    const d = await api(`/api/run/${runId}`);
-    const tl = document.getElementById("tl");
-    if (tl) tl.innerHTML = timelineHtml(d.timeline, "running");
-    if (tab === "events") renderTab(runId, "events", d, true);
-    if (d.meta.status !== "running") { stopPolling(); viewRun(runId, new URLSearchParams(`tab=${tab}`)); }
-  } catch { /* transient */ }
+async function refreshRun(runId, tab, signal) {
+  const d = await data.run(runId, { signal });
+  const tl = document.getElementById("tl");
+  if (tl) tl.innerHTML = timelineHtml(d.timeline, "running");
+  if (d.meta.status === "running") return;
+  stop("run-events");
+  await viewRun(runId, new URLSearchParams(`tab=${tab}`));
+  return STOP;
 }
 
 async function renderTab(runId, tab, d, running) {
@@ -137,26 +139,25 @@ async function renderTab(runId, tab, d, running) {
   }
 
   if (tab === "events") {
-    const live = await api(`/api/run/${runId}/live?after=0`);
+    const live = await data.runLive(runId, 0);
     liveCursor = live.next;
     const rows = live.rows, details = live.details;
     el.innerHTML = `<div class="ev-wrap" id="ev-wrap">` +
       rows.map((r, i) => evRow(r, details[i])).join("") +
       `</div>` + (running ? `<div class="dim" style="padding:8px;font-size:11px">Streaming…</div>` : "");
     bindEvRows(el, rows, details);
-    if (running) poll(async () => {
-      try {
-        const inc = await api(`/api/run/${runId}/live?after=${liveCursor}`);
-        liveCursor = inc.next;
-        const wrap = document.getElementById("ev-wrap");
-        if (wrap && inc.rows.length) {
-          const html = inc.rows.map((r, i) => evRow(r, inc.details[i])).join("");
-          wrap.insertAdjacentHTML("beforeend", html);
-          bindEvRows(wrap, inc.rows, inc.details, true);
-          wrap.scrollTop = wrap.scrollHeight;
-        }
-      } catch { /* transient */ }
-    }, 2000);
+    if (running && can("live_stream")) start("run-events", async signal => {
+      const inc = await data.runLive(runId, liveCursor, { signal });
+      liveCursor = inc.next;
+      const wrap = document.getElementById("ev-wrap");
+      if (wrap && inc.rows.length) {
+        const html = inc.rows.map((r, i) => evRow(r, inc.details[i])).join("");
+        wrap.insertAdjacentHTML("beforeend", html);
+        bindEvRows(wrap, inc.rows, inc.details, true);
+        wrap.scrollTop = wrap.scrollHeight;
+      }
+      if (inc.status && inc.status !== "running") return STOP;
+    }, { ms: 2000 });
     return;
   }
 

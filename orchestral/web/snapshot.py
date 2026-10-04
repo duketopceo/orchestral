@@ -9,7 +9,8 @@ Keys are what the hosted adapter in ``ui/js/data.js`` requests, minus the
 ``.json`` suffix the Worker adds (``/api/<name>`` maps to ``api/<name>.json``):
 
     meta.json  overview.json  runs.json  groups.json  matrix.json
-    leaderboard.json  flags.json  pairings.json  pairings.<group>.json
+    leaderboard.json  flags.json  models-catalog.json  experiment.<name>.json
+    pairings.json  pairings.<group>.json
     cards.<lens>.json  card/<kind>/<target>.<lens>.json
     compare.<a>.<b>.json   (every ordered pair, only below MAX_COMPARE_GROUPS)
     run/<id>.json  run/<id>/live.json  run/<id>/evidence.json
@@ -30,7 +31,7 @@ from urllib.parse import quote
 from orchestral import cf
 from orchestral.privacy import HoldoutRunError
 from orchestral.storage import RunStore
-from orchestral.web import state
+from orchestral.web import catalog, state
 
 # Compare keys grow quadratically; past this many groups the hosted build omits
 # them and the SPA says the pair is not part of the snapshot.
@@ -71,7 +72,14 @@ def build_snapshot(
         "leaderboard.json": state.leaderboard_rows(store),
         "flags.json": store.annotations(),
         "pairings.json": state.pairings_payload(store, tasks_dir=tasks_dir),
+        "models-catalog.json": catalog.models_catalog_payload(store, models_dir),
     }
+    experiments_dir = tasks_dir.parent / "experiments"
+    if experiments_dir.is_dir():
+        for spec in sorted(experiments_dir.glob("*.yaml")):
+            payload = state.experiment_payload(store, spec, tasks_dir=tasks_dir)
+            if payload is not None:
+                out[f"experiment.{enc(spec.stem)}.json"] = payload
     groups = [g["group"] for g in out["groups.json"]]
     for g in groups:
         out[f"pairings.{enc(g)}.json"] = state.pairings_payload(
@@ -83,10 +91,10 @@ def build_snapshot(
                     out[f"compare.{enc(a)}.{enc(b)}.json"] = state.compare_payload(store, a, b)
     for lens in state.CARD_LENSES:
         lens_id = lens["id"]
-        catalog = state.card_catalog_payload(
+        lens_catalog = state.card_catalog_payload(
             store, tasks_dir=tasks_dir, groups_file=groups_file, lens=lens_id)
-        out[f"cards.{lens_id}.json"] = catalog
-        for card in catalog["cards"]:
+        out[f"cards.{lens_id}.json"] = lens_catalog
+        for card in lens_catalog["cards"]:
             kind, target = card.get("kind"), card.get("target")
             if kind and target:
                 out[f"card/{kind}/{enc(target)}.{lens_id}.json"] = card

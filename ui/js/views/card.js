@@ -1,6 +1,6 @@
 import * as F from "../format.js";
 import { $view } from "../dom.js";
-import { api } from "../api.js";
+import { can, data, optional } from "../data.js";
 import { confirmSpend } from "../confirm.js";
 import { bindFlags, flagOf, flagWidget, loadFlags } from "../flags.js";
 import { NIL, esc, fmtEstimate, fmtMoney, fmtScore, fmtUsdRange, newIdempotencyKey, providerErrorText, slug, spendContextRows } from "../util.js";
@@ -83,17 +83,11 @@ export async function viewCard(params) {
   if (!target) { location.hash = "#/cards"; return; }
   const scopedGroup = params.get("group") || "";
   const lens = params.get("lens") || "overall";
-  const query = new URLSearchParams({ kind, target, lens });
-  if (scopedGroup) query.set("group", scopedGroup);
-  const d = await api(`/api/card?${query.toString()}`);
+  const d = await data.card({ kind, target, lens, group: scopedGroup });
   const proof = d.story?.proof;
   let evidence = proof;
   if (proof?.run_id) {
-    try {
-      evidence = await api(`/api/run/${encodeURIComponent(proof.run_id)}/evidence?max_bytes=6000&max_lines=80`);
-    } catch {
-      evidence = proof;
-    }
+    evidence = (await optional(data.runEvidence(proof.run_id))) ?? proof;
   }
   await loadFlags();
   const story = d.story || {
@@ -127,16 +121,16 @@ export async function viewCard(params) {
       ${flagWidget(kind, target)}
       <a class="btn" href="#/cards">All cards</a>
       <a class="btn" href="${inspectHref}">Inspect →</a>
-      <a class="btn" href="/api/shot.png?route=${encodeURIComponent(location.hash.slice(1))}" download>Download PNG</a>
+      ${can("png_capture") ? `<a class="btn" href="/api/shot.png?route=${encodeURIComponent(location.hash.slice(1))}" download>Download PNG</a>` : ""}
       <button class="btn" id="copy-context">Copy context</button>
-      <input id="thread-model" class="thread-model" placeholder="Writer model (optional, paid)" aria-label="Writer model slug. Leave blank to use free templates." value="">
+      ${can("thread") ? `<input id="thread-model" class="thread-model" placeholder="Writer model (optional, paid)" aria-label="Writer model slug. Leave blank to use free templates." value="">
       <select id="thread-n" class="thread-n" title="Follow-up posts (the card is post 1)">
         <option value="3" selected>4-post thread</option>
         <option value="4">5-post thread</option>
         <option value="2">3-post thread</option>
       </select>
-      <button class="btn primary" id="btn-thread">Write thread</button>
-      <span class="hint">1200×675 PNG (X-ready) · named download · ${flag === "interesting" ? "Flagged story" : "Local export"}</span>
+      <button class="btn primary" id="btn-thread">Write thread</button>` : ""}
+      ${can("png_capture") ? `<span class="hint">1200×675 PNG (X-ready) · named download · ${flag === "interesting" ? "Flagged story" : "Local export"}</span>` : ""}
     </div>
     <div class="xcard" data-card-scope="${esc(kind)}" data-card-lens="${esc(story.lens?.id || lens)}">
       <div class="xc-top">
@@ -169,7 +163,7 @@ export async function viewCard(params) {
     try { await navigator.clipboard?.writeText(text); button.textContent = "Copied"; }
     catch { button.textContent = "Copy failed"; }
   });
-  document.getElementById("btn-thread").addEventListener("click", async e => {
+  document.getElementById("btn-thread")?.addEventListener("click", async e => {
     const btn = e.currentTarget;
     const panel = document.getElementById("thread-panel");
     const model = document.getElementById("thread-model").value.trim();
@@ -191,7 +185,7 @@ export async function viewCard(params) {
     btn.disabled = true;
     try {
       if (model) {
-        const est = await api(`/api/thread-estimate?${new URLSearchParams({ model }).toString()}`);
+        const est = await data.threadEstimate(model);
         if (est.will_spend) {
           if (!(await confirmWriter(est))) {
             panel.innerHTML = `<div class="panel panel-pad dim">Thread not written. Nothing was spent.</div>`;
@@ -203,12 +197,12 @@ export async function viewCard(params) {
       }
       btn.textContent = "Writing…";
       let out;
-      try { out = await api("/api/thread", { method: "POST", body }); }
+      try { out = await data.thread({ body }); }
       catch (ex) {
         if (ex.status === 409 && ex.body.needs_confirm && await confirmWriter(ex.body.estimate || {})) {
           body.set("confirm_spend", "1");
           if (!body.has("idempotency_key")) body.set("idempotency_key", newIdempotencyKey());
-          out = await api("/api/thread", { method: "POST", body });
+          out = await data.thread({ body });
         } else throw ex;
       }
       document.getElementById("thread-panel").innerHTML = `<div class="panel panel-pad thread">

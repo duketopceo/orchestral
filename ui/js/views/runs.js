@@ -1,11 +1,12 @@
 import { $view } from "../dom.js";
-import { api } from "../api.js";
+import { STALE, data, latest } from "../data.js";
+import { isAbort } from "../api.js";
 import { RUN_HEAD, runRow } from "../chips.js";
 import { bindFlags, loadFlags } from "../flags.js";
 import { esc } from "../util.js";
 
 export async function viewRuns(params) {
-  const groups = await api("/api/groups");
+  const groups = await data.groups();
   await loadFlags();
   const group = params.get("group") || "";
   const status = params.get("status") || "";
@@ -27,17 +28,23 @@ export async function viewRuns(params) {
     <div class="panel"><table class="data">${RUN_HEAD}<tbody id="runs-body">
       <tr><td colspan="9" class="empty">Loading…</td></tr></tbody></table></div>`;
 
-  async function load() {
-    const qs = new URLSearchParams();
-    const gv = document.getElementById("f-group").value;
-    const sv = document.getElementById("f-status").value;
-    const tv = document.getElementById("f-task").value;
-    const qv = document.getElementById("f-q").value;
-    if (gv) qs.set("group", gv);
-    if (sv) qs.set("status", sv);
-    if (tv) qs.set("task", tv);
-    if (qv) qs.set("q", qv);
-    const rows = await api("/api/runs?" + qs);
+  const newest = latest();
+  async function load(initial) {
+    const filters = {
+      group: document.getElementById("f-group").value,
+      status: document.getElementById("f-status").value,
+      task: document.getElementById("f-task").value,
+      q: document.getElementById("f-q").value,
+    };
+    let rows;
+    try { rows = await newest(signal => data.runs(filters, { signal })); }
+    catch (e) {
+      if (initial || isAbort(e)) throw e;
+      const failed = document.getElementById("runs-body");
+      if (failed) failed.innerHTML = `<tr><td colspan="9" class="empty" role="alert">${esc(e.message)}</td></tr>`;
+      return;
+    }
+    if (rows === STALE) return;
     const body = document.getElementById("runs-body");
     if (body) {
       body.innerHTML =
@@ -48,5 +55,5 @@ export async function viewRuns(params) {
   for (const id of ["f-group", "f-status", "f-task", "f-q"]) {
     document.getElementById(id).addEventListener("input", () => load());
   }
-  await load();
+  await load(true);
 }

@@ -1,14 +1,14 @@
 import * as F from "../format.js";
 import { $view } from "../dom.js";
-import { api } from "../api.js";
+import { data, optional } from "../data.js";
 import { RUN_HEAD, runRow } from "../chips.js";
 import { bindFlags, flagWidget, loadFlags } from "../flags.js";
 import { NIL, esc, fmtMoney, fmtPct, fmtScore, slug } from "../util.js";
 
 export async function viewOverview() {
   const [ov, mx, exp] = await Promise.all([
-    api("/api/overview"), api("/api/matrix"),
-    api("/api/experiment").catch(() => null),
+    data.overview(), data.matrix(),
+    optional(data.experiment()),
   ]);
   await loadFlags();
   const live = (ov.jobs || []).filter(j => j.status === "running");

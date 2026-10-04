@@ -1,10 +1,10 @@
 import * as F from "../format.js";
 import { $view } from "../dom.js";
-import { api } from "../api.js";
+import { data } from "../data.js";
 import { NIL, esc, fmtMoney, fmtPct, slug } from "../util.js";
 
 export async function viewCompare(params) {
-  const groups = await api("/api/groups");
+  const groups = await data.groups();
   const a = params.get("a") || (groups[0] && groups[0].group) || "";
   const b = params.get("b") || (groups[1] && groups[1].group) || "";
 
@@ -32,7 +32,7 @@ async function renderCompare(a, b) {
   const out = document.getElementById("cmp-out");
   if (!out) return;
   out.innerHTML = `<div class="loading">Comparing…</div>`;
-  const d = await api(`/api/compare?a=${encodeURIComponent(a)}&b=${encodeURIComponent(b)}`);
+  const d = await data.compare(a, b);
   const v = d.verdicts || {};
   const chipFor = x => ({ improved: "chip-pass", regressed: "chip-fail", stable: "chip-dim", "one-sided": "chip-warn" }[x]);
   const verdictLabel = x => ({ improved: "Improved", regressed: "Regressed", stable: "Stable", "one-sided": "One-sided" }[x] || x);

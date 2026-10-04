@@ -928,3 +928,15 @@ label.f.check-line { flex-direction: row; align-items: center; font-size: 13px; 
 
 /* null glyph (U5): a short rule, never a dash character; aria-label carries "no data" */
 .nil { display: inline-block; width: 10px; height: 1px; background: var(--ink-3, currentColor); vertical-align: middle; }
+
+/* ---------- status line (R15) ---------- */
+.status-line { margin: 0 0 14px; padding: 8px 12px; border: 1px solid var(--rule); border-radius: 6px;
+  background: var(--sunken); color: var(--ink-2); font-size: 12.5px; }
+.status-line[hidden] { display: none; }
+.status-line[data-tone="warn"] { color: var(--live-text); background: var(--live-wash);
+  border-color: color-mix(in srgb, var(--live-fill) 35%, transparent); }
+.status-line button.link { background: none; border: 0; padding: 0; color: inherit; font: inherit;
+  text-decoration: underline; cursor: pointer; }
+.rest-state { max-width: 560px; margin: 40px auto; text-align: left; padding: 22px; }
+.rest-state h1 { font-size: 18px; margin: 0 0 10px; color: var(--ink); }
+.rest-state p { margin: 0 0 12px; color: var(--ink-2); }

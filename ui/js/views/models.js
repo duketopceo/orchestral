@@ -1,10 +1,10 @@
 import * as F from "../format.js";
 import { $view } from "../dom.js";
-import { api } from "../api.js";
+import { data } from "../data.js";
 import { NIL, esc, fmtMoney, fmtWhen } from "../util.js";
 
 export async function viewModels() {
-  const d = await api("/api/models-catalog");
+  const d = await data.modelsCatalog();
   const roleCell = (m, r) => {
     const u = (m.usage || {})[r] || {};
     if (!u.runs && !u.calls) return `<td class="t-num dim" title="${esc(m.slug)} has not run as ${r}">${NIL}</td>`;

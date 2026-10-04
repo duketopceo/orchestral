@@ -1,5 +1,5 @@
 import { $view } from "../dom.js";
-import { api } from "../api.js";
+import { data } from "../data.js";
 import { setFlags, bindFlags, flagWidget } from "../flags.js";
 import { esc, slug } from "../util.js";
 
@@ -42,7 +42,7 @@ function galleryCard(card, lens, group) {
 }
 
 export async function viewCards(params) {
-  const groups = await api("/api/groups");
+  const groups = await data.groups();
   const requestedGroup = params.get("group");
   const group = requestedGroup !== null
     ? requestedGroup
@@ -50,11 +50,8 @@ export async function viewCards(params) {
   const scope = params.get("scope") || "group";
   const lens = params.get("lens") || "overall";
   const flagged = params.get("flagged") === "1";
-  const query = new URLSearchParams({ scope, lens });
-  if (group) query.set("group", group);
-  if (flagged) query.set("flagged", "1");
   const [catalog, flags] = await Promise.all([
-    api(`/api/cards?${query.toString()}`), api("/api/flags"),
+    data.cards({ group, scope, lens, flagged }), data.flags(),
   ]);
   setFlags(flags);
   const lenses = catalog.lenses || [];

@@ -1,6 +1,6 @@
 import * as F from "../format.js";
 import { $view } from "../dom.js";
-import { api } from "../api.js";
+import { data } from "../data.js";
 import { bindFlags, flagWidget, loadFlags } from "../flags.js";
 import { NIL, esc, fmtMoney, fmtMs, fmtPct, fmtScore, slug } from "../util.js";
 
@@ -56,12 +56,12 @@ function lbScatter(rows, cardHref, selectedTarget) {
 }
 
 export async function viewLeaderboard(params) {
-  const groups = await api("/api/groups");
+  const groups = await data.groups();
   const requestedGroup = params.get("group");
   // A run group is the default story boundary; all-runs remains an explicit choice.
   const group = requestedGroup !== null ? requestedGroup : (groups[0] && groups[0].group) || "";
   const requestedLens = params.get("lens") || "overall";
-  const d = await api("/api/pairings" + (group ? `?group=${encodeURIComponent(group)}` : ""));
+  const d = await data.pairings(group);
   const lens = d.lenses.find(item => item.id === requestedLens) || d.lenses[0] || {
     id: "overall", label: "Best overall", description: "No eligible pairing yet.",
     selected_target: "", ranking: [], reason: "", empty_reason: "No pairing has three finished runs yet",

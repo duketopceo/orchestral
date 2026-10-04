@@ -1,13 +1,13 @@
 import * as F from "../format.js";
 import { $view } from "../dom.js";
-import { api } from "../api.js";
+import { data } from "../data.js";
 import { confirmSpend } from "../confirm.js";
 import { esc, fmtEstimate, fmtUsdRange, newIdempotencyKey, spendContextRows } from "../util.js";
 
 export async function viewNew() {
   const [tasks, orchs, workers, models] = await Promise.all([
-    api("/api/tasks"), api("/api/models?role=orchestrator"),
-    api("/api/models?role=worker"), api("/api/models"),
+    data.tasks(), data.models("orchestrator"),
+    data.models("worker"), data.models(),
   ]);
   $view.innerHTML = `
     <h1>New Run</h1>
@@ -36,7 +36,7 @@ export async function viewNew() {
     for (const [k, v] of new FormData(form)) body.set(k, v);
     return body;
   };
-  const estimate = () => api(`/api/estimate?${formBody().toString()}`);
+  const estimate = () => data.estimate(formBody().toString());
   let seq = 0;
   const refresh = async () => {
     btn.textContent = dry.checked ? "Launch dry run" : "Launch paid run";
@@ -65,7 +65,7 @@ export async function viewNew() {
     const err = document.getElementById("launch-err");
     err.textContent = "";
     const body = formBody();
-    const launch = () => api("/api/run", { method: "POST", body });
+    const launch = () => data.launch({ body });
     // set once the person confirms; every retry of this launch carries it
     const keyed = () => { if (!body.has("idempotency_key")) body.set("idempotency_key", newIdempotencyKey()); };
     const confirmPaid = async est => confirmSpend({

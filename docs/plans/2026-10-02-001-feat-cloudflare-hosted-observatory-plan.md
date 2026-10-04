@@ -230,6 +230,38 @@ logs can be diffed against. It is not the observatory's read store.
 - Cost: free-tier or already-paid; Workers AI (clef arm, later) bills
   separately.
 
+## Addendum (Score redesign U6): snapshot keys, `meta.mode`, shared writer
+
+The Score redesign's SPA runtime reads the hosted mirror through one adapter, so
+this plan's payload tree gains a contract.
+
+- **One writer.** `orchestral/web/snapshot.py` (`build_snapshot`, `write_snapshot`,
+  `scripts/build-static-snapshot.py`) renders the key tree from the existing
+  `state.py` payload functions. `harness.py sync` must reuse it instead of
+  `cf.global_payloads` plus the per-run loop, so there is one definition of what
+  the hosted SPA can read. Per-run keys are rendered over the scrubbed tree
+  (`cf.scrub_to_dir`, `cf._hosted_detail`) exactly as `push_run` does today;
+  holdout runs yield no keys.
+- **Keys** (the Worker serves `/api/<name>` from `api/<name>.json`; names inside a
+  key are `quote(name, safe="")`): `meta`, `overview`, `runs`, `groups`, `matrix`,
+  `leaderboard`, `flags`, `models-catalog`, `experiment.<name>`, `pairings`,
+  `pairings.<group>`, `cards.<lens>`, `card/<kind>/<target>.<lens>`,
+  `compare.<a>.<b>` (every ordered pair, only while there are fewer than 30
+  groups), `run/<id>`, `run/<id>/live`, `run/<id>/evidence`.
+- **Filtering is client-side.** The hosted adapter ignores query parameters: `runs`
+  filters by group, task, status and text; `cards` by scope, group and flag;
+  `run/<id>/live` is sliced by cursor.
+- **`meta.mode` contract.** The SPA fetches `/api/meta`, then `/api/meta.json` if that
+  404s or the network fails, and picks its adapter from `mode` (`local` or
+  `hosted`), never from the HTTP status. The hosted document sets `mode: "hosted"`,
+  `synced_at`, `source_commit`, all capability flags false and the low-n thresholds.
+  The sync client must therefore write `api/meta.json` on every push.
+- **Worker gap to close in the sync unit.** The Worker's flat route accepts only
+  `[A-Za-z0-9._-]+`, so it does not yet resolve the slash and percent-encoded keys
+  above (`card/...`, `compare.<a>.<b>`, `run/<id>/live` already works). Either widen
+  that route to the snapshot key alphabet or have sync also write the existing
+  `card.<kind>.<target>` and `compare.<a>.vs.<b>` aliases.
+
 ## Verification gates
 
 ```bash

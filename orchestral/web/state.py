@@ -42,6 +42,7 @@ from orchestral.format import (
     fmt_percent,
     fmt_range_pct,
     fmt_score,
+    is_low_n_best,
 )
 from orchestral.judge import DEFAULT_JUDGE
 from orchestral.runner import Runner
@@ -1287,6 +1288,7 @@ def pairings_payload(
     metas = _runs_for_group(store, group)
     rows = pairing_leaderboard(metas, unmetered_workers=store.unmetered_workers())
     types = _task_types(store, tasks_dir)
+    default_group = None if group else default_pairing_group(metas)
 
     by_pair: dict[tuple[str, str], list[Any]] = {}
     for m in metas:
@@ -1321,6 +1323,7 @@ def pairings_payload(
             "best_type": best[0] if best else None,
             "worst_type": worst[0] if worst else None,
             "why": _pairing_why(r, best, worst, top_failure),
+            "low_n_best": is_low_n_best(r.finished),
         })
         enriched.append(d)
 
@@ -1335,6 +1338,7 @@ def pairings_payload(
                 "orchestrator": o, "worker": w,
                 "pass_rate": (c["pass_rate"] if c else None),
                 "runs": (c["runs"] if c else 0),
+                "finished": (c["finished"] if c else 0),
                 "score_mean": (c["score_mean"] if c else None),
                 "low_sample": (c["low_sample"] if c else False),
             }
@@ -1342,7 +1346,33 @@ def pairings_payload(
             for c in [by_key.get((o, w))]
         ],
     }
-    return {"rows": enriched, "matrix": matrix, "lenses": _lens_payloads(enriched)}
+    summary = {
+        "pairings": len(enriched),
+        "metered": sum(1 for d in enriched if (d.get("cost_total") or 0) > 0),
+        "unmetered": sum(1 for d in enriched if not (d.get("cost_total") or 0) > 0),
+        "best_eligible": sum(1 for d in enriched if not d["low_n_best"]),
+        "no_pass": sum(1 for d in enriched if d.get("finished") and not d.get("passed")),
+    }
+    return {"rows": enriched, "matrix": matrix, "lenses": _lens_payloads(enriched),
+            "summary": summary, "default_group": default_group}
+
+
+def default_pairing_group(metas: list[Any]) -> str:
+    """The run group Pairings opens on: the most recent labelled group holding
+    at least three pairings, else ``""`` (all groups). A one-pairing cohort is
+    never the default story."""
+    pairs: dict[str, set[tuple[str, str]]] = {}
+    latest: dict[str, str] = {}
+    for m in metas:
+        group = getattr(m, "run_group", "") or ""
+        if not group:
+            continue
+        pairs.setdefault(group, set()).add((m.orchestrator, m.worker))
+        started = getattr(m, "started_at", "") or ""
+        if started > latest.get(group, ""):
+            latest[group] = started
+    big = [g for g, p in pairs.items() if len(p) >= 3]
+    return max(big, key=lambda g: (latest.get(g, ""), g)) if big else ""
 
 
 def _pairing_why(r: Any, best: Any, worst: Any, top_failure: str | None) -> str:
@@ -2546,12 +2576,20 @@ def card_catalog_payload(
 
 
 def compare_payload(store: RunStore, group_a: str, group_b: str) -> dict[str, Any]:
-    """Cell-by-cell group delta — the same join `report --compare` prints,
-    plus a pairing matrix the SPA renders as a grid."""
+    """Cell-by-cell group delta, baseline (a) first against candidate (b).
+
+    Each cell carries both Wilson intervals, the pass-rate delta and the cost
+    delta. Rows sort by regression (largest drop first), one-sided cells last.
+    ``a == b`` is blocked with a message instead of a vacuous all-stable table."""
+    if group_a == group_b:
+        return {"group_a": group_a, "group_b": group_b, "cells": [], "verdicts": {},
+                "shared": 0, "one_sided": 0, "cost_a": 0, "cost_b": 0, "cost_delta": None,
+                "blocked": "Pick two different run groups to compare."}
+
     def cells(group: str) -> dict[tuple[str, str, str], Any]:
         return {
             (c.task_id, c.orchestrator, c.worker): c
-            for c in aggregate(store.list_runs(run_group=group))
+            for c in aggregate(_runs_for_group(store, group) if group else [])
         }
 
     cells_a, cells_b = cells(group_a), cells(group_b)
@@ -2561,30 +2599,51 @@ def compare_payload(store: RunStore, group_a: str, group_b: str) -> dict[str, An
         a, b = cells_a.get((task_id, orch, worker)), cells_b.get((task_id, orch, worker))
         pa = a.pass_rate if a else None
         pb = b.pass_rate if b else None
+        side = ""
         if pa is None or pb is None:
             verdict = "one-sided"
+            side = "baseline" if pa is not None else "candidate" if pb is not None else "neither"
         elif pb > pa:
             verdict = "improved"
         elif pb < pa:
             verdict = "regressed"
         else:
             verdict = "stable"
+        cost_a = a.cost_total if a else None
+        cost_b = b.cost_total if b else None
+        two_sided = verdict != "one-sided"
         rows.append({
             "task_id": task_id, "orchestrator": orch, "worker": worker,
-            "n_a": a.runs if a else 0, "pass_a": pa, "cost_a": a.cost_total if a else None,
-            "n_b": b.runs if b else 0, "pass_b": pb, "cost_b": b.cost_total if b else None,
+            "n_a": a.runs if a else 0, "pass_a": pa, "cost_a": cost_a,
+            "n_b": b.runs if b else 0, "pass_b": pb, "cost_b": cost_b,
+            "passed_a": a.passed if a else 0, "finished_a": a.finished if a else 0,
+            "passed_b": b.passed if b else 0, "finished_b": b.finished if b else 0,
+            "ci_a": _wilson(a.passed, a.finished) if a else None,
+            "ci_b": _wilson(b.passed, b.finished) if b else None,
+            "delta": (pb - pa) if two_sided and pa is not None and pb is not None else None,
+            "cost_delta": (cost_b or 0) - (cost_a or 0) if two_sided else None,
+            "side": side,
             "verdict": verdict,
             "failures_a": a.failures if a else {},
             "failures_b": b.failures if b else {},
         })
+    rows.sort(key=lambda r: (r["delta"] is None, r["delta"] if r["delta"] is not None else 0.0,
+                             r["task_id"], r["orchestrator"], r["worker"]))
     verdicts: dict[str, int] = {}
     for r in rows:
         verdicts[r["verdict"]] = verdicts.get(r["verdict"], 0) + 1
+    cost_a_total = sum(r["cost_a"] or 0 for r in rows)
+    cost_b_total = sum(r["cost_b"] or 0 for r in rows)
+    one_sided = verdicts.get("one-sided", 0)
     return {
         "group_a": group_a, "group_b": group_b, "cells": rows,
         "verdicts": verdicts,
-        "cost_a": sum(r["cost_a"] or 0 for r in rows),
-        "cost_b": sum(r["cost_b"] or 0 for r in rows),
+        "shared": len(rows) - one_sided,
+        "one_sided": one_sided,
+        "cost_a": cost_a_total,
+        "cost_b": cost_b_total,
+        "cost_delta": cost_b_total - cost_a_total,
+        "blocked": "",
     }
 
 

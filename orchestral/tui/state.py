@@ -8,6 +8,9 @@ dispatch intents back.
 from __future__ import annotations
 
 import json
+import locale
+import os
+import sys
 import threading
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -15,8 +18,11 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
+from rich.text import Text
+
 from orchestral.format import NULL_GLYPH, fmt_duration_ms, fmt_money
 from orchestral.format import fmt_tokens as fmt_tokens  # re-export
+from orchestral.glyphs import GLYPHS, glyph
 
 # Fields a launch spec may carry — must equal web.state.LAUNCH_FIELDS
 # (the parity test asserts it; divergence fails in CI, not production).
@@ -103,47 +109,97 @@ fmt_cost = fmt_money
 
 def fmt_usd_range(lo: float | None, hi: float | None) -> str:
     if lo is None or hi is None:
-        return "unknown"
+        return "Unknown"
     return f"{fmt_money(lo)} to {fmt_money(hi)}"
 
 
 def format_spend_estimate(est: dict[str, Any]) -> str:
-    """The launch-estimate payload as plain lines for the confirm panel.
+    """The launch-estimate payload as the confirm panel's lines.
 
-    Same fields the web confirm dialog shows: range, basis, and month-to-date
-    billed spend against the eval cap. `unknown` is never rendered as $0.
+    Row for row what the web confirm dialog shows (``ui/app.js``): runs,
+    estimated cost ("about" a figure, ``$0.00`` for a dry run, "Unknown" when
+    there is no billed history, never $0), range, basis, month-to-date billed
+    spend against the eval cap, then the caveat.
     """
     runs = est.get("replicates") or 1
+    total = est.get("total_usd")
+    if total is None:
+        cost = "Unknown"
+    elif total == 0:
+        cost = fmt_money(0)
+    else:
+        cost = f"about {fmt_money(total)}"
     lines = [
-        f"Estimated cost: {fmt_usd_range(est.get('total_low_usd'), est.get('total_high_usd'))} "
-        f"for {runs} run{'' if runs == 1 else 's'}",
-        str(est.get("basis_label") or ""),
+        f"Runs: {runs}",
+        f"Estimated cost: {cost}",
+        f"Range: {fmt_usd_range(est.get('total_low_usd'), est.get('total_high_usd'))}",
+        f"Estimate basis: {est.get('basis_label') or NULL_GLYPH}",
     ]
     if est.get("month_to_date_billed_usd") is not None:
         lines.append(
-            f"Spent this month: ${est['month_to_date_billed_usd']:.2f} of "
-            f"${est.get('monthly_cap_usd', 0):.0f} eval cap (billed, recorded in this index)")
+            f"Spent this month: ${float(est['month_to_date_billed_usd']):.2f} of "
+            f"${float(est.get('monthly_cap_usd') or 0):.0f} eval cap "
+            "(billed spend recorded in this index)")
     if est.get("caveat"):
         lines.append(str(est["caveat"]))
-    return "\n".join(line for line in lines if line)
+    return "\n".join(lines)
 
 
-def pass_label(passes: bool | None) -> tuple[str, str]:
-    """(text, css-class) — text carries the meaning, color only decorates."""
+def use_ascii() -> bool:
+    """ASCII glyphs unless the terminal can show Unicode (same rules as the CLI).
+
+    Unicode needs a UTF-8 stream, ``TERM`` other than ``dumb`` and ``ORCH_ASCII``
+    unset. ``NO_COLOR`` is not consulted: it drops colour only. The TUI is
+    always on a terminal, so there is no isatty test here.
+    """
+    if os.environ.get("ORCH_ASCII") or os.environ.get("TERM") == "dumb":
+        return True
+    enc = getattr(sys.stdout, "encoding", None) or locale.getpreferredencoding(False)
+    return "utf" not in str(enc).lower()
+
+
+Label = tuple[str, str, str]  # (glyph, word, colour role from ui/tokens.css)
+
+
+def _label(name: str, word: str | None, ascii_only: bool | None) -> Label:
+    row = GLYPHS[name]
+    return (glyph(name, ascii_only=use_ascii() if ascii_only is None else ascii_only),
+            word or row.word, row.role)
+
+
+def pass_label(passes: bool | None, ascii_only: bool | None = None) -> Label:
+    """(glyph, word, role). The word always travels with the glyph; colour only decorates."""
     if passes is True:
-        return "pass", "ok"
+        return _label("pass", None, ascii_only)
     if passes is False:
-        return "fail", "err"
-    return "-", "muted"
+        return _label("fail", None, ascii_only)
+    return ("", NULL_GLYPH, "ink-3")
 
 
-def status_label(status: str) -> tuple[str, str]:
-    return {
-        "finished": ("finished", "ok"),
-        "running": ("running", "warn"),
-        "failed": ("failed", "err"),
-        "cancelled": ("cancelled", "warn"),
-    }.get(status, (status, "muted"))
+def status_label(status: str, ascii_only: bool | None = None) -> Label:
+    """A run status as (glyph, word, role); ``finished`` is a word with no verdict glyph."""
+    if status == "running":
+        return _label("live", "running", ascii_only)
+    if status == "failed":
+        return _label("fail", "failed", ascii_only)
+    if status == "cancelled":
+        return _label("cancelled", None, ascii_only)
+    if status == "finished":
+        return ("", "finished", "ink-2")
+    return ("", status or NULL_GLYPH, "ink-3")
+
+
+def label_plain(label: Label) -> str:
+    return f"{label[0]} {label[1]}".strip()
+
+
+def verdict_cell(label: Label, tokens: dict[str, str]) -> Text:
+    """A table cell: glyph and word, coloured by role unless ``NO_COLOR`` is set."""
+    text = label_plain(label)
+    if os.environ.get("NO_COLOR"):
+        return Text(text)
+    colour = tokens.get(f"--{label[2]}-text") or tokens.get(f"--{label[2]}")
+    return Text(text, style=colour or "")
 
 
 # ---------------------------------------------------------------------------

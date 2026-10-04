@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 import sys
+import time
 import uuid
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -47,6 +48,7 @@ from orchestral.experiment import (
     rep_target,
     resolve_matrix_tasks,
     run_experiment,
+    run_is_stale,
 )
 from orchestral.export import leaderboard_csv, run_audit_markdown, runs_csv
 from orchestral.fileset import expected_paths, required_content
@@ -519,6 +521,69 @@ def cmd_run(args: argparse.Namespace) -> None:
                 if cell.failures:
                     print(f"  failures: {cell.failures}")
     if failures:
+        sys.exit(1)
+
+
+def cmd_recover(args: argparse.Namespace) -> None:
+    """Relaunch the slot an orphaned 'running' run left behind.
+
+    Marks the corpse ``aborted`` and launches a fresh run carrying the
+    same task, pairing, group, replicate, and seed — the orphan keeps
+    its row (its billed calls stay attributed) while the new run
+    completes the replicate. Refuses terminal runs (their slot is
+    complete by policy) and fresh 'running' rows (possibly live
+    elsewhere) unless --force.
+    """
+    store, known, judge = _run_preamble(args)
+    meta = store.get_run(args.run_id)
+    if meta is None:
+        print(f"recover: no run {args.run_id!r} in the index", file=sys.stderr)
+        sys.exit(1)
+    if meta.status != "running":
+        print(
+            f"recover: run {meta.run_id} is {meta.status} — only orphaned "
+            "'running' rows recover; a terminal run's slot is complete",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    if not args.force and not run_is_stale(meta, time.time()):
+        print(
+            f"recover: run {meta.run_id} shows recent activity — refusing to "
+            "race a possibly-live owner (retry later or pass --force)",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    task_path = find_task(meta.task_id, Path(args.tasks_dir))
+    if task_path is None:
+        print(
+            f"recover: task spec {meta.task_id!r} not under {args.tasks_dir}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    task = load_task(task_path)
+    orchestrator = replace(_model_from_arg(meta.orchestrator, args.models_dir, known), role="orchestrator")
+    worker = _apply_retry_limit(replace(_model_from_arg(meta.worker, args.models_dir, known), role="worker"), args)
+    _check_provider_envs(args, orchestrator, worker, judge)
+    cfg = meta.config or {}
+    store.repair_orphan_costs(meta.run_id)
+    store.set_annotation(
+        "run", meta.run_id, "aborted",
+        note="orphaned 'running' row — superseded by relaunch",
+    )
+    kwargs = _runner_kwargs(
+        args, store,
+        run_group=meta.run_group,
+        replicate=meta.replicate,
+        seed=cfg.get("seed"),
+        jev_assist=cfg.get("jev_assist", False),
+        planner=cfg.get("planner", getattr(args, "planner", None)),
+        prompt_variant=cfg.get("prompt_variant"),
+    )
+    new_meta = Runner(**kwargs).run(task, orchestrator, worker, judge)
+    print(f"Recovered {meta.run_id} → {new_meta.run_id} [{new_meta.status}]")
+    print(f"  Directory: {new_meta.run_dir}")
+    print(f"  Cost: ${new_meta.total_cost_usd:.6f} | Passes: {new_meta.passes} | Score: {new_meta.score}")
+    if new_meta.status != "finished":
         sys.exit(1)
 
 
@@ -1443,6 +1508,32 @@ def cmd_fixtures(args: argparse.Namespace) -> None:
         print(f"{len(registry)} fixture(s) consistent with registry")
 
 
+def cmd_harbor(args: argparse.Namespace) -> None:
+    """Harbor task-package export — spec → dist/harbor/<task_id>/."""
+    from orchestral.harbor_export import export_task
+
+    if args.harbor_cmd == "export":
+        spec = load_task(_task_from_arg(args.task, args.tasks_dir))
+        try:
+            package = export_task(
+                spec,
+                args.out_dir,
+                publish_keys=args.publish_keys,
+                fixtures_dir=args.fixtures_dir,
+            )
+        except ValueError as exc:
+            print(f"harbor export: {exc}")
+            sys.exit(1)
+        print(f"exported {spec.id} -> {package}")
+        for rel in sorted(p.relative_to(package) for p in package.rglob("*") if p.is_file()):
+            print(f"  {rel}")
+        print(
+            "\nReview the package before sharing it: tests/oracle/ and "
+            "checks.json carry the answer key by design (that's what "
+            "--publish-keys acknowledged)."
+        )
+
+
 def cmd_calibrate(args: argparse.Namespace) -> None:
     """Judge-vs-human agreement metrics from a labels file."""
     if args.emit:
@@ -2093,6 +2184,20 @@ def build_parser() -> argparse.ArgumentParser:
     _add_run_flags(run)
     run.set_defaults(func=cmd_run)
 
+    recover = sub.add_parser(
+        "recover",
+        help="Relaunch the slot an orphaned 'running' run left behind "
+        "(marks the corpse aborted, launches a fresh run with the same "
+        "task, pairing, group, replicate, and seed)",
+    )
+    recover.add_argument("run_id", help="Orphaned run id to recover")
+    recover.add_argument(
+        "--force", action="store_true",
+        help="Relaunch even if the orphan shows recent activity",
+    )
+    _add_run_flags(recover)
+    recover.set_defaults(func=cmd_recover)
+
     grid = sub.add_parser("grid", help="Run a matrix of orchestrators × workers")
     grid.add_argument("--task", required=True, help="Task id or path")
     grid.add_argument("--orchestrators", default=None, help="Comma-separated OpenRouter model slugs (default: all models with role=orchestrator)")
@@ -2346,6 +2451,26 @@ def build_parser() -> argparse.ArgumentParser:
     ff.add_argument("ids", nargs="*", help="Fixture ids (default: all registered)")
     fsub.add_parser("check", help="Verify fetched tarballs match registry pins + locks")
     fixtures.set_defaults(func=cmd_fixtures)
+
+    harbor = sub.add_parser(
+        "harbor",
+        help="Export task specs as self-contained Harbor packages (instruction + environment + verifier)",
+    )
+    hsub = harbor.add_subparsers(dest="harbor_cmd", required=True)
+    hexp = hsub.add_parser(
+        "export",
+        help="Package one task — embeds the answer key by design; holdout specs refuse",
+    )
+    hexp.add_argument("task", help="Task spec id")
+    hexp.add_argument(
+        "--publish-keys",
+        action="store_true",
+        help="Acknowledge that the package publishes this spec's expected answers (required)",
+    )
+    hexp.add_argument("--out-dir", default="dist/harbor", help="Package output root")
+    _add_global_dir_flag(hexp, "--tasks-dir", "Task spec directory")
+    hexp.add_argument("--fixtures-dir", default="fixtures", help="Fixture directory")
+    harbor.set_defaults(func=cmd_harbor)
 
     models = sub.add_parser(
         "models",

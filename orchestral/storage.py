@@ -33,8 +33,10 @@ DB_NAME = "index.db"
 
 # Judge-cache payload version — bump when the result shape or the input
 # contract changes so stale records go cold on read instead of being
-# trusted. v1 was the bare result dict (pre-inconclusive rule).
-JUDGE_CACHE_SCHEMA = 2
+# trusted. v1 was the bare result dict (pre-inconclusive rule); v2 added
+# the inconclusive rule; v3 is judge_contract v2 — per-criterion
+# {satisfied, supported, evidence} triples (wandr pattern).
+JUDGE_CACHE_SCHEMA = 3
 
 # Byte cap on a call's prompt/completion body when a caller wants a *preview*
 # (the web observatory) rather than the ledger (dataset export, the TUI).
@@ -669,6 +671,69 @@ class RunStore:
                 (f"{esc}%",),
             ).fetchone()
         return float(row[0] or 0.0)
+
+    def repair_orphan_costs(self, run_id: str) -> bool:
+        """Recompute a run's cost/token totals from its ``calls`` rows.
+
+        A run killed mid-flight meters ``total_cost_usd = 0`` forever —
+        finalize never ran, so ``coverage_rows``, ``spend_today`` and
+        ``mean_cell_cost`` all undercount it while its billed calls sit
+        in the ledger. Recompute from the ledger; returns True when the
+        row actually changed.
+        """
+        with self._connect() as conn:
+            sums = conn.execute(
+                "SELECT COALESCE(SUM(cost_usd), 0), "
+                "COALESCE(SUM(input_tokens), 0), "
+                "COALESCE(SUM(output_tokens), 0) "
+                "FROM calls WHERE run_id = ?",
+                (run_id,),
+            ).fetchone()
+            n = conn.execute(
+                "UPDATE runs SET total_cost_usd = ?, total_input_tokens = ?, "
+                "total_output_tokens = ? WHERE run_id = ? "
+                "AND (total_cost_usd IS NULL OR total_cost_usd != ? "
+                "OR total_input_tokens != ? OR total_output_tokens != ?)",
+                (sums[0], sums[1], sums[2], run_id, sums[0], sums[1], sums[2]),
+            ).rowcount
+        if n:
+            meta = self.get_run(run_id)
+            if meta is not None:
+                self._write_meta_file(Path(meta.run_dir), meta)
+        return bool(n)
+
+    def missing_cost_count(
+        self, *, run_id: str | None = None, group_prefix: str | None = None
+    ) -> int:
+        """Calls with no provider-reported cost.
+
+        Keyed on ``api_cost_usd IS NULL`` against the pricing vocabulary:
+        ``flat_estimate``/``configured_estimate`` are estimates by
+        definition, ``cli_reported``/``api`` count when the provider
+        returned no usage cost; ``unmetered``/``none`` are legitimately
+        $0 and excluded. Dry-run rows excluded.
+        """
+        where = (
+            "api_cost_usd IS NULL "
+            "AND COALESCE(pricing_source, '') NOT IN ('unmetered', 'none') "
+            "AND COALESCE(dry_run, 0) = 0"
+        )
+        params: tuple = ()
+        if run_id is not None:
+            where += " AND run_id = ?"
+            params = (run_id,)
+        elif group_prefix is not None:
+            esc = group_prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            where += (
+                " AND run_id IN (SELECT run_id FROM runs "
+                "WHERE run_group LIKE ? ESCAPE '\\')"
+            )
+            params = (f"{esc}%",)
+        with self._connect() as conn:
+            row = conn.execute(
+                f"SELECT COUNT(*) FROM calls WHERE {where}", params
+            ).fetchone()
+        return int(row[0])
 
     def set_annotation(
         self, kind: str, target: str, flag: str, note: str = ""

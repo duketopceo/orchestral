@@ -10,7 +10,6 @@ a judge pass can never rescue a mechanical failure.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import tempfile
 import unittest
@@ -266,7 +265,8 @@ class TestInconclusiveRule(unittest.TestCase):
             task = TaskSpec(id="t1", type="html", prompt="make a page",
                             validation=["non_empty"])
             _, _, store = _run(tmp, judge, _judge_client("garbage"), task=task)
-            sha = hashlib.sha256(task.prompt.encode() + b"\0" + GOOD_HTML.encode()).hexdigest()
+            from orchestral.judge import judge_cache_key
+            sha = judge_cache_key(task, GOOD_HTML.encode())
             self.assertIsNone(store.get_judge_result(task.id, judge.slug, sha))
 
             good = _judge_client(json.dumps({"score": 0.8, "passed": True}))

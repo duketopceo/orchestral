@@ -587,6 +587,39 @@ def holdout_secrets(spec: TaskSpec) -> list[str]:
     return [value for value in raw if isinstance(value, str) and value.strip()]
 
 
+def spec_secrets(spec: TaskSpec) -> set[str]:
+    """Every answer-key string a spec carries — holdout or not.
+
+    ``holdout_secrets`` covers the unpublished arm's keys; graded
+    metadata keys (``expected_answer``, ``reference_sql``,
+    ``required_content``, ``calls`` …) carry answer keys on *any* spec,
+    and generated specs add ``document``/``schema``-style task data.
+    Membership is by value, not key name — a criterion or export that
+    reproduces one of these strings is secret-bearing regardless of
+    where the value sat in the spec.
+    """
+    from orchestral.privacy import GRADED_KEYS, GRADED_METADATA_KEYS
+
+    secrets = set(holdout_secrets(spec))
+
+    def _collect(node: Any) -> None:
+        if isinstance(node, str) and node.strip():
+            secrets.add(node)
+        elif isinstance(node, dict):
+            for v in node.values():
+                _collect(v)
+        elif isinstance(node, list | tuple):
+            for v in node:
+                _collect(v)
+
+    for key in GRADED_KEYS | GRADED_METADATA_KEYS:
+        _collect(spec.metadata.get(key))
+    if is_holdout(spec):
+        for key in ("document", "schema", "seed"):
+            _collect(spec.metadata.get(key))
+    return secrets
+
+
 def materialize(specs: list[TaskSpec], out_dir: Path | str) -> list[Path]:
     """Write specs as YAML under `out_dir` and return the written paths.
 

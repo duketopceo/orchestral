@@ -25,9 +25,12 @@ from __future__ import annotations
 import math
 import os
 import threading
+import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import suppress
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -54,6 +57,16 @@ REP_CAP = 100
 # Task types whose validation executes worker code — they need the
 # isolated runtime contract or every run lands a "no runtime" verdict.
 ISOLATED_TASK_TYPES = frozenset({"code", "bugfix"})
+
+# Slot-filling statuses: a run that reached any terminal state completed
+# its replicate slot (infra-error outcomes stay out of pass denominators
+# but still count as delivered work). "running" is the only live status.
+TERMINAL_STATUSES = frozenset({"finished", "failed", "cancelled"})
+
+# A "running" row with no activity for this long is a corpse: launches
+# are synchronous inside the driver, so a row that outlives its process
+# is process death, not in-flight work.
+STALE_RUNNING_SECONDS = 600.0
 
 CellLauncher = Callable[["Cell", str, int, str, int | None], RunMeta]
 
@@ -178,6 +191,32 @@ def arm_stats(runs: list[RunMeta]) -> tuple[int, int, int]:
     return passes, len(finished), len(runs) - len(finished)
 
 
+def status_counts(runs: list[RunMeta]) -> dict[str, int]:
+    """Per-status run counts — the honest denominator split behind
+    ``infra_errors`` (an orphan crash and a graceful failure used to
+    hide in the same bucket)."""
+    counts: dict[str, int] = {}
+    for r in runs:
+        counts[r.status] = counts.get(r.status, 0) + 1
+    return counts
+
+
+def dual_pass_rates(runs: list[RunMeta]) -> dict[str, float | None]:
+    """Both failure-accounting conventions (the search_evals pattern).
+
+    ``failed_excluded`` — pass rate over finished runs only;
+    ``failed_as_zero`` — every non-finished run scored as zero. The
+    second is display-only: mixing failure modes into ``diff_ci``
+    would conflate task failure with infra failure.
+    """
+    finished = [r for r in runs if r.status == "finished"]
+    passes = sum(1 for r in finished if r.passes)
+    return {
+        "failed_excluded": passes / len(finished) if finished else None,
+        "failed_as_zero": passes / len(runs) if runs else None,
+    }
+
+
 def estimate_pair_cost(store: RunStore, cell: Cell) -> float | None:
     """Estimated cost of one replicate (both arms) for this cell.
 
@@ -246,17 +285,56 @@ def _mark_aborted(store: RunStore, matrix_name: str, cell: Cell, reason: str) ->
     )
 
 
+def run_is_stale(meta: RunMeta, now: float) -> bool:
+    """Whether a ``running`` row's last activity predates the staleness
+    window. ``events.jsonl`` mtime is the heartbeat (a live run appends
+    on every call); ``started_at`` is the fallback for a run that never
+    logged. No signal at all is stale — a row with nothing to check has
+    nothing keeping it honest."""
+    candidates: list[float] = []
+    if meta.run_dir:
+        with suppress(OSError):
+            candidates.append(
+                (Path(meta.run_dir) / "events.jsonl").stat().st_mtime
+            )
+    if meta.started_at:
+        with suppress(ValueError):
+            candidates.append(
+                datetime.fromisoformat(meta.started_at).timestamp()
+            )
+    if not candidates:
+        return True
+    return now - max(candidates) > STALE_RUNNING_SECONDS
+
+
 def _missing_work(
-    arms: dict[str, list[RunMeta]], upto: int
-) -> dict[int, set[str]]:
-    """Replicate indexes 1..upto × arms still missing a finished-or-failed
-    run — fills gaps before advancing so a resume completes half-pairs."""
+    arms: dict[str, list[RunMeta]], upto: int, *, now: float | None = None
+) -> tuple[dict[int, set[str]], list[RunMeta]]:
+    """Replicate indexes 1..upto × arms still missing a terminal-status
+    run, plus the orphaned ``running`` rows behind those gaps.
+
+    A ``running`` row fills its slot only while it looks alive — a live
+    run in another process must not be raced. A stale one is a corpse:
+    its slot reopens for relaunch and the row is returned for the
+    caller to mark. Treating it as done (the old behavior) dropped the
+    replicate forever *and* could spin the driver loop empty forever
+    when every slot in a cell was orphaned.
+    """
+    ts = time.time() if now is None else now
     done: dict[int, set[str]] = {}
+    orphans: list[RunMeta] = []
     for arm in ARMS:
         for r in arms[arm]:
-            if r.replicate:
+            if not r.replicate:
+                continue
+            if r.status in TERMINAL_STATUSES or (
+                r.status == "running" and not run_is_stale(r, ts)
+            ):
                 done.setdefault(r.replicate, set()).add(arm)
-    return {i: set(ARMS) - done.get(i, set()) for i in range(1, upto + 1)}
+            elif r.status == "running":
+                orphans.append(r)
+    missing = {i: set(ARMS) - done.get(i, set()) for i in range(1, upto + 1)}
+    return missing, orphans
 
 
 def run_experiment(
@@ -327,6 +405,7 @@ def run_experiment(
         batch_infra_errors = 0
         batch_runs = 0
         pairs = 0
+        marked_orphans: set[str] = set()
 
         while not stop.is_set():
             arms = cell_runs(store, matrix.name, cell)
@@ -348,7 +427,28 @@ def run_experiment(
             # a cell with no billing history runs one calibration pair,
             # then reprices from what actually billed
             upto = pairs + 1 if not calibrated else min(target, pairs + batch_size)
-            missing = _missing_work(arms, upto)
+            missing, orphans = _missing_work(arms, upto)
+            for orphan in orphans:
+                if orphan.run_id in marked_orphans:
+                    continue
+                marked_orphans.add(orphan.run_id)
+                # hydrate the corpse's billed calls into runs.* before
+                # it goes on the books as aborted — killed runs would
+                # otherwise meter $0 to coverage and spend reports
+                store.repair_orphan_costs(orphan.run_id)
+                store.set_annotation(
+                    "run", orphan.run_id, "aborted",
+                    note="orphaned 'running' row — presumed process death",
+                )
+                emit(
+                    f"[recover] {cell.key} rep {orphan.replicate}: orphan "
+                    f"{orphan.run_id} marked aborted — slot reopened"
+                )
+            if not any(missing.values()):
+                # every slot is held by a terminal row or a live run —
+                # nothing launchable this pass; breaking keeps an
+                # all-orphan cell from spinning the loop forever
+                break
             for i in sorted(missing):
                 if stop.is_set():
                     break
@@ -406,6 +506,19 @@ def run_experiment(
         for cell in cells:
             _run_cell(cell)
 
+    cells_by_key = {cell.key: cell for cell in cells}
+    for key in summary:
+        summary[key]["missing_cost"] = store.missing_cost_count(
+            group_prefix=f"{matrix.name}:{key}:"
+        )
+        arms = cell_runs(store, matrix.name, cells_by_key[key])
+        summary[key]["arms"] = {
+            arm: {
+                "status": status_counts(arms[arm]),
+                **dual_pass_rates(arms[arm]),
+            }
+            for arm in ARMS
+        }
     return {
         "matrix": matrix.name,
         "cells": summary,

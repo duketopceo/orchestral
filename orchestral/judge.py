@@ -26,6 +26,7 @@ from orchestral.calibrate import _coerce_score, _coerce_verdict
 from orchestral.config import ModelConfig, TaskSpec, find_task, load_task
 from orchestral.costs import compute_cost, pricing_source_for, token_usage_from_raw
 from orchestral.fileset import files_listing_with_content
+from orchestral.holdout import spec_secrets
 from orchestral.logger import EventLogger
 from orchestral.planners import _extract_json, _response_fingerprint
 from orchestral.providers import Provider
@@ -49,6 +50,235 @@ Return only a JSON object with this exact shape:
 
 # base64 inflates ~33%, so this keeps judge payloads under ~10MB
 MAX_JUDGE_IMAGE_BYTES = 7_500_000
+
+# judge_contract v2 (wandr pattern): judgments decompose into per-criterion
+# {satisfied, supported, evidence} triples. `supported` is mechanical —
+# the judge must quote verbatim artifact text, and the claim counts only
+# when the quote is actually there. A satisfied criterion without a
+# verified quote is flagged, never trusted.
+JUDGE_CONTRACT = "v2"
+
+JUDGE_CRITERIA_PROMPT = """You are an expert judge evaluating the output of an AI system.
+
+Task: {prompt}
+
+Artifact:
+{artifact_section}
+
+Score the artifact from 0.0 to 1.0 based on how well it satisfies the task,
+then judge each criterion independently. For every satisfied criterion,
+quote the shortest verbatim excerpt from the artifact that proves it —
+no paraphrases, no descriptions of evidence.
+
+Criteria:
+{criteria_block}
+
+Return only a JSON object with this exact shape:
+
+{{
+  "score": <float between 0.0 and 1.0>,
+  "passed": <boolean>,
+  "reasoning": "<concise explanation>",
+  "criteria": [
+    {{"id": "<criterion id>", "satisfied": <boolean>,
+      "evidence": "<verbatim excerpt>"}}
+  ]
+}}
+"""
+
+# bounds that keep criteria evidence publishable and prompts sane
+MAX_CRITERIA = 20
+MAX_CRITERION_EVIDENCE_CHARS = 300
+
+# substring intersection below this length false-positives on ordinary
+# words — shorter secrets rely on an explicit ``secret: true`` criterion
+_MIN_SECRET_MATCH_CHARS = 8
+
+
+def task_criteria(spec: TaskSpec) -> list[dict[str, Any]]:
+    """Judgment criteria for a spec (judge_contract v2).
+
+    Explicit ``metadata.criteria`` entries win — ``{"id", "rubric"}``
+    dicts or bare rubric strings. Absent, the contract is a single
+    ``task`` criterion over the spec prompt, which reproduces the v1
+    whole-artifact judgment exactly. Each entry is tagged ``secret``
+    when its text intersects ``spec_secrets(spec)`` by value membership;
+    secret criteria never reach an LLM judge (the rubric IS the answer
+    key) and are graded mechanically instead.
+    """
+    raw = (spec.metadata or {}).get("criteria")
+    items: list[dict[str, Any]] = []
+    if isinstance(raw, list):
+        for i, entry in enumerate(raw):
+            if isinstance(entry, str) and entry.strip():
+                items.append({"id": f"c{i + 1}", "rubric": entry.strip(), "secret": False})
+            elif isinstance(entry, dict):
+                rubric = str(entry.get("rubric") or entry.get("text") or "").strip()
+                if not rubric:
+                    continue
+                items.append({
+                    "id": str(entry.get("id") or f"c{i + 1}"),
+                    "rubric": rubric,
+                    "secret": bool(entry.get("secret")),
+                })
+    if not items:
+        items = [{"id": "task", "rubric": spec.prompt, "secret": False}]
+    secrets = {s for s in spec_secrets(spec) if len(s) >= _MIN_SECRET_MATCH_CHARS}
+    for item in items[:MAX_CRITERIA]:
+        if not item["secret"]:
+            item["secret"] = any(s in item["rubric"] for s in secrets)
+    return items[:MAX_CRITERIA]
+
+
+def judge_cache_key(spec: TaskSpec, payload: bytes) -> str:
+    """The sha the judge cache is keyed on — prompt, criteria, and the
+    artifact. Both write paths (run-time judge and backfill) must hash
+    identically or backfill stores under keys the runner never reads."""
+    criteria_key = json.dumps(
+        [(c["id"], c["rubric"], c["secret"]) for c in task_criteria(spec)],
+        sort_keys=True,
+    )
+    return hashlib.sha256(
+        spec.prompt.encode() + b"\0" + criteria_key.encode() + b"\0" + payload
+    ).hexdigest()
+
+
+def _criteria_block(criteria: list[dict[str, Any]]) -> str:
+    return "\n".join(f"- {c['id']}: {c['rubric']}" for c in criteria)
+
+
+def _criterion_evidence(value: Any) -> list[str]:
+    """Bounded verbatim excerpts — strings only, capped count and length."""
+    raw = value if isinstance(value, list) else ([value] if value else [])
+    out: list[str] = []
+    for item in raw[:3]:
+        if isinstance(item, str) and item.strip():
+            out.append(item.strip()[:MAX_CRITERION_EVIDENCE_CHARS])
+    return out
+
+
+def _mechanical_satisfied(secrets_in_rubric: set[str], artifact: str) -> bool | None:
+    """Presence check for a secret-bearing criterion: the secrets its
+    rubric embeds are the values it demands — satisfied iff the artifact
+    contains them all. Direction-sensitive criteria (forbidden strings)
+    can't be told apart by value membership, so the note on the result
+    entry flags the semantics."""
+    if not secrets_in_rubric:
+        return None
+    return all(s in artifact for s in secrets_in_rubric)
+
+
+def criteria_rollup(criteria: list[dict[str, Any]]) -> dict[str, int]:
+    """Headline counts for a per-criterion result set — the score-tree
+    root that travels with ``judge.criteria`` into reports, BI payloads,
+    and the hosted mirror."""
+    return {
+        "total": len(criteria),
+        "satisfied": sum(1 for c in criteria if c.get("satisfied") is True),
+        "supported": sum(1 for c in criteria if c.get("supported") is True),
+        "unsupported": sum(1 for c in criteria if c.get("supported") is False),
+        "unassessed": sum(1 for c in criteria if c.get("satisfied") is None),
+        "secret": sum(1 for c in criteria if c.get("secret")),
+    }
+
+
+def _merge_criteria(
+    result: dict[str, Any],
+    criteria: list[dict[str, Any]],
+    answers: Any,
+    *,
+    artifact: str,
+    is_image: bool,
+    spec: TaskSpec,
+) -> None:
+    """Attach per-criterion results to a judge result (chat path).
+
+    ``supported`` is the wandr triple's second half — a satisfied claim
+    counts only when the judge quoted artifact text that verifies. A
+    missing criteria block in the response is "not assessable"
+    (supported=None), not bad evidence — that distinction keeps v1-shape
+    replies from flagging as unsupported.
+    """
+    by_id: dict[str, dict[str, Any]] = {}
+    if isinstance(answers, list):
+        for entry in answers:
+            if isinstance(entry, dict) and entry.get("id") is not None:
+                by_id[str(entry["id"])] = entry
+    secrets = {s for s in spec_secrets(spec) if len(s) >= _MIN_SECRET_MATCH_CHARS}
+    out: list[dict[str, Any]] = []
+    unsupported = 0
+    for crit in criteria:
+        cid = crit["id"]
+        if crit["secret"]:
+            in_rubric = {s for s in secrets if s in crit["rubric"]}
+            mech_satisfied = _mechanical_satisfied(in_rubric, artifact)
+            out.append({
+                "id": cid,
+                # the rubric is the answer key — withheld from results too
+                "satisfied": mech_satisfied,
+                "supported": None,
+                "evidence": [],
+                "engine": "mechanical",
+                "secret": True,
+                "note": "secret-bearing — graded by mechanical presence check, "
+                        "direction (required vs forbidden) not inferred",
+            })
+            continue
+        satisfied: bool | None
+        supported: bool | None
+        note: str | None
+        ans = by_id.get(cid)
+        if ans is None:
+            satisfied = None
+            supported = None
+            evidence: list[str] = []
+            note = "no criterion verdict in judge response"
+        else:
+            satisfied = _coerce_verdict(ans.get("satisfied"))
+            evidence = _criterion_evidence(ans.get("evidence"))
+            if satisfied is True:
+                # a satisfied claim needs a verifiable quote; image
+                # artifacts can't be substring-verified at all
+                if is_image:
+                    supported = None
+                    note = "evidence not verifiable on image artifacts"
+                elif evidence and any(e in artifact for e in evidence):
+                    supported = True
+                    note = None
+                else:
+                    supported = False
+                    note = "satisfied claim without verified artifact evidence"
+                    unsupported += 1
+            else:
+                supported = None
+                note = None
+        entry = {
+            "id": cid,
+            "rubric": crit["rubric"],
+            "satisfied": satisfied,
+            "supported": supported,
+            "evidence": evidence,
+            "engine": "chat",
+        }
+        if note:
+            entry["note"] = note
+        out.append(entry)
+    result["criteria"] = out
+    result["criteria_rollup"] = criteria_rollup(out)
+    result["unsupported_criteria"] = unsupported
+    # v2 hard verdict: when every open criterion carries a verdict, the
+    # headline pass/score derives from the criteria — the judge's scalar
+    # claim stays recorded for disagreement analysis. `supported is not
+    # False` is the gate: a satisfied claim contradicted by its evidence
+    # fails; unverifiable evidence (image artifacts) does not.
+    open_crit = [c for c in out if not c.get("secret")]
+    if open_crit and all(c["satisfied"] is not None for c in open_crit):
+        result["claimed_passed"] = result.get("passed")
+        result["claimed_score"] = result.get("score")
+        result["passed"] = all(
+            c["satisfied"] and c["supported"] is not False for c in open_crit
+        ) and all(c["satisfied"] for c in out if c.get("secret"))
+        result["score"] = sum(1 for c in out if c["satisfied"]) / len(out)
 
 # The structured-decisions judge offered on every launch surface. The `~`
 # prefix marks a decisions-engine slug: it never appears in load_models()
@@ -133,6 +363,7 @@ def _judge_via_decisions(
         "noul": noul,
         "confidence": quality.get("confidence"),
         "engine": "decisions",
+        "judge_contract": JUDGE_CONTRACT,
         "model": judge.slug,
         # the decisions state cap is artifact[:8000] — a truncated judge
         # input is partial evidence and badge provenance must see it
@@ -181,10 +412,17 @@ def judge_artifact(
     `language` labels the fenced artifact block — multi-file tasks pass a
     neutral tag because their artifact section is a file listing, not HTML.
     """
+    criteria = task_criteria(task)
+    # secret-bearing criteria never reach the judge — the rubric embeds
+    # the answer key. They're graded mechanically in the merge instead.
+    llm_criteria = [c for c in criteria if not c["secret"]]
+
     if image_bytes is not None and len(image_bytes) > MAX_JUDGE_IMAGE_BYTES:
         result: dict[str, Any] = {"score": None, "passed": None, "inconclusive": True,
-                                  "model": judge.slug,
+                                  "model": judge.slug, "judge_contract": JUDGE_CONTRACT,
                                   "reasoning": f"image too large to judge ({len(image_bytes)} bytes)"}
+        _merge_criteria(result, criteria, None, artifact=artifact,
+                        is_image=True, spec=task)
         logger.log(
             phase="judge",
             step=step,
@@ -204,13 +442,23 @@ def judge_artifact(
             + ("\n[artifact truncated for review]" if len(artifact) > JUDGE_CHAT_ARTIFACT_CAP else "")
         )
     )
-    prompt_text = JUDGE_PROMPT.format(prompt=task.prompt, artifact_section=artifact_section)
+    prompt_text = (
+        JUDGE_CRITERIA_PROMPT.format(
+            prompt=task.prompt,
+            artifact_section=artifact_section,
+            criteria_block=_criteria_block(llm_criteria),
+        )
+        if llm_criteria
+        else JUDGE_PROMPT.format(prompt=task.prompt, artifact_section=artifact_section)
+    )
 
     if dry_run or client is None:
         result = _fake_judge_result()
         # provenance parity with the real paths — report["judge"]["model"]
         # names which judge would have run, even when no call was made
         result["model"] = judge.slug
+        _merge_criteria(result, criteria, None, artifact=artifact,
+                        is_image=image_bytes is not None, spec=task)
         cost: dict[str, Any] = {
             "phase": "judge",
             "model": judge.slug,
@@ -240,17 +488,37 @@ def judge_artifact(
         if image_bytes is not None:
             # decisions engines are text-only — no image path exists
             result = {"score": None, "passed": None, "inconclusive": True,
-                      "model": judge.slug,
+                      "model": judge.slug, "judge_contract": JUDGE_CONTRACT,
                       "reasoning": "decisions engine cannot judge image artifacts"}
+            _merge_criteria(result, criteria, None, artifact=artifact,
+                            is_image=True, spec=task)
             logger.log(phase="judge", step=step, event_type="judge_skipped",
                        model=judge.slug, role="judge",
                        input_data={"task": task.id}, output_data=result,
                        reasoning="Decisions engine is text-only; image skipped.")
             return result, []
-        return _judge_via_decisions(
+        result, costs = _judge_via_decisions(
             logger=logger, step=step, task=task, artifact=artifact,
             judge=judge, client=client, language=language,
         )
+        # the decisions engine returns scalar verdicts — per-criterion
+        # evidence is explicitly unavailable, never fabricated
+        result["criteria"] = [
+            {
+                "id": c["id"],
+                **({"rubric": c["rubric"]} if not c["secret"] else {}),
+                "satisfied": None,
+                "supported": None,
+                "evidence": [],
+                "engine": "mechanical" if c["secret"] else "decisions",
+                **({"secret": True} if c["secret"] else {}),
+                "note": "scalar verdict — per-criterion evidence unavailable",
+            }
+            for c in criteria
+        ]
+        result["criteria_rollup"] = criteria_rollup(result["criteria"])
+        result["unsupported_criteria"] = 0
+        return result, costs
 
     if image_bytes is not None:
         b64 = base64.b64encode(image_bytes).decode()
@@ -315,9 +583,14 @@ def judge_artifact(
         result["reasoning"] = ""
     result["model"] = judge.slug
     result["engine"] = "chat"
+    result["judge_contract"] = JUDGE_CONTRACT
     # the chat judge's artifact section caps at artifact[:2000] — partial
     # evidence is recorded, not hidden
     result["judge_input_truncated"] = len(artifact) > 2000
+    _merge_criteria(
+        result, criteria, result.get("criteria") if not result.get("parse_failed") else None,
+        artifact=artifact, is_image=image_bytes is not None, spec=task,
+    )
 
     logger.log_llm_call(
         phase="judge",
@@ -373,6 +646,7 @@ def _judge_score(value: Any, response: str) -> float | None:
 
 def _fake_judge_result() -> dict[str, Any]:
     return {"score": None, "passed": None, "inconclusive": True,
+            "judge_contract": JUDGE_CONTRACT,
             "reasoning": "Dry-run; no judge model was called."}
 
 
@@ -976,7 +1250,7 @@ def backfill_judgments(
         logger = EventLogger(run_dir, store=store, run_id=meta.run_id, dry_run=dry_run)
         try:
             payload = image_bytes if image_bytes is not None else (text or "").encode()
-            sha = hashlib.sha256(task.prompt.encode() + b"\0" + payload).hexdigest()
+            sha = judge_cache_key(task, payload)
             with store.judge_lock((task.id, judge.slug, sha)):
                 cached = None if dry_run else store.get_judge_result(task.id, judge.slug, sha)
                 result: dict[str, Any]

@@ -560,7 +560,39 @@ async function renderTab(runId, tab, d, running) {
     el.innerHTML = reviewHtml(val);
     return;
   }
+  if (tab === "report" && val && typeof val === "object" &&
+      val.judge && Array.isArray(val.judge.criteria) && val.judge.criteria.length) {
+    el.innerHTML = criteriaHtml(val.judge) +
+      `<pre class="block">${esc(JSON.stringify(val, null, 2))}</pre>`;
+    return;
+  }
   el.innerHTML = `<pre class="block">${esc(typeof val === "string" ? val : JSON.stringify(val, null, 2))}</pre>`;
+}
+
+// Per-criterion judge contract (v2): each row shows the verdict the
+// judge claimed, whether quoted evidence actually verifies it, and the
+// engine that graded it. Secret criteria withhold the rubric — the
+// table renders what's in report.json, nothing more.
+function criteriaHtml(judge) {
+  const mark = (v) => v === true ? '<span class="chip chip-pass">yes</span>'
+    : v === false ? '<span class="chip chip-fail">no</span>'
+    : '<span class="chip chip-dim">—</span>';
+  const r = judge.criteria_rollup || {};
+  const head = `<div class="panel panel-pad"><h3>Criteria <span class="dim sm">${
+    judge.judge_contract || "v1"}${r.total != null ? ` · ${r.satisfied}/${r.total} satisfied` : ""}${
+    r.unsupported ? ` · ${r.unsupported} unsupported` : ""}${
+    r.unassessed ? ` · ${r.unassessed} unassessed` : ""}</span></h3>
+    <table class="data"><thead><tr>
+      <th>Criterion</th><th>Satisfied</th><th>Evidence</th><th>Engine</th><th>Note</th>
+    </tr></thead><tbody>`;
+  const rows = judge.criteria.map(c => `<tr>
+      <td>${esc(c.id || "")}${c.rubric ? `<div class="dim sm">${esc(c.rubric)}</div>` : ""}</td>
+      <td>${mark(c.satisfied)}${c.supported === false ? ` <span class="chip chip-warn" title="satisfied claim without verified artifact evidence">unverified</span>` : ""}</td>
+      <td class="dim sm">${(c.evidence || []).map(e => `<div class="mono">“${esc(e)}”</div>`).join("") || "—"}</td>
+      <td class="dim">${esc(c.engine || "")}</td>
+      <td class="dim sm">${esc(c.note || "")}</td>
+    </tr>`).join("");
+  return head + rows + `</tbody></table></div>`;
 }
 
 function evRow(r, detail) {

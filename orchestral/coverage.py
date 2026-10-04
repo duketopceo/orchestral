@@ -22,7 +22,9 @@ from orchestral.experiment import (
     arm_stats,
     cell_runs,
     cell_state,
+    dual_pass_rates,
     rep_target,
+    status_counts,
 )
 from orchestral.stats import diff_ci, diff_verdict
 from orchestral.storage import RunStore
@@ -41,6 +43,10 @@ class CoverageRow:
     jev_passes: int = 0
     jev_n: int = 0
     infra_errors: int = 0
+    baseline_status: dict[str, int] = field(default_factory=dict)
+    jev_status: dict[str, int] = field(default_factory=dict)
+    baseline_rates: dict[str, float | None] = field(default_factory=dict)
+    jev_rates: dict[str, float | None] = field(default_factory=dict)
     diff: list[float] | None = None
     verdict: str = "pending"
     cost: float = 0.0
@@ -57,8 +63,18 @@ class CoverageRow:
             "worker": self.worker,
             "state": self.state,
             "target": self.target,
-            "baseline": {"passes": self.baseline_passes, "n": self.baseline_n},
-            "jev": {"passes": self.jev_passes, "n": self.jev_n},
+            "baseline": {
+                "passes": self.baseline_passes,
+                "n": self.baseline_n,
+                "status": self.baseline_status,
+                **self.baseline_rates,
+            },
+            "jev": {
+                "passes": self.jev_passes,
+                "n": self.jev_n,
+                "status": self.jev_status,
+                **self.jev_rates,
+            },
             "infra_errors": self.infra_errors,
             "diff_ci": self.diff,
             "verdict": self.verdict,
@@ -112,6 +128,10 @@ def coverage_rows(
             jev_passes=b_pass,
             jev_n=b_n,
             infra_errors=a_err + b_err,
+            baseline_status=status_counts(arms["baseline"]),
+            jev_status=status_counts(arms["jev"]),
+            baseline_rates=dual_pass_rates(arms["baseline"]),
+            jev_rates=dual_pass_rates(arms["jev"]),
             diff=[round(ci[0], 3), round(ci[1], 3)] if ci else None,
             verdict=diff_verdict(a_pass, a_n, b_pass, b_n, diff_eps),
             cost=sum(
@@ -141,4 +161,24 @@ def coverage_summary(rows: list[CoverageRow]) -> dict[str, Any]:
             v: sum(1 for r in rows if r.verdict == v)
             for v in ("lift", "harm", "resolved", "inconclusive", "insufficient", "pending")
         },
+        "pass_rates": _mean_dual_rates(rows),
     }
+
+
+def _mean_dual_rates(rows: list[CoverageRow]) -> dict[str, float | None]:
+    """Cell-mean pass rates under both failure-accounting conventions —
+    ``failed_excluded`` for the honest finished-only read,
+    ``failed_as_zero`` for the no-free-crashes read."""
+    out: dict[str, float | None] = {}
+    for conv in ("failed_excluded", "failed_as_zero"):
+        vals: list[float] = [
+            v
+            for r in rows
+            for v in (
+                r.baseline_rates.get(conv),
+                r.jev_rates.get(conv),
+            )
+            if v is not None
+        ]
+        out[conv] = round(sum(vals) / len(vals), 4) if vals else None
+    return out

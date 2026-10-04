@@ -49,6 +49,7 @@ from orchestral.judge import (
     JUDGE_DECISIONS_ARTIFACT_CAP,
     is_decisions_model,
     judge_artifact,
+    judge_cache_key,
 )
 from orchestral.logger import EventLogger
 from orchestral.manifest import build_manifest, finalize_manifest, write_manifest
@@ -1179,6 +1180,11 @@ class Runner:
             )
             report["delegated"] = not self_executed
             report["subtasks"] = len(subtasks)
+            # calls that billed no provider-reported cost — estimates and
+            # unmetered-free unknowns must not read as $0 in evidence
+            report["missing_cost_count"] = self.store.missing_cost_count(
+                run_id=run_id
+            )
             (run_dir / "report.json").write_text(json.dumps(report, indent=2, default=str))
 
             # 5. Screenshot for HTML artifacts (optional, degrades cleanly)
@@ -1362,8 +1368,9 @@ class Runner:
             )
 
         payload = artifact_bytes if artifact_bytes is not None else (artifact_text or "").encode()
-        # task prompt is part of the key so a task edit under the same id invalidates
-        sha = hashlib.sha256(task.prompt.encode() + b"\0" + payload).hexdigest()
+        # task prompt and criteria are part of the key — a task edit or a
+        # metadata.criteria change under the same id must invalidate
+        sha = judge_cache_key(task, payload)
         with self.store.judge_lock((task.id, judge.slug, sha)):
             if self.use_judge_cache:
                 cached = self.store.get_judge_result(task.id, judge.slug, sha)

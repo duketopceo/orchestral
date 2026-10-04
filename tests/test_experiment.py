@@ -6,8 +6,10 @@ import argparse
 import io
 import os
 import tempfile
+import time
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import patch
 
@@ -16,6 +18,7 @@ from orchestral.config import TaskSpec
 from orchestral.experiment import (
     REP_CAP,
     REP_FLOOR,
+    STALE_RUNNING_SECONDS,
     Cell,
     Matrix,
     cell_runs,
@@ -25,6 +28,7 @@ from orchestral.experiment import (
     rep_target,
     resolve_matrix_tasks,
     run_experiment,
+    run_is_stale,
 )
 from orchestral.storage import RunMeta, RunStore
 
@@ -325,6 +329,320 @@ class TestDryRun(unittest.TestCase):
             store = RunStore(args.runs_dir)
             self.assertEqual(store.list_runs(), [])
             self.assertEqual(store.annotations(), [])
+
+
+class TestRunIsStale(unittest.TestCase):
+    def test_no_signals_is_stale(self):
+        meta = _meta(status="running", run_dir=None, started_at="")
+        self.assertTrue(run_is_stale(meta, time.time()))
+
+    def test_fresh_events_mtime_is_live(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "r"
+            run_dir.mkdir()
+            (run_dir / "events.jsonl").write_text("{}\n", encoding="utf-8")
+            meta = _meta(status="running", run_dir=str(run_dir), started_at="")
+            self.assertFalse(run_is_stale(meta, time.time()))
+
+    def test_old_events_mtime_is_stale(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "r"
+            run_dir.mkdir()
+            ev = run_dir / "events.jsonl"
+            ev.write_text("{}\n", encoding="utf-8")
+            old = time.time() - STALE_RUNNING_SECONDS - 60
+            os.utime(ev, (old, old))
+            meta = _meta(status="running", run_dir=str(run_dir), started_at="")
+            self.assertTrue(run_is_stale(meta, time.time()))
+
+    def test_started_at_fallback(self):
+        old = _meta(status="running", run_dir=None,
+                    started_at="2026-01-01T00:00:00+00:00")
+        fresh = _meta(status="running", run_dir=None,
+                      started_at=datetime.now(UTC).isoformat())
+        self.assertTrue(run_is_stale(old, time.time()))
+        self.assertFalse(run_is_stale(fresh, time.time()))
+
+
+class TestOrphanRecovery(unittest.TestCase):
+    """A0: 'running' rows that outlive their process reopen their slots."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.store = RunStore(self.tmp.name)
+        self.spec = TaskSpec(id="t", type="html", prompt="p")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _run(self, launch, **kw):
+        kw.setdefault("tasks", {"t": self.spec})
+        kw.setdefault("emit", lambda *_: None)
+        return run_experiment(self.store, MATRIX, launch=launch, **kw)
+
+    def _orphan(self, arm: str, rep: int, *, stale: bool) -> str:
+        """Index a 'running' row with an events.jsonl heartbeat — old
+        mtime for corpses, fresh for runs possibly live elsewhere."""
+        rid = f"orph-{arm}-{rep}-{'stale' if stale else 'live'}"
+        run_dir = Path(self.tmp.name) / rid
+        run_dir.mkdir()
+        ev = run_dir / "events.jsonl"
+        ev.write_text("{}\n", encoding="utf-8")
+        started = datetime.now(UTC).isoformat()
+        if stale:
+            old = time.time() - STALE_RUNNING_SECONDS - 60
+            os.utime(ev, (old, old))
+            started = "2026-01-01T00:00:00+00:00"
+        self.store.index_meta(_meta(
+            run_id=rid, status="running", started_at=started,
+            run_group=f"m:t:o/m:w/m:{arm}", replicate=rep,
+            run_dir=str(run_dir), passes=None, score=None,
+            total_cost_usd=None, config={"jev_assist": arm == "jev"},
+        ))
+        return rid
+
+    def test_stale_orphan_slot_reopens_and_marks_aborted(self):
+        rid = self._orphan("baseline", 1, stale=True)
+        launch = FakeLaunch(self.store)
+        self._run(launch, budget=0.0, daily_cap=0.0, batch_size=1,
+                  diff_eps=0.0)
+        slots = {(a, r) for _k, a, r, _g, _s in launch.launches}
+        self.assertIn(("baseline", 1), slots)
+        aborted = [a for a in self.store.annotations()
+                   if a["kind"] == "run" and a["target"] == rid
+                   and a["flag"] == "aborted"]
+        self.assertEqual(len(aborted), 1)
+
+    def test_live_running_row_blocks_slot(self):
+        rid = self._orphan("baseline", 1, stale=False)
+        launch = FakeLaunch(self.store)
+        out = self._run(launch, budget=0.0, daily_cap=0.0, batch_size=1,
+                        diff_eps=0.0)
+        # the live row holds baseline rep 1 — jev rep 1 launches alone,
+        # then every slot is filled and the cell parks at partial
+        self.assertEqual(
+            launch.launches[0][1:3], ("jev", 1))
+        self.assertEqual(len(launch.launches), 1)
+        self.assertFalse([a for a in self.store.annotations()
+                          if a["target"] == rid])
+        self.assertEqual(out["cells"]["t:o/m:w/m"]["state"], "partial")
+
+    def test_terminal_statuses_fill_slots(self):
+        for i in range(1, REP_FLOOR + 1):
+            self.store.index_meta(_meta(
+                run_id=f"cancel-b-{i}", status="cancelled",
+                run_group="m:t:o/m:w/m:baseline", replicate=i,
+                passes=None, score=None, total_cost_usd=None))
+            self.store.index_meta(_meta(
+                run_id=f"fail-j-{i}", status="failed",
+                run_group="m:t:o/m:w/m:jev", replicate=i,
+                passes=None, score=None, total_cost_usd=None,
+                failure_reason="exception:boom",
+                config={"jev_assist": True}))
+        launch = FakeLaunch(self.store)
+        out = self._run(launch, budget=100.0, daily_cap=0.0, diff_eps=0.0)
+        # terminal rows own their slots — nothing relaunches, no spin
+        self.assertEqual(launch.launches, [])
+        self.assertEqual(out["cells"]["t:o/m:w/m"]["state"], "pending")
+
+    def test_all_orphan_cell_recovers(self):
+        for arm in ("baseline", "jev"):
+            for i in range(1, REP_FLOOR + 1):
+                self._orphan(arm, i, stale=True)
+        launch = FakeLaunch(self.store)
+        out = self._run(launch, budget=0.0, daily_cap=0.0, batch_size=5,
+                        diff_eps=0.0)
+        # every corpse marked once, every slot relaunched, cell completes
+        self.assertEqual(len(launch.launches), 2 * REP_FLOOR)
+        aborted = [a for a in self.store.annotations()
+                   if a["kind"] == "run" and a["flag"] == "aborted"]
+        self.assertEqual(len(aborted), 2 * REP_FLOOR)
+        self.assertEqual(out["cells"]["t:o/m:w/m"]["state"], "done")
+
+
+class TestCmdRecover(unittest.TestCase):
+    """harness recover: relaunch the slot an orphaned run left behind."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        root = Path(self.tmp.name)
+        self.runs_dir = root / "runs"
+        self.store = RunStore(str(self.runs_dir))
+        self.tasks_dir = root / "tasks"
+        self.tasks_dir.mkdir()
+        (self.tasks_dir / "t.yaml").write_text(
+            "id: t\ntype: html\nprompt: hi\n", encoding="utf-8")
+        self.models_dir = root / "models"
+        self.models_dir.mkdir()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _args(self, run_id: str, **kw) -> argparse.Namespace:
+        base = {
+            "run_id": run_id, "force": False, "runs_dir": str(self.runs_dir),
+            "tasks_dir": str(self.tasks_dir), "models_dir": str(self.models_dir),
+            "retry_limit": None, "replicates": 1, "replicate": None,
+            "prompt_variant": None, "planner": "raw", "judge": None,
+            "no_judge": True, "no_judge_cache": False, "jev_assist": False,
+            "dry_run": True, "json": False, "verbose": False, "group": None,
+            "seed": None, "daily_cap": 0.0, "max_cost": 0.0,
+            "allow_agent_exec": False,
+        }
+        base.update(kw)
+        return argparse.Namespace(**base)
+
+    def _orphan(self, *, stale: bool = True) -> str:
+        run_dir = self.runs_dir / "orphee"
+        run_dir.mkdir(parents=True)
+        ev = run_dir / "events.jsonl"
+        ev.write_text("{}\n", encoding="utf-8")
+        started = datetime.now(UTC).isoformat()
+        if stale:
+            old = time.time() - STALE_RUNNING_SECONDS - 60
+            os.utime(ev, (old, old))
+            started = "2026-01-01T00:00:00+00:00"
+        self.store.index_meta(_meta(
+            run_id="orphee", status="running", started_at=started,
+            run_dir=str(run_dir), passes=None, score=None,
+            total_cost_usd=None, run_group="g:t:o/m:w/m:baseline",
+            replicate=3,
+            config={"seed": 42, "jev_assist": False, "planner": "raw"},
+        ))
+        return "orphee"
+
+    def test_unknown_run_refused(self):
+        with redirect_stdout(io.StringIO()), self.assertRaises(SystemExit):
+            harness.cmd_recover(self._args("nope"))
+
+    def test_terminal_run_refused(self):
+        self.store.index_meta(_meta(run_id="done", status="finished"))
+        with redirect_stdout(io.StringIO()), self.assertRaises(SystemExit):
+            harness.cmd_recover(self._args("done"))
+
+    def test_live_run_refused_without_force(self):
+        rid = self._orphan(stale=False)
+        with redirect_stdout(io.StringIO()), self.assertRaises(SystemExit):
+            harness.cmd_recover(self._args(rid))
+
+    def test_stale_run_relaunches(self):
+        rid = self._orphan(stale=True)
+        buf = io.StringIO()
+        with redirect_stdout(buf), redirect_stderr(io.StringIO()):
+            harness.cmd_recover(self._args(rid))
+        self.assertIn("Recovered", buf.getvalue())
+        aborted = [a for a in self.store.annotations()
+                   if a["kind"] == "run" and a["target"] == rid
+                   and a["flag"] == "aborted"]
+        self.assertEqual(len(aborted), 1)
+        # the replacement carries the orphan's group, replicate, and seed
+        new = [r for r in self.store.list_runs(limit=None)
+               if r.run_id != rid]
+        self.assertEqual(len(new), 1)
+        self.assertEqual(new[0].run_group, "g:t:o/m:w/m:baseline")
+        self.assertEqual(new[0].replicate, 3)
+        self.assertEqual((new[0].config or {}).get("seed"), 42)
+
+
+class TestOrphanCostRepair(unittest.TestCase):
+    """A3: killed runs meter $0 forever unless the calls ledger
+    rehydrates their runs row."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.store = RunStore(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _corpse(self, rid: str = "dead") -> Path:
+        run_dir = Path(self.tmp.name) / rid
+        run_dir.mkdir()
+        ev = run_dir / "events.jsonl"
+        ev.write_text("{}\n", encoding="utf-8")
+        old = time.time() - STALE_RUNNING_SECONDS - 60
+        os.utime(ev, (old, old))
+        self.store.index_meta(_meta(
+            run_id=rid, status="running", started_at="2026-01-01T00:00:00+00:00",
+            run_dir=str(run_dir), total_cost_usd=0.0,
+            total_input_tokens=0, total_output_tokens=0,
+        ))
+        self.store.record_call(run_id=rid, phase="plan", step=1,
+                               role="orchestrator", model="o/m",
+                               input_tokens=100, output_tokens=200,
+                               cost_usd=0.01, api_cost_usd=0.01,
+                               pricing_source="api_reported")
+        return run_dir
+
+    def test_repair_rehydrates_totals(self):
+        run_dir = self._corpse()
+        self.assertTrue(self.store.repair_orphan_costs("dead"))
+        meta = self.store.get_run("dead")
+        self.assertEqual(meta.total_cost_usd, 0.01)
+        self.assertEqual(meta.total_input_tokens, 100)
+        self.assertEqual(meta.total_output_tokens, 200)
+        # run.json reflects the repair for snapshot consumers
+        import json
+        on_disk = json.loads((run_dir / "run.json").read_text())
+        self.assertEqual(on_disk["total_cost_usd"], 0.01)
+        # idempotent — no rewrite when the ledger already agrees
+        self.assertFalse(self.store.repair_orphan_costs("dead"))
+
+    def test_driver_repairs_orphan_before_marking(self):
+        self._corpse()
+        self.store.index_meta(_meta(
+            run_id="dead", status="running", replicate=1,
+            run_group="m:t:o/m:w/m:baseline",
+            started_at="2026-01-01T00:00:00+00:00",
+        ))
+        spec = TaskSpec(id="t", type="html", prompt="p")
+        launch = FakeLaunch(self.store)
+        run_experiment(self.store, MATRIX, launch=launch,
+                       tasks={"t": spec}, emit=lambda *_: None,
+                       budget=0.0, daily_cap=0.0, batch_size=1,
+                       diff_eps=0.0)
+        meta = self.store.get_run("dead")
+        self.assertEqual(meta.total_cost_usd, 0.01)
+
+
+class TestMissingCostCount(unittest.TestCase):
+    """A3: api_cost_usd NULL keyed against the pricing vocabulary."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.store = RunStore(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _call(self, rid: str, source: str | None, api_cost: float | None,
+              *, dry_run: bool = False) -> None:
+        self.store.record_call(run_id=rid, phase="plan", step=1,
+                               role="orchestrator", model="o/m",
+                               cost_usd=0.0 if api_cost is None else api_cost,
+                               api_cost_usd=api_cost, pricing_source=source,
+                               dry_run=dry_run)
+
+    def test_vocabulary(self):
+        self._call("r", "api_reported", 0.01)       # real cost — known
+        self._call("r", "configured_estimate", None)  # estimate — missing
+        self._call("r", "flat_estimate", None)        # estimate — missing
+        self._call("r", "cli_reported", None)         # no usage.usd — missing
+        self._call("r", "api", None)                  # no usage.cost — missing
+        self._call("r", "api", 0.005)                 # usage.cost — known
+        self._call("r", "unmetered", None)            # legitimately $0
+        self._call("r", "none", None)                 # legitimately $0
+        self._call("r", "configured_estimate", None, dry_run=True)  # excluded
+        self.assertEqual(self.store.missing_cost_count(run_id="r"), 4)
+
+    def test_group_prefix_scope(self):
+        self.store.index_meta(_meta(run_id="a", run_group="m:t:o/m:w/m:baseline"))
+        self.store.index_meta(_meta(run_id="b", run_group="m:t:o/m:w/m:jev"))
+        self.store.index_meta(_meta(run_id="c", run_group="other:t:o/m:w/m:baseline"))
+        for rid in ("a", "b", "c"):
+            self._call(rid, "configured_estimate", None)
+        self.assertEqual(
+            self.store.missing_cost_count(group_prefix="m:t:o/m:w/m:"), 2)
 
 
 class TestCellState(unittest.TestCase):

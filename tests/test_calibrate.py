@@ -447,5 +447,68 @@ class TestCalibrateCLI(unittest.TestCase):
             harness.cmd_calibrate(self._args(tmp))
 
 
+class TestContractSlices(unittest.TestCase):
+    """v2 judge contract slices: per-criterion rates and the
+    claimed-vs-derived disagreement gate metric."""
+
+    def test_contract_block_counts_disagreements(self):
+        pairs = [
+            {"run_id": "r1", "task_id": "t", "judge_model": "j",
+             "judge_passed": False, "judge_claimed_passed": True},
+            {"run_id": "r2", "task_id": "t", "judge_model": "j",
+             "judge_passed": True, "judge_claimed_passed": True},
+            {"run_id": "r3", "task_id": "t", "judge_model": "j",
+             "judge_passed": True},  # pre-v2 — no claim recorded
+        ]
+        contract = agreement_metrics(pairs)["contract"]
+        self.assertEqual(contract["n"], 2)
+        self.assertEqual(contract["disagreements"], 1)
+        self.assertEqual(contract["runs"], ["r1"])
+        self.assertEqual(contract["disagreement_rate"], 0.5)
+
+    def test_contract_block_empty_without_v2_pairs(self):
+        m = agreement_metrics([{"run_id": "r", "judge_passed": True}])
+        self.assertEqual(m["contract"]["n"], 0)
+        self.assertIsNone(m["contract"]["disagreement_rate"])
+
+    def test_criteria_block_rates_by_task_criterion(self):
+        pairs = [
+            {"run_id": "r1", "task_id": "t", "criteria": {
+                "a": {"satisfied": True, "supported": True},
+                "b": {"satisfied": True, "supported": False},
+            }},
+            {"run_id": "r2", "task_id": "t", "criteria": {
+                "a": {"satisfied": False, "supported": None},
+                "b": {"satisfied": None, "supported": None},
+            }},
+        ]
+        crit = agreement_metrics(pairs)["by_criterion"]
+        self.assertEqual(crit["t:a"]["satisfied_rate"], 0.5)
+        self.assertEqual(crit["t:a"]["supported_rate"], 0.5)
+        self.assertEqual(crit["t:b"]["unsupported_rate"], 0.5)
+        self.assertEqual(crit["t:b"]["unassessed_rate"], 0.5)
+
+    def test_collect_pairs_carries_claimed_and_criteria(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            meta = TestCollectPairs._judged_run(self, tmp)
+            report_path = Path(meta.run_dir) / "report.json"
+            report = json.loads(report_path.read_text())
+            report["judge"]["claimed_passed"] = True
+            report["judge"]["claimed_score"] = 0.9
+            report["judge"]["judge_contract"] = "v2"
+            report["judge"]["criteria"] = [
+                {"id": "a", "satisfied": True, "supported": True},
+            ]
+            report_path.write_text(json.dumps(report))
+            result = collect_pairs(
+                RunStore(tmp), [{"run_id": meta.run_id, "passed": True}])
+            (p,) = result["pairs"]
+            self.assertTrue(p["judge_claimed_passed"])
+            self.assertEqual(p["judge_claimed_score"], 0.9)
+            self.assertEqual(p["judge_contract"], "v2")
+            self.assertEqual(
+                p["criteria"], {"a": {"satisfied": True, "supported": True}})
+
+
 if __name__ == "__main__":
     unittest.main()

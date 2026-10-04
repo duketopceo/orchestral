@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en" data-theme="paper">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=1280">
+<title>orchestral: GitHub social image</title>
+<!-- Source of docs/assets/social.png (1280x640, 1x). Served by the observatory
+     at /static/og/social.html over the key-free fixture corpus; the pairings
+     strip plot is the real chart kit (ui/js/charts) fed by /api/pairings.
+     Rendered by scripts/render-readme-assets.py with motion reduced and
+     no network beyond that loopback server. Paper theme, tokens only. -->
+<link rel="stylesheet" href="../tokens.css">
+<link rel="stylesheet" href="../app.css">
+<style>
+  html, body { width: 1280px; height: 640px; margin: 0; overflow: hidden; background: var(--canvas); color: var(--ink); }
+  body { position: relative; font-family: var(--font-sans); }
+  #lockup { position: absolute; left: 64px; top: 44px; height: 30px; color: var(--ink); }
+  #lockup svg { height: 100%; width: auto; display: block; }
+  h1 {
+    position: absolute; left: 64px; top: 104px; width: 1000px; margin: 0;
+    font: 600 40px/44px var(--font-sans); font-stretch: 90%; letter-spacing: -.02em;
+  }
+  #plot { position: absolute; left: 49px; top: 172px; width: 880px; zoom: 1.3; }
+  #plot .chart { margin: 0; }
+  #plot .chart-table { display: none; }
+  .foot {
+    position: absolute; left: 64px; right: 64px; bottom: 36px; display: flex; justify-content: space-between;
+    padding-top: 12px; border-top: 1px solid var(--rule-strong); font: 400 16px/22px var(--font-mono); color: var(--ink-2);
+  }
+</style>
+</head>
+<body>
+<div id="lockup" role="img" aria-label="orchestral"></div>
+<h1>Which orchestrator and worker pairing does the job at the lowest cost per pass?</h1>
+<div id="plot"></div>
+<div class="foot"><span>github.com/duketopceo/orchestral</span><span id="foot-note">Sample data: key-free fixture corpus</span></div>
+<script type="module">
+  import { laneStrip } from "../js/charts/index.js";
+  import { LOW_N_BEST } from "../js/format.js";
+
+  const get = async url => (await fetch(url)).json();
+  const lockup = await (await fetch("../brand/lockup-horizontal.svg")).text();
+  document.getElementById("lockup").innerHTML = lockup;
+
+  const all = await get("/api/pairings?group=");
+  const rows = all.rows
+    .filter(r => (r.finished || 0) >= LOW_N_BEST && r.pass_rate != null && r.cost_per_pass != null)
+    .sort((a, b) => b.pass_rate - a.pass_rate || a.cost_per_pass - b.cost_per_pass)
+    .slice(0, 6)
+    .map(r => ({ ...r, key: r.target, href: "#" }));
+  document.getElementById("plot").innerHTML = laneStrip({
+    id: "social-lanes", rows, width: 880, lensLabel: "Best overall",
+  });
+  document.documentElement.dataset.ready = "1";
+</script>
+</body>
+</html>

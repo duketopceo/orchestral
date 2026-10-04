@@ -1,0 +1,29 @@
+# Local e2e only: wrangler dev --local --config wrangler.e2e.toml
+# (scripts/e2e-hosted.py). Same assets and bindings as wrangler.toml, no custom
+# domain route, plus the /__seed wrapper. Never deploy this file.
+name = "orchestral-observatory-e2e"
+main = "e2e/entry.js"
+compatibility_date = "2026-01-01"
+workers_dev = false
+
+[build]
+command = "python3 ../../../scripts/build-hosted-assets.py"
+cwd = "."
+watch_dir = "../../../ui"
+
+[assets]
+directory = ".build/ui"
+binding = "ASSETS"
+html_handling = "none"
+
+[[r2_buckets]]
+binding = "BUCKET"
+bucket_name = "orchestral-artifacts"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "orchestral-runs"
+database_id = "00000000-0000-0000-0000-000000000000"
+
+[vars]
+INGEST_IDENTITY = "e2e.access"

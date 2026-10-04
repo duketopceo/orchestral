@@ -570,7 +570,8 @@ td .cell-delta { font-family: var(--mono); }
 
 .xc-top { display: flex; align-items: center; justify-content: space-between; }
 .xc-brand { display: flex; align-items: baseline; gap: 10px; }
-.xc-brand .mark { color: var(--accent); font-size: 15px; }
+.xc-brand .mark { color: var(--accent); display: inline-flex; align-self: center; flex: none; }
+.xc-brand .mark svg { display: block; width: 16px; height: 16px; }
 .xc-brand .word { font: 700 19px var(--sans); letter-spacing: -.01em; }
 .xc-brand .sub { color: var(--text-3); font-size: 14px; }
 .xc-suite { font: 11px var(--mono); color: var(--text-3); border: 1px solid var(--line); border-radius: 99px; padding: 4px 11px; letter-spacing: .08em; }
@@ -922,7 +923,6 @@ tr.story-selected td { background: color-mix(in srgb, var(--ink) 4%, transparent
   gap: 0;
 }
 .xcard .xc-top { flex: 0 0 auto; }
-.xcard .xc-brand .mark { font-size: 13px; }
 .xcard .xc-brand .word { font-size: 17px; }
 .xcard .xc-brand .sub { font-size: 12px; }
 .xcard .xc-suite { font-size: 10px; padding: 4px 9px; }

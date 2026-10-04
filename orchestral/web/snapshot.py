@@ -15,8 +15,10 @@ Keys are what the hosted adapter in ``ui/js/data.js`` requests, minus the
     compare.<a>.<b>.json   (every ordered pair, only below MAX_COMPARE_GROUPS)
     run/<id>.json  run/<id>/live.json  run/<id>/evidence.json
 
-Names inside a key are percent-encoded with ``quote(..., safe="")``; the SPA
-applies the same encoding (``encodeURIComponent`` plus ``!'()*``). Filtering,
+Names inside a key are percent-encoded with ``quote(..., safe="")`` and the dot
+escaped as ``%2E`` so ``compare.<a>.<b>`` is unambiguous; the SPA applies the
+same encoding (``encodeURIComponent`` plus ``!'()*.``). The Worker accepts only
+these shapes (infra/cloudflare/observatory/keys.js). Filtering,
 sorting and pagination are client-side, so query parameters never select a key.
 """
 
@@ -40,7 +42,7 @@ MAX_COMPARE_GROUPS = 30
 
 def enc(name: str) -> str:
     """Key-safe form of a group, run or card target (matches ui/js/data.js)."""
-    return quote(name, safe="")
+    return quote(name, safe="").replace(".", "%2E")
 
 
 def _plain(value: Any) -> Any:
@@ -152,38 +154,65 @@ def build_snapshot(
     return _plain(out)
 
 
+def holdout_run_ids(store: RunStore) -> list[str]:
+    """Runs the hosted mirror withholds (config-only flags included)."""
+    return [m.run_id for m in store.list_runs(limit=None) if _is_holdout_meta(m)]
+
+
 def run_payloads(
     store: RunStore, run_id: str, tasks_dir: Path, groups_file: Path | None = None,
 ) -> dict[str, Any]:
     """Detail, live and evidence keys for one run, rendered over the scrubbed
     tree so prompt and completion text never reach a hosted payload. A holdout
-    run, or an unknown id, yields no keys."""
+    run yields only a withheld stub; an unknown id yields no keys."""
     meta = store.get_run(run_id)
     if meta is None:
         return {}
-    gf = groups_file or Path(tasks_dir).parent / "groups.yaml"
+    if _is_holdout_meta(meta):  # the index row alone can mark it
+        return _withheld_stub(store, run_id, tasks_dir, groups_file)
     try:
-        if _is_holdout_meta(meta):  # the index row alone can mark it
-            raise HoldoutRunError(run_id)
         with tempfile.TemporaryDirectory(prefix="orch-snap-") as tmp:
             scrubbed = cf.scrub_to_dir(Path(meta.run_dir), Path(tmp))
-            detail = cf._hosted_detail(store, run_id, scrubbed, Path(tasks_dir), gf)
-            if detail is None:
-                return {}
-            evidence = state.run_evidence_payload(
-                cast(RunStore, cf._ScrubbedStore(store, run_id, scrubbed)), run_id)
-            live = state.live_payload(scrubbed, 0, started_at=meta.started_at, meta=meta)
+            return scrubbed_run_payloads(store, meta, scrubbed, tasks_dir, groups_file)
     except HoldoutRunError:
-        # No file of a holdout run is published, but its page still has to say why
-        # every tab is empty: a stub detail with each section withheld, built from
-        # the index row alone.
-        stub = state.run_detail_payload(store, run_id, tasks_dir, gf, hosted=True)
-        return {f"run/{run_id}.json": stub} if stub else {}
+        return _withheld_stub(store, run_id, tasks_dir, groups_file)
+
+
+def scrubbed_run_payloads(
+    store: RunStore, meta: Any, scrubbed: Path, tasks_dir: Path, groups_file: Path | None = None,
+) -> dict[str, Any]:
+    """The per-run keys for a run whose scrubbed tree is already on disk (the
+    sync push scrubs once for both the files and these payloads)."""
+    run_id = meta.run_id
+    gf = groups_file or Path(tasks_dir).parent / "groups.yaml"
+    detail = cf._hosted_detail(store, run_id, scrubbed, Path(tasks_dir), gf)
+    if detail is None:
+        return {}
+    evidence = state.run_evidence_payload(
+        cast(RunStore, cf._ScrubbedStore(store, run_id, scrubbed)), run_id)
+    live = state.live_payload(scrubbed, 0, started_at=meta.started_at, meta=meta)
     live["cancellable"] = False
-    out: dict[str, Any] = {f"run/{run_id}.json": detail, f"run/{run_id}/live.json": live}
+    rid = enc(run_id)
+    out: dict[str, Any] = {f"run/{rid}.json": detail, f"run/{rid}/live.json": live}
     if evidence is not None:
-        out[f"run/{run_id}/evidence.json"] = evidence
+        out[f"run/{rid}/evidence.json"] = evidence
     return out
+
+
+def _withheld_stub(
+    store: RunStore, run_id: str, tasks_dir: Path, groups_file: Path | None,
+) -> dict[str, Any]:
+    """No file of a holdout run is published, but its page still has to say why
+    every tab is empty: a stub detail with each section withheld, built from the
+    index row alone."""
+    gf = groups_file or Path(tasks_dir).parent / "groups.yaml"
+    stub = state.run_detail_payload(store, run_id, tasks_dir, gf, hosted=True)
+    if not stub:
+        return {}
+    # The index row carries the outcome; the runs list masks it (_runs_rows) and so
+    # must the page, or the withheld run's pass/fail and score are one click away.
+    stub["meta"].update(dict.fromkeys(_OUTCOME_FIELDS), holdout=True)
+    return {f"run/{enc(run_id)}.json": stub}
 
 
 def write_snapshot(snapshot: dict[str, Any], out_dir: Path) -> int:

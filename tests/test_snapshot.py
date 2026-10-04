@@ -10,7 +10,6 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
-from urllib.parse import quote
 
 from orchestral.web import snapshot, state
 
@@ -23,8 +22,7 @@ corpus = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(corpus)
 
 
-def enc(s: str) -> str:
-    return quote(s, safe="")
+enc = snapshot.enc
 
 
 class TestSnapshot(unittest.TestCase):

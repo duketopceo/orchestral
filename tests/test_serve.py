@@ -500,10 +500,10 @@ class TestHttpRoutes(unittest.TestCase):
 
     def test_live_page_and_poll(self):
         # legacy /live URL redirects to the SPA hash route; the polling
-        # contract lives in app.js + /api/run/<id>/live
+        # contract lives in ui/js/views/run.js + /api/run/<id>/live
         code, _ = self._get(f"/run/{self.rid}/live")
         self.assertEqual(code, 200)
-        code, body = self._get("/static/app.js")
+        code, body = self._get("/static/js/views/run.js")
         self.assertEqual(code, 200)
         self.assertIn("/api/run/", body)
         code, body = self._get(f"/api/run/{self.rid}/live?after=0")
@@ -515,7 +515,7 @@ class TestHttpRoutes(unittest.TestCase):
     def test_spa_shell_and_api_surface(self):
         code, body = self._get("/")
         self.assertEqual(code, 200)
-        self.assertRegex(body, r'src="/static/app\.js\?v=[0-9a-f]+"')
+        self.assertRegex(body, r'src="/static/js/main\.js\?v=[0-9a-f]+"')
         for path in ("/api/overview", "/api/groups", "/api/tasks",
                      "/api/models", "/api/leaderboard", "/api/runs"):
             code, body = self._get(path)

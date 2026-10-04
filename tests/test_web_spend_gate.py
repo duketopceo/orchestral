@@ -312,7 +312,7 @@ class TestFaviconAndErrors(_Server):
 class TestUiDefaults(unittest.TestCase):
     """Static contract on the SPA source — the browser suite covers behavior."""
 
-    js = (UI / "app.js").read_text()
+    js = "\n".join(p.read_text() for p in sorted((UI / "js").rglob("*.js")))
 
     def test_new_run_defaults_to_dry_run(self):
         tag = re.search(r'<input type="checkbox" name="dry_run"[^>]*>', self.js)

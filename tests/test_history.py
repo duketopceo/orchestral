@@ -8,12 +8,13 @@ from orchestral.reporter import _dashboard_html, model_history
 from orchestral.storage import RunMeta
 
 
-def _meta(rid: str, orch: str, worker: str, *, cost: float, score=None, passes=True, judge=None, status="finished"):
+def _meta(rid: str, orch: str, worker: str, *, cost: float, score=None, passes=True, judge=None, status="finished",
+          judge_score=None):
     return RunMeta(
         run_id=rid, orchestrator=orch, task_id="t", worker=worker, status=status,
         started_at="2026-01-01T00:00:00Z", finished_at="2026-01-01T00:01:00Z",
         total_cost_usd=cost, total_input_tokens=10, total_output_tokens=20,
-        score=score, passes=passes, run_dir="/tmp/x",
+        score=score, passes=passes, judge_score=judge_score, run_dir="/tmp/x",
         config={"judge": judge, "planner": "raw"},
     )
 
@@ -46,7 +47,7 @@ class TestModelHistory(unittest.TestCase):
 class TestDashboardScatter(unittest.TestCase):
     def test_dashboard_contains_scatter_and_history(self):
         runs = [
-            _meta("a", "o1", "w1", cost=0.01, score=0.8),
+            _meta("a", "o1", "w1", cost=0.01, score=0.8, judge_score=0.8),
             _meta("b", "o2", "w2", cost=0.02, score=None, passes=False),
         ]
         summary = {"runs": 2, "total_cost_usd": 0.03, "total_tokens": 60}

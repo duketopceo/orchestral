@@ -91,18 +91,18 @@ class TestBrowserSmoke(unittest.TestCase):
                 pg = browser.new_page(viewport={"width": 390, "height": 844})
                 pg.goto(f"http://127.0.0.1:{self.port}/#/cards")
                 pg.wait_for_selector("#view[data-ready='ok']")
-                self.assertIn("Cards", pg.inner_text("h1"))
-                self.assertIn("shareable card", pg.inner_text("body").lower())
-                self.assertGreaterEqual(pg.locator(".gallery-card").count(), 1)
+                self.assertIn("Publish", pg.inner_text("h1"))
+                self.assertIn("preview the card", pg.inner_text("body").lower())
+                self.assertGreaterEqual(pg.locator(".pub-row").count(), 1)
                 self.assertEqual(pg.locator("body").evaluate("e => e.scrollWidth"), 390)
 
                 pg.select_option("#cards-lens", "divergence")
                 pg.wait_for_selector("#view[data-ready='ok']")
                 self.assertIn("lens=divergence", pg.url)
-                pg.locator(".gallery-card-title").first.click()
+                pg.locator(".pub-preview a.primary").click()
                 pg.wait_for_selector(".xcard")
                 self.assertIn("run group", pg.inner_text("body").lower())
-                self.assertGreaterEqual(pg.locator(".xc-proof-panel").count(), 2)
+                self.assertEqual(pg.locator(".xcard .pc-measure").count(), 3)
             finally:
                 browser.close()
 
@@ -117,9 +117,9 @@ class TestBrowserSmoke(unittest.TestCase):
                 pg.wait_for_selector(".xcard")
                 pg.wait_for_selector("#view[data-ready='ok']")
                 self.assertEqual(pg.locator("body").evaluate("e => e.scrollWidth"), 390)
+                self.assertLessEqual(pg.locator(".pcard-fit").evaluate("e => e.scrollWidth"), 390)
                 card = pg.locator(".xcard")
-                self.assertLessEqual(card.evaluate("e => e.scrollWidth"), 390)
-                self.assertGreater(card.evaluate("e => e.getBoundingClientRect().height"), 675)
+                self.assertLessEqual(card.evaluate("e => e.getBoundingClientRect().right"), 390)
             finally:
                 browser.close()
 

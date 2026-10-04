@@ -101,6 +101,59 @@ class TestCoverageRows(unittest.TestCase):
         self.assertEqual(r.state, "pending")  # other experiment, not this one
 
 
+class TestDualScoring(unittest.TestCase):
+    """A4: failed_excluded and failed_as_zero side by side."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.store = RunStore(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_row_reports_both_conventions(self):
+        # baseline: 3 finished (2 pass) + 1 failed + 1 running corpse
+        _seed(self.store, "baseline", 2)
+        _seed(self.store, "baseline", 1, passes=False, offset=2)
+        self.store.index_meta(_meta(
+            run_id="b-fail", status="failed", passes=None, score=None,
+            run_group=f"m:{CELL_KEY}:baseline", replicate=4,
+            failure_reason="exception:boom", config={"jev_assist": False},
+        ))
+        self.store.index_meta(_meta(
+            run_id="b-orphan", status="running", passes=None, score=None,
+            run_group=f"m:{CELL_KEY}:baseline", replicate=5,
+            config={"jev_assist": False},
+        ))
+        _seed(self.store, "jev", 5)
+        (r,) = coverage_rows(self.store, MATRIX)
+        d = r.to_dict()
+        # excluded: 2/3 finished pass; as-zero: 2/5 runs pass
+        self.assertAlmostEqual(d["baseline"]["failed_excluded"], 2 / 3)
+        self.assertAlmostEqual(d["baseline"]["failed_as_zero"], 2 / 5)
+        self.assertEqual(
+            d["baseline"]["status"],
+            {"finished": 3, "failed": 1, "running": 1},
+        )
+        self.assertAlmostEqual(d["jev"]["failed_excluded"], 1.0)
+        self.assertAlmostEqual(d["jev"]["failed_as_zero"], 1.0)
+
+    def test_summary_mean_rates(self):
+        _seed(self.store, "baseline", 5)
+        _seed(self.store, "jev", 5)
+        self.store.index_meta(_meta(
+            run_id="b-corpse", status="running", passes=None, score=None,
+            run_group=f"m:{CELL_KEY}:baseline", replicate=6,
+            config={"jev_assist": False},
+        ))
+        summ = coverage_summary(coverage_rows(self.store, MATRIX))
+        # excluded: 10/10 finished pass → 1.0
+        # as-zero: mean of arm rates — baseline 5/6, jev 5/5 → 11/12
+        self.assertAlmostEqual(summ["pass_rates"]["failed_excluded"], 1.0)
+        self.assertAlmostEqual(
+            summ["pass_rates"]["failed_as_zero"], 11 / 12, places=3)
+
+
 class TestPublishMark(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

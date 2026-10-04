@@ -9,6 +9,9 @@ from __future__ import annotations
 
 import hashlib
 import re
+import shutil
+import subprocess
+import tempfile
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -18,7 +21,34 @@ from urllib.parse import parse_qs
 
 
 class ScreenshotUnavailable(Exception):
-    """Raised when Playwright or its browser binaries are not installed."""
+    """Raised when Playwright or its browser binaries are not installed.
+
+    ``code`` tells a caller which fix to offer: ``playwright_missing``,
+    ``chromium_missing`` or the generic ``unavailable``."""
+
+    def __init__(self, message: str, *, code: str = "unavailable") -> None:
+        super().__init__(message)
+        self.code = code
+
+
+class CaptureError(Exception):
+    """The page loaded but could not become a card image: it timed out or the
+    view reported ``data-ready="error"``. Never answered with image bytes."""
+
+    def __init__(self, message: str, *, code: str = "capture_error") -> None:
+        super().__init__(message)
+        self.code = code
+
+
+INSTALL_COMMAND = {
+    "playwright_missing": "pip install 'orchestral[shots]' && playwright install chromium",
+    "chromium_missing": "playwright install chromium",
+}
+
+# One fixed capture contract: the share card is 1200x675 CSS px rendered at 2x.
+CARD_VIEWPORT = (1200, 675)
+CARD_SCALE = 2
+OG_VIEWPORT = (1200, 630)
 
 
 def shot_name(route: str, *, stamp: str | None = None) -> str:
@@ -28,6 +58,7 @@ def shot_name(route: str, *, stamp: str | None = None) -> str:
     batch export so the same view downloads under the same name either way."""
     path, _, raw_q = route.partition("?")
     params = parse_qs(raw_q)
+    params.pop("capture", None)  # the capture flag never renames a download
     kind = params.get("kind", [""])[0]
     target = params.get("target", [""])[0]
     grp = params.get("group", [""])[0]
@@ -63,7 +94,9 @@ def _import_playwright():
     try:
         from playwright.sync_api import sync_playwright
     except ImportError as exc:
-        raise ScreenshotUnavailable("playwright is not installed (pip install 'orchestral[shots]')") from exc
+        raise ScreenshotUnavailable(
+            "playwright is not installed (pip install 'orchestral[shots]')",
+            code="playwright_missing") from exc
     return sync_playwright
 
 
@@ -81,7 +114,8 @@ def browser_session() -> Iterator[Any]:
     except ScreenshotUnavailable:
         raise
     except Exception as exc:
-        raise ScreenshotUnavailable(f"could not launch browser: {exc}") from exc
+        code = "chromium_missing" if "Executable doesn't exist" in str(exc) else "unavailable"
+        raise ScreenshotUnavailable(f"could not launch browser: {exc}", code=code) from exc
 
 
 def capture_html(
@@ -133,6 +167,7 @@ def capture_page(
     element: str | None = None,
     width: int = 1280,
     height: int = 800,
+    scale: int = 1,
     browser: Any = None,
     timeout_ms: int = 20000,
 ) -> bytes:
@@ -140,18 +175,28 @@ def capture_page(
 
     ``wait_for`` is the readiness selector (the SPA sets
     ``#view[data-ready]`` after each render). ``element`` narrows the
-    shot to one node — e.g. ``.xcard`` for just the share card.
+    shot to one node, e.g. ``.xcard`` for just the share card. A view that
+    settles as ``data-ready="error"`` raises :class:`CaptureError` instead of
+    returning the error page as an image. The viewport, device scale, colour
+    scheme and motion are fixed so the same data renders the same pixels.
     """
+    view = wait_for.split("[")[0]
 
     def _grab(b: Any) -> bytes:
-        page = b.new_page(viewport={"width": width, "height": height})
+        page = b.new_page(
+            viewport={"width": width, "height": height}, device_scale_factor=scale,
+            color_scheme="light", reduced_motion="reduce", locale="en-US",
+            timezone_id="UTC")
         try:
             page.goto(url)
             page.wait_for_selector(wait_for, state="visible", timeout=timeout_ms)
+            if page.get_attribute(view, "data-ready") == "error":
+                raise CaptureError(
+                    "the view reported an error, so no image was made", code="view_error")
             if element:
                 page.wait_for_selector(element, state="visible", timeout=timeout_ms)
                 return page.locator(element).first.screenshot(type="png")
-            return page.locator(wait_for.split("[")[0]).first.screenshot(type="png")
+            return page.locator(view).first.screenshot(type="png")
         finally:
             page.close()
 
@@ -160,10 +205,67 @@ def capture_page(
             return _grab(browser)
         with browser_session() as shared:
             return _grab(shared)
+    except (ScreenshotUnavailable, CaptureError):
+        raise
+    except Exception as exc:
+        if type(exc).__name__ == "TimeoutError":
+            raise CaptureError(
+                f"the page did not settle within {timeout_ms // 1000}s", code="timeout") from exc
+        raise ScreenshotUnavailable(f"page capture failed: {exc}") from exc
+
+
+def optimize_png(png: bytes, *, timeout_s: int = 60) -> bytes:
+    """Run ``oxipng`` over a capture when it is on PATH; otherwise, or when it
+    fails, hand back the original bytes. Never a Python dependency."""
+    exe = shutil.which("oxipng")
+    if not exe:
+        return png
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "card.png"
+            path.write_bytes(png)
+            done = subprocess.run(
+                [exe, "-o", "4", "--strip", "safe", "--quiet", str(path)],
+                capture_output=True, timeout=timeout_s, check=False)
+            out = path.read_bytes()
+            if done.returncode == 0 and 0 < len(out) < len(png):
+                return out
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return png
+
+
+def render_og(out_png: str | Path, *, template: str | Path | None = None) -> Path:
+    """Render ``ui/og/default.html`` to the 1200x630 OG image (1x, so it stays
+    inside the 150KB budget). The template is static: no data, no network."""
+    template = Path(template) if template else Path(__file__).resolve().parents[1] / "ui" / "og" / "default.html"
+    out_png = Path(out_png)
+    width, height = OG_VIEWPORT
+
+    def _grab(b: Any) -> bytes:
+        page = b.new_page(
+            viewport={"width": width, "height": height}, device_scale_factor=1,
+            color_scheme="light", reduced_motion="reduce", locale="en-US",
+            timezone_id="UTC")
+        try:
+            page.route("**/*", lambda route: (
+                route.abort() if route.request.url.startswith(("http://", "https://"))
+                else route.continue_()))
+            page.goto(template.resolve().as_uri())
+            page.evaluate("document.fonts.ready")
+            return page.screenshot(type="png", clip={"x": 0, "y": 0, "width": width, "height": height})
+        finally:
+            page.close()
+
+    try:
+        with browser_session() as shared:
+            png = _grab(shared)
     except ScreenshotUnavailable:
         raise
     except Exception as exc:
-        raise ScreenshotUnavailable(f"page capture failed: {exc}") from exc
+        raise ScreenshotUnavailable(f"og render failed: {exc}") from exc
+    out_png.write_bytes(optimize_png(png))
+    return out_png
 
 
 def capture_run(run_dir: str | Path, *, force: bool = False, browser: Any = None) -> tuple[Path | None, str]:

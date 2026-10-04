@@ -2439,6 +2439,69 @@ def _story_caption(payload: dict[str, Any], claim: str) -> str:
     return _bounded_text(f"{claim} {context}.", max_bytes=270, max_lines=4)
 
 
+ALT_TEXT_MAX = 1000
+
+
+def _pct_word(v: float) -> int:
+    return int(v * 100 + 0.5)
+
+
+def card_alt_text(payload: dict[str, Any]) -> str:
+    """Alt text for a card image, generated from the card's own numbers.
+
+    Deterministic and template-only: it names the scope, the subject, the
+    pass count with its interval, the judge axis, the spend and the first
+    caveat. It never reads judge reasoning, descriptions or artifact text, so
+    nothing a model wrote can reach a published image's alt attribute. A thin
+    sample is stated as "not ranked, thin sample" in place of the claim."""
+    story = payload.get("story") or {}
+    kind = str(payload.get("kind") or story.get("scope") or "group")
+    scope = {"group": "Run group card.", "pairing": "Pairing card.", "run": "Run card."}.get(
+        kind, "Card.")
+    if kind == "pairing":
+        subject = f"{payload.get('orchestrator')} to {payload.get('worker')}."
+    elif kind == "run":
+        subject = f"{payload.get('task_title') or payload.get('task_id') or 'one run'}."
+    else:
+        subject = f"{payload.get('group_label') or payload.get('target')}."
+    parts = [scope, subject]
+    mech = (story.get("confidence") or {}).get("mechanical") or {}
+    thin = kind != "run" and (
+        mech.get("level") == "low" or int(payload.get("finished") or 0) < LOW_N_BEST)
+    if thin:
+        parts.append("Status: not ranked, thin sample.")
+    elif story.get("claim"):
+        claim = str(story["claim"]).strip()
+        parts.append(claim if claim.endswith(".") else claim + ".")
+    if kind == "run":
+        verdict = ("pass" if payload.get("passes") else "fail"
+                   if payload.get("passes") is False else "not recorded")
+        parts.append(f"Mechanical {verdict}.")
+        if payload.get("judge_score") is not None:
+            parts.append(f"Judge score {fmt_score(float(payload['judge_score']))}.")
+        else:
+            parts.append("Not judged.")
+    else:
+        finished = int(payload.get("finished") or 0)
+        line = f"Mechanical pass {payload.get('passed', 0)} of {finished} finished runs"
+        ci = payload.get("pass_ci")
+        if payload.get("pass_rate") is not None and ci:
+            line += (f" ({_pct_word(float(payload['pass_rate']))} percent, 95 percent interval "
+                     f"{_pct_word(float(ci[0]))} to {_pct_word(float(ci[1]))} percent)")
+        parts.append(line + ".")
+        judged = int(payload.get("judged") or 0)
+        parts.append(f"Judge approved {payload.get('judge_approved', 0)} of {judged} reviewed runs."
+                     if judged else "No judge verdicts.")
+    parts.append(f"Metered spend {fmt_money(float(payload.get('cost_usd') or 0))}.")
+    caveats = [c for c in story.get("caveats") or [] if not c.startswith("Proof is one")]
+    if caveats:
+        parts.append(f"Caveat: {caveats[0]}")
+    text = " ".join(parts)
+    if len(text) > ALT_TEXT_MAX:
+        text = text[:ALT_TEXT_MAX - 1].rstrip() + "."
+    return text
+
+
 def _attach_story(
     payload: dict[str, Any],
     metas: list[Any],
@@ -2524,6 +2587,7 @@ def _attach_story(
             ),
         },
     }
+    payload["story"]["alt"] = card_alt_text(payload)
     return payload
 
 
@@ -3150,7 +3214,7 @@ def _jev_interventions(metas: list[Any]) -> dict[str, int]:
 
 def _arm_block(runs: list[Any]) -> dict[str, Any]:
     """Per-arm BI block for one experiment cell."""
-    from orchestral.experiment import arm_stats
+    from orchestral.experiment import arm_stats, status_counts
     passes, n, errors = arm_stats(runs)
     ci = _wilson(passes, n)
     cost = sum(r.display_cost_usd or 0.0 for r in runs)
@@ -3160,6 +3224,9 @@ def _arm_block(runs: list[Any]) -> dict[str, Any]:
         "rate": passes / n if n else None,
         "ci": ci,
         "errors": errors,
+        "status": status_counts(runs),
+        # same concept as CoverageRow.to_dict's failed_as_zero — one name
+        "failed_as_zero": passes / len(runs) if runs else None,
         "cost": round(cost, 6),
         "cost_per_pass": round(cost / passes, 6) if passes else None,
         "delegated": sum(1 for r in runs if r.delegated),

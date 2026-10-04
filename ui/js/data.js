@@ -28,10 +28,11 @@ export const isHosted = () => META.mode === "hosted";
 export function setSignal(signal) { ACTIVE = signal; }
 const sig = opts => opts?.signal ?? ACTIVE ?? undefined;
 
-/* Percent-encode a name inside a snapshot key exactly as snapshot.py does
-   (encodeURIComponent plus the characters it leaves bare). */
+/* Percent-encode a name inside a snapshot key exactly as snapshot.py's enc()
+   does: encodeURIComponent plus the characters it leaves bare, and the dot, so
+   `compare.<a>.<b>` has one reading. */
 export function keyEnc(name) {
-  return encodeURIComponent(String(name)).replace(/[!'()*]/g, c => "%" + c.charCodeAt(0).toString(16).toUpperCase());
+  return encodeURIComponent(String(name)).replace(/[!'()*.]/g, c => "%" + c.charCodeAt(0).toString(16).toUpperCase());
 }
 
 /* ---------- meta ---------- */

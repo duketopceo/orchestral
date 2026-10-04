@@ -143,6 +143,18 @@ class TestSyncSurfaces(unittest.TestCase):
         self.assertEqual({s["state"] for s in stub["sections"].values()}, {"withheld"})
         self.assertNotIn(SECRET, _dump(out))
 
+    def test_the_withheld_stub_carries_no_outcome_in_its_meta(self):
+        meta = self.store.get_run(self.run_id)
+        assert meta is not None
+        meta.passes, meta.score, meta.failure_reason = False, 0.7412, "outcome-canary"
+        self.store.update_meta(meta)
+        stub = snapshot.run_payloads(self.store, self.run_id, self.tmp / "tasks")[f"run/{self.run_id}.json"]
+        for field in ("passes", "score", "judge_score", "judge_passed", "failure_reason"):
+            self.assertIsNone(stub["meta"][field], field)
+        self.assertTrue(stub["meta"]["holdout"])  # the verdict chip reads this: "Withheld", not "Fail"
+        self.assertNotIn("0.7412", _dump(stub))
+        self.assertNotIn("outcome-canary", _dump(stub))
+
     def test_a_run_whose_run_json_is_gone_is_still_withheld_by_its_index_config(self):
         (self.run_dir / "run.json").unlink()
         self.assertTrue(privacy.run_is_holdout(

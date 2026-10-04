@@ -10,6 +10,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
+from orchestral.format import NULL_GLYPH
 from orchestral.storage import RunStore
 
 STYLE = """
@@ -251,11 +252,11 @@ def _index_html(runs: list[Any]) -> str:
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>orchestral — Runs</title>
+  <title>orchestral: Runs</title>
   {STYLE}
 </head>
 <body>
-  <h1>Orchestral — Runs</h1>
+  <h1>Orchestral: Runs</h1>
   <p>Click a run to drill into events, plan, cost, and artifact. <a href="gallery.html">Visual gallery</a> &middot; <a href="dashboard.html">Dashboard</a></p>
   {_groups_table_html(runs)}
   <table>
@@ -378,11 +379,11 @@ def generate_gallery(runs: list[Any], reports_dir: Path, task_id: str | None = N
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>orchestral — Gallery</title>
+  <title>orchestral: Gallery</title>
   {STYLE}
 </head>
 <body>
-  <h1>Orchestral — Gallery</h1>
+  <h1>Orchestral: Gallery</h1>
   <a href="index.html">&larr; All runs</a> &middot; <a href="dashboard.html">Dashboard</a>
   {sections}
 </body>
@@ -445,11 +446,11 @@ def _dashboard_html(runs: list[Any], summary: dict[str, Any], *, experiment: str
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>orchestral — Dashboard</title>
+  <title>orchestral: Dashboard</title>
   {STYLE}
 </head>
 <body>
-  <h1>Orchestral — Dashboard</h1>
+  <h1>Orchestral: Dashboard</h1>
   <a href="index.html">&larr; Per-run drill-down</a> &middot; <a href="gallery.html">Gallery</a>
 
   <div class="summary">
@@ -665,15 +666,15 @@ def _experiment_html(store: Any, matrix_path: Path) -> str:
         return ""
     body = "".join(
         f"<tr><td>{_esc(r.task_id)}<br><small>{_esc(r.orchestrator)} → {_esc(r.worker)}</small></td>"
-        f"<td>{f'{r.baseline_passes}/{r.baseline_n}' if r.baseline_n else '—'}</td>"
-        f"<td>{f'{r.jev_passes}/{r.jev_n}' if r.jev_n else '—'}</td>"
-        f"<td>{f'[{r.diff[0]:+.2f}, {r.diff[1]:+.2f}]' if r.diff else '—'}</td>"
+        f"<td>{f'{r.baseline_passes}/{r.baseline_n}' if r.baseline_n else NULL_GLYPH}</td>"
+        f"<td>{f'{r.jev_passes}/{r.jev_n}' if r.jev_n else NULL_GLYPH}</td>"
+        f"<td>{f'[{r.diff[0]:+.2f}, {r.diff[1]:+.2f}]' if r.diff else NULL_GLYPH}</td>"
         f"<td>{_esc(r.verdict)}</td><td>{_esc(r.state)}</td>"
-        f"<td>{'✓' if r.posted else ''}</td></tr>"
+        f"<td>{'posted' if r.posted else ''}</td></tr>"
         for r in rows
     )
     return f"""<div class="section">
-    <h2>Experiment — {_esc(matrix.name)}</h2>
+    <h2>Experiment: {_esc(matrix.name)}</h2>
     <p><small>Baseline vs jev-assist, paired replicates. Primary axis: mechanical pass.
     Judge-score deltas are self-referential (the decisions engine assists the
     jev arm and scores both arms).</small></p>

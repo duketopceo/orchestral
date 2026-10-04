@@ -76,10 +76,10 @@ class _Server(unittest.TestCase):
     def _get(self, path: str) -> tuple[int, str, str]:
         try:
             with urllib.request.urlopen(f"http://127.0.0.1:{self.port}{path}") as r:
-                return r.status, r.headers.get("Content-Type", ""), r.read().decode()
+                return r.status, r.headers.get("Content-Type", ""), r.read().decode(errors="replace")
         except urllib.error.HTTPError as e:
             with e:
-                return e.code, e.headers.get("Content-Type", ""), e.read().decode()
+                return e.code, e.headers.get("Content-Type", ""), e.read().decode(errors="replace")
 
     def _post(self, path: str, fields: dict[str, str]) -> tuple[int, dict]:
         req = urllib.request.Request(
@@ -188,11 +188,13 @@ class TestThreadConfirmGate(_Server):
 
 class TestFaviconAndErrors(_Server):
     def test_favicon(self):
-        for path in ("/favicon.ico", "/static/favicon.svg"):
-            code, ctype, body = self._get(path)
-            self.assertEqual(code, 200, path)
-            self.assertEqual(ctype, "image/svg+xml")
-            self.assertIn("<svg", body)
+        code, ctype, body = self._get("/static/favicon.svg")
+        self.assertEqual(code, 200)
+        self.assertEqual(ctype, "image/svg+xml")
+        self.assertIn("<svg", body)
+        code, ctype, _ = self._get("/favicon.ico")
+        self.assertEqual(code, 200)
+        self.assertEqual(ctype, "image/x-icon")
         _, _, html = self._get("/")
         self.assertIn('rel="icon"', html)
 

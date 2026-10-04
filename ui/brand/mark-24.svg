@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" fill="none">
+  <title>orchestral</title>
+  <!-- Optical size for 24-32px: staff lines 2u so they land on whole pixels
+       (y=7-9, 11-13, 15-17), baton 2.5u, gap 1u each side of the middle line. -->
+  <path fill="currentColor" d="M2 7h20v2H2zM2 15h20v2H2zM2 11h6.8v2H2zM14.25 11H22v2h-7.75z"/>
+  <path d="M5 19L19 4" stroke="currentColor" stroke-width="2.5" stroke-linecap="square"/>
+</svg>

@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+import statistics
 import threading
 import uuid
 from collections.abc import Iterable
@@ -43,6 +44,70 @@ JUDGE_CACHE_SCHEMA = 2
 # is applied in SQL by `call_previews`, not to the response afterwards, so the
 # bytes never leave SQLite in the first place.
 CALL_PREVIEW_MAX_BYTES = 2000
+
+# A model needs this many priced non-dry-run calls before its own
+# billed/rate-card ratio is trusted; below it the all-model ratio is used.
+MIN_OWN_RATIO_CALLS = 20
+
+# `RunMeta.cost_basis` values: every call priced by the provider, only some,
+# or none (rate card scaled by a calibration ratio).
+COST_BASES = ("billed", "mixed", "calibrated")
+
+
+@dataclass(frozen=True)
+class RatioChoice:
+    """The billed/rate-card multiple chosen for one model, and why.
+
+    ``source`` is ``own`` (the model's own priced calls), ``global`` (all
+    priced calls, because the model has fewer than ``MIN_OWN_RATIO_CALLS``) or
+    ``none`` (nothing was ever priced). ``n`` is the number of priced calls the
+    ratio rests on.
+    """
+
+    ratio: float | None
+    source: str
+    n: int
+
+
+@dataclass(frozen=True)
+class Calibration:
+    """Per-model billed/rate-card ratios derived from priced calls (KTD7).
+
+    The ratio divides stored ``api_cost_usd`` by stored ``cost_usd``, and it is
+    applied to a stored ``cost_usd``: both sides share the basis a call was
+    recorded with, so editing a model's yaml rates later changes nothing here.
+    """
+
+    per_model: dict[str, tuple[int, float, float]]  # model -> (priced calls, api sum, cost sum)
+
+    def _ratio(self, calls: int, api: float, cost: float) -> float | None:
+        return api / cost if calls and cost > 0 else None
+
+    def global_choice(self) -> RatioChoice:
+        n = sum(v[0] for v in self.per_model.values())
+        api = sum(v[1] for v in self.per_model.values())
+        cost = sum(v[2] for v in self.per_model.values())
+        ratio = self._ratio(n, api, cost)
+        return RatioChoice(ratio, "global" if ratio is not None else "none", n)
+
+    def ratio_for(self, model: str | None) -> RatioChoice:
+        n, api, cost = self.per_model.get(model or "", (0, 0.0, 0.0))
+        own = self._ratio(n, api, cost)
+        if own is not None and n >= MIN_OWN_RATIO_CALLS:
+            return RatioChoice(own, "own", n)
+        return self.global_choice()
+
+
+@dataclass(frozen=True)
+class BilledEstimate:
+    """Billed-cost estimate for one launch. ``per_run_usd`` is None when the
+    index holds no billed history to estimate from (unknown, not zero)."""
+
+    per_run_usd: float | None
+    low_usd: float | None
+    high_usd: float | None
+    n: int
+    basis: str  # task_pairing | pairing | unknown
 
 
 def _bounded_body(raw: Any, total: Any) -> tuple[str, int, bool]:
@@ -89,9 +154,22 @@ class RunMeta:
     judge_score: float | None = None
     judge_passed: bool | None = None
     delegated: bool | None = None
+    # Read-side only, filled from `calls` by RunStore.list_runs/get_run. They
+    # are not columns and never serialised, so run.json, exports and every
+    # --json output keep their shape. None = not computed (in-memory metas).
+    billed_cost_usd: float | None = field(default=None, repr=False, compare=False)
+    cost_basis: str | None = field(default=None, repr=False, compare=False)
+
+    @property
+    def display_cost_usd(self) -> float:
+        """Billed spend when known, else the recorded rate-card total."""
+        return self.total_cost_usd if self.billed_cost_usd is None else self.billed_cost_usd
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        d = asdict(self)
+        d.pop("billed_cost_usd", None)
+        d.pop("cost_basis", None)
+        return d
 
     def to_public_dict(self) -> dict[str, Any]:
         """`to_dict()` minus `run_dir`.
@@ -102,7 +180,7 @@ class RunMeta:
         publishing it hands out local filesystem layout. `to_dict()` stays
         for the on-disk `run.json`, where the real path must survive.
         """
-        d = asdict(self)
+        d = self.to_dict()
         d.pop("run_dir", None)
         return d
 
@@ -631,7 +709,12 @@ class RunStore:
     def mean_cell_cost(
         self, task_id: str, orchestrator: str, worker: str, *, arm: str = "baseline"
     ) -> float | None:
-        """Mean billed cost per finished run for one experiment cell arm.
+        """Mean *rate-card* cost per finished run for one experiment cell arm.
+
+        This is ``runs.total_cost_usd``, the harness's configured-rate estimate,
+        not billed spend (billed spend is ``billed_estimate`` and
+        ``RunMeta.billed_cost_usd``). Replicate planning keeps this basis on
+        purpose so the targets of a matrix in flight do not shift.
 
         Task-scoped (``mean_run_cost`` is pairing-scoped — a task's cost
         profile dominates a pairing's). ``arm`` selects on the run's
@@ -649,9 +732,145 @@ class RunStore:
             ).fetchone()
         return float(row[0]) if row and row[0] is not None else None
 
+    # -- billed cost (KTD7) -------------------------------------------------
+
+    def cost_calibration(self) -> Calibration:
+        """Per-model billed/rate-card ratios over priced non-dry-run calls."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT COALESCE(model, ''), COUNT(*), SUM(api_cost_usd), SUM(cost_usd) "
+                "FROM calls WHERE COALESCE(dry_run, 0) = 0 AND api_cost_usd IS NOT NULL "
+                "GROUP BY COALESCE(model, '')"
+            ).fetchall()
+        return Calibration({m: (int(n), float(api or 0.0), float(cost or 0.0))
+                            for m, n, api, cost in rows})
+
+    def _billed_map(self, run_ids: list[str] | None = None) -> dict[str, tuple[float, str]]:
+        """run_id -> (billed cost, basis) for the given runs, or every run.
+
+        Billed cost is ``SUM(COALESCE(api_cost_usd, cost_usd * ratio(model)))``
+        over a run's non-dry-run calls, failed runs included (``total_cost_usd``
+        is left at 0 for them). A model with no usable ratio contributes its
+        rate-card ``cost_usd`` unscaled, which is a floor. A dry run bills
+        nothing. A run with no call rows at all falls back to its recorded
+        ``total_cost_usd`` and is labelled ``calibrated`` (rate card).
+        """
+        cal = self.cost_calibration()
+        marks = ",".join("?" * len(run_ids)) if run_ids is not None else ""
+        call_scope = f" AND c.run_id IN ({marks})" if run_ids is not None else ""
+        run_scope = f" WHERE run_id IN ({marks})" if run_ids is not None else ""
+        params = list(run_ids or [])
+        with self._connect() as conn:
+            call_rows = conn.execute(
+                "SELECT c.run_id, COALESCE(c.model, ''), COUNT(*), "
+                "COALESCE(SUM(c.api_cost_usd IS NOT NULL), 0), COALESCE(SUM(c.api_cost_usd), 0.0), "
+                "COALESCE(SUM(CASE WHEN c.api_cost_usd IS NULL THEN c.cost_usd END), 0.0) "
+                "FROM calls c WHERE COALESCE(c.dry_run, 0) = 0" + call_scope +
+                " GROUP BY c.run_id, COALESCE(c.model, '')", params
+            ).fetchall()
+            run_rows = conn.execute(
+                "SELECT run_id, COALESCE(total_cost_usd, 0.0), COALESCE(dry_run, 0) FROM runs"
+                + run_scope, params
+            ).fetchall()
+        acc: dict[str, list[Any]] = {}
+        for run_id, model, n, priced, api_sum, unpriced_cost in call_rows:
+            a = acc.setdefault(run_id, [0.0, False, False])  # billed, has_priced, has_unpriced
+            a[0] += float(api_sum)
+            a[1] = a[1] or priced > 0
+            if priced < n:
+                ratio = cal.ratio_for(model).ratio
+                a[0] += float(unpriced_cost) * (ratio if ratio is not None else 1.0)
+                a[2] = True
+        out: dict[str, tuple[float, str]] = {}
+        for run_id, total, dry in run_rows:
+            if dry:
+                out[run_id] = (0.0, "billed")
+            elif run_id in acc:
+                billed, has_priced, has_unpriced = acc[run_id]
+                basis = ("billed" if not has_unpriced
+                         else "mixed" if has_priced else "calibrated")
+                out[run_id] = (round(billed, 10), basis)
+            else:
+                out[run_id] = (float(total), "calibrated")
+        return out
+
+    def billed_costs(self, run_ids: Iterable[str] | None = None) -> dict[str, tuple[float, str]]:
+        return self._billed_map(None if run_ids is None else list(run_ids))
+
+    def _attach_billed(self, metas: list[RunMeta]) -> None:
+        if not metas:
+            return
+        ids = [m.run_id for m in metas]
+        billed = self._billed_map(ids if len(ids) <= 500 else None)
+        for m in metas:
+            if m.run_id in billed:
+                m.billed_cost_usd, m.cost_basis = billed[m.run_id]
+
+    def _billed_spend(self, where: str, params: tuple[Any, ...]) -> float:
+        with self._connect() as conn:
+            ids = [r[0] for r in conn.execute(
+                f"SELECT run_id FROM runs WHERE COALESCE(dry_run, 0) = 0 AND {where}", params)]
+        if not ids:
+            return 0.0
+        billed = self._billed_map(ids if len(ids) <= 500 else None)
+        return float(sum(billed[i][0] for i in ids if i in billed))
+
+    def billed_estimate(
+        self, task_id: str, orchestrator: str, worker: str, *,
+        exclude_task_id: str | None = None,
+    ) -> BilledEstimate:
+        """Billed cost of one more run of this pairing, from past billed runs.
+
+        Prefers the same task + pairing, then the pairing on any task. Finished
+        and failed runs count (a failed run still spent money); dry runs,
+        running and cancelled runs do not. The range is the 10th to 90th
+        percentile of per-run billed cost, clamped to within 2x of the mean so
+        ``high / low`` never exceeds 4. ``exclude_task_id`` drops that task's
+        runs entirely, which is how the held-out backtest scores an estimate
+        without the cell it predicts.
+        """
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT run_id, task_id FROM runs WHERE orchestrator = ? AND worker = ? "
+                "AND status IN ('finished', 'failed') AND COALESCE(dry_run, 0) = 0",
+                (orchestrator, worker)).fetchall()
+        if exclude_task_id is not None:
+            rows = [r for r in rows if r[1] != exclude_task_id]
+        same_task = [r[0] for r in rows if r[1] == task_id]
+        basis, ids = "unknown", []
+        if same_task and exclude_task_id is None:
+            basis, ids = "task_pairing", same_task
+        elif rows:
+            basis, ids = "pairing", [r[0] for r in rows]
+        if not ids:
+            return BilledEstimate(None, None, None, 0, "unknown")
+        billed = self._billed_map(ids if len(ids) <= 500 else None)
+        xs = sorted(billed[i][0] for i in ids if i in billed)
+        mean = sum(xs) / len(xs)
+        if len(xs) >= 5:
+            q = statistics.quantiles(xs, n=10, method="inclusive")
+            low, high = q[0], q[8]
+        else:
+            low, high = xs[0], xs[-1]
+        low, high = min(low, mean), max(high, mean)
+        low, high = max(low, mean / 2), min(high, mean * 2)
+        return BilledEstimate(mean, low, high, len(xs), basis)
+
+    def billed_total_usd(self) -> float:
+        """Billed spend over every non-dry run in the index."""
+        return self._billed_spend("1 = 1", ())
+
+    def month_to_date_billed_usd(self, now: datetime | None = None) -> float:
+        """Billed spend of non-dry runs started this calendar month (UTC)."""
+        now = now or datetime.now(UTC)
+        start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        return self._billed_spend("started_at >= ?", (start.isoformat(),))
+
     def group_spend(self, group_prefix: str) -> float:
-        """Live spend meter for one experiment — sums ``calls.cost_usd``
-        joined to runs under ``group_prefix%``.
+        """Live billed spend meter for one experiment: every non-dry call of
+        runs under ``group_prefix%``, at ``api_cost_usd`` where the provider
+        priced it and at ``cost_usd`` scaled by the model's calibration ratio
+        where it did not.
 
         Runs meter ``total_cost_usd`` at $0 until they finish and index;
         ``calls`` rows land per call during the run, so this sees in-flight
@@ -660,15 +879,21 @@ class RunStore:
         must not meter ``jevxab`` groups.
         """
         esc = group_prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        cal = self.cost_calibration()
         with self._connect() as conn:
-            row = conn.execute(
-                "SELECT COALESCE(SUM(c.cost_usd), 0) FROM calls c "
-                "JOIN runs r ON c.run_id = r.run_id "
+            rows = conn.execute(
+                "SELECT COALESCE(c.model, ''), COALESCE(SUM(c.api_cost_usd), 0.0), "
+                "COALESCE(SUM(CASE WHEN c.api_cost_usd IS NULL THEN c.cost_usd END), 0.0) "
+                "FROM calls c JOIN runs r ON c.run_id = r.run_id "
                 "WHERE r.run_group LIKE ? ESCAPE '\\' "
-                "AND COALESCE(r.dry_run, 0) = 0",
+                "AND COALESCE(r.dry_run, 0) = 0 GROUP BY COALESCE(c.model, '')",
                 (f"{esc}%",),
-            ).fetchone()
-        return float(row[0] or 0.0)
+            ).fetchall()
+        total = 0.0
+        for model, api_sum, unpriced in rows:
+            ratio = cal.ratio_for(model).ratio
+            total += float(api_sum) + float(unpriced) * (ratio if ratio is not None else 1.0)
+        return total
 
     def set_annotation(
         self, kind: str, target: str, flag: str, note: str = ""
@@ -737,7 +962,9 @@ class RunStore:
             row = conn.execute("SELECT * FROM runs WHERE run_id = ?", (run_id,)).fetchone()
         if not row:
             return None
-        return _row_to_meta(row)
+        meta = _row_to_meta(row)
+        self._attach_billed([meta])
+        return meta
 
     def update_meta(self, meta: RunMeta) -> None:
         self._write_meta_file(Path(meta.run_dir), meta)
@@ -806,7 +1033,9 @@ class RunStore:
 
         with self._connect() as conn:
             rows = conn.execute(query, params).fetchall()
-        return [_row_to_meta(row) for row in rows]
+        metas = [_row_to_meta(row) for row in rows]
+        self._attach_billed(metas)
+        return metas
 
     def judge_lock(self, key: tuple[str, str, str]) -> threading.Lock:
         """Per-(task, judge, artifact) lock so parallel runners don't duplicate judge calls."""
@@ -870,15 +1099,9 @@ class RunStore:
         }
 
     def spend_today(self) -> float:
-        """Recorded cost of all runs started today (UTC) — the spend-guard meter."""
+        """Billed cost of all runs started today (UTC) — the spend-guard meter."""
         today = datetime.now(UTC).date().isoformat()
-        with self._connect() as conn:
-            row = conn.execute(
-                "SELECT COALESCE(SUM(total_cost_usd), 0) FROM runs "
-                "WHERE started_at >= ? AND COALESCE(dry_run, 0) = 0",
-                (today,),
-            ).fetchone()
-        return float(row[0] or 0.0)
+        return self._billed_spend("started_at >= ?", (today,))
 
     def mean_run_cost(self, *, orchestrator: str | None = None,
                       worker: str | None = None) -> float | None:

@@ -8,6 +8,7 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from typing import ClassVar
 
 from orchestral.config import ModelConfig, TaskSpec
 from orchestral.runner import Runner
@@ -92,8 +93,9 @@ class TestFormatters(unittest.TestCase):
         self.assertEqual(fmt_cost(None), "-")
         self.assertEqual(fmt_tokens(999), "999")
         self.assertEqual(fmt_tokens(1500), "1.5k")
-        self.assertEqual(pass_label(True), ("pass", "ok"))
-        self.assertEqual(pass_label(None), ("-", "muted"))
+        self.assertEqual(pass_label(True, ascii_only=False), ("■", "pass", "pass"))
+        self.assertEqual(pass_label(False, ascii_only=False), ("□", "fail", "fail"))
+        self.assertEqual(pass_label(None, ascii_only=False), ("", "-", "ink-3"))
 
 
 class TestRunnerCancel(unittest.TestCase):
@@ -292,31 +294,31 @@ class TestStatusBar(unittest.TestCase):
         return str(bar.visual)
 
     def test_counts_render_without_a_note(self):
-        self.assertEqual(self._text(self._bar(runs=3, cost=0.1234)), "3 runs  ·  $0.1234")
+        self.assertEqual(self._text(self._bar(runs=3, cost=0.1234)), "3 runs, $0.123")
 
     def test_note_renders_after_counts(self):
         bar = self._bar(runs=1, cost=0.5, note="2 queued")
-        self.assertEqual(self._text(bar), "1 runs  ·  $0.5000  ·  2 queued")
+        self.assertEqual(self._text(bar), "1 runs, $0.500, 2 queued")
 
     def test_note_renders_after_jobs(self):
         # test_note_renders_after_counts builds a bar with no jobs, so it pins the
         # note against the counts and nothing else. Hoisting the note append above
         # the jobs block leaves that test green, so pin the two-segment order
         # explicitly: note last, jobs present and before it.
-        running = Job(label="o/m·t")
+        running = Job(label="t on o/m")
         running.transition(JobStatus.RUNNING)
         text = self._text(self._bar(runs=1, cost=0.5, jobs=[running], note="2 queued"))
         self.assertTrue(text.endswith("2 queued"), text)
         self.assertLess(text.index("jobs:"), text.index("2 queued"))
 
     def test_active_jobs_are_listed_and_terminal_ones_are_not(self):
-        running = Job(label="o/m·t")
+        running = Job(label="t on o/m")
         running.transition(JobStatus.RUNNING)
         done = Job(label="old")
         done.transition(JobStatus.RUNNING)
         done.transition(JobStatus.SUCCEEDED)
         bar = self._bar(jobs=[running, done])
-        self.assertEqual(self._text(bar), "0 runs  ·  $0.0000  ·  jobs: o/m·t (running)")
+        self.assertEqual(self._text(bar), "0 runs, $0.00, jobs: t on o/m (running)")
 
     def test_active_jobs_are_capped_at_three_with_a_count(self):
         jobs = []
@@ -580,6 +582,366 @@ class TestAppPilot(unittest.IsolatedAsyncioTestCase):
                 await pilot.pause()
                 csv = (reports / "runs.csv").read_text(encoding="utf-8")
                 self.assertIn("run_id", csv.splitlines()[0])
+
+
+# ---------------------------------------------------------------------------
+# U17: Score theme, glyph parity, spend parity
+# ---------------------------------------------------------------------------
+
+import importlib.util  # noqa: E402
+import os  # noqa: E402
+import re  # noqa: E402
+import shutil  # noqa: E402
+from unittest.mock import patch  # noqa: E402
+
+from orchestral import design_tokens  # noqa: E402
+from orchestral.format import fmt_money  # noqa: E402
+from orchestral.glyphs import GLYPHS  # noqa: E402
+
+_ROOT = Path(__file__).resolve().parents[1]
+_TUI_SRC = sorted((_ROOT / "orchestral" / "tui").glob("*.py"))
+_CORPUS_SPEC = importlib.util.spec_from_file_location(
+    "build_fixture_corpus", _ROOT / "scripts" / "build-fixture-corpus.py")
+assert _CORPUS_SPEC and _CORPUS_SPEC.loader
+_corpus = importlib.util.module_from_spec(_CORPUS_SPEC)
+_CORPUS_SPEC.loader.exec_module(_corpus)
+_FIXTURE_MODELS = _ROOT / "tests" / "fixtures" / "observatory" / "models"
+
+
+class TestNoPaletteInTuiSource(unittest.TestCase):
+    def test_no_hex_literals_in_tui_modules(self):
+        for path in _TUI_SRC:
+            hits = re.findall(r"#[0-9a-fA-F]{6}\b", path.read_text(encoding="utf-8"))
+            self.assertEqual(hits, [], f"{path.name} hard-codes a colour; derive it from design_tokens")
+
+
+class TestVerdictLabels(unittest.TestCase):
+    def test_pass_label_is_glyph_word_role(self):
+        from orchestral.tui.state import pass_label
+
+        self.assertEqual(pass_label(True, ascii_only=False), (GLYPHS["pass"].unicode, "pass", "pass"))
+        self.assertEqual(pass_label(False, ascii_only=False), (GLYPHS["fail"].unicode, "fail", "fail"))
+        self.assertEqual(pass_label(True, ascii_only=True), ("[+]", "pass", "pass"))
+
+    def test_status_label_uses_the_glyph_table(self):
+        from orchestral.tui.state import status_label
+
+        self.assertEqual(status_label("running", ascii_only=False), ("◔", "running", "live"))
+        self.assertEqual(status_label("failed", ascii_only=False), ("□", "failed", "fail"))
+        self.assertEqual(status_label("cancelled", ascii_only=False)[0], "┄")
+        self.assertEqual(status_label("finished", ascii_only=False)[1], "finished")
+
+    def test_ascii_rules_mirror_the_cli(self):
+        from orchestral.tui.state import use_ascii
+
+        class Enc:
+            encoding = "utf-8"
+
+        with patch.dict(os.environ, {"TERM": "xterm-256color"}, clear=True), patch("sys.stdout", Enc()):
+            self.assertFalse(use_ascii())
+            with patch.dict(os.environ, {"ORCH_ASCII": "1"}):
+                self.assertTrue(use_ascii())
+            with patch.dict(os.environ, {"TERM": "dumb"}):
+                self.assertTrue(use_ascii())
+            with patch.dict(os.environ, {"NO_COLOR": "1"}):
+                self.assertFalse(use_ascii())  # NO_COLOR drops colour only
+        Enc.encoding = "latin-1"
+        with patch.dict(os.environ, {"TERM": "xterm"}, clear=True), patch("sys.stdout", Enc()):
+            self.assertTrue(use_ascii())
+
+    def test_cell_text_colours_by_role_unless_no_color(self):
+        from orchestral.tui.state import verdict_cell
+
+        stage = design_tokens.theme("stage")
+        with patch.dict(os.environ, {}, clear=True):
+            cell = verdict_cell(("■", "pass", "pass"), stage)
+            self.assertEqual(cell.plain, "■ pass")
+            self.assertIn(stage["--pass-text"].lower(), str(cell.style).lower())
+        with patch.dict(os.environ, {"NO_COLOR": "1"}, clear=True):
+            cell = verdict_cell(("■", "pass", "pass"), stage)
+            self.assertEqual(cell.plain, "■ pass")
+            self.assertEqual(str(cell.style), "")
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(verdict_cell(("", "-", "ink-3"), stage).plain, "-")
+
+
+@unittest.skipUnless(HAS_TEXTUAL, "textual not installed (pip install 'orchestral[tui]')")
+class TestScoreTheme(unittest.IsolatedAsyncioTestCase):
+    def test_both_themes_derive_every_role_from_tokens(self):
+        from orchestral.tui.theme import THEME_NAMES, build_theme
+
+        self.assertEqual(THEME_NAMES, ("orchestral-paper", "orchestral-stage"))
+        for key in design_tokens.THEMES:
+            t, tok = build_theme(f"orchestral-{key}"), design_tokens.theme(key)
+            self.assertEqual(t.background.upper(), tok["--canvas"].upper())
+            self.assertEqual(t.surface.upper(), tok["--surface"].upper())
+            self.assertEqual(t.foreground.upper(), tok["--ink"].upper())
+            self.assertEqual(t.success.upper(), tok["--pass-text"].upper())
+            self.assertEqual(t.error.upper(), tok["--fail-text"].upper())
+            self.assertEqual(t.warning.upper(), tok["--live-text"].upper())
+            self.assertEqual(t.primary.upper(), tok["--judge-text"].upper())
+            self.assertEqual(t.dark, key == "stage")
+
+    async def test_default_is_stage_and_toggle_switches_background(self):
+        from textual.color import Color
+
+        from orchestral.tui.app import OrchestralApp
+
+        stage, paper = design_tokens.theme("stage"), design_tokens.theme("paper")
+        with tempfile.TemporaryDirectory() as tmp:
+            app = OrchestralApp(Path(tmp), Path("tasks"), Path("models"))
+            async with app.run_test() as pilot:
+                self.assertEqual(app.theme, "orchestral-stage")
+                self.assertEqual(app.screen.styles.background.hex, Color.parse(stage["--canvas"]).hex)
+                await pilot.press("t")
+                await pilot.pause()
+                self.assertEqual(app.theme, "orchestral-paper")
+                self.assertEqual(app.screen.styles.background.hex, Color.parse(paper["--canvas"]).hex)
+                await pilot.press("t")
+                await pilot.pause()
+                self.assertEqual(app.theme, "orchestral-stage")
+
+
+@unittest.skipUnless(HAS_TEXTUAL, "textual not installed (pip install 'orchestral[tui]')")
+class TestScoreTables(unittest.IsolatedAsyncioTestCase):
+    async def _table(self, app, pilot):
+        from textual.widgets import DataTable
+
+        table = app.query_one("#runs-table", DataTable)
+        for _ in range(250):
+            await pilot.pause()
+            await asyncio.sleep(0.02)
+            if table.row_count:
+                break
+        return table
+
+    def _verdict_cells(self, table):
+        cols = [str(c.label) for c in table.columns.values()]
+        row = table.get_row_at(0)
+        return row[cols.index("Pass")], row[cols.index("Status")]
+
+    def _seed(self, tmp, passes):
+        store = RunStore(tmp)
+        meta = Runner(dry_run=True, runs_dir=tmp, store=store).run(
+            TaskSpec(id="t-task", type="html", prompt="p"),
+            _model("o/model", "orchestrator"), _model("w/model", "worker"))
+        updated = store.get_run(meta.run_id)
+        assert updated is not None
+        updated.passes = passes
+        store.index_meta(updated)
+
+    async def test_cells_show_glyph_and_word(self):
+        from orchestral.tui.app import OrchestralApp
+
+        for passes, expected in ((True, "■ pass"), (False, "□ fail"), (None, "-")):
+            with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"TERM": "xterm", "LC_ALL": "C.UTF-8"}):
+                os.environ.pop("ORCH_ASCII", None)
+                os.environ.pop("NO_COLOR", None)
+                self._seed(tmp, passes)
+                app = OrchestralApp(Path(tmp), Path("tasks"), Path("models"))
+                async with app.run_test() as pilot:
+                    table = await self._table(app, pilot)
+                    pass_cell, status_cell = self._verdict_cells(table)
+                    self.assertEqual(getattr(pass_cell, "plain", pass_cell), expected)
+                    self.assertIn("finished", getattr(status_cell, "plain", status_cell))
+
+    async def test_no_color_keeps_glyph_and_word_for_every_verdict(self):
+        from orchestral.tui.app import OrchestralApp
+
+        for passes, expected in ((True, "■ pass"), (False, "□ fail")):
+            with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"NO_COLOR": "1", "TERM": "xterm"}):
+                os.environ.pop("ORCH_ASCII", None)
+                self._seed(tmp, passes)
+                app = OrchestralApp(Path(tmp), Path("tasks"), Path("models"))
+                async with app.run_test() as pilot:
+                    table = await self._table(app, pilot)
+                    pass_cell, _ = self._verdict_cells(table)
+                    self.assertEqual(pass_cell.plain, expected)
+                    self.assertEqual(str(pass_cell.style), "")
+
+    async def test_ascii_fallback_in_the_table(self):
+        from orchestral.tui.app import OrchestralApp
+
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"ORCH_ASCII": "1"}):
+            self._seed(tmp, True)
+            app = OrchestralApp(Path(tmp), Path("tasks"), Path("models"))
+            async with app.run_test() as pilot:
+                table = await self._table(app, pilot)
+                self.assertEqual(self._verdict_cells(table)[0].plain, "[+] pass")
+
+    async def test_colour_follows_the_theme_toggle(self):
+        from orchestral.tui.app import OrchestralApp
+
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"TERM": "xterm"}):
+            os.environ.pop("NO_COLOR", None)
+            os.environ.pop("ORCH_ASCII", None)
+            self._seed(tmp, True)
+            app = OrchestralApp(Path(tmp), Path("tasks"), Path("models"))
+            async with app.run_test() as pilot:
+                table = await self._table(app, pilot)
+                stage = design_tokens.theme("stage")["--pass-text"].lower()
+                paper = design_tokens.theme("paper")["--pass-text"].lower()
+                self.assertIn(stage, str(self._verdict_cells(table)[0].style).lower())
+                await pilot.press("t")
+                await pilot.pause()
+                await pilot.pause()
+                table = app.query_one("#runs-table", type(table))
+                self.assertIn(paper, str(self._verdict_cells(table)[0].style).lower())
+
+
+class TestStatusBarCopy(unittest.TestCase):
+    @unittest.skipUnless(HAS_TEXTUAL, "textual not installed")
+    def test_status_bar_text_has_no_middle_dot(self):
+        from orchestral.tui.widgets import StatusBar
+
+        bar = StatusBar()
+        bar.set_counts(4, 1.5)
+        bar.set_jobs([Job(label="a on b", status=JobStatus.RUNNING)])
+        bar.set_note("2 queued")
+        self.assertNotIn("·", str(bar.visual))
+
+
+class TestSpendParity(unittest.TestCase):
+    """The TUI confirm panel renders the very payload the web dialog renders,
+    on the U23 corpus: same billed numbers, same range, same unknown handling."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = Path(tempfile.mkdtemp())
+        cls.root = cls.tmp / "runs"
+        with patch.dict(os.environ, {}, clear=True):
+            cls.manifest = _corpus.build_corpus(cls.root, "full")
+        cls.store = RunStore(cls.root)
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    KNOWN: ClassVar[dict[str, str]] = {"task": "corpus-landing-page", "orchestrator": "corpus/orch-a",
+             "worker": "corpus/worker-cheap", "replicates": "3"}
+    UNKNOWN: ClassVar[dict[str, str]] = {"task": "corpus-landing-page", "orchestrator": "corpus/orch-b",
+               "worker": "corpus/worker-local", "replicates": "2"}
+
+    def _est(self, spec):
+        from orchestral.web import state as web_state
+
+        return web_state.launch_estimate(self.store, _FIXTURE_MODELS, spec)
+
+    def test_known_pairing_rows_match_the_web_dialog(self):
+        from orchestral.tui.state import format_spend_estimate
+
+        est = self._est(self.KNOWN)
+        self.assertIsNotNone(est["total_usd"])
+        lines = format_spend_estimate(est).split("\n")
+        self.assertEqual(lines[0], "Runs: 3")
+        self.assertEqual(lines[1], f"Estimated cost: about {fmt_money(est['total_usd'])}")
+        self.assertEqual(lines[2], f"Range: {fmt_money(est['total_low_usd'])} to {fmt_money(est['total_high_usd'])}")
+        self.assertEqual(lines[3], f"Estimate basis: {est['basis_label']}")
+        self.assertEqual(
+            lines[4],
+            f"Spent this month: ${est['month_to_date_billed_usd']:.2f} of "
+            f"${est['monthly_cap_usd']:.0f} eval cap (billed spend recorded in this index)")
+        self.assertEqual(lines[5], est["caveat"])
+        self.assertEqual(len(lines), 6)
+
+    def test_unknown_is_never_zero(self):
+        from orchestral.tui.state import format_spend_estimate
+
+        est = self._est(self.UNKNOWN)
+        self.assertIsNone(est["total_usd"])
+        text = format_spend_estimate(est)
+        self.assertIn("Estimated cost: Unknown", text)
+        self.assertIn("Range: Unknown", text)
+        self.assertNotIn("$0.00", text.split("Spent this month")[0])
+        self.assertIn(est["basis_label"], text)
+
+    def test_dry_run_is_zero_not_unknown(self):
+        from orchestral.tui.state import format_spend_estimate
+
+        est = self._est({**self.KNOWN, "dry_run": True})
+        text = format_spend_estimate(est)
+        self.assertIn("Estimated cost: $0.00", text)
+        self.assertNotIn("about", text)
+
+    def test_tui_estimate_hook_is_the_web_payload(self):
+        from orchestral.tui.app import OrchestralApp
+
+        app = OrchestralApp(self.root, Path("tasks"), _FIXTURE_MODELS)
+        self.assertEqual(app._launch_estimate(dict(self.KNOWN)), self._est(dict(self.KNOWN)))
+
+    def test_headline_spend_is_the_billed_total_the_web_sums(self):
+        from orchestral.tui.app import OrchestralApp
+
+        app = OrchestralApp(self.root, Path("tasks"), _FIXTURE_MODELS)
+        runs = self.store.list_runs(limit=None)
+        web_total = sum(r.display_cost_usd or 0.0 for r in runs)
+        self.assertAlmostEqual(app._summary()["total_cost_usd"], web_total, places=6)
+        failed = self.store.get_run(self.manifest["failed_run_id"])
+        assert failed is not None
+        from orchestral.tui.state import fmt_cost
+        self.assertEqual(fmt_cost(failed.display_cost_usd), fmt_money(0.74))  # billed, not the recorded $0.11
+
+    @unittest.skipUnless(HAS_TEXTUAL, "textual not installed")
+    def test_launch_screen_panel_shows_the_same_numbers(self):
+        async def go():
+            from textual.widgets import Checkbox, Select, Static
+
+            from orchestral.tui.app import OrchestralApp
+            from orchestral.tui.screens import LaunchScreen
+            from orchestral.tui.state import format_spend_estimate
+
+            app = OrchestralApp(self.root, _FIXTURE_MODELS.parent / "tasks", _FIXTURE_MODELS)
+            async with app.run_test() as pilot:
+                await pilot.press("n")
+                await pilot.pause()
+                screen = app.screen
+                self.assertIsInstance(screen, LaunchScreen)
+                screen.query_one("#launch-task", Select).value = self.KNOWN["task"]
+                screen.query_one("#launch-orch", Select).value = self.KNOWN["orchestrator"]
+                screen.query_one("#launch-worker", Select).value = self.KNOWN["worker"]
+                screen.query_one("#launch-dry", Checkbox).value = False
+                await pilot.pause()
+                shown = str(screen.query_one("#launch-estimate", Static).render())
+                spec = {**self.KNOWN, "replicates": "1", "judge": screen.query_one("#launch-judge", Select).value or None}
+                self.assertEqual(shown, format_spend_estimate(self._est(spec)))
+
+        asyncio.run(go())
+
+
+@unittest.skipUnless(HAS_TEXTUAL, "textual not installed (pip install 'orchestral[tui]')")
+class TestScreenshots(unittest.IsolatedAsyncioTestCase):
+    """Render each theme at 80 and 120 columns; SVG goes to ORCH_TUI_SHOTS when set."""
+
+    async def test_renders_at_both_widths_and_themes(self):
+        from orchestral.tui.app import OrchestralApp
+
+        out = os.environ.get("ORCH_TUI_SHOTS")
+        for cols in (80, 120):
+            for theme in ("orchestral-stage", "orchestral-paper"):
+                with tempfile.TemporaryDirectory() as tmp:
+                    store = RunStore(tmp)
+                    for passes in (True, False, None):
+                        meta = Runner(dry_run=True, runs_dir=tmp, store=store).run(
+                            TaskSpec(id="t-task", type="html", prompt="p"),
+                            _model("o/model", "orchestrator"), _model("w/model", "worker"))
+                        row = store.get_run(meta.run_id)
+                        assert row is not None
+                        row.passes = passes
+                        store.index_meta(row)
+                    app = OrchestralApp(Path(tmp), Path("tasks"), Path("models"))
+                    async with app.run_test(size=(cols, 30)) as pilot:
+                        app.theme = theme
+                        for _ in range(100):
+                            await pilot.pause()
+                            await asyncio.sleep(0.02)
+                            if app.query_one("#runs-table").row_count == 3:  # type: ignore[attr-defined]
+                                break
+                        await pilot.pause()
+                        svg = app.export_screenshot()
+                        self.assertIn("<svg", svg)
+                        if out:
+                            Path(out).mkdir(parents=True, exist_ok=True)
+                            (Path(out) / f"tui-{theme.split('-')[1]}-{cols}.svg").write_text(svg, encoding="utf-8")
 
 
 if __name__ == "__main__":

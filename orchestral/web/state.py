@@ -48,6 +48,7 @@ from orchestral.format import (
     is_low_n_cell,
 )
 from orchestral.judge import DEFAULT_JUDGE
+from orchestral.privacy import run_is_holdout
 from orchestral.runner import Runner
 from orchestral.stats import aggregate, mean, pairing_leaderboard, wilson_interval
 from orchestral.storage import RunStore
@@ -1173,22 +1174,203 @@ def artifact_info(run_dir: Path) -> dict[str, Any] | None:
     return info
 
 
+def resolve_run_dir(store: Any, meta: Any) -> Path:
+    """The directory a run's files live in.
+
+    The index records `run_dir` as it was when the run started, which is relative
+    to the working directory for any run launched with a relative runs path. Read
+    from another directory, or from a copied or moved runs dir, that path points
+    nowhere and every file looks missing. When it does not exist, the recorded
+    `orch/task/worker/run_id` tail is rebased under the store's root, the same
+    rule `RunStore.backfill_calls` uses."""
+    p = Path(meta.run_dir)
+    if p.exists():
+        return p
+    root = getattr(store, "root", None)
+    if root:
+        cand = Path(root).joinpath(*p.parts[-4:])
+        if cand.exists():
+            return cand
+    return p
+
+
+_ERROR_TYPE_MARKERS = (".failed", "_error", "worker_error")
+
+
+def _is_error_event(ev: dict[str, Any]) -> bool:
+    typ = str(ev.get("type") or "")
+    return bool(ev.get("error")) or typ.endswith(_ERROR_TYPE_MARKERS) or typ in ("error", "run.failed")
+
+
+def _first_failing_check(report: Any) -> str | None:
+    checks = report.get("checks") if isinstance(report, dict) else None
+    if isinstance(checks, dict):
+        for name, ok in checks.items():
+            if ok is False:
+                return str(name)
+    return None
+
+
+def _failure_summary(meta: Any, events: list[dict[str, Any]], report: Any,
+                     report_exists: bool) -> dict[str, Any] | None:
+    """Why a failed run failed, from what the run dir holds: the taxonomy reason,
+    the first failing check, and the event to read first (the first error event, or
+    the last event when none carries an error). With no events at all the run died
+    before it started recording, and the summary says so."""
+    if meta.status != "failed":
+        return None
+    idx: int | None = next((i for i, ev in enumerate(events) if _is_error_event(ev)), None)
+    kind = "error"
+    if idx is None and events:
+        idx, kind = len(events) - 1, "last"
+    event: dict[str, Any] | None = None
+    if idx is not None:
+        ev = events[idx]
+        event = {"index": idx, "kind": kind, "type": str(ev.get("type") or "?"),
+                 "phase": str(ev.get("phase") or ""),
+                 "summary": event_row(ev)[3] or str(ev.get("error") or "")[:160]}
+    errors = report.get("errors") if isinstance(report, dict) else None
+    return {
+        "reason": meta.failure_reason or "",
+        "failing_check": _first_failing_check(report),
+        "errors": [str(e)[:300] for e in errors[:3]] if isinstance(errors, list) else [],
+        "event": event,
+        "no_detail": not events,
+        "report_available": report_exists,
+    }
+
+
+def _lane_for(ev: dict[str, Any], worker: str | None) -> tuple[str, str] | None:
+    phase, role = ev.get("phase"), ev.get("role")
+    if role == "judge" or phase == "judge":
+        return "judge", "judge"
+    if phase == "assemble":
+        return "assemble", "assemble"
+    if phase == "validate":
+        return "validate", "validate"
+    if phase == "plan":
+        return "orchestrator", "orchestrator"
+    if phase == "delegate":
+        wid = ev.get("worker_id") or worker or "worker"
+        return str(wid), str(wid)
+    return None
+
+
+_LANE_ORDER = ("orchestrator", "worker", "assemble", "validate", "judge")
+
+
+def lanes_payload(events: list[dict[str, Any]], running: bool = False) -> dict[str, Any]:
+    """Lane timeline data (DESIGN 6.9 #7): one lane per orchestrator, worker, assemble,
+    validate and judge, one bar per call with its start offset, length (latency), cost
+    and a verdict tick. `event` is the index of the call's event in the stream."""
+    stamps = [t for t in (_parse_ts(e.get("timestamp")) for e in events) if t]
+    if not stamps:
+        return {"span_ms": 0, "lanes": [], "live": None}
+    t0, t1 = min(stamps), max(stamps)
+    lanes: dict[str, dict[str, Any]] = {}
+    worker: str | None = None
+    for i, ev in enumerate(events):
+        typ = ev.get("type")
+        if typ == "worker.started":
+            worker = ev.get("worker_id") or worker
+        lane = _lane_for(ev, worker)
+        timed = typ in ("llm_call", "worker_error") or (ev.get("latency_ms") or 0) > 0
+        end = _parse_ts(ev.get("timestamp"))
+        if lane is None or not timed or end is None:
+            continue
+        dur = float(ev.get("latency_ms") or 0.0)
+        start = max(0.0, (end - t0).total_seconds() * 1000 - dur)
+        bucket = lanes.setdefault(lane[0], {"id": lane[0], "label": lane[1], "bars": []})
+        cost = ev.get("cost") or {}
+        bucket["bars"].append({
+            "start_ms": start, "dur_ms": dur, "event": i, "type": str(typ),
+            "verdict": "fail" if _is_error_event(ev) else "ok",
+            "cost_usd": cost.get("api_cost_usd") if cost.get("api_cost_usd") is not None else cost.get("usd"),
+            "model": str(ev.get("model") or ""),
+        })
+
+    def order(item: dict[str, Any]) -> tuple[int, str]:
+        k = item["id"]
+        return (_LANE_ORDER.index(k) if k in _LANE_ORDER else 1, k)
+    ordered = sorted(lanes.values(), key=order)
+    live = None
+    if running and events:
+        live = (_lane_for(events[-1], worker) or (None, None))[0]
+    return {"span_ms": max((t1 - t0).total_seconds() * 1000, 1.0), "lanes": ordered, "live": live}
+
+
+def run_liveness(store: RunStore, registry: JobRegistry | None, meta: Any,
+                 now: datetime | None = None) -> dict[str, Any]:
+    """live, stalled, abandoned or done for one run, plus which action applies.
+    Cancel only for runs this server owns; abandon only for stalled unowned ones."""
+    if meta.status != "running":
+        return {"state": "done", "owned": False, "cancellable": False, "abandonable": False,
+                "idle_s": None}
+    if meta.run_id in _abandoned_runs(store):
+        return {"state": "abandoned", "owned": False, "cancellable": False, "abandonable": False,
+                "idle_s": None}
+    now = now or _now()
+    beat = last_heartbeat(resolve_run_dir(store, meta), meta.started_at)
+    idle = max(0.0, (now - beat).total_seconds()) if beat else None
+    owned = bool(registry and registry.owns(meta.run_id))
+    st = liveness_state(idle)
+    return {"state": st, "owned": owned, "cancellable": owned,
+            "abandonable": st == "stalled" and not owned,
+            "idle_s": int(idle) if idle is not None else None}
+
+
+_SECTION_TABS = ("artifact", "events", "calls", "report", "review", "plan", "manifest")
+_HOLDOUT_REASON = ("This run belongs to the holdout arm, so its task text, answer key and outputs "
+                   "are not published. Open it on the machine that ran it.")
+
+
+def _section(state_: str, reason: str = "", count: int | None = None) -> dict[str, Any]:
+    return {"state": state_, "reason": reason, "count": count}
+
+
+def _file_section(path: Path, running: bool, parsed: Any, what: str,
+                  dry: bool = False, stopped: bool = False) -> dict[str, Any]:
+    if parsed is not None:
+        return _section("ok")
+    if path.exists():
+        return _section("missing", f"{what} could not be read: it is unreadable or truncated.")
+    if stopped:
+        return _section("missing", f"This run stopped reporting before it wrote {what.lower()}.")
+    if running:
+        return _section("not_yet", f"The run is still working. {what} is written when it finishes.")
+    if dry:
+        return _section("empty_by_design", f"A dry run does not write {what.lower()}.")
+    return _section("missing", f"This run did not write {what.lower()}.")
+
+
 def run_detail_payload(
     store: RunStore,
     run_id: str,
     tasks_dir: Path | str | None = None,
     groups_file: Path | str | None = None,
+    *,
+    registry: JobRegistry | None = None,
+    hosted: bool = False,
+    raw_dir: Path | None = None,
+    now: datetime | None = None,
 ) -> dict[str, Any] | None:
-    """Everything the run detail view needs in one fetch."""
+    """Everything the run detail view needs in one fetch.
+
+    Beyond the stored files it derives, so the view never guesses: `failure` (the
+    summary for a failed run), `sections` (one evidence state per tab: ok, not_yet,
+    empty_by_design, missing or withheld), `lanes` (timeline bars), `plan_json`
+    (the subtask list) and `liveness` (state and which action applies). `hosted`
+    marks the public mirror: holdout runs are withheld whole, `plan.md` (found in
+    `raw_dir`, the unscrubbed run dir) and zip artifacts are withheld."""
     meta = store.get_run(run_id)
     if meta is None:
         return None
-    run_dir = Path(meta.run_dir)
-    plan_path = run_dir / "plan.md"
+    run_dir = resolve_run_dir(store, meta)
     tm = _task_meta(store, tasks_dir).get(meta.task_id) or {}
     gm = _groups_meta(groups_file).get(meta.run_group or "") or {}
     jstate, jreason = judge_state(meta)
-    return {
+    holdout = bool((meta.config or {}).get("holdout")) or run_is_holdout(run_dir)
+    out: dict[str, Any] = {
         "meta": _public_run(meta),
         "judge_state": jstate,
         "judge_reason": jreason,
@@ -1196,14 +1378,91 @@ def run_detail_payload(
         "task_blurb": tm.get("blurb") or "",
         "group_label": gm.get("label") or "",
         "group_description": gm.get("description") or "",
-        "calls": store.call_previews(run_id),
-        "report": read_json(run_dir / "report.json"),
-        "review": read_json(run_dir / "review.json"),
-        "manifest": read_json(run_dir / "manifest.json"),
-        "plan": plan_path.read_text(encoding="utf-8", errors="replace") if plan_path.exists() else None,
-        "timeline": timeline_payload(run_dir),
-        "artifact": artifact_info(run_dir),
+        "holdout": holdout,
+        "liveness": run_liveness(store, registry, meta, now),
     }
+    if hosted and holdout:
+        out.update(
+            calls=[], report=None, review=None, manifest=None, plan=None, plan_json=None,
+            timeline=[], artifact=None, failure=None,
+            lanes={"span_ms": 0, "lanes": [], "live": None},
+            sections={t: _section("withheld", _HOLDOUT_REASON) for t in _SECTION_TABS})
+        return out
+
+    # `running` means the run is live and may still write these; a run that is stalled or
+    # abandoned is not "not yet", it has stopped.
+    running = meta.status == "running" and out["liveness"]["state"] == "live"
+    stopped = meta.status == "running" and not running
+    dry = bool(meta.dry_run)
+    events, _ = tail_events(run_dir / "events.jsonl", 0)
+    calls = store.call_previews(run_id)
+    report = read_json(run_dir / "report.json")
+    review = read_json(run_dir / "review.json")
+    manifest = read_json(run_dir / "manifest.json")
+    plan_path = run_dir / "plan.md"
+    plan = plan_path.read_text(encoding="utf-8", errors="replace") if plan_path.exists() else None
+    plan_json = read_json(run_dir / "plan.json")
+    if not isinstance(plan_json, dict):
+        plan_json = None
+    artifact = artifact_info(run_dir)
+    if artifact:
+        # the run-relative path (orch/task/worker/run_id/name), never an absolute one
+        artifact["path"] = "/".join([*Path(meta.run_dir).parts[-4:], artifact["name"]])
+    out.update(
+        calls=calls, report=report, review=review, manifest=manifest, plan=plan, plan_json=plan_json,
+        timeline=timeline_payload(run_dir), artifact=artifact,
+        lanes=lanes_payload(events, running),
+        failure=_failure_summary(meta, events, report, (run_dir / "report.json").exists()))
+
+    sections: dict[str, dict[str, Any]] = {}
+    if artifact:
+        sections["artifact"] = _section("ok")
+    elif stopped:
+        sections["artifact"] = _section("missing", "This run stopped reporting before it stored an artifact.")
+    elif running:
+        sections["artifact"] = _section("not_yet", "The run is still working. The artifact is stored when it finishes.")
+    elif dry:
+        sections["artifact"] = _section("empty_by_design", "A dry run calls no model, so it stores no artifact.")
+    else:
+        why = meta.failure_reason or jreason or ""
+        sections["artifact"] = _section(
+            "missing", "This run did not store an artifact." + (f" Reason on record: {why}." if why else ""))
+    if events:
+        sections["events"] = _section("ok", count=len(events))
+    elif running:
+        sections["events"] = _section("not_yet", "No event has been written yet.")
+    elif stopped:
+        sections["events"] = _section("missing", "This run never wrote an event.", 0)
+    else:
+        sections["events"] = _section("missing", "This run recorded no events.", 0)
+    if calls:
+        sections["calls"] = _section("ok", count=len(calls))
+    elif running or stopped:
+        sections["calls"] = (_section("not_yet", "No model call has finished yet.", 0) if running
+                             else _section("missing", "This run stopped reporting before a call was recorded.", 0))
+    elif dry:
+        sections["calls"] = _section(
+            "empty_by_design", "This was a dry run: no model was called, so there are no calls to list.", 0)
+    else:
+        sections["calls"] = _section("missing", "No calls were recorded for this run.", 0)
+    sections["report"] = _file_section(run_dir / "report.json", running, report, "A report", stopped=stopped)
+    sections["review"] = _file_section(run_dir / "review.json", running, review, "A review", stopped=stopped)
+    sections["manifest"] = _file_section(run_dir / "manifest.json", running, manifest, "A manifest",
+                                         stopped=stopped)
+    if plan_json is not None or plan is not None:
+        subtasks = plan_json.get("subtasks") if plan_json else None
+        sections["plan"] = _section("ok", count=len(subtasks) if isinstance(subtasks, list) else None)
+    else:
+        sections["plan"] = _file_section(run_dir / "plan.json", running, None, "A plan", dry, stopped)
+    if hosted:
+        if plan_path.exists() or (raw_dir is not None and (Path(raw_dir) / "plan.md").exists()):
+            out["plan"] = None
+            sections["plan"] = _section("withheld", "The plan carries the task prompt, so it is not published on the hosted copy.")
+        if artifact and artifact.get("ext") == "zip":
+            sections["artifact"] = _section(
+                "withheld", "Archive contents are not published on the hosted copy. The member list is shown.")
+    out["sections"] = sections
+    return out
 
 
 _ARMS = ("baseline", "jev")

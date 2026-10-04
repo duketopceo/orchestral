@@ -121,7 +121,7 @@ class Observatory:
         meta = self.store.get_run(run_id)
         if meta is None:
             return None
-        return Path(meta.run_dir)
+        return state.resolve_run_dir(self.store, meta)
 
 
 def _provider_ready(slug: str) -> bool:
@@ -407,12 +407,11 @@ def make_handler(obs: Observatory) -> type[BaseHTTPRequestHandler]:
                 payload = state.run_detail_payload(
                     obs.store, run_id,
                     tasks_dir=obs.tasks_dir, groups_file=obs.groups_file,
+                    registry=obs.registry,
                 )
                 if payload is None:
                     return self._json({"error": f"unknown run {run_id}"}, 404)
-                payload["cancellable"] = bool(
-                    (j := obs.registry.job_for_run(run_id)) and j.active
-                )
+                payload["cancellable"] = payload["liveness"]["cancellable"]
                 return self._json(payload)
             if parts[3] == "live":
                 try:

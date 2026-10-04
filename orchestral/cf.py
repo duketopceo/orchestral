@@ -168,8 +168,10 @@ def _hosted_detail(store: RunStore, run_id: str, scrubbed: Path, tasks_dir: Path
                    groups_file: Path) -> dict[str, Any] | None:
     """run_detail_payload over the scrubbed tree + body-free calls ledger."""
     shim = cast(RunStore, _ScrubbedStore(store, run_id, scrubbed))
+    meta = store.get_run(run_id)
     payload = state.run_detail_payload(
-        shim, run_id, tasks_dir=tasks_dir, groups_file=groups_file)
+        shim, run_id, tasks_dir=tasks_dir, groups_file=groups_file, hosted=True,
+        raw_dir=state.resolve_run_dir(store, meta) if meta else None)
     if payload is None:
         return None
     payload["calls"] = _ledger_calls(store, run_id)

@@ -174,6 +174,11 @@ def models_catalog_payload(store: RunStore, models_dir: Path) -> dict[str, Any]:
         "models": rows,
         "provider_synced_at": (remote or {}).get("fetched_at"),
         "provider_source": (remote or {}).get("source"),
+        "provider_sync": {
+            "state": "synced" if remote else "never",
+            "synced_at": (remote or {}).get("fetched_at"),
+            "source": (remote or {}).get("source"),
+        },
     }
 
 

@@ -707,6 +707,11 @@ table.hm th.hm-h, table.hm th.hm-corner { font: 11px var(--mono); color: var(--i
 table.hm tbody th.hm-h { position: sticky; left: 0; z-index: 1; max-width: 148px; overflow: hidden; text-overflow: ellipsis; border-right: 1px solid var(--rule); }
 table.hm th.hm-corner { position: sticky; left: 0; z-index: 2; border-right: 1px solid var(--rule); }
 table.hm td { padding: 3px; }
+table.hm th.hm-h, table.hm th.hm-corner { text-transform: none; letter-spacing: normal; }
+table.hm th.hm-h a { color: var(--ink); }
+.hm-sub { display: block; font: 10px var(--mono); color: var(--ink-3); overflow: hidden; text-overflow: ellipsis; }
+table.hm thead th.hm-h { text-align: center; vertical-align: bottom; }
+.hm-ln { font: 500 9px var(--sans); letter-spacing: .04em; margin-left: 6px; }
 a.hm-cell { display: flex; align-items: center; justify-content: center; min-width: 84px; height: 40px; line-height: 1; font: 700 13px var(--mono); border-radius: 2px; color: var(--ink); text-decoration: none; }
 a.hm-cell:hover { outline: 1px solid var(--ink-2); }
 a.hm-cell:focus-visible { outline: 2px solid var(--ink); outline-offset: 1px; }
@@ -904,19 +909,6 @@ tr.story-selected td { background: color-mix(in srgb, var(--ink) 4%, transparent
   .gallery-grid { grid-template-columns: 1fr; }
 
 }
-
-/* tasks × pairings heatmap */
-.heat-wrap { overflow-x: auto; }
-.heat th, .heat td { border-bottom: 1px solid var(--line); }
-.heat-task { text-align: left; font-weight: 500; padding: 8px 12px 8px 14px; white-space: nowrap; }
-.heat-task a { color: var(--text); }
-.heat-task .sm { font: 10px var(--mono); font-weight: 400; }
-.heat-col { font: 10px var(--mono); font-weight: 500; color: var(--text-2); padding: 6px 8px; text-align: center; vertical-align: bottom; min-width: 92px; }
-.heat-cell { padding: 3px; text-align: center; }
-.heat-task, .heat th.heat-task { text-transform: none; letter-spacing: normal; }
-.heat thead th.heat-task { position: sticky; left: 0; z-index: 1; background: var(--surface); }
-.heat tbody th.heat-task { position: sticky; left: 0; background: var(--surface); z-index: 1; }
-.heat-cell:hover .hm { outline: 1px solid var(--text-2); }
 
 .xc-self td { color: var(--accent); font-weight: 600; }
 .xc-self td:first-child::before { content: "▸ "; }
@@ -1151,34 +1143,6 @@ td > .state { margin: 0; }
 .look-item a, .look-why { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .exp-line { margin: var(--s-3) 0 0; }
 
-/* tasks x pairings heatmap: one sequential ramp, sunken to pass-fill, 6 steps */
-.hm {
-  --hm-bg: var(--sunken);
-  display: flex; align-items: center; justify-content: center; gap: 6px; min-height: 30px; padding: 4px;
-  border-radius: 3px; background-color: var(--hm-bg); color: var(--ink);
-  font: 600 11px var(--mono); text-decoration: none;
-}
-.hm:hover { text-decoration: none; }
-.hm-0 { --hm-bg: var(--sunken); }
-.hm-1 { --hm-bg: color-mix(in srgb, var(--pass-fill) 14%, var(--sunken)); }
-.hm-2 { --hm-bg: color-mix(in srgb, var(--pass-fill) 32%, var(--sunken)); }
-.hm-3 { --hm-bg: color-mix(in srgb, var(--pass-fill) 52%, var(--sunken)); }
-.hm-4 { --hm-bg: color-mix(in srgb, var(--pass-fill) 76%, var(--sunken)); color: var(--on-fill); }
-.hm-5 { --hm-bg: var(--pass-fill); color: var(--on-fill); }
-.hm-3 { color: light-dark(var(--on-fill), var(--ink)); }
-.hm-0, .hm-1, .hm-2 { color: var(--ink); }
-.hm .ln { font: 500 9px var(--sans); letter-spacing: .04em; text-transform: none; }
-/* low n: hatch over a paler fill, plus the words "low n" (never a hue) */
-.hm.low-n {
-  background-color: color-mix(in srgb, var(--hm-bg) 55%, var(--surface));
-  background-image: repeating-linear-gradient(45deg, transparent 0 3px, color-mix(in srgb, var(--ink-2) 50%, transparent) 3px 4px);
-  color: var(--ink);
-}
-.hm-none {
-  display: block; min-height: 30px; border-radius: 3px;
-  background: linear-gradient(to top right, transparent calc(50% - .5px), var(--rule) calc(50% - .5px) calc(50% + .5px), transparent calc(50% + .5px));
-}
-
 /* ---------- Experiments (U10) ---------- */
 
 .ledger-chips { display: flex; flex-wrap: wrap; gap: var(--s-2); }
@@ -1194,14 +1158,6 @@ td > .state { margin: 0; }
 .ledger-group .panel { overflow-x: auto; }
 .ledger td:first-child { min-width: 150px; }
 .db-cell { width: 180px; }
-svg.dumbbell { display: block; overflow: visible; }
-.db-tick { stroke: var(--rule-strong); stroke-width: 1; }
-.db-axis { stroke: var(--rule-strong); stroke-width: 1; }
-.db-link { stroke: var(--ink-3); stroke-width: 1; }
-.db-whisker { stroke: var(--ink-2); stroke-width: 1.5; }
-.db-whisker.low-n { stroke-dasharray: 2 2; }
-.db-baseline { fill: var(--surface); stroke: var(--ink); stroke-width: 1.5; }
-.db-jev { fill: var(--ink); }
 
 /* ---------- breakpoints (DESIGN 6.6) ---------- */
 

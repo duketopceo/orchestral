@@ -20,6 +20,7 @@ from unittest.mock import patch
 
 import browser_corpus as bc
 
+
 from orchestral.storage import RunMeta, RunStore
 from orchestral.web.server import Observatory, make_handler
 
@@ -203,7 +204,7 @@ class TestNow(_Base):
 
     def test_heatmap_cells_are_links_with_task_and_pairing_facets(self):
         pg = self.open(self.page(self.srv), self.srv)
-        cell = pg.locator("table.heat a.hm").first
+        cell = pg.locator("table.hm a.hm-cell").first
         href = cell.get_attribute("href")
         self.assertIn("task=", href)
         self.assertIn("pairing=", href)
@@ -218,7 +219,7 @@ class TestNow(_Base):
         """Canonical URL form is `pairing=orch|worker` (URL-encoded), the same
         one Runs reads and writes: clicking a cell applies both facets."""
         pg = self.open(self.page(self.srv), self.srv)
-        cell = pg.locator("table.heat a.hm, .chart-heatmap a.hm-cell").first
+        cell = pg.locator("table.hm a.hm-cell").first
         href = cell.get_attribute("href")
         self.assertIn("pairing=corpus%2F", href)
         self.assertIn("%7C", href)  # the pipe, encoded
@@ -239,7 +240,7 @@ class TestNow(_Base):
 
     def test_low_n_cell_is_hatched_and_says_low_n_without_a_warning_color(self):
         pg = self.open(self.page(self.srv), self.srv)
-        low = pg.locator("table.heat a.hm.low-n").first
+        low = pg.locator("table.hm a.hm-thin").first
         self.assertIn("low n", low.inner_text().lower())
         bg = low.evaluate("e => getComputedStyle(e).backgroundImage")
         self.assertIn("gradient", bg)  # the hatch
@@ -254,16 +255,31 @@ class TestNow(_Base):
                            " document.body.appendChild(d); const v = getComputedStyle(d).color;"
                            " d.remove(); return v; }", css)
 
+    def test_heatmap_text_meets_contrast_in_both_themes(self):
+        from test_charts_browser import CONTRAST_JS
+        for theme in ("paper", "stage"):
+            pg = self.open(self.page(self.srv, theme=theme), self.srv)
+            ratios = pg.evaluate(CONTRAST_JS)
+            self.assertTrue(ratios)
+            for cls, ratio in ratios:
+                self.assertGreaterEqual(ratio, 4.5, f"{theme} {cls}")
+
+    def test_heatmap_row_head_is_sticky_and_the_grid_scrolls_in_its_own_region(self):
+        pg = self.open(self.page(self.srv, width=390, height=800), self.srv)
+        self.assertEqual(pg.locator("#now-matrix .chart-scroll[role='region']").count(), 1)
+        pos = pg.locator("#now-matrix tbody th.hm-h").first.evaluate("e => getComputedStyle(e).position")
+        self.assertEqual(pos, "sticky")
+
     def test_never_attempted_cell_is_empty_with_a_name(self):
         pg = self.open(self.page(self.srv), self.srv)
-        none = pg.locator("table.heat .hm-none").first
+        none = pg.locator("table.hm td.hm-none .hm-empty").first
         self.assertEqual(none.get_attribute("role"), "img")
-        self.assertEqual(none.get_attribute("aria-label"), "Not attempted")
+        self.assertEqual(none.get_attribute("aria-label"), "never attempted")
         self.assertEqual(none.inner_text().strip(), "")
 
     def test_task_titles_are_not_uppercased(self):
         pg = self.open(self.page(self.srv), self.srv)
-        th = pg.locator("table.heat th.heat-task a").first
+        th = pg.locator("table.hm tbody th.hm-h a").first
         self.assertEqual(th.evaluate("e => getComputedStyle(e.closest('th')).textTransform"), "none")
         text = th.inner_text()
         self.assertNotEqual(text, text.upper())
@@ -368,11 +384,11 @@ class TestExperiments(_Base):
 
     def test_each_cell_has_an_interval_dumbbell_with_a_text_alternative(self):
         pg = self.open(self.page(self.srv), self.srv, "/experiment")
-        svg = pg.locator("svg.dumbbell").first
+        svg = pg.locator("svg.ch-dumbbell").first
         self.assertEqual(svg.get_attribute("role"), "img")
         self.assertTrue(svg.locator("title").text_content())
         self.assertIn("Baseline", svg.locator("desc").text_content())
-        self.assertGreaterEqual(svg.locator(".db-point").count(), 2)
+        self.assertGreaterEqual(svg.locator(".ch-pt").count(), 2)
         # the same numbers are in the table beside it
         self.assertIn("1/3", pg.locator("table.ledger").first.inner_text())
 

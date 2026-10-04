@@ -1,11 +1,12 @@
 import * as F from "../format.js";
 import { $view } from "../dom.js";
-import { can, data, isHosted, meta, optional } from "../data.js";
+import { can, data, isHosted, optional } from "../data.js";
 import { isAbort } from "../api.js";
+import { heatmap } from "../charts/index.js";
 import { start } from "../poller.js";
 import { bindFlags, flagWidget, loadFlags } from "../flags.js";
 import { HOSTED_NOTE, UNOWNED_NOTE } from "../live.js";
-import { NIL, esc, failureText, fmtMoney, fmtPct, fmtScore, fmtWhen, nilOr, pairingParam, slug } from "../util.js";
+import { esc, failureText, fmtMoney, fmtPct, fmtScore, fmtWhen, nilOr, pairingParam, slug } from "../util.js";
 import { icon, liveGlyph, stateHtml } from "../components/states.js";
 
 /* Now: three bands (Live, Changed since you last looked, Needs a look), then the
@@ -134,32 +135,45 @@ function experimentLine(list) {
 
 /* ---------- heatmap (DESIGN 6.9 #4) ---------- */
 
-// Single-hue ramp, 6 steps from --sunken to --pass-fill; the dark steps carry on-fill text.
-const rampStep = v => (v == null ? 0 : Math.min(5, Math.floor(v * 6)));
 const sentence = t => (t && t === t.toUpperCase() && /[A-Z]/.test(t) ? t.charAt(0) + t.slice(1).toLowerCase() : t);
+const splitPairing = p => { const [orch, worker = ""] = p.split(" \u2192 "); return [orch, worker]; };
 
-function heatCell(t, p, c, lowN) {
-  const [orch, worker = ""] = p.split(" \u2192 ");
-  const href = `#/runs?task=${encodeURIComponent(t.task_id)}&pairing=${encodeURIComponent(pairingParam(orch, worker))}`;
-  if (!c) return `<td class="heat-cell"><span class="hm-none" role="img" aria-label="Not attempted"></span></td>`;
-  const v = c.pass_rate, low = c.n < lowN;
-  const jm = c.judge_mean != null ? `, judge ${fmtScore(c.judge_mean)}` : "";
-  const label = `${t.task_title || t.task_id}, ${p}: ${v == null ? "no finished runs" : `${fmtPct(v)} pass`} over ${c.n} run${c.n === 1 ? "" : "s"}${jm}${low ? ", low n" : ""}`;
-  return `<td class="heat-cell"><a class="hm hm-${rampStep(v)}${low ? " low-n" : ""}" href="${href}" aria-label="${esc(label)}" title="${esc(label)}">
-    ${v == null ? NIL : esc(fmtPct(v))}${low ? '<small class="ln">low n</small>' : ""}</a></td>`;
-}
-
-function heatmapBand(mx, lowN) {
+/* The chart kit draws the grid (sticky row heads, ramp, low-n hatch, never-attempted diagonal);
+   this only maps the matrix payload to it. Pairing keys in the payload are `orch → worker`;
+   the Runs link uses the canonical `orch|worker`. */
+function heatmapBand(mx) {
   const tasks = mx.tasks || [];
   if (!tasks.length) return "";
-  const head = mx.pairings.map(p => `<th class="heat-col" scope="col"><div>${esc(slug(p.split(" → ")[0]))}</div><div class="dim">→ ${esc(slug(p.split(" → ")[1] || ""))}</div></th>`).join("");
-  const rows = tasks.map(t => `<tr>
-    <th class="heat-task" scope="row"><a href="#/runs?task=${encodeURIComponent(t.task_id)}">${esc(sentence(t.task_title) || t.task_id)}</a>
-      <div class="dim sm">${esc(t.task_id)}${t.task_type ? ` · ${esc(t.task_type)}` : ""}${t.difficulty ? ` · ${esc(t.difficulty)}` : ""}</div></th>
-    ${mx.pairings.map(p => heatCell(t, p, t.cells[p], lowN)).join("")}</tr>`).join("");
-  return `<p class="band-sub">Mechanical pass rate per cell. A hatched cell has too few runs to trust. An empty cell was never attempted.</p>
-    <div class="panel heat-wrap"><table class="data heat"><caption class="sr-only">Pass rate by task and pairing. Scrolls sideways.</caption>
-      <thead><tr><th class="heat-task" scope="col">Task</th>${head}</tr></thead><tbody>${rows}</tbody></table></div>`;
+  const cells = [];
+  for (const t of tasks) {
+    for (const p of mx.pairings) {
+      const c = t.cells[p];
+      if (!c) continue;
+      const [orch, worker] = splitPairing(p);
+      const v = c.pass_rate;
+      const jm = c.judge_mean != null ? `, judge ${fmtScore(c.judge_mean)}` : "";
+      cells.push({
+        row: t.task_id, col: p, value: v, n: c.n, unrated: v == null,
+        href: `#/runs?task=${encodeURIComponent(t.task_id)}&pairing=${encodeURIComponent(pairingParam(orch, worker))}`,
+        title: `${t.task_title || t.task_id}, ${p}: ${v == null ? "no finished runs" : `${fmtPct(v)} pass`} over ${c.n} run${c.n === 1 ? "" : "s"}${jm}${F.lowNCell(c.n) ? ", low n" : ""}`,
+      });
+    }
+  }
+  return `<div class="panel panel-pad">${heatmap({
+    id: "now-matrix",
+    caption: "Mechanical pass rate per cell. A hatched cell has too few runs to trust. An empty cell was never attempted. Scrolls sideways.",
+    corner: "Task",
+    rowHeads: tasks.map(t => ({
+      key: t.task_id, label: sentence(t.task_title) || t.task_id, title: t.task_id,
+      href: `#/runs?task=${encodeURIComponent(t.task_id)}`,
+      sub: [t.task_id, t.task_type, t.difficulty].filter(Boolean).join(" \u00b7 "),
+    })),
+    colHeads: mx.pairings.map(p => {
+      const [orch, worker] = splitPairing(p);
+      return { key: p, label: slug(orch), sub: `\u2192 ${slug(worker)}`, title: p };
+    }),
+    cells,
+  })}</div>`;
 }
 
 const matrixError = () => `<div class="band-error" role="alert">
@@ -220,7 +234,6 @@ function bindLive(root, refresh) {
 
 export async function viewNow() {
   const hosted = isHosted();
-  const lowN = meta().low_n?.cell ?? 3;
   const [ov, mx, exps] = await Promise.all([
     data.overview(), settle(data.matrix()), optional(data.experiments()),
   ]);
@@ -248,7 +261,7 @@ export async function viewNow() {
     ${lookBand(ov)}
     ${experimentLine(exps)}
     <section class="band" id="band-heatmap" aria-labelledby="band-heatmap-h"><h2 id="band-heatmap-h">Tasks by pairing</h2>
-      <div id="heat-host">${matrixErr ? matrixError() : heatmapBand(matrix, lowN)}</div>
+      <div id="heat-host">${matrixErr ? matrixError() : heatmapBand(matrix)}</div>
     </section>
     ${(ov.groups || []).length ? `<section class="band" id="band-groups" aria-labelledby="band-groups-h"><h2 id="band-groups-h">Groups</h2>${groupsBand(ov.groups)}</section>` : ""}
     ${Object.keys(taxonomy).length ? `<section class="band" id="band-taxonomy" aria-labelledby="band-tax-h"><h2 id="band-tax-h">Failure taxonomy</h2>
@@ -262,7 +275,7 @@ export async function viewNow() {
   heat.addEventListener("click", async ev => {
     if (!ev.target.closest("#retry-matrix")) return;
     const [fresh, err] = await settle(data.matrix());
-    heat.innerHTML = err ? matrixError() : heatmapBand(fresh, lowN);
+    heat.innerHTML = err ? matrixError() : heatmapBand(fresh);
   });
 
   const host = $view.querySelector("#live-host");

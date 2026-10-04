@@ -1,6 +1,7 @@
 import * as F from "../format.js";
+import { dumbbell } from "../charts/index.js";
 import { $view } from "../dom.js";
-import { data, meta, optional } from "../data.js";
+import { data, optional } from "../data.js";
 import { ApiError, isAbort } from "../api.js";
 import { stateHtml } from "../components/states.js";
 import { NIL, esc, fmtMoney, fmtPct, slug } from "../util.js";
@@ -23,47 +24,20 @@ const armCell = a => a && a.n
   ? `${a.passes}/${a.n} <span class="dim sm">${fmtPct(a.rate)}${a.ci ? ` [${F.rangePct(a.ci[0], a.ci[1])}]` : ""}</span>`
   : `<span class="dim">·</span>`;
 
-const W = 168, H = 28, PAD = 6;
-const x = v => PAD + v * (W - 2 * PAD);
-
-/* Two arms on one hairline axis: baseline is a ring, jev is a filled square, so
-   the arms differ by shape and never by hue. A whisker is the Wilson interval;
-   it is dashed (hatched) when the arm has fewer runs than the low-n threshold. */
-export function dumbbell(cell, lowN) {
-  const arms = [["baseline", cell.baseline], ["jev", cell.jev]].filter(([, a]) => a && a.n);
-  const desc = `Baseline ${armText(cell.baseline)}. Jev ${armText(cell.jev)}.`;
-  const title = `Pass rate by arm for ${cell.task}`;
-  if (!arms.length) {
-    return `<svg class="dumbbell" role="img" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}"><title>${esc(title)}</title><desc>${esc(desc)}</desc>
-      <line class="db-axis" x1="${x(0)}" x2="${x(1)}" y1="${H / 2}" y2="${H / 2}"/></svg>`;
-  }
-  const ticks = [0, 0.5, 1].map(v => `<line class="db-tick" x1="${x(v)}" x2="${x(v)}" y1="${H / 2 - 9}" y2="${H / 2 + 9}"/>`).join("");
-  const rates = arms.map(([, a]) => a.rate).filter(r => r != null);
-  const link = rates.length === 2
-    ? `<line class="db-link" x1="${x(rates[0])}" x2="${x(rates[1])}" y1="${H / 2}" y2="${H / 2}"/>` : "";
-  const marks = arms.map(([name, a], i) => {
-    const y = H / 2 + (i === 0 ? -5 : 5);
-    const low = a.n < lowN;
-    const whisker = a.ci ? `<line class="db-whisker${low ? " low-n" : ""}" x1="${x(a.ci[0])}" x2="${x(a.ci[1])}" y1="${y}" y2="${y}"/>` : "";
-    const px = x(a.rate ?? 0);
-    const point = name === "baseline"
-      ? `<circle class="db-point db-baseline" cx="${px}" cy="${y}" r="3.5"/>`
-      : `<rect class="db-point db-jev" x="${px - 3.5}" y="${y - 3.5}" width="7" height="7"/>`;
-    return whisker + point;
-  }).join("");
-  return `<svg class="dumbbell" role="img" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}"><title>${esc(title)}</title><desc>${esc(desc)}</desc>
-    <line class="db-axis" x1="${x(0)}" x2="${x(1)}" y1="${H / 2}" y2="${H / 2}"/>${ticks}${link}${marks}</svg>`;
-}
+/* The pass-rate dumbbell is the chart kit's: baseline ring, jev filled point, Wilson whiskers,
+   hatched when an arm has fewer finished runs than the low-n threshold. */
+const arm = a => ({ passed: (a && a.passes) || 0, finished: (a && a.n) || 0, ci: a && a.ci });
+const cellDumbbell = (cell, i) => dumbbell({ id: `exp-db-${i}`, a: arm(cell.baseline), b: arm(cell.jev), width: 168 });
 
 const diffText = c => (c.diff_ci
   ? `[${c.diff_ci[0] >= 0 ? "+" : ""}${c.diff_ci[0].toFixed(2)}, ${c.diff_ci[1] >= 0 ? "+" : ""}${c.diff_ci[1].toFixed(2)}]` : NIL);
 
-function cellRow(c, lowN) {
+function cellRow(c, i) {
   const iv = c.jev && c.jev.interventions;
   const intervened = iv && (iv.replan + iv.rework) ? ` · jev intervened ${iv.replan + iv.rework} times` : "";
   return `<tr>
     <td>${esc(c.task)}<div class="dim sm">${esc(slug(c.orchestrator))} → ${esc(slug(c.worker))}${c.difficulty ? ` · ${esc(c.difficulty)}` : ""}${c.archetype ? ` ${esc(c.archetype)}` : ""}${intervened}</div></td>
-    <td class="db-cell">${dumbbell(c, lowN)}</td>
+    <td class="db-cell">${cellDumbbell(c, i)}</td>
     <td class="t-num">${armCell(c.baseline)}</td>
     <td class="t-num">${armCell(c.jev)}</td>
     <td class="t-num" data-pri="2">${diffText(c)}</td>
@@ -76,14 +50,14 @@ function cellRow(c, lowN) {
 const HEAD = `<thead><tr><th>Cell</th><th>Pass rate</th><th class="t-num">Baseline</th><th class="t-num">Jev</th>
   <th class="t-num" data-pri="2">Difference</th><th>Verdict</th><th class="t-num" data-pri="3">Target</th><th data-pri="3">Posted</th></tr></thead>`;
 
-function ledger(exp, lowN) {
+function ledger(exp) {
   const by = {};
   for (const c of exp.cells) (by[c.state] ||= []).push(c);
   const order = [...STATE_ORDER, ...Object.keys(by).filter(s => !STATE_ORDER.includes(s))];
   return order.filter(s => by[s]).map(s => `
     <details class="ledger-group" data-state="${esc(s)}"${s === "pending" ? "" : " open"}>
       <summary><span class="chip ${stateChip(s)}">${esc(STATE_LABEL[s] || s)}</span> <span class="dim">${by[s].length} cell${by[s].length === 1 ? "" : "s"}</span></summary>
-      <div class="panel"><table class="data ledger">${HEAD}<tbody>${by[s].map(c => cellRow(c, lowN)).join("")}</tbody></table></div>
+      <div class="panel"><table class="data ledger">${HEAD}<tbody>${by[s].map(c => cellRow(c, exp.cells.indexOf(c))).join("")}</tbody></table></div>
     </details>`).join("");
 }
 
@@ -120,7 +94,6 @@ function notFound(name, list) {
 }
 
 export async function viewExperiment(params = new URLSearchParams()) {
-  const lowN = meta().low_n?.cell ?? 3;
   const asked = params.get("matrix") || "";
   const list = (await optional(data.experiments())) || [];
   if (!asked && !list.length) {
@@ -148,5 +121,5 @@ export async function viewExperiment(params = new URLSearchParams()) {
     <div class="ledger-chips">${Object.entries(states).map(([k, n]) => `<span class="chip ${stateChip(k)}">${esc(k)} ${n}</span>`).join("")}
       <span class="chip chip-dim">Posted ${(exp.summary || {}).posted || 0}</span></div>
     ${spendGauge(exp)}
-    ${ledger(exp, lowN)}`);
+    ${ledger(exp)}`);
 }

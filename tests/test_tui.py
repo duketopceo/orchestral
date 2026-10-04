@@ -87,7 +87,9 @@ class TestFormatters(unittest.TestCase):
         self.assertEqual(fmt_ms(None), "-")
         self.assertEqual(fmt_ms(500), "500ms")
         self.assertEqual(fmt_ms(12_000), "12.0s")
-        self.assertEqual(fmt_cost(0.01234), "$0.0123")
+        self.assertEqual(fmt_cost(0.01234), "$0.012")  # tiers: $0.0072 / $0.187 / $12.40
+        self.assertEqual(fmt_cost(0.0072), "$0.0072")
+        self.assertEqual(fmt_cost(None), "-")
         self.assertEqual(fmt_tokens(999), "999")
         self.assertEqual(fmt_tokens(1500), "1.5k")
         self.assertEqual(pass_label(True), ("pass", "ok"))
@@ -420,6 +422,60 @@ class TestAppPilot(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(app.jobs[0].status, JobStatus.SUCCEEDED)
                 table = app.query_one("#runs-table", DataTable)
                 self.assertTrue(await self._pump(app, pilot, lambda: table.row_count == 1))
+
+    async def test_paid_launch_needs_the_estimate_and_a_typed_run(self):
+        from textual.widgets import Checkbox, Input, Static
+
+        from orchestral.tui.app import OrchestralApp
+        from orchestral.tui.screens import LaunchScreen
+
+        with tempfile.TemporaryDirectory() as tmp:
+            app = OrchestralApp(Path(tmp), Path("tasks"), Path("models"))
+            started: list[dict] = []
+            app._start_job = started.append  # type: ignore[method-assign]
+            async with app.run_test() as pilot:
+                await pilot.press("n")
+                await pilot.pause()
+                self.assertIsInstance(app.screen, LaunchScreen)
+                screen = app.screen
+                confirm = screen.query_one("#launch-confirm", Input)
+                self.assertFalse(confirm.display)  # dry run: nothing to confirm
+                screen.query_one("#launch-dry", Checkbox).value = False
+                await pilot.pause()
+                self.assertTrue(confirm.display)
+                text = str(screen.query_one("#launch-estimate", Static).render())
+                self.assertIn("Estimated cost", text)
+                self.assertIn("run", confirm.placeholder)
+                # Enter on the button without typing starts nothing
+                screen.query_one("#launch-go").press()
+                await pilot.pause()
+                self.assertEqual(started, [])
+                self.assertIsInstance(app.screen, LaunchScreen)
+                confirm.value = "RUN please"
+                screen.query_one("#launch-go").press()
+                await pilot.pause()
+                self.assertEqual(started, [])
+                confirm.value = "run"
+                screen.query_one("#launch-go").press()
+                await pilot.pause()
+                self.assertEqual(len(started), 1)
+                self.assertFalse(started[0]["dry_run"])
+                self.assertNotIn("confirm", started[0])
+
+    async def test_dry_run_launch_needs_no_confirm(self):
+        from orchestral.tui.app import OrchestralApp
+
+        with tempfile.TemporaryDirectory() as tmp:
+            app = OrchestralApp(Path(tmp), Path("tasks"), Path("models"))
+            started: list[dict] = []
+            app._start_job = started.append  # type: ignore[method-assign]
+            async with app.run_test() as pilot:
+                await pilot.press("n")
+                await pilot.pause()
+                app.screen.query_one("#launch-go").press()
+                await pilot.pause()
+                self.assertEqual(len(started), 1)
+                self.assertTrue(started[0]["dry_run"])
 
     async def test_leaderboard_screen(self):
         from textual.widgets import DataTable

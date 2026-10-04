@@ -1,11 +1,24 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-default-theme="system">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#F7F8F8" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0E1012" media="(prefers-color-scheme: dark)">
 <title>orchestral · observatory</title>
 <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
-<link rel="stylesheet" href="/static/app.css">
+<script>
+/* pre-paint: stored choice, else the shell default (local = system, hosted = paper) */
+(function () {
+  var d = document.documentElement, t = d.getAttribute("data-default-theme") || "system";
+  try { var s = localStorage.getItem("orchestral.theme"); if (s === "paper" || s === "stage" || s === "system") t = s; } catch (e) {}
+  d.setAttribute("data-theme", t);
+})();
+</script>
+<link rel="preload" href="/static/fonts/InstrumentSans-latin-var.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="/static/tokens.css?v=__V__">
+<link rel="stylesheet" href="/static/app.css?v=__V__">
 </head>
 <body>
 <div id="shell">
@@ -31,11 +44,14 @@
       <div class="rail-live-head">Activity</div>
       <div id="rail-jobs"></div>
     </div>
+    <button id="theme-toggle" type="button" aria-label="Colour theme"></button>
   </aside>
   <main id="main">
     <div id="view"><div class="loading">Loading…</div></div>
   </main>
 </div>
-<script src="/static/app.js"></script>
+<script src="/static/theme.js?v=__V__"></script>
+<script type="module">import * as F from "/static/js/format.js?v=__V__"; window.OrchFormat = F;</script>
+<script defer src="/static/app.js?v=__V__"></script>
 </body>
 </html>

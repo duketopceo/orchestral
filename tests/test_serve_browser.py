@@ -278,7 +278,7 @@ class TestSpaRuntimeLocal(_Browser):
         pg.select_option("#f-status", "passed")
         pg.wait_for_timeout(3500)
         body = pg.inner_text("#runs-body")
-        self.assertEqual(pg.locator("#runs-body tr").count(), passed)
+        self.assertEqual(int(pg.get_attribute("#runs-count", "data-total")), passed)
         self.assertNotIn("Failed", body)
 
     def test_finish_noticed_after_switching_to_events_tab(self):
@@ -440,7 +440,7 @@ class TestSpaRuntimeHosted(_Browser):
         pg.goto(f"{self.hbase}/#/runs?status=failed")
         pg.wait_for_selector("#view[data-ready='ok']")
         pg.wait_for_selector("#runs-body tr .chip")
-        self.assertEqual(pg.locator("#runs-body tr").count(), len(expected))
+        self.assertEqual(int(pg.get_attribute("#runs-count", "data-total")), len(expected))
         chips = pg.locator("#runs-body tr td:first-child .chip").all_inner_texts()
         self.assertTrue(chips and all(c in {"Failed", "Fail"} for c in chips), set(chips))
 
@@ -466,7 +466,7 @@ class TestSpaRuntimeHosted(_Browser):
         pg = self.page()
         pg.goto(f"{self.hbase}/")
         pg.wait_for_selector("#view[data-ready='ok']")
-        pg.route("**/api/groups", lambda r: r.abort())
+        pg.route("**/api/runs", lambda r: r.abort())
         pg.goto(f"{self.hbase}/#/runs")
         pg.wait_for_selector("#view[data-ready='error']", timeout=20000)
         self.assertIn("Sign in again", pg.inner_text("#view"))

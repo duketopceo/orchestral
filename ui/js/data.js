@@ -65,7 +65,9 @@ export function localAdapter() {
   return {
     mode: "local",
     overview: o => get("/api/overview", o),
-    runs: (f = {}, o) => get(`/api/runs${qs({ group: f.group, status: f.status, task: f.task, q: f.q })}`, o),
+    runs: (f = {}, o) => get(`/api/runs${qs({
+      group: f.group, status: f.status, task: f.task, q: f.q, pairing: f.pairing, judge: f.judge,
+      type: f.type, difficulty: f.difficulty, sort: f.sort, dir: f.dir })}`, o),
     groups: o => get("/api/groups", o),
     matrix: o => get("/api/matrix", o),
     experiment: (name, o) => get(`/api/experiment${qs({ matrix: name })}`, o),
@@ -117,19 +119,41 @@ export const HOSTED_KEYS = {
   modelsCatalog: () => "models-catalog",
 };
 
-// Mirrors orchestral.tui.state.filter_runs and state.runs_payload's status filter.
+// Mirrors orchestral.tui.state.filter_runs and state.runs_payload (facets and sort).
+const SORT_KEYS = {
+  started: ["started_at", "desc"], cost: ["billed_cost_usd", "desc"], duration: ["latency_ms", "desc"],
+  tokens: ["tokens", "desc"], task: ["task_id", "asc"], status: ["status", "asc"],
+};
+
 export function filterRuns(rows, f = {}) {
   const q = String(f.q || "").trim().toLowerCase();
-  return rows.filter(r => {
+  const out = rows.filter(r => {
     if (f.group && r.run_group !== f.group) return false;
     if (f.task && r.task_id !== f.task) return false;
+    if (f.pairing && `${r.orchestrator}|${r.worker}` !== f.pairing) return false;
+    if (f.judge && r.judge_state !== f.judge) return false;
+    if (f.type && r.type !== f.type) return false;
+    if (f.difficulty && r.difficulty !== f.difficulty) return false;
     if (q && ![r.run_id, r.task_id, r.orchestrator, r.worker, r.run_group, r.status, r.failure_reason]
       .some(v => String(v || "").toLowerCase().includes(q))) return false;
     if (f.status === "passed") return r.status === "finished" && !!r.passes;
     if (f.status === "failed") return r.status === "failed" || (r.status === "finished" && !r.passes);
+    if (f.status === "stalled") return !!r.stalled;
     if (f.status) return r.status === f.status;
     return true;
   });
+  return sortRuns(out, f.sort, f.dir);
+}
+
+/* Unknown sort names keep the incoming order; a missing value sorts last either way. */
+export function sortRuns(rows, sort, dir) {
+  const spec = SORT_KEYS[sort];
+  if (!spec) return rows;
+  const [key, dflt] = spec;
+  const sign = (dir === "asc" || dir === "desc" ? dir : dflt) === "desc" ? -1 : 1;
+  const has = r => r[key] !== null && r[key] !== undefined && r[key] !== "";
+  const cmp = (a, b) => (a[key] < b[key] ? -1 : a[key] > b[key] ? 1 : 0) * sign;
+  return [...rows.filter(has).sort(cmp), ...rows.filter(r => !has(r))];
 }
 
 export function hostedAdapter() {

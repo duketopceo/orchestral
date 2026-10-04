@@ -124,7 +124,11 @@ def run_payloads(
                 cast(RunStore, cf._ScrubbedStore(store, run_id, scrubbed)), run_id)
             live = state.live_payload(scrubbed, 0, started_at=meta.started_at, meta=meta)
     except HoldoutRunError:
-        return {}
+        # No file of a holdout run is published, but its page still has to say why
+        # every tab is empty: a stub detail with each section withheld, built from
+        # the index row alone.
+        stub = state.run_detail_payload(store, run_id, tasks_dir, gf, hosted=True)
+        return {f"run/{run_id}.json": stub} if stub else {}
     live["cancellable"] = False
     out: dict[str, Any] = {f"run/{run_id}.json": detail, f"run/{run_id}/live.json": live}
     if evidence is not None:

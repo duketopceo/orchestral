@@ -47,6 +47,12 @@ JUDGE_CACHE_SCHEMA = 3
 CALL_PREVIEW_MAX_BYTES = 2000
 
 
+def _like_escape(prefix: str) -> str:
+    """Escape ``%``/``_``/``\\`` for a ``LIKE … ESCAPE '\\'`` prefix match —
+    a matrix named ``jev_ab`` must not match ``jevxab`` groups."""
+    return prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 def _bounded_body(raw: Any, total: Any) -> tuple[str, int, bool]:
     """Decode a `substr(CAST(col AS BLOB), 1, cap)` slice, marked if it was cut.
 
@@ -661,7 +667,7 @@ class RunStore:
         ``%``/``_`` in the prefix are escaped — a matrix named ``jev_ab``
         must not meter ``jevxab`` groups.
         """
-        esc = group_prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        esc = _like_escape(group_prefix)
         with self._connect() as conn:
             row = conn.execute(
                 "SELECT COALESCE(SUM(c.cost_usd), 0) FROM calls c "
@@ -693,13 +699,16 @@ class RunStore:
                 "UPDATE runs SET total_cost_usd = ?, total_input_tokens = ?, "
                 "total_output_tokens = ? WHERE run_id = ? "
                 "AND (total_cost_usd IS NULL OR total_cost_usd != ? "
-                "OR total_input_tokens != ? OR total_output_tokens != ?)",
+                "OR total_input_tokens IS NULL OR total_input_tokens != ? "
+                "OR total_output_tokens IS NULL OR total_output_tokens != ?)",
                 (sums[0], sums[1], sums[2], run_id, sums[0], sums[1], sums[2]),
             ).rowcount
         if n:
             meta = self.get_run(run_id)
-            if meta is not None:
-                self._write_meta_file(Path(meta.run_dir), meta)
+            # run_dir can be empty on rows that predate the column —
+            # update_meta would write run.json into the caller's cwd
+            if meta is not None and meta.run_dir:
+                self.update_meta(meta)
         return bool(n)
 
     def missing_cost_count(
@@ -723,7 +732,7 @@ class RunStore:
             where += " AND run_id = ?"
             params = (run_id,)
         elif group_prefix is not None:
-            esc = group_prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            esc = _like_escape(group_prefix)
             where += (
                 " AND run_id IN (SELECT run_id FROM runs "
                 "WHERE run_group LIKE ? ESCAPE '\\')"
@@ -734,6 +743,23 @@ class RunStore:
                 f"SELECT COUNT(*) FROM calls WHERE {where}", params
             ).fetchone()
         return int(row[0])
+
+    def missing_cost_counts_by_group(self, group_prefix: str) -> dict[str, int]:
+        """``missing_cost_count`` grouped by ``run_group`` — one pass for
+        a whole matrix instead of a per-cell LIKE scan."""
+        esc = _like_escape(group_prefix)
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT r.run_group, COUNT(*) FROM calls c "
+                "JOIN runs r ON c.run_id = r.run_id "
+                "WHERE r.run_group LIKE ? ESCAPE '\\' "
+                "AND c.api_cost_usd IS NULL "
+                "AND COALESCE(c.pricing_source, '') NOT IN ('unmetered', 'none') "
+                "AND COALESCE(c.dry_run, 0) = 0 "
+                "GROUP BY r.run_group",
+                (f"{esc}%",),
+            ).fetchall()
+        return {str(r[0]): int(r[1]) for r in rows}
 
     def set_annotation(
         self, kind: str, target: str, flag: str, note: str = ""

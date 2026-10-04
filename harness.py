@@ -546,6 +546,20 @@ def cmd_recover(args: argparse.Namespace) -> None:
             file=sys.stderr,
         )
         sys.exit(1)
+    # a corpse keeps status="running" — the aborted annotation is the
+    # record that recovery already ran; a second recover would launch a
+    # second replacement into the same slot
+    already_aborted = any(
+        a["kind"] == "run" and a["target"] == meta.run_id and a["flag"] == "aborted"
+        for a in store.annotations()
+    )
+    if already_aborted:
+        print(
+            f"recover: run {meta.run_id} was already marked aborted — "
+            "its slot was already relaunched or reopened",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     if not args.force and not run_is_stale(meta, time.time()):
         print(
             f"recover: run {meta.run_id} shows recent activity — refusing to "
@@ -568,7 +582,7 @@ def cmd_recover(args: argparse.Namespace) -> None:
     store.repair_orphan_costs(meta.run_id)
     store.set_annotation(
         "run", meta.run_id, "aborted",
-        note="orphaned 'running' row — superseded by relaunch",
+        note="orphaned 'running' row — relaunching replacement",
     )
     kwargs = _runner_kwargs(
         args, store,
@@ -578,8 +592,13 @@ def cmd_recover(args: argparse.Namespace) -> None:
         jev_assist=cfg.get("jev_assist", False),
         planner=cfg.get("planner", getattr(args, "planner", None)),
         prompt_variant=cfg.get("prompt_variant"),
+        dry_run=bool(meta.dry_run) or bool(getattr(args, "dry_run", False)),
     )
     new_meta = Runner(**kwargs).run(task, orchestrator, worker, judge)
+    store.set_annotation(
+        "run", meta.run_id, "aborted",
+        note=f"orphaned 'running' row — superseded by {new_meta.run_id}",
+    )
     print(f"Recovered {meta.run_id} → {new_meta.run_id} [{new_meta.status}]")
     print(f"  Directory: {new_meta.run_dir}")
     print(f"  Cost: ${new_meta.total_cost_usd:.6f} | Passes: {new_meta.passes} | Score: {new_meta.score}")
@@ -1522,7 +1541,7 @@ def cmd_harbor(args: argparse.Namespace) -> None:
                 fixtures_dir=args.fixtures_dir,
             )
         except ValueError as exc:
-            print(f"harbor export: {exc}")
+            print(f"harbor export: {exc}", file=sys.stderr)
             sys.exit(1)
         print(f"exported {spec.id} -> {package}")
         for rel in sorted(p.relative_to(package) for p in package.rglob("*") if p.is_file()):

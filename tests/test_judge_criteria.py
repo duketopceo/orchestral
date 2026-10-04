@@ -88,6 +88,24 @@ class TestTaskCriteria(unittest.TestCase):
         })
         self.assertTrue(task_criteria(spec)[0]["secret"])
 
+    def test_public_required_and_forbidden_mark_secret(self):
+        # required/forbidden are answer keys on *any* spec — a rubric
+        # embedding one must be withheld whether or not the spec is a
+        # holdout arm
+        spec = TaskSpec(id="t", type="html", prompt="p", metadata={
+            "required": ["FALCON-4417-open"],
+            "forbidden": ["lorem-ipsum-token-99"],
+            "criteria": [
+                {"id": "req", "rubric": "output includes FALCON-4417-open"},
+                {"id": "fb", "rubric": "output avoids lorem-ipsum-token-99"},
+                {"id": "open", "rubric": "layout is clean"},
+            ],
+        })
+        criteria = task_criteria(spec)
+        self.assertTrue(criteria[0]["secret"])
+        self.assertTrue(criteria[1]["secret"])
+        self.assertFalse(criteria[2]["secret"])
+
     def test_cache_key_changes_with_criteria(self):
         a = TaskSpec(id="t", type="html", prompt="p")
         b = TaskSpec(id="t", type="html", prompt="p",
@@ -199,6 +217,31 @@ class TestSecretCanary(unittest.TestCase):
         (entry,) = result["criteria"]
         self.assertFalse(entry["satisfied"])
 
+    def test_forbidden_secret_grades_by_absence(self):
+        # a rubric embedding a metadata.forbidden value is an *absence*
+        # requirement — satisfied iff the artifact avoids the token
+        bad = "lorem-ipsum-token-99"
+        spec = TaskSpec(id="t", type="html", prompt="p", metadata={
+            "forbidden": [bad],
+            "criteria": [{"id": "fb", "rubric": f"output avoids {bad}"}],
+        })
+        client = _client('{"score": 0.5, "passed": false, "reasoning": "x"}')
+        result, _ = _judge(spec, client, "<html>clean prose</html>")
+        self.assertTrue(result["criteria"][0]["satisfied"])
+        result, _ = _judge(spec, client, f"<html>uh oh {bad}</html>")
+        self.assertFalse(result["criteria"][0]["satisfied"])
+
+    def test_forbidden_pattern_grades_by_regex_absence(self):
+        spec = TaskSpec(id="t", type="html", prompt="p", metadata={
+            "forbidden_pattern": "lorem-ipsum!+",
+            "criteria": [{"id": "fb", "rubric": "output avoids lorem-ipsum!+"}],
+        })
+        client = _client('{"score": 0.5, "passed": false, "reasoning": "x"}')
+        result, _ = _judge(spec, client, "<html>calm prose</html>")
+        self.assertTrue(result["criteria"][0]["satisfied"])
+        result, _ = _judge(spec, client, "<html>lorem-ipsum!!</html>")
+        self.assertFalse(result["criteria"][0]["satisfied"])
+
 
 class TestDerivedVerdict(unittest.TestCase):
     """v2 hard verdict: when every open criterion is assessed, the
@@ -271,6 +314,19 @@ class TestDerivedVerdict(unittest.TestCase):
         self.assertEqual(roll["unsupported"], 1)
         self.assertEqual(roll["unassessed"], 0)
 
+    def test_inconclusive_scalar_blocks_derivation(self):
+        # a null/garbage scalar verdict marks the result inconclusive —
+        # deriving a concrete pass/fail over it would record a verdict
+        # next to a "no answer" flag
+        result, _ = _judge(self._spec(), _client(self._reply(0.5, "maybe", [
+            {"id": "a", "satisfied": True, "evidence": "<h1>x</h1>"},
+            {"id": "b", "satisfied": True, "evidence": "<footer>y</footer>"},
+        ])), artifact="<h1>x</h1><footer>y</footer>")
+        self.assertTrue(result["inconclusive"])
+        self.assertIsNone(result["passed"])
+        self.assertNotIn("claimed_passed", result)
+        self.assertEqual(result["criteria_rollup"]["satisfied"], 2)
+
     def test_derived_pass_respects_secret_mechanical(self):
         spec = TaskSpec(id="t", type="html", prompt="p", metadata={
             "expected_answer": "sekret-4242-xyz",
@@ -313,6 +369,36 @@ class TestDecisionsCriteria(unittest.TestCase):
         self.assertIsNone(crit["supported"])
         self.assertIn("unavailable", crit["note"])
         self.assertEqual(result["judge_contract"], JUDGE_CONTRACT)
+
+    def test_decisions_secret_graded_mechanically(self):
+        # the decisions engine can't assess a rubric it was never shown —
+        # secret criteria on this path still grade mechanically, not
+        # as unassessed entries under a mechanical label
+        secret = "sekrit-deploy-7788"
+        spec = TaskSpec(id="t", type="html", prompt="p", metadata={
+            "required": [secret],
+            "criteria": [
+                {"id": "open", "rubric": "clean layout"},
+                {"id": "key", "rubric": f"output includes {secret}"},
+            ],
+        })
+        judge = _model("~typesafe/jev-latest", "judge")
+        client = MagicMock()
+        client.decide.return_value = {
+            "answers": {"verdict": {"noul": 0.9}, "quality": {"score": 3}},
+            "usage": {"input_tokens": 1, "output_tokens": 1, "cost": 0.001},
+            "id": "d",
+        }
+        result, _ = judge_artifact(
+            logger=MagicMock(), step=1, task=spec,
+            artifact=f"<html>{secret}</html>", judge=judge, client=client,
+            dry_run=False,
+        )
+        key = next(c for c in result["criteria"] if c["id"] == "key")
+        self.assertEqual(key["engine"], "mechanical")
+        self.assertTrue(key["satisfied"])
+        self.assertTrue(key["secret"])
+        self.assertNotIn("rubric", key)
 
 
 class TestCacheInvalidation(unittest.TestCase):

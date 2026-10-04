@@ -39,12 +39,17 @@ from __future__ import annotations
 
 import json
 import shlex
-import shutil
 import stat
 from pathlib import Path
 from typing import Any
 
 from orchestral.config import TaskSpec
+from orchestral.fileset import required_content
+from orchestral.fixtures import (
+    FixtureError,
+    screen_members,
+    verified_fixture_bytes,
+)
 from orchestral.holdout import holdout_secrets, is_holdout
 from orchestral.privacy import scrub_text
 
@@ -80,8 +85,9 @@ def _toml_value(value: Any) -> str:
         return repr(value)
     if isinstance(value, (list, tuple)):
         return "[" + ", ".join(_toml_value(v) for v in value) + "]"
-    s = str(value).replace("\\", "\\\\").replace('"', '\\"')
-    return f'"{s}"'
+    # json.dumps is a valid TOML basic-string serializer — handles
+    # newlines, tabs, quotes and backslashes uniformly
+    return json.dumps(str(value))
 
 
 def _task_toml(spec: TaskSpec, *, verifier_mode: str,
@@ -203,11 +209,16 @@ def _test_sh(spec: TaskSpec, *, fixture: bool,
         ]
     else:
         lines.append('cd "$work_dir" || fail "workspace missing" 1')
-    for cmd in setup:
-        lines.append(f"{cmd} || fail \"setup failed: {cmd[:60]}\" $?")
+    for i, cmd in enumerate(setup, 1):
+        # the command string itself must stay raw to run — quoting it
+        # into the message would corrupt test.sh on " or $ characters
+        lines.append(f"{cmd} || fail \"setup failed (step {i})\" $?")
     if setup:
         lines.append("")
-    if fixture and command:
+    if fixture:
+        # export_task refuses fixture specs without verify.command —
+        # checks.py/checks.json exist only on the non-fixture path, and
+        # the fixture branch defines repo_dir, not work_dir
         lines.append(f"timeout {int(timeout_seconds)} {shlex.join(command)}")
         lines += [
             "rc=$?",
@@ -230,8 +241,10 @@ def _test_sh(spec: TaskSpec, *, fixture: bool,
 _CHECKS_PY = '''"""Mechanical content checks for a non-fixture Harbor export.
 
 required[] strings must each appear in some workspace file; forbidden[]
-strings must appear in none. This is the export's whole verifier —
-judge-evaluated specs lose semantic grading outside orchestral.
+strings must appear in none — both matched case-insensitively, the same
+rule as the harness's own has_required/no_forbidden checks. This is the
+export's whole verifier — judge-evaluated specs lose semantic grading
+outside orchestral.
 """
 import json
 import sys
@@ -239,9 +252,9 @@ from pathlib import Path
 
 work = Path(sys.argv[1])
 checks = json.loads(Path(sys.argv[2]).read_text())
-bodies = [p.read_text(errors="replace") for p in work.rglob("*") if p.is_file()]
-missing = [s for s in checks.get("required", []) if not any(s in b for b in bodies)]
-present = [s for s in checks.get("forbidden", []) if any(s in b for b in bodies)]
+bodies = [p.read_text(errors="replace").lower() for p in work.rglob("*") if p.is_file()]
+missing = [s for s in checks.get("required", []) if not any(s.lower() in b for b in bodies)]
+present = [s for s in checks.get("forbidden", []) if any(s.lower() in b for b in bodies)]
 for s in missing:
     print(f"required content missing: {s[:80]}")
 for s in present:
@@ -250,8 +263,10 @@ sys.exit(1 if (missing or present) else 0)
 '''
 
 # mechanical graded keys for non-fixture exports — expected_answer and
-# required/forbidden lists are the checkable part of the v1 contract
-_REQUIRED_KEYS = ("required", "required_content", "expected_answer")
+# required/forbidden lists are the checkable part of the v1 contract.
+# required_content is a {path: [tokens]} mapping — the dict shape the
+# canonical fileset parser returns — so it flattens in separately.
+_REQUIRED_KEYS = ("required", "expected_answer")
 _FORBIDDEN_KEYS = ("forbidden",)
 
 
@@ -264,6 +279,8 @@ def _mechanical_checks(spec: TaskSpec) -> dict[str, list[str]]:
             required.append(value)
         elif isinstance(value, list):
             required.extend(v for v in value if isinstance(v, str) and v.strip())
+    for tokens in required_content(meta).values():
+        required.extend(tokens)
     forbidden: list[str] = []
     for key in _FORBIDDEN_KEYS:
         value = meta.get(key)
@@ -306,6 +323,30 @@ def export_task(
     fixture = bool(fixture_id)
     timeout_seconds = float(meta.get("timeout_seconds") or 600)
 
+    # all validation before the first mkdir — a refused export must not
+    # leave a half-written package skeleton in dist/
+    fixture_blob: bytes | None = None
+    if fixture:
+        verify = meta.get("verify") or {}
+        if not verify.get("command"):
+            raise ValueError(
+                f"{spec.id!r} declares a fixture but no verify.command — "
+                "the Harbor verifier would have nothing to run"
+            )
+        # verified_fixture_bytes is the grading-time contract: id format,
+        # lock sha256, member screen — export can't bypass it by taking
+        # the tarball path directly
+        try:
+            fixture_blob = verified_fixture_bytes(fixture_id, fixtures_dir)
+        except FixtureError as exc:
+            raise ValueError(str(exc)) from exc
+        oracle = {str(k): str(v) for k, v in (meta.get("test_files") or {}).items()}
+        bad = screen_members(oracle)
+        if bad:
+            raise ValueError(
+                f"{spec.id!r} test_files carry unsafe member names "
+                f"({', '.join(bad[:5])}) — refusing to export"
+            )
     checks = None
     if not fixture:
         checks = _mechanical_checks(spec)
@@ -335,18 +376,11 @@ def export_task(
         ),
     }
     if fixture:
-        blob = Path(fixtures_dir) / f"{fixture_id}.tar.gz"
-        if not blob.exists():
-            raise ValueError(
-                f"fixture blob {blob} not fetched — run "
-                f"`harness.py fixtures fetch {fixture_id}` first"
-            )
-        oracle = meta.get("test_files") or {}
         for rel, body in oracle.items():
-            target = tests_dir / "oracle" / str(rel)
+            target = tests_dir / "oracle" / rel
             target.parent.mkdir(parents=True, exist_ok=True)
-            emitted[target] = str(body)
-        shutil.copyfile(blob, env_dir / "fixture.tar.gz")
+            emitted[target] = body
+        (env_dir / "fixture.tar.gz").write_bytes(fixture_blob or b"")
     else:
         emitted[tests_dir / "checks.py"] = _CHECKS_PY
         emitted[tests_dir / "checks.json"] = json.dumps(checks, indent=2) + "\n"

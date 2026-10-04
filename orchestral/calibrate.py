@@ -269,7 +269,7 @@ def _metrics_block(pairs: list[dict[str, Any]]) -> dict[str, Any]:
     return metrics
 
 
-def _criteria_block(pairs: list[dict[str, Any]]) -> dict[str, Any]:
+def _criterion_rates(pairs: list[dict[str, Any]]) -> dict[str, Any]:
     """Per-criterion rates across pairs, sliced task:criterion.
 
     Human labels carry no per-criterion verdicts, so this reports the
@@ -297,9 +297,8 @@ def _criteria_block(pairs: list[dict[str, Any]]) -> dict[str, Any]:
             elif c.get("supported") is False:
                 slot["unsupported"] += 1
     for slot in slices.values():
-        n = slot["n"] or 1
         for k in ("satisfied", "supported", "unsupported", "unassessed"):
-            slot[f"{k}_rate"] = round(slot[k] / n, 4)
+            slot[f"{k}_rate"] = round(slot[k] / slot["n"], 4)
     return slices
 
 
@@ -340,7 +339,7 @@ def agreement_metrics(pairs: list[dict[str, Any]]) -> dict[str, Any]:
                 [p for p in pairs if p.get(key) == value]
             )
         metrics[axis] = slices
-    metrics["by_criterion"] = _criteria_block(pairs)
+    metrics["by_criterion"] = _criterion_rates(pairs)
     metrics["contract"] = _contract_block(pairs)
     return metrics
 

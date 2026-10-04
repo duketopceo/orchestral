@@ -46,6 +46,7 @@ from orchestral.holdout import is_holdout, spec_seed
 from orchestral.jevassist import output_gate, plan_gate
 from orchestral.judge import (
     JUDGE_CHAT_ARTIFACT_CAP,
+    JUDGE_CONTRACT,
     JUDGE_DECISIONS_ARTIFACT_CAP,
     is_decisions_model,
     judge_artifact,
@@ -1162,6 +1163,7 @@ class Runner:
                     report["judge"] = {
                         "score": None, "passed": None, "inconclusive": True,
                         "model": judge.slug,
+                        "judge_contract": JUDGE_CONTRACT,
                         "reasoning": f"judge call failed: {str(exc)[:200]}",
                     }
                 else:

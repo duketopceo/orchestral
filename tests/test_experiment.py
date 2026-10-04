@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import io
+import json
 import os
 import tempfile
 import time
@@ -525,6 +526,19 @@ class TestCmdRecover(unittest.TestCase):
         with redirect_stdout(io.StringIO()), self.assertRaises(SystemExit):
             harness.cmd_recover(self._args(rid))
 
+    def test_already_aborted_refused(self):
+        # a corpse keeps status="running" — the aborted annotation is the
+        # record that its slot was handled; a second recover must not
+        # launch a second replacement into it
+        rid = self._orphan(stale=True)
+        self.store.set_annotation(
+            "run", rid, "aborted", note="superseded by earlier-recover")
+        with (redirect_stdout(io.StringIO()),
+              redirect_stderr(io.StringIO()),
+              self.assertRaises(SystemExit)):
+            harness.cmd_recover(self._args(rid))
+        self.assertEqual(len(self.store.list_runs(limit=None)), 1)
+
     def test_stale_run_relaunches(self):
         rid = self._orphan(stale=True)
         buf = io.StringIO()
@@ -582,7 +596,6 @@ class TestOrphanCostRepair(unittest.TestCase):
         self.assertEqual(meta.total_input_tokens, 100)
         self.assertEqual(meta.total_output_tokens, 200)
         # run.json reflects the repair for snapshot consumers
-        import json
         on_disk = json.loads((run_dir / "run.json").read_text())
         self.assertEqual(on_disk["total_cost_usd"], 0.01)
         # idempotent — no rewrite when the ledger already agrees
@@ -643,6 +656,35 @@ class TestMissingCostCount(unittest.TestCase):
             self._call(rid, "configured_estimate", None)
         self.assertEqual(
             self.store.missing_cost_count(group_prefix="m:t:o/m:w/m:"), 2)
+
+    def test_grouped_counts_match_scalar_per_cell(self):
+        # missing_cost_counts_by_group is the one-pass version the
+        # experiment summary uses — it must agree with the scalar
+        # predicate on the same pricing vocabulary
+        self.store.index_meta(_meta(run_id="a", run_group="m:t:o/m:w/m:baseline"))
+        self.store.index_meta(_meta(run_id="b", run_group="m:t:o/m:w/m:jev"))
+        self.store.index_meta(_meta(run_id="c", run_group="m:u:o/m:w/m:baseline"))
+        self.store.index_meta(_meta(run_id="d", run_group="other:t:o/m:w/m:baseline"))
+        self._call("a", "configured_estimate", None)
+        self._call("a", "api", 0.01)
+        self._call("b", "flat_estimate", None)
+        self._call("b", "unmetered", None)
+        self._call("c", "cli_reported", None)
+        self._call("d", "api", None)
+        self._call("d", "none", None)
+        counts = self.store.missing_cost_counts_by_group("m:")
+        self.assertEqual(counts["m:t:o/m:w/m:baseline"], 1)
+        self.assertEqual(counts["m:t:o/m:w/m:jev"], 1)
+        self.assertEqual(counts["m:u:o/m:w/m:baseline"], 1)
+        self.assertNotIn("other:t:o/m:w/m:baseline", counts)
+        # and the experiment's per-cell attribution over it agrees with
+        # the scalar count
+        per_cell = sum(
+            n for g, n in counts.items() if g.startswith("m:t:o/m:w/m:")
+        )
+        self.assertEqual(
+            per_cell,
+            self.store.missing_cost_count(group_prefix="m:t:o/m:w/m:"))
 
 
 class TestCellState(unittest.TestCase):

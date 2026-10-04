@@ -36,6 +36,7 @@ from typing import Any
 import yaml
 
 from orchestral.config import TaskSpec
+from orchestral.privacy import GRADED_KEYS, GRADED_METADATA_KEYS
 
 # Marker recorded in every generated spec's metadata. `holdout` is the field the
 # runner, the leaderboard, the scrubber, and the audit all key on; the rest is
@@ -598,8 +599,6 @@ def spec_secrets(spec: TaskSpec) -> set[str]:
     reproduces one of these strings is secret-bearing regardless of
     where the value sat in the spec.
     """
-    from orchestral.privacy import GRADED_KEYS, GRADED_METADATA_KEYS
-
     secrets = set(holdout_secrets(spec))
 
     def _collect(node: Any) -> None:
@@ -612,7 +611,15 @@ def spec_secrets(spec: TaskSpec) -> set[str]:
             for v in node:
                 _collect(v)
 
-    for key in GRADED_KEYS | GRADED_METADATA_KEYS:
+    # GRADED_KEYS plus per-type answer keys: required/forbidden tokens (the
+    # has_required/no_forbidden checks), the hidden test bodies and
+    # reference solutions that grade code/repo specs — all of them are
+    # things a judge must never be shown on *any* spec, holdout or not.
+    for key in (
+        GRADED_KEYS | GRADED_METADATA_KEYS
+        | {"required", "forbidden", "forbidden_pattern", "forbidden_patterns",
+           "reference", "reference_files", "test_files", "tests", "patch"}
+    ):
         _collect(spec.metadata.get(key))
     if is_holdout(spec):
         for key in ("document", "schema", "seed"):

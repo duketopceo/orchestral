@@ -26,6 +26,7 @@ import math
 import os
 import threading
 import time
+from collections import Counter
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
@@ -195,10 +196,7 @@ def status_counts(runs: list[RunMeta]) -> dict[str, int]:
     """Per-status run counts — the honest denominator split behind
     ``infra_errors`` (an orphan crash and a graceful failure used to
     hide in the same bucket)."""
-    counts: dict[str, int] = {}
-    for r in runs:
-        counts[r.status] = counts.get(r.status, 0) + 1
-    return counts
+    return dict(Counter(r.status for r in runs))
 
 
 def dual_pass_rates(runs: list[RunMeta]) -> dict[str, float | None]:
@@ -406,6 +404,13 @@ def run_experiment(
         batch_runs = 0
         pairs = 0
         marked_orphans: set[str] = set()
+        # corpses keep status="running" — the aborted annotation is the
+        # cross-process record that one was already repaired and marked,
+        # so later driver invocations don't re-repair and re-dirty it
+        aborted_runs = {
+            a["target"] for a in store.annotations()
+            if a["kind"] == "run" and a["flag"] == "aborted"
+        }
 
         while not stop.is_set():
             arms = cell_runs(store, matrix.name, cell)
@@ -429,7 +434,7 @@ def run_experiment(
             upto = pairs + 1 if not calibrated else min(target, pairs + batch_size)
             missing, orphans = _missing_work(arms, upto)
             for orphan in orphans:
-                if orphan.run_id in marked_orphans:
+                if orphan.run_id in marked_orphans or orphan.run_id in aborted_runs:
                     continue
                 marked_orphans.add(orphan.run_id)
                 # hydrate the corpse's billed calls into runs.* before
@@ -496,7 +501,12 @@ def run_experiment(
         summary[cell.key] = {
             "state": cell_state(store, matrix.name, cell, target, diff_eps),
             "reps": pairs,
-            "note": "stopped — budget/daily cap",
+            "note": (
+                "stopped — budget/daily cap" if stop.is_set()
+                # every slot is held by a terminal row or a live run
+                # elsewhere — nothing launchable, nothing owed
+                else "parked — slots held by terminal or live runs"
+            ),
         }
 
     if jobs > 1 and len(cells) > 1:
@@ -507,9 +517,11 @@ def run_experiment(
             _run_cell(cell)
 
     cells_by_key = {cell.key: cell for cell in cells}
+    missing_by_group = store.missing_cost_counts_by_group(f"{matrix.name}:")
     for key in summary:
-        summary[key]["missing_cost"] = store.missing_cost_count(
-            group_prefix=f"{matrix.name}:{key}:"
+        prefix = f"{matrix.name}:{key}:"
+        summary[key]["missing_cost"] = sum(
+            n for g, n in missing_by_group.items() if g.startswith(prefix)
         )
         arms = cell_runs(store, matrix.name, cells_by_key[key])
         summary[key]["arms"] = {

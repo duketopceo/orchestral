@@ -17,6 +17,7 @@ import base64
 import hashlib
 import json
 import random
+import re
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -123,11 +124,12 @@ def task_criteria(spec: TaskSpec) -> list[dict[str, Any]]:
                 })
     if not items:
         items = [{"id": "task", "rubric": spec.prompt, "secret": False}]
-    secrets = {s for s in spec_secrets(spec) if len(s) >= _MIN_SECRET_MATCH_CHARS}
-    for item in items[:MAX_CRITERIA]:
+    items = items[:MAX_CRITERIA]
+    secrets = _secret_set(spec)
+    for item in items:
         if not item["secret"]:
             item["secret"] = any(s in item["rubric"] for s in secrets)
-    return items[:MAX_CRITERIA]
+    return items
 
 
 def judge_cache_key(spec: TaskSpec, payload: bytes) -> str:
@@ -157,15 +159,48 @@ def _criterion_evidence(value: Any) -> list[str]:
     return out
 
 
-def _mechanical_satisfied(secrets_in_rubric: set[str], artifact: str) -> bool | None:
-    """Presence check for a secret-bearing criterion: the secrets its
-    rubric embeds are the values it demands — satisfied iff the artifact
-    contains them all. Direction-sensitive criteria (forbidden strings)
-    can't be told apart by value membership, so the note on the result
-    entry flags the semantics."""
+def _secret_set(spec: TaskSpec) -> set[str]:
+    """Spec answer-key strings long enough that substring membership in a
+    rubric means the rubric embeds the key — below ``_MIN_SECRET_MATCH_CHARS``
+    a rubric mentioning a short word false-flags as secret."""
+    return {s for s in spec_secrets(spec) if len(s) >= _MIN_SECRET_MATCH_CHARS}
+
+
+def _mechanical_satisfied(
+    secrets_in_rubric: set[str], spec: TaskSpec, artifact: str
+) -> bool | None:
+    """Direction-aware presence check for a secret-bearing criterion.
+
+    Values drawn from ``metadata.forbidden`` are *absence* requirements —
+    satisfied iff the artifact avoids them. Forbidden *patterns* are
+    regexes: unmatchable-as-substring, so they grade by ``re.search``
+    (an invalid pattern can't be graded → None). Every other embedded
+    answer key is a presence requirement."""
     if not secrets_in_rubric:
         return None
-    return all(s in artifact for s in secrets_in_rubric)
+    meta = spec.metadata or {}
+    forbidden_vals = {str(f) for f in meta.get("forbidden") or []}
+    patterns = {
+        str(p)
+        for p in (
+            [meta.get("forbidden_pattern")]
+            if meta.get("forbidden_pattern")
+            else []
+        ) + list(meta.get("forbidden_patterns") or [])
+        if p
+    }
+    required = secrets_in_rubric - forbidden_vals - patterns
+    if not all(s in artifact for s in required):
+        return False
+    if any(s in artifact for s in secrets_in_rubric & forbidden_vals):
+        return False
+    for pat in secrets_in_rubric & patterns:
+        try:
+            if re.search(pat, artifact):
+                return False
+        except re.error:
+            return None
+    return True
 
 
 def criteria_rollup(criteria: list[dict[str, Any]]) -> dict[str, int]:
@@ -204,14 +239,14 @@ def _merge_criteria(
         for entry in answers:
             if isinstance(entry, dict) and entry.get("id") is not None:
                 by_id[str(entry["id"])] = entry
-    secrets = {s for s in spec_secrets(spec) if len(s) >= _MIN_SECRET_MATCH_CHARS}
+    secrets = _secret_set(spec)
     out: list[dict[str, Any]] = []
     unsupported = 0
     for crit in criteria:
         cid = crit["id"]
         if crit["secret"]:
             in_rubric = {s for s in secrets if s in crit["rubric"]}
-            mech_satisfied = _mechanical_satisfied(in_rubric, artifact)
+            mech_satisfied = _mechanical_satisfied(in_rubric, spec, artifact)
             out.append({
                 "id": cid,
                 # the rubric is the answer key — withheld from results too
@@ -220,8 +255,7 @@ def _merge_criteria(
                 "evidence": [],
                 "engine": "mechanical",
                 "secret": True,
-                "note": "secret-bearing — graded by mechanical presence check, "
-                        "direction (required vs forbidden) not inferred",
+                "note": "secret-bearing — graded by mechanical presence/absence check",
             })
             continue
         satisfied: bool | None
@@ -272,7 +306,14 @@ def _merge_criteria(
     # False` is the gate: a satisfied claim contradicted by its evidence
     # fails; unverifiable evidence (image artifacts) does not.
     open_crit = [c for c in out if not c.get("secret")]
-    if open_crit and all(c["satisfied"] is not None for c in open_crit):
+    if (
+        open_crit
+        and all(c["satisfied"] is not None for c in open_crit)
+        # an inconclusive scalar verdict stays inconclusive — deriving a
+        # pass/fail over it would record a concrete verdict next to a
+        # "no answer" flag
+        and not result.get("inconclusive")
+    ):
         result["claimed_passed"] = result.get("passed")
         result["claimed_score"] = result.get("score")
         result["passed"] = all(
@@ -502,17 +543,29 @@ def judge_artifact(
             judge=judge, client=client, language=language,
         )
         # the decisions engine returns scalar verdicts — per-criterion
-        # evidence is explicitly unavailable, never fabricated
+        # evidence is explicitly unavailable, never fabricated; secret
+        # criteria still grade mechanically against the artifact
+        secrets = _secret_set(task)
         result["criteria"] = [
             {
                 "id": c["id"],
                 **({"rubric": c["rubric"]} if not c["secret"] else {}),
-                "satisfied": None,
+                "satisfied": (
+                    _mechanical_satisfied(
+                        {s for s in secrets if s in c["rubric"]}, task, artifact
+                    )
+                    if c["secret"]
+                    else None
+                ),
                 "supported": None,
                 "evidence": [],
                 "engine": "mechanical" if c["secret"] else "decisions",
                 **({"secret": True} if c["secret"] else {}),
-                "note": "scalar verdict — per-criterion evidence unavailable",
+                "note": (
+                    "secret-bearing — graded by mechanical presence/absence check"
+                    if c["secret"]
+                    else "scalar verdict — per-criterion evidence unavailable"
+                ),
             }
             for c in criteria
         ]

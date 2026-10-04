@@ -11,6 +11,10 @@ routes = [
   { pattern = "obs.shippedit.dev", custom_domain = true },
 ]
 
+# Required so Workers Builds PR previews (`npx wrangler preview`) work;
+# the block may be empty — assets/bindings inherit from the top level.
+previews = {}
+
 # The SPA (ui/) is static — pushed snapshots live in R2, not here.
 [assets]
 directory = "../../../ui"

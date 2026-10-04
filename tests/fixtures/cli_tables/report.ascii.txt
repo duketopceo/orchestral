@@ -1,0 +1,14 @@
+run_id        orchestrator  task                 worker           cost  pass
+--------------------------------------------------------------------------------
+corporph0930  orch-a        corpus-landing-page  worker-cheap  $0.0065  -
+corpfail0001  orch-b        corpus-failed-task   worker-hot     $0.740  [x] fail
+corp00001023  orch-b        corpus-api-order     worker-fresh   $0.013  [+] pass
+corp00001022  orch-b        corpus-api-order     worker-fresh   $0.026  [+] pass
+corp00001021  orch-a        corpus-api-order     worker-fresh   $0.013  [+] pass
+corp00001020  orch-a        corpus-api-order     worker-fresh   $0.013  [+] pass
+corp00001019  orch-a        corpus-code-slugify  worker-local   $0.013  [x] fail
+corp00001018  orch-a        corpus-code-slugify  worker-local  $0.0072  [+] pass
+corp00001017  orch-a        corpus-code-slugify  worker-local   $0.011  [x] fail
+corp00001016  orch-a        corpus-code-slugify  worker-local   $0.010  [+] pass
+
+Total runs: 1025 | Total billed cost: $13.85 | Total tokens: 11.3M

@@ -1,0 +1,9 @@
+contamination estimate: mean score by arm, per task type
+
+task type     pub n  pub mean  hold n  hold mean    gap
+───────────────────────────────────────────────────────
+(unrecorded)    970      0.66       4       0.60  +0.06
+
+1 type(s) comparable. A positive gap means the published arm scored higher than the holdout arm of the same type.
+Widest: (unrecorded) +0.06 (published n=970, holdout n=4).
+Under-powered (fewer than 5 runs on a side): (unrecorded) (970/4); read these as anecdote.

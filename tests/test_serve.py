@@ -19,7 +19,7 @@ from unittest.mock import MagicMock
 
 from orchestral.config import ModelConfig, TaskSpec
 from orchestral.runner import Runner
-from orchestral.storage import RunStore
+from orchestral.storage import RunMeta, RunStore
 from orchestral.tui.state import JobStatus
 from orchestral.web import render, state
 from orchestral.web.server import Observatory, make_handler
@@ -500,10 +500,13 @@ class TestHttpRoutes(unittest.TestCase):
 
     def test_live_page_and_poll(self):
         # legacy /live URL redirects to the SPA hash route; the polling
-        # contract lives in app.js + /api/run/<id>/live
+        # contract lives in ui/js/views/run.js (through ui/js/data.js) + /api/run/<id>/live
         code, _ = self._get(f"/run/{self.rid}/live")
         self.assertEqual(code, 200)
-        code, body = self._get("/static/app.js")
+        code, body = self._get("/static/js/views/run.js")
+        self.assertEqual(code, 200)
+        self.assertIn("data.runLive(", body)
+        code, body = self._get("/static/js/data.js")
         self.assertEqual(code, 200)
         self.assertIn("/api/run/", body)
         code, body = self._get(f"/api/run/{self.rid}/live?after=0")
@@ -515,7 +518,7 @@ class TestHttpRoutes(unittest.TestCase):
     def test_spa_shell_and_api_surface(self):
         code, body = self._get("/")
         self.assertEqual(code, 200)
-        self.assertRegex(body, r'src="/static/app\.js\?v=[0-9a-f]+"')
+        self.assertRegex(body, r'src="/static/js/main\.js\?v=[0-9a-f]+"')
         for path in ("/api/overview", "/api/groups", "/api/tasks",
                      "/api/models", "/api/leaderboard", "/api/runs"):
             code, body = self._get(path)
@@ -919,6 +922,100 @@ class TestThreadRefusesUnreadableCard(unittest.TestCase):
         code, body = self._post_thread("group", "g-ok")
         self.assertEqual(code, 200)
         self.assertIn("posts", body)
+
+
+class TestLivenessRoutes(unittest.TestCase):
+    """U9: cancel ownership and the abandon action over real HTTP."""
+
+    @classmethod
+    def setUpClass(cls):
+        from datetime import UTC, datetime, timedelta
+
+        cls.tmp = tempfile.mkdtemp()
+        cls.finished = _seed_run(cls.tmp)
+        cls.tasks, cls.models = _write_specs(Path(cls.tmp))
+        cls.store = RunStore(cls.tmp)
+        now = datetime.now(UTC)
+        for rid, ago in (("orph-old", 2 * 86400), ("orph-abn", 2 * 86400), ("orph-new", 30)):
+            run_dir = Path(cls.tmp) / rid
+            run_dir.mkdir()
+            ts = (now - timedelta(seconds=ago)).isoformat()
+            (run_dir / "events.jsonl").write_text(
+                json.dumps({"type": "run.started", "timestamp": ts}) + "\n")
+            cls.store.index_meta(RunMeta(
+                run_id=rid, orchestrator="o/model", task_id="t-task", worker="w/model",
+                status="running", started_at=(now - timedelta(days=2)).isoformat(),
+                run_dir=str(run_dir)))
+        cls.obs = Observatory(Path(cls.tmp), cls.tasks, cls.models)
+        cls.httpd = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(cls.obs))
+        cls.port = cls.httpd.server_address[1]
+        threading.Thread(target=cls.httpd.serve_forever, daemon=True).start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+        cls.httpd.server_close()
+
+    def _call(self, method: str, path: str) -> tuple[int, dict]:
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{self.port}{path}", data=b"" if method == "POST" else None,
+            method=method)
+        try:
+            with urllib.request.urlopen(req) as r:
+                return r.status, json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read())
+
+    def test_overview_jobs_show_live_and_stalled_unowned_rows(self):
+        code, body = self._call("GET", "/api/overview")
+        self.assertEqual(code, 200)
+        jobs = {j["run_id"]: j for j in body["jobs"]}
+        self.assertTrue(jobs["orph-old"]["stalled"])
+        self.assertFalse(jobs["orph-old"]["owned"])
+        self.assertTrue(jobs["orph-old"]["abandonable"])
+        self.assertFalse(jobs["orph-new"]["stalled"])
+        self.assertFalse(jobs["orph-new"]["abandonable"])
+        self.assertNotIn(self.finished, jobs)
+
+    def test_cancel_unowned_run_is_a_readable_409_and_changes_nothing(self):
+        code, body = self._call("POST", "/api/run/orph-new/cancel")
+        self.assertEqual(code, 409)
+        self.assertFalse(body["cancelled"])
+        self.assertIn("another process", body["error"])
+        self.assertEqual(self.store.get_run("orph-new").status, "running")
+        self.assertNotIn("orph-new", {a["target"] for a in self.store.annotations()})
+
+    def test_cancel_unknown_run_is_404(self):
+        code, _ = self._call("POST", "/api/run/ghost/cancel")
+        self.assertEqual(code, 404)
+
+    def test_abandon_recent_run_is_refused_with_409(self):
+        code, body = self._call("POST", "/api/run/orph-new/abandon")
+        self.assertEqual(code, 409)
+        self.assertIn("recent", body["error"])
+
+    def test_abandon_finished_run_is_refused_with_409(self):
+        code, body = self._call("POST", f"/api/run/{self.finished}/abandon")
+        self.assertEqual(code, 409)
+        self.assertIn("finished", body["error"])
+        self.assertEqual(self.store.get_run(self.finished).status, "finished")
+
+    def test_abandon_orphan_retires_it_and_is_idempotent(self):
+        code, body = self._call("POST", "/api/run/orph-abn/abandon")
+        self.assertEqual((code, body["abandoned"]), (200, True))
+        code, body = self._call("POST", "/api/run/orph-abn/abandon")
+        self.assertEqual((code, body["abandoned"], body["already"]), (200, True, True))
+        _, ov = self._call("GET", "/api/overview")
+        self.assertNotIn("orph-abn", {j["run_id"] for j in ov["jobs"]})
+        self.assertEqual(self.store.get_run("orph-abn").status, "running")
+
+    def test_abandon_unknown_run_is_404(self):
+        code, _ = self._call("POST", "/api/run/ghost/abandon")
+        self.assertEqual(code, 404)
+
+    def test_get_abandon_is_not_a_route(self):
+        code, _ = self._call("GET", "/api/run/orph-new/abandon")
+        self.assertIn(code, (404, 405))
 
 
 if __name__ == "__main__":

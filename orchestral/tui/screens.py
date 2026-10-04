@@ -28,13 +28,14 @@ from textual.widgets import (
 
 from orchestral.calibrate import calibration_status
 from orchestral.export import leaderboard_csv, run_audit_markdown
-from orchestral.format import NULL_GLYPH, fmt_percent, fmt_score
+from orchestral.format import NULL_GLYPH, fmt_money, fmt_percent, fmt_score
 from orchestral.judge import DEFAULT_JUDGE
 from orchestral.stats import aggregate, pairing_leaderboard
 from orchestral.storage import RunStore
 from orchestral.tui.state import (
     LB_SORTS,
     TERMINAL_PHASES,
+    _label,
     event_detail,
     event_row,
     fmt_cost,
@@ -42,9 +43,12 @@ from orchestral.tui.state import (
     fmt_ms,
     fmt_tokens,
     format_spend_estimate,
+    label_plain,
     live_totals,
+    pass_label,
     run_phase,
     sort_leaderboard,
+    status_label,
     tail_events,
     worker_states,
 )
@@ -120,11 +124,11 @@ class RunDetailScreen(Screen):
             self.query_one("#detail-summary", Static).update(f"run {self._run_id} not found in index")
             return
         lines = [
-            f"[b]{meta.run_id}[/b]  {meta.status}  ·  {meta.task_id}",
-            f"{meta.orchestrator} → {meta.worker}",
-            f"cost {fmt_cost(meta.display_cost_usd)} · tokens {fmt_tokens(meta.total_input_tokens + meta.total_output_tokens)} · latency {fmt_ms(meta.latency_ms)}",
-            f"pass {meta.passes} · score {meta.score} · failure {meta.failure_reason or '-'}",
-            f"group {meta.run_group or '-'} · rep {meta.replicate or '-'} · {meta.started_at}",
+            f"[b]{meta.run_id}[/b]  {label_plain(status_label(meta.status))}, {meta.task_id}",
+            f"{meta.orchestrator} to {meta.worker}",
+            f"cost {fmt_cost(meta.display_cost_usd)}, tokens {fmt_tokens(meta.total_input_tokens + meta.total_output_tokens)}, latency {fmt_ms(meta.latency_ms)}",
+            f"verdict {label_plain(pass_label(meta.passes))}, score {fmt_score(meta.score)}, failure {meta.failure_reason or NULL_GLYPH}",
+            f"group {meta.run_group or NULL_GLYPH}, rep {meta.replicate or NULL_GLYPH}, {meta.started_at}",
             f"[dim]{meta.run_dir}[/dim]",
         ]
         self.query_one("#detail-summary", Static).update("\n".join(lines))
@@ -190,7 +194,7 @@ class GroupsScreen(Screen):
         table.add_columns("Group", "Task", "Orchestrator", "Worker", "n", "Pass %", "Score ± SD", "Cost ± SD", "p50", "p95", "Pass / $", "Failures")
         for c in aggregate(self._store.list_runs(limit=None)):
             score = f"{c.score_mean:.2f}±{c.score_sd:.2f}" if c.score_mean is not None else "-"
-            cost = f"{c.cost_mean:.4f}±{c.cost_sd:.4f}"
+            cost = f"{fmt_money(c.cost_mean)}±{fmt_money(c.cost_sd)}"
             spd = f"{c.successes_per_dollar:.0f}" if c.successes_per_dollar is not None else "-"
             fails = ",".join(f"{k.split(':')[-1]}×{v}" for k, v in sorted(c.failures.items()))[:24]
             table.add_row(
@@ -310,22 +314,22 @@ class LiveRunScreen(Screen):
         self._finished_at = (run_json or {}).get("finished_at") or (manifest or {}).get("finished_at")
         elapsed = fmt_elapsed(started, self._finished_at)
         info = [
-            f"[b]{self._run_id}[/b]  phase {phase}  ·  {meta.task_id}",
-            f"{meta.orchestrator} → {meta.worker}",
-            f"cost {fmt_cost(cost)} · tokens {fmt_tokens(toks)} · elapsed {elapsed}",
+            f"[b]{self._run_id}[/b]  phase {phase}, {meta.task_id}",
+            f"{meta.orchestrator} to {meta.worker}",
+            f"cost {fmt_cost(cost)}, tokens {fmt_tokens(toks)}, elapsed {elapsed}",
         ]
         if manifest:
-            info.append(f"task hash {manifest.get('task_hash', '-')[:16]} · config {manifest.get('config_hash', '-')[:16]}")
+            info.append(f"task hash {manifest.get('task_hash', '-')[:16]}, config {manifest.get('config_hash', '-')[:16]}")
         self.query_one("#live-info", Static).update("\n".join(info))
 
         states = worker_states(self._events)
         chips = "  ".join(f"{wid} {st}" for wid, st in sorted(states.items())) or NULL_GLYPH
         if phase in ("planning",):
-            chips = f"orchestrator running · {chips}"
+            chips = f"orchestrator running, {chips}"
         elif phase in ("assembling",):
-            chips += " · synthesizer"
+            chips += ", synthesizer"
         elif phase in ("evaluating",):
-            chips += " · evaluator"
+            chips += ", evaluator"
         self.query_one("#live-workers", Static).update(f"workers: {chips}")
 
         if phase in TERMINAL_PHASES or meta.status != "running":
@@ -420,10 +424,10 @@ class LeaderboardScreen(Screen):
         key = LB_SORTS[self._sort_i]
         header = self.query_one("#lb-header", Static)
         low = sum(1 for r in rows if r.low_sample)
-        judge_note = f" · judge {'; '.join(judge_bits)}" if judge_bits else ""
+        judge_note = f", judge {'; '.join(judge_bits)}" if judge_bits else ""
         header.update(
-            f"Pairing leaderboard, sort {key} (s cycles) · "
-            f"{len(rows)} pairings · {low} below {self._min_samples} samples "
+            f"Pairing leaderboard, sort {key} (s cycles), "
+            f"{len(rows)} pairings, {low} below {self._min_samples} samples "
             "[dim](low-sample ranks are anecdote, not evidence)[/dim]"
             f"{judge_note}"
         )
@@ -438,7 +442,7 @@ class LeaderboardScreen(Screen):
                 fmt_ms(r.duration_median_ms),
                 fmt_percent(r.failure_rate or 0),
                 fmt_cost(r.cost_per_pass),
-                "low-n" if r.low_sample else "ok",
+                label_plain(_label("low-n", None, None)) if r.low_sample else "ok",
             )
 
     def action_cycle_sort(self) -> None:
@@ -473,6 +477,7 @@ HELP_TEXT = """\
   x              cancel the active job
   c              cancel the run being watched (live view)
   e              export: audit markdown (detail/live), CSV (history/board)
+  t              toggle theme: stage (dark, default) and paper (light)
   r              refresh run list
   ?              this help
   Esc            back / close

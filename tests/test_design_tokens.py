@@ -146,7 +146,7 @@ class TestShellContract(unittest.TestCase):
         self.assertLess(self.html.index("data-theme"), self.html.index('rel="stylesheet"'))
 
     def test_assets_are_versioned(self):
-        for ref in ("tokens.css", "app.css", "app.js"):
+        for ref in ("tokens.css", "app.css", "js/main.js"):
             self.assertRegex(self.html, rf"/static/{re.escape(ref)}\?v=__V__")
 
 
@@ -191,7 +191,7 @@ class TestStaticServing(_Served):
                     "/static/site.webmanifest": "application/manifest+json",
                     "/static/app.css": "text/css; charset=utf-8",
                     "/static/tokens.css": "text/css; charset=utf-8",
-                    "/static/app.js": "text/javascript; charset=utf-8",
+                    "/static/js/main.js": "text/javascript; charset=utf-8",
                     "/static/favicon.svg": "image/svg+xml",
                 }
                 for path, ctype in cases.items():

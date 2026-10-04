@@ -26,6 +26,16 @@ from orchestral.calibrate import (
     load_labels,
     persist_calibration,
 )
+from orchestral.cli_table import (
+    Column,
+    Note,
+    detect_style,
+    fmt_duration_compact,
+    format_error,
+    n_cell,
+    print_table,
+    verdict_cell,
+)
 from orchestral.codeexec import CODE_RUNTIME_ENV, ISOLATED_CODE_RUNTIME
 from orchestral.config import (
     ConfigError,
@@ -50,7 +60,15 @@ from orchestral.experiment import (
 )
 from orchestral.export import leaderboard_csv, run_audit_markdown, runs_csv
 from orchestral.fileset import expected_paths, required_content
-from orchestral.format import NULL_GLYPH
+from orchestral.format import (
+    NULL_GLYPH,
+    fmt_delta,
+    fmt_money,
+    fmt_percent,
+    fmt_score,
+    fmt_tokens,
+    short_slug,
+)
 from orchestral.holdout import DEFAULT_ARM_SIZE, DEFAULT_SEED, generate_arm, materialize
 from orchestral.judge import DEFAULT_JUDGE
 from orchestral.planners import available_prompt_variants, load_prompt_variant
@@ -303,7 +321,7 @@ def _cf_sync_hook(store: RunStore) -> Any:
     client = _CF_HOOK_CLIENT
 
     def _push(meta: Any) -> None:
-        if privacy.run_is_holdout(Path(meta.run_dir)):
+        if privacy.run_is_holdout(Path(meta.run_dir), meta.config):
             return
         cf.push_run_events_only(client, store, meta)
 
@@ -595,12 +613,9 @@ def cmd_grid(args: argparse.Namespace) -> None:
                 print(_fail_line(f"{o.slug} × {w.slug}", i, n_reps, _attempt_budget(w), exc), file=sys.stderr)
 
     print("\nGrid summary")
-    rep_col = f"{'rep':>4} " if n_reps > 1 else ""
-    print(f"{'Orchestrator':<40} {'Worker':<40} {rep_col}{'Cost':>10} {'Tokens':>8} {'Pass':>6} {'Score':>6}")
-    for r in results:
-        score = f"{r['score']:.2f}" if r['score'] is not None else "-"
-        rep = f"{r['replicate']:>4} " if n_reps > 1 else ""
-        print(f"{r['orchestrator']:<40} {r['worker']:<40} {rep}${r['cost']:.6f} {r['tokens']:>8} {r['passes']!s:>6} {score:>6}")
+    _print_result_grid(
+        [Column("Orchestrator", max_width=36), Column("Worker", max_width=36)], results,
+        lambda r: [short_slug(r["orchestrator"]), short_slug(r["worker"])], n_reps)
 
     if n_reps > 1:
         for cell in aggregate(store.list_runs(run_group=group, task_id=task.id)):
@@ -694,12 +709,7 @@ def cmd_batch(args: argparse.Namespace) -> None:
                 print(_fail_line(f"{path}", i, n_reps, budget, exc), file=sys.stderr)
 
     print(f"\nBatch summary ({len(results)} runs across {len(paths)} tasks)")
-    rep_col = f"{'rep':>4} " if n_reps > 1 else ""
-    print(f"{'Task':<30} {rep_col}{'Cost':>10} {'Tokens':>8} {'Pass':>6} {'Score':>6}")
-    for r in results:
-        score = f"{r['score']:.2f}" if r['score'] is not None else "-"
-        rep = f"{r['replicate']:>4} " if n_reps > 1 else ""
-        print(f"{r['task_id']:<30} {rep}${r['cost']:.6f} {r['tokens']:>8} {r['passes']!s:>6} {score:>6}")
+    _print_result_grid([Column("Task", max_width=30)], results, lambda r: [r["task_id"]], n_reps)
 
     total_cost = sum(r["cost"] for r in results)
     n_pass = sum(1 for r in results if r["passes"])
@@ -780,6 +790,18 @@ def cmd_experiment(args: argparse.Namespace) -> None:
             print(f"  {cell['state']:<8} {key}  {note}")
 
 
+def _print_result_grid(lead: list[Column], results: list[dict[str, Any]], lead_cells: Any, n_reps: int) -> None:
+    """The cost/tokens/pass/score summary shared by grid, batch and ablate."""
+    st = detect_style()
+    cols = [*lead, *([Column("rep", "r", priority=3)] if n_reps > 1 else []),
+            Column("Cost", "r"), Column("Tokens", "r", priority=8),
+            Column("Pass"), Column("Score", "r", priority=2)]
+    rows = [[*lead_cells(r), *([str(r["replicate"])] if n_reps > 1 else []),
+             fmt_money(r["cost"]), fmt_tokens(r["tokens"]), verdict_cell(r["passes"], st),
+             fmt_score(r["score"])] for r in results]
+    print_table(cols, rows, st)
+
+
 def cmd_coverage(args: argparse.Namespace) -> None:
     """Done/pending/posted ledger for one experiment matrix."""
     matrix = load_matrix(args.matrix)
@@ -798,15 +820,18 @@ def cmd_coverage(args: argparse.Namespace) -> None:
     print(f"Coverage {matrix.name!r}: {summ['cells']} cell(s): "
           + ", ".join(f"{k} {v}" for k, v in sorted(summ["states"].items()))
           + f" | posted {summ['posted']} | spend ${summ['spend']:.4f}")
-    print(f"{'Cell':<62} {'State':<9} {'Base':>7} {'Jev':>7} {'Diff CI':>17} {'Verdict':>13} {'Posted':>6}")
+    st = detect_style()
+    cols = [Column("Cell", max_width=62), Column("State"), Column("Base", "r"), Column("Jev", "r"),
+            Column("Diff CI", "r", priority=2), Column("Verdict", "r"), Column("Posted", "r", priority=1)]
+    table: list[Any] = []
     for r in rows:
-        base = f"{r.baseline_passes}/{r.baseline_n}" if r.baseline_n else "-"
-        jev = f"{r.jev_passes}/{r.jev_n}" if r.jev_n else "-"
-        ci = f"[{r.diff[0]:+.2f},{r.diff[1]:+.2f}]" if r.diff else "-"
-        print(f"{r.cell_key:<62} {r.state:<9} {base:>7} {jev:>7} {ci:>17} "
-              f"{r.verdict:>13} {'posted' if r.posted else '-':>6}")
+        base = f"{r.baseline_passes}/{r.baseline_n}" if r.baseline_n else None
+        jev = f"{r.jev_passes}/{r.jev_n}" if r.jev_n else None
+        ci = f"[{r.diff[0]:+.2f},{r.diff[1]:+.2f}]" if r.diff else None
+        table.append([r.cell_key, r.state, base, jev, ci, r.verdict, "posted" if r.posted else None])
         if r.note:
-            print(f"    {'':>62} ↳ {r.note}")
+            table.append(Note(f"  {'>' if not st.unicode else '↳'} {r.note}"))
+    print_table(cols, table, st)
 
 
 def cmd_publish_mark(args: argparse.Namespace) -> None:
@@ -906,12 +931,7 @@ def cmd_ablate(args: argparse.Namespace) -> None:
     results.sort(key=lambda r: (order[r["value"]], r["replicate"] or 0))
 
     print(f"\nAblation: {knob} on {task.id} ({orchestrator.slug} → {base_worker.slug})")
-    rep_col = f"{'rep':>4} " if n_reps > 1 else ""
-    print(f"{knob:<16} {rep_col}{'Cost':>10} {'Tokens':>8} {'Pass':>6} {'Score':>6}")
-    for r in results:
-        score = f"{r['score']:.2f}" if r['score'] is not None else "-"
-        rep = f"{r['replicate']:>4} " if n_reps > 1 else ""
-        print(f"{r['value']!s:<16} {rep}${r['cost']:.6f} {r['tokens']:>8} {r['passes']!s:>6} {score:>6}")
+    _print_result_grid([Column(knob, max_width=16)], results, lambda r: [str(r["value"])], n_reps)
 
     if args.json:
         print(json.dumps(results, indent=2, default=str))
@@ -932,11 +952,13 @@ def cmd_history(args: argparse.Namespace) -> None:
         if not table:
             continue
         print(f"\n{role.capitalize()} history")
-        print(f"{'Model':<45} {'Runs':>5} {'Pass %':>7} {'Avg score':>9} {'Avg cost':>11} {'Total cost':>11}")
-        for name, s in sorted(table.items(), key=lambda kv: -kv[1]["total_cost"]):
-            pass_pct = f"{s['pass_rate'] * 100:.1f}%" if s["pass_rate"] is not None else "-"
-            score = f"{s['avg_score']:.2f}" if s["avg_score"] is not None else "-"
-            print(f"{name:<45} {s['runs']:>5} {pass_pct:>7} {score:>9} ${s['avg_cost']:>10.6f} ${s['total_cost']:>10.4f}")
+        print_table(
+            [Column("Model", max_width=36), Column("Runs", "r"), Column("Pass", "r"),
+             Column("Avg score", "r", priority=2), Column("Avg cost", "r", priority=1),
+             Column("Total cost", "r")],
+            [[short_slug(name), str(s["runs"]), fmt_percent(s["pass_rate"]), fmt_score(s["avg_score"]),
+              fmt_money(s["avg_cost"]), fmt_money(s["total_cost"])]
+             for name, s in sorted(table.items(), key=lambda kv: -kv[1]["total_cost"])])
 
 
 def cmd_holdout(args: argparse.Namespace) -> None:
@@ -986,13 +1008,14 @@ def cmd_report(args: argparse.Namespace) -> None:
             return
         print(f"Experiment {matrix.name!r}: baseline vs jev-assist "
               "(mechanical pass is primary; judge deltas are self-referential)")
-        print(f"{'Cell':<62} {'Baseline':>10} {'Jev':>10} {'Diff CI':>17} {'Verdict':>13}")
-        for row in cov_rows:
-            ci = f"[{row.diff[0]:+.2f},{row.diff[1]:+.2f}]" if row.diff else "-"
-            print(f"{row.cell_key:<62} "
-                  f"{f'{row.baseline_passes}/{row.baseline_n}' if row.baseline_n else '-':>10} "
-                  f"{f'{row.jev_passes}/{row.jev_n}' if row.jev_n else '-':>10} "
-                  f"{ci:>17} {row.verdict:>13}")
+        print_table(
+            [Column("Cell", max_width=62), Column("Baseline", "r"), Column("Jev", "r"),
+             Column("Diff CI", "r", priority=2), Column("Verdict", "r")],
+            [[row.cell_key,
+              f"{row.baseline_passes}/{row.baseline_n}" if row.baseline_n else None,
+              f"{row.jev_passes}/{row.jev_n}" if row.jev_n else None,
+              f"[{row.diff[0]:+.2f},{row.diff[1]:+.2f}]" if row.diff else None,
+              row.verdict] for row in cov_rows])
         return
     runs = store.list_runs(
         orchestrator=args.orchestrator,
@@ -1057,17 +1080,19 @@ def cmd_report(args: argparse.Namespace) -> None:
         print(json.dumps(out, indent=2, default=str))
         return
 
-    print(f"{'run_id':<13} {'planner':<10} {'orchestrator':<30} {'task':<20} {'worker':<35} {'cost':>10} {'tokens':>7} {'pass':>5}")
-    print("-" * 145)
-    for r in runs:
-        planner = r.config.get("planner", "raw") if r.config else "raw"
-        pass_label = str(r.passes) if r.passes is not None else "-"
-        tokens = r.total_input_tokens + r.total_output_tokens
-        print(f"{r.run_id:<13} {planner:<10} {r.orchestrator:<30} {r.task_id:<20} {r.worker:<35} ${r.display_cost_usd:>8.4f} {tokens:>7} {pass_label:>5}")
+    st = detect_style()
+    print_table(
+        [Column("run_id"), Column("planner", priority=5), Column("orchestrator", max_width=30),
+         Column("task", max_width=24), Column("worker", max_width=30), Column("cost", "r"),
+         Column("tokens", "r", priority=8), Column("pass")],
+        [[r.run_id, r.config.get("planner", "raw") if r.config else "raw", short_slug(r.orchestrator),
+          r.task_id, short_slug(r.worker), fmt_money(r.display_cost_usd),
+          fmt_tokens(r.total_input_tokens + r.total_output_tokens), verdict_cell(r.passes, st)]
+         for r in runs], st)
 
     print()
     summary = store.summary()
-    print(f"Total runs: {summary['runs']} | Total billed cost: ${store.billed_total_usd():.4f} | Total tokens: {summary['total_tokens']}")
+    print(f"Total runs: {summary['runs']} | Total billed cost: {fmt_money(store.billed_total_usd())} | Total tokens: {fmt_tokens(summary['total_tokens'])}")
 
 
 def _print_pairing_table(runs: list[Any]) -> None:
@@ -1092,11 +1117,12 @@ def _print_pairing_table(runs: list[Any]) -> None:
         rows.append((orch, work, len(group), passed, avg_score, cost, tokens, qpd))
 
     rows.sort(key=lambda r: -r[7])
-    print(f"{'orchestrator':<35} {'worker':<35} {'runs':>5} {'pass':>5} {'avg score':>9} {'total cost':>11} {'tokens':>8} {'quality/$':>10}")
-    print("-" * 135)
-    for orch, work, n, passed, avg_score, cost, tokens, qpd in rows:
-        score = f"{avg_score:.2f}" if avg_score is not None else "-"
-        print(f"{orch:<35} {work:<35} {n:>5} {passed:>5} {score:>9} ${cost:>10.4f} {tokens:>8} {qpd:>10.1f}")
+    print_table(
+        [Column("orchestrator", max_width=30), Column("worker", max_width=30), Column("runs", "r"),
+         Column("pass", "r", priority=1), Column("avg score", "r", priority=3),
+         Column("total cost", "r"), Column("tokens", "r", priority=8), Column("quality/$", "r", priority=2)],
+        [[short_slug(orch), short_slug(work), str(n), str(passed), fmt_score(avg_score), fmt_money(cost),
+          fmt_tokens(tokens), f"{qpd:.1f}"] for orch, work, n, passed, avg_score, cost, tokens, qpd in rows])
 
 
 def _print_leaderboard(
@@ -1113,25 +1139,29 @@ def _print_leaderboard(
     ranked = [p for p in rows if not p.holdout_only]
     held = [p for p in rows if p.holdout_only]
     if ranked:
-        print(f"{'orchestrator':<30} {'worker':<30} {'n':>3} {'tasks':>5} {'pass%':>6} {'med score':>9} {'med judge':>9} {'med cost':>9} {'med ms':>8} {'fail%':>6} {'$/pass':>9} {'holdout':>7}")
-        print("-" * 140)
+        st = detect_style()
+        rule = "\u2500\u2500" if st.unicode else "--"
+        table: list[Any] = []
         rank = 0
         divided = False
         for p in ranked:
             if p.low_sample and not divided:
                 divided = True
-                print(f"{'':<4}── unranked: fewer than {min_samples} runs, anecdote not evidence ──")
+                table.append(Note(f"{rule} unranked: fewer than {min_samples} runs, anecdote not evidence {rule}"))
             rank += 0 if p.low_sample else 1
-            score = f"{p.score_median:.2f}" if p.score_median is not None else "-"
-            judge_score = f"{p.judge_score_median:.2f}" if p.judge_score_median is not None else "-"
-            cpp = f"${p.cost_per_pass:.4f}" if p.cost_per_pass is not None else "-"
-            rank_txt = NULL_GLYPH if p.low_sample else str(rank)
-            print(
-                f"{rank_txt:>3} {p.orchestrator:<30} {p.worker:<30} {p.runs:>3} {p.tasks_covered:>5} "
-                f"{(p.pass_rate or 0) * 100:>5.0f}% {score:>9} {judge_score:>9} ${p.cost_median:>8.4f} "
-                f"{p.duration_median_ms:>8.0f} {(p.failure_rate or 0) * 100:>5.0f}% {cpp:>9} "
-                f"{p.holdout_runs:>7}"
-            )
+            table.append([
+                None if p.low_sample else str(rank), short_slug(p.orchestrator), short_slug(p.worker),
+                n_cell(p.runs, p.low_sample, st), str(p.tasks_covered), fmt_percent(p.pass_rate or 0),
+                fmt_score(p.score_median), fmt_score(p.judge_score_median), fmt_money(p.cost_median),
+                fmt_duration_compact(p.duration_median_ms), fmt_percent(p.failure_rate or 0),
+                fmt_money(p.cost_per_pass), str(p.holdout_runs)])
+        print_table(
+            [Column("#", "r"), Column("orchestrator", max_width=30), Column("worker", max_width=30),
+             Column("n", "r"), Column("tasks", "r", priority=6), Column("pass%", "r"),
+             Column("med score", "r", priority=4), Column("med judge", "r", priority=5),
+             Column("med cost", "r"), Column("latency", "r", priority=9),
+             Column("fail%", "r", priority=3), Column("$/pass", "r", priority=2),
+             Column("holdout", "r", priority=7)], table, st)
     if held:
         print(
             f"\n{len(held)} pairing(s) have holdout runs only and are unranked, so they have no "
@@ -1148,11 +1178,11 @@ def _print_leaderboard(
         )
     if store is not None and metas:
         for slug in store.judge_slugs({m.task_id for m in metas}):
-            st = calibration_status(reports_dir, slug)
-            if st["calibrated"]:
-                detail = f"kappa {st['kappa']:.2f} over {st['verdict_pairs']} pairs"
+            cal = calibration_status(reports_dir, slug)
+            if cal["calibrated"]:
+                detail = f"kappa {cal['kappa']:.2f} over {cal['verdict_pairs']} pairs"
             else:
-                detail = (f"uncalibrated: {st['verdict_pairs']} verdict pairs "
+                detail = (f"uncalibrated: {cal['verdict_pairs']} verdict pairs "
                           f"(need {MIN_CALIBRATION_PAIRS}+ labeled, kappa >= 0.7)")
             print(f"judge: {slug}: {detail}")
 
@@ -1163,13 +1193,11 @@ def _print_contamination(rows: list[Any]) -> None:
         return
     print("contamination estimate: mean score by arm, per task type")
     print()
-    print(f"{'task type':<14} {'pub n':>5} {'pub mean':>9} {'hold n':>6} {'hold mean':>10} {'gap':>8}")
-    print("-" * 60)
-    for r in rows:
-        pub = f"{r.published_mean:.2f}" if r.published_mean is not None else "-"
-        hold = f"{r.holdout_mean:.2f}" if r.holdout_mean is not None else "-"
-        gap = f"{r.gap:+.2f}" if r.gap is not None else "n/a"
-        print(f"{r.task_type:<14} {r.published_n:>5} {pub:>9} {r.holdout_n:>6} {hold:>10} {gap:>8}")
+    print_table(
+        [Column("task type", max_width=24), Column("pub n", "r"), Column("pub mean", "r"),
+         Column("hold n", "r"), Column("hold mean", "r"), Column("gap", "r")],
+        [[r.task_type, str(r.published_n), fmt_score(r.published_mean), str(r.holdout_n),
+          fmt_score(r.holdout_mean), fmt_delta(r.gap, "score")] for r in rows])
     print()
     comparable = [r for r in rows if r.comparable]
     if not comparable:
@@ -1202,14 +1230,24 @@ def _print_groups_table(cells: list[Any]) -> None:
     if not cells:
         print("No runs match.")
         return
-    print(f"{'group':<18} {'task':<18} {'orchestrator':<26} {'worker':<26} {'n':>3} {'pass%':>6} {'score±sd':>12} {'cost±sd':>16} {'p50ms':>8} {'p95ms':>8} {'succ/$':>9} {'failures':<20}")
-    print("-" * 175)
+    st = detect_style()
+    pm, times = ("\u00b1", "\u00d7") if st.unicode else ("+-", "x")
+    table: list[Any] = []
     for c in cells:
-        score = f"{c.score_mean:.2f}±{c.score_sd:.2f}" if c.score_mean is not None else "-"
-        cost = f"${c.cost_mean:.4f}±${c.cost_sd:.4f}"
-        spd = f"{c.successes_per_dollar:.0f}" if c.successes_per_dollar is not None else "-"
-        fails = ",".join(f"{k.split(':')[-1]}×{v}" for k, v in sorted(c.failures.items()))[:20]
-        print(f"{c.run_group or '-':<18} {c.task_id:<18} {c.orchestrator:<26} {c.worker:<26} {c.runs:>3} {c.pass_rate * 100:>5.0f}% {score:>12} {cost:>16} {c.latency_p50:>8.0f} {c.latency_p95:>8.0f} {spd:>9} {fails:<20}")
+        score = f"{fmt_score(c.score_mean)}{pm}{fmt_score(c.score_sd)}" if c.score_mean is not None else None
+        fails = ",".join(f"{k.split(':')[-1]}{times}{v}" for k, v in sorted(c.failures.items())) or None
+        table.append([
+            c.run_group, c.task_id, short_slug(c.orchestrator), short_slug(c.worker), str(c.runs),
+            fmt_percent(c.pass_rate), score, f"{fmt_money(c.cost_mean)}{pm}{fmt_money(c.cost_sd)}",
+            fmt_duration_compact(c.latency_p50), fmt_duration_compact(c.latency_p95),
+            f"{c.successes_per_dollar:.0f}" if c.successes_per_dollar is not None else None, fails])
+    print_table(
+        [Column("group", max_width=24), Column("task", max_width=28),
+         Column("orchestrator", max_width=26), Column("worker", max_width=26), Column("n", "r"),
+         Column("pass%", "r"), Column("score" + pm + "sd", "r", priority=4),
+         Column("cost" + pm + "sd", "r", priority=2), Column("p50", "r", priority=8),
+         Column("p95", "r", priority=9), Column("succ/$", "r", priority=6),
+         Column("failures", priority=7, max_width=20)], table, st)
 
 
 def _print_group_delta(store: RunStore, spec: str, *, json_out: bool = False) -> None:
@@ -1219,7 +1257,10 @@ def _print_group_delta(store: RunStore, spec: str, *, json_out: bool = False) ->
     drift in grid shape is visible rather than silently interpolated."""
     names = _slugs_from_arg(spec)
     if len(names) != 2:
-        print("--compare takes exactly two comma-separated run_group names", file=sys.stderr)
+        print(format_error(
+            "--compare takes exactly two comma-separated run_group names",
+            f"got {len(names)}: {spec!r}",
+            "python harness.py report --compare <group-a>,<group-b>"), file=sys.stderr)
         sys.exit(1)
     group_a, group_b = names
 
@@ -1259,20 +1300,22 @@ def _print_group_delta(store: RunStore, spec: str, *, json_out: bool = False) ->
         print(json.dumps({"group_a": group_a, "group_b": group_b, "cells": rows}, indent=2, default=str))
         return
     print(f"Delta {group_a} -> {group_b}  (cells joined on task x orchestrator x worker)")
-    print(f"{'task':<22} {'orchestrator':<24} {'worker':<24} {'n':>7} {'pass':>11} {'delta':>7} {'verdict':<10}")
-    print("-" * 115)
+    table = []
     for r in rows:
-        n = f"{r['n_a']}/{r['n_b']}"
-        pass_a = f"{r['pass_a'] * 100:.0f}%" if r['pass_a'] is not None else "-"
-        pass_b = f"{r['pass_b'] * 100:.0f}%" if r['pass_b'] is not None else "-"
-        delta = "-" if r["verdict"] == "one-sided" else f"{(r['pass_b'] - r['pass_a']) * 100:+.0f}pp"
-        print(f"{r['task_id']:<22} {r['orchestrator']:<24} {r['worker']:<24} {n:>7} {pass_a:>5}->{pass_b:<5} {delta:>7} {r['verdict']:<10}")
+        one_sided = r["verdict"] == "one-sided"
+        table.append([
+            r["task_id"], short_slug(r["orchestrator"]), short_slug(r["worker"]),
+            f"{r['n_a']}/{r['n_b']}", fmt_percent(r["pass_a"]), fmt_percent(r["pass_b"]),
+            None if one_sided else fmt_delta(r["pass_b"] - r["pass_a"], "pp"), r["verdict"]])
+    print_table(
+        [Column("task", max_width=22), Column("orchestrator", max_width=24), Column("worker", max_width=24),
+         Column("n", "r", priority=3), Column("pass a", "r"), Column("pass b", "r"),
+         Column("delta", "r"), Column("verdict")], table)
     counts = Counter(r["verdict"] for r in rows)
     total_a = sum(r["cost_a"] or 0 for r in rows)
     total_b = sum(r["cost_b"] or 0 for r in rows)
-    print("-" * 115)
     print("Verdicts: " + ", ".join(f"{k}={v}" for k, v in sorted(counts.items())))
-    print(f"Cost: {group_a}=${total_a:.4f}  {group_b}=${total_b:.4f}")
+    print(f"Cost: {group_a}={fmt_money(total_a)}  {group_b}={fmt_money(total_b)}")
 
 
 def cmd_export(args: argparse.Namespace) -> None:
@@ -1360,13 +1403,12 @@ def cmd_prices(args: argparse.Namespace) -> None:
     if not rows:
         print("No calls indexed yet.")
         return
-    print(f"{'model':<38} {'calls':>5} {'api':>4} {'api $':>10} {'cfg $':>10} {'ratio':>7}  drift")
-    print("-" * 90)
-    for r in rows:
-        cfg = f"${r.configured_cost_usd:.4f}" if r.configured_cost_usd is not None else "-"
-        ratio = f"{r.ratio:.2f}x" if r.ratio is not None else "-"
-        flag = "STALE?" if r.drifted else (r.note or "ok")
-        print(f"{r.model:<38} {r.calls:>5} {r.api_calls:>4} ${r.api_cost_usd:>9.4f} {cfg:>10} {ratio:>7}  {flag}")
+    print_table(
+        [Column("model", max_width=36), Column("calls", "r"), Column("api", "r", priority=2),
+         Column("api $", "r"), Column("cfg $", "r"), Column("ratio", "r"), Column("drift")],
+        [[short_slug(r.model), str(r.calls), str(r.api_calls), fmt_money(r.api_cost_usd),
+          fmt_money(r.configured_cost_usd), f"{r.ratio:.2f}x" if r.ratio is not None else None,
+          "STALE?" if r.drifted else (r.note or "ok")] for r in rows])
     drifted = [r for r in rows if r.drifted]
     if drifted:
         print(f"\n{len(drifted)} model(s) beyond {args.threshold:.0%} drift: update models/*.yaml or check for silent rerouting.")

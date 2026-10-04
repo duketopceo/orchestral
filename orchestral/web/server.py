@@ -121,7 +121,7 @@ class Observatory:
         meta = self.store.get_run(run_id)
         if meta is None:
             return None
-        return Path(meta.run_dir)
+        return state.resolve_run_dir(self.store, meta)
 
 
 def _provider_ready(slug: str) -> bool:
@@ -263,7 +263,9 @@ def make_handler(obs: Observatory) -> type[BaseHTTPRequestHandler]:
             return vals[0] if vals else default
 
         def _api_get(self, path: str, qs: dict[str, list[str]]) -> None:
-            if path == "/api/overview":
+            if path == "/api/meta":
+                self._json(state.meta_payload())
+            elif path == "/api/overview":
                 self._json(state.overview_payload(
                     obs.store, obs.registry, tasks_dir=obs.tasks_dir,
                     groups_file=obs.groups_file))
@@ -275,6 +277,13 @@ def make_handler(obs: Observatory) -> type[BaseHTTPRequestHandler]:
                     status=self._q1(qs, "status"),
                     q=self._q1(qs, "q", "") or "",
                     tasks_dir=obs.tasks_dir,
+                    pairing=self._q1(qs, "pairing"),
+                    judge=self._q1(qs, "judge"),
+                    type=self._q1(qs, "type"),
+                    difficulty=self._q1(qs, "difficulty"),
+                    sort=self._q1(qs, "sort"),
+                    direction=self._q1(qs, "dir"),
+                    groups_file=obs.groups_file,
                 ))
             elif path == "/api/groups":
                 self._json(state.groups_payload(obs.store, obs.groups_file))
@@ -292,10 +301,14 @@ def make_handler(obs: Observatory) -> type[BaseHTTPRequestHandler]:
                 if not re.fullmatch(r"[A-Za-z0-9._-]+", name) or ".." in name:
                     return self._json({"error": "matrix must be a spec name under experiments/"}, 400)
                 payload = state.experiment_payload(
-                    obs.store, obs.tasks_dir.parent / "experiments" / f"{name}.yaml")
+                    obs.store, obs.tasks_dir.parent / "experiments" / f"{name}.yaml",
+                    tasks_dir=obs.tasks_dir)
                 if payload is None:
                     return self._json({"error": f"no experiment matrix '{name}'"}, 404)
                 self._json(payload)
+            elif path == "/api/experiments":
+                self._json(state.experiments_list(
+                    obs.store, obs.tasks_dir.parent / "experiments", tasks_dir=obs.tasks_dir))
             elif path == "/api/flags":
                 self._json(obs.store.annotations())
             elif path == "/api/cards":
@@ -394,12 +407,11 @@ def make_handler(obs: Observatory) -> type[BaseHTTPRequestHandler]:
                 payload = state.run_detail_payload(
                     obs.store, run_id,
                     tasks_dir=obs.tasks_dir, groups_file=obs.groups_file,
+                    registry=obs.registry,
                 )
                 if payload is None:
                     return self._json({"error": f"unknown run {run_id}"}, 404)
-                payload["cancellable"] = bool(
-                    (j := obs.registry.job_for_run(run_id)) and j.active
-                )
+                payload["cancellable"] = payload["liveness"]["cancellable"]
                 return self._json(payload)
             if parts[3] == "live":
                 try:
@@ -509,8 +521,22 @@ def make_handler(obs: Observatory) -> type[BaseHTTPRequestHandler]:
                 obs.registry.cancel_run(parts[1])
                 return self._redirect(f"/#/run/{parts[1]}")
             if len(parts) == 4 and parts[3] == "cancel" and parts[0] == "api" and parts[1] == "run":
-                cancelled = obs.registry.cancel_run(parts[2])
-                return self._json({"cancelled": cancelled})
+                run_id = parts[2]
+                if obs.registry.job_for_run(run_id) is None:
+                    if obs.store.get_run(run_id) is None:
+                        return self._json({"error": f"unknown run {run_id}", "cancelled": False}, 404)
+                    return self._json({
+                        "error": (f"Run {run_id} was not started by this server, possibly by another "
+                                  "process, so it cannot be cancelled here. Stop it where it was "
+                                  "started, or abandon it if it has stalled."),
+                        "cancelled": False,
+                    }, 409)
+                return self._json({"cancelled": obs.registry.cancel_run(run_id)})
+            if len(parts) == 4 and parts[3] == "abandon" and parts[0] == "api" and parts[1] == "run":
+                try:
+                    return self._json(state.abandon_run(obs.store, obs.registry, parts[2]))
+                except state.LivenessRefusal as exc:
+                    return self._json({"error": str(exc), "abandoned": False}, exc.status)
             if path == "/api/flag":
                 form = self._form()
                 try:

@@ -65,3 +65,7 @@ scripts/cube-env.sh
 # not config
 models/provider-catalog.json
 .wrangler/
+
+# hosted Worker: staged ui/ (scripts/build-hosted-assets.py)
+infra/cloudflare/observatory/.build/
+infra/cloudflare/observatory/.wrangler/

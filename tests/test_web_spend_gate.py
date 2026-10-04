@@ -314,7 +314,24 @@ class TestFaviconAndErrors(_Server):
 class TestUiDefaults(unittest.TestCase):
     """Static contract on the SPA source — the browser suite covers behavior."""
 
-    js = (UI / "app.js").read_text()
+    js = "\n".join(p.read_text() for p in sorted((UI / "js").rglob("*.js")))
+
+    def test_no_unconditional_timers_remain(self):
+        # Every live surface goes through ui/js/poller.js, which pauses while hidden.
+        for path in (UI / "js").rglob("*.js"):
+            text = path.read_text()
+            self.assertNotIn("setInterval", text, path.name)
+            if path.name not in {"poller.js", "router.js"}:
+                self.assertNotIn("setTimeout", text, path.name)
+
+    def test_import_map_versions_every_module(self):
+        # Nested imports bust the cache through the map in app.html, so a module
+        # missing from it would be served stale forever.
+        html = (UI / "app.html").read_text()
+        mapped = set(re.findall(r'"(/static/js/[^"]+\.js)": "\1\?v=__V__"', html))
+        modules = {"/static/" + p.relative_to(UI).as_posix() for p in (UI / "js").rglob("*.js")}
+        self.assertEqual(modules - mapped - {"/static/js/main.js"}, set())
+        self.assertEqual(mapped - modules, set())
 
     def test_new_run_defaults_to_dry_run(self):
         tag = re.search(r'<input type="checkbox" name="dry_run"[^>]*>', self.js)

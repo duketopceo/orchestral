@@ -52,6 +52,11 @@ OpenRouter eval workflow (`.github/workflows/orchestral.yml`) is dispatch-only
 and environment-gated — it is never reachable from pull-request code; external
 contributions are covered by the mock-provider integration tests.
 
+A separate `browser` job installs `.[dev,tui,shots]` and Chromium and runs the
+same suite, so the Playwright tests execute there instead of skipping. It is not
+a required check and the `test` job does not wait on it. To run them locally, build
+the venv with `BROWSER=1 scripts/bootstrap-venv.sh /tmp/my-venv`.
+
 
 ## Conventions
 

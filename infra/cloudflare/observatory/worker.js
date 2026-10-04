@@ -14,6 +14,8 @@
 //   - D1 writes are parameterized and column-allowlisted again server-side
 //   - artifact bytes always carry the CSP sandbox header
 
+import { payloadName, ingestKeyKind, isSafeSegment } from "./keys.js";
+
 const HOST = "obs.shippedit.dev";
 
 // Access application binding for ingest JWT validation — the JWT's aud
@@ -96,12 +98,6 @@ function containsForbiddenKey(value) {
 }
 
 const RUN_ID_RE = /^[A-Za-z0-9._-]+$/;
-const KEY_RE = /^[A-Za-z0-9._\/%-]+$/;
-
-function safeKey(key) {
-  return typeof key === "string" && key.length < 512 &&
-    KEY_RE.test(key) && !key.includes("..") && !key.startsWith("/");
-}
 
 async function r2json(env, key) {
   const obj = await env.BUCKET.get(key);
@@ -109,8 +105,10 @@ async function r2json(env, key) {
   return obj;
 }
 
-async function serveJson(env, key, transform) {
-  const obj = await r2json(env, key);
+async function serveJson(env, key, transform, fallbackKey = null) {
+  // fallbackKey: a request that already names the .json object (/api/meta.json)
+  let obj = await r2json(env, key);
+  if (obj === null && fallbackKey) obj = await r2json(env, fallbackKey);
   if (obj === null) return json({ error: `not found` }, 404);
   if (!transform) {
     return new Response(obj.body, {
@@ -147,87 +145,39 @@ async function serveArtifact(env, runId, member) {
 
 async function handleApi(env, url) {
   const p = url.pathname;
-  const q = url.searchParams;
 
   // Endpoints that need live harness state or playwright — explicit 501
   // rather than a silent wrong answer.
   if (p === "/api/shot.png" || p === "/api/estimate" ||
-      p === "/api/thread-estimate" || p === "/api/thread") {
+      p === "/api/thread-estimate" || p === "/api/thread" ||
+      p === "/api/tasks" || p === "/api/models") {
     return readOnly();
   }
 
-  if (p.startsWith("/api/run/")) {
-    const parts = p.slice("/api/run/".length).split("/");
-    const runId = parts[0];
+  // run/<id>/artifact[/<member>]: scrubbed bytes under runs/, not a payload.
+  const art = p.match(/^\/api\/run\/([^/]+)\/artifact(?:\/(.+))?$/);
+  if (art) {
+    let runId, member;
+    try {
+      runId = decodeURIComponent(art[1]);
+      member = art[2] ? decodeURIComponent(art[2]) : null;
+    } catch {
+      return json({ error: "bad path" }, 400);
+    }
     if (!RUN_ID_RE.test(runId)) return json({ error: "bad run id" }, 400);
-    if (parts.length === 1) return serveJson(env, `api/run/${runId}.json`);
-    if (parts[1] === "live") return serveJson(env, `api/run/${runId}/live.json`);
-    if (parts[1] === "evidence") return serveJson(env, `api/run/${runId}/evidence.json`);
-    if (parts[1] === "artifact") {
-      const member = parts.length > 2
-        ? decodeURIComponent(parts.slice(2).join("/")) : null;
-      if (member && !safeKey(member)) return json({ error: "bad member" }, 400);
-      return serveArtifact(env, runId, member);
+    if (member && !member.split("/").every(isSafeSegment)) {
+      return json({ error: "bad member" }, 400);
     }
-    return json({ error: `not found: ${p}` }, 404);
+    return serveArtifact(env, runId, member);
   }
 
-  if (p === "/api/overview") {
-    return serveJson(env, "api/overview.json",
-      d => ({ ...d, hosted: true, read_only: true }));
-  }
-  if (p === "/api/experiment") {
-    const name = q.get("matrix") || "jev-ab";
-    if (!RUN_ID_RE.test(name)) {
-      return json({ error: "matrix must be a spec name" }, 400);
-    }
-    return serveJson(env, `api/experiment.${name}.json`);
-  }
-  if (p === "/api/compare") {
-    const a = q.get("a") || "", b = q.get("b") || "";
-    if (!a || !b) return json({ error: "compare needs ?a=<group>&b=<group>" }, 400);
-    const key = x => encodeURIComponent(x).replace(/[!'()*]/g,
-      c => "%" + c.charCodeAt(0).toString(16).toUpperCase());
-    const first = await r2json(env, `api/compare.${key(a)}.vs.${key(b)}.json`);
-    if (first !== null) {
-      return new Response(first.body, {
-        headers: { "Content-Type": "application/json; charset=utf-8" },
-      });
-    }
-    return serveJson(env, `api/compare.${key(b)}.vs.${key(a)}.json`);
-  }
-  if (p === "/api/card") {
-    const kind = q.get("kind") || "group", target = q.get("target") || "";
-    if (!RUN_ID_RE.test(kind)) return json({ error: "bad kind" }, 400);
-    const key = encodeURIComponent(target).replace(/[!'()*]/g,
-      c => "%" + c.charCodeAt(0).toString(16).toUpperCase());
-    return serveJson(env, `api/card.${kind}.${key}.json`);
-  }
-  if (p === "/api/runs") {
-    // filters are applied here — the snapshot is the full row set
-    const group = q.get("group"), task = q.get("task"),
-      status = q.get("status"), needle = (q.get("q") || "").toLowerCase();
-    return serveJson(env, "api/runs.json", rows => rows.filter(r =>
-      (!group || r.run_group === group) &&
-      (!task || r.task_id === task) &&
-      (!status || r.status === status) &&
-      (!needle || [r.run_id, r.task_id, r.orchestrator, r.worker]
-        .some(v => (v || "").toLowerCase().includes(needle)))));
-  }
-  if (p === "/api/leaderboard") {
-    const sort = q.get("sort") || "cost_per_pass";
-    return serveJson(env, "api/leaderboard.json", rows =>
-      Array.isArray(rows) && rows.length && sort in rows[0]
-        ? [...rows].sort((a, b) => (a[sort] ?? 0) - (b[sort] ?? 0))
-        : rows);
-  }
-
-  // flat snapshots: /api/<name> → api/<name>.json
-  const name = p.slice("/api/".length);
-  if (/^[A-Za-z0-9._-]+$/.test(name) && !name.includes("..")) {
-    return serveJson(env, `api/${name}.json`);
-  }
-  return json({ error: `not found: ${p}` }, 404);
+  // Everything else is a snapshot key: /api/<rest> -> api/<rest>.json. All
+  // filtering, sorting and pagination is client-side (ui/js/data.js), so query
+  // strings never select a key.
+  const name = payloadName(p.slice("/api/".length));
+  if (name === null) return json({ error: `bad key: ${p}` }, 400);
+  return serveJson(env, `api/${name}.json`, null,
+    name.endsWith(".json") ? `api/${name}` : null);
 }
 
 // --- ingest -----------------------------------------------------------------
@@ -255,10 +205,10 @@ async function upsert(env, table, columns, rows) {
     rows.map(r => stmt.bind(...columns.map(c => r[c] ?? null))));
 }
 
-async function writeObjects(env, map, prefixRe) {
+async function writeObjects(env, map, prefixRe, kind) {
   const written = [];
   for (const [key, value] of Object.entries(map || {})) {
-    if (!safeKey(key) || !prefixRe.test(key)) {
+    if (ingestKeyKind(key) !== kind || !prefixRe.test(key)) {
       throw Object.assign(
         new Error(`rejected object key '${key}'`), { status: 400 });
     }
@@ -359,10 +309,12 @@ async function handleIngest(request, env, url) {
         return json({ error: "bad run_id" }, 400);
       }
       const esc = runId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      // payload keys carry the snapshot encoding of the id (dot -> %2E)
+      const escKey = runId.replace(/\./g, "%2E");
       const written = await writeObjects(
-        env, body.payloads, new RegExp(`^api/run/${esc}(\\.json|/)`));
+        env, body.payloads, new RegExp(`^api/run/${escKey}(\\.json|/)`), "payload");
       const filesWritten = await writeObjects(
-        env, body.files, new RegExp(`^runs/${esc}/`));
+        env, body.files, new RegExp(`^runs/${esc}/`), "file");
       if (body.manifest_hash != null) {
         if (typeof body.manifest_hash !== "string" ||
             !/^[0-9a-f]{64}$/.test(body.manifest_hash)) {
@@ -375,7 +327,7 @@ async function handleIngest(request, env, url) {
       return json({ ok: true, run_id: runId, written: written.length + filesWritten.length });
     }
     if (url.pathname === "/ingest/state") {
-      const written = await writeObjects(env, body.payloads, /^api\//);
+      const written = await writeObjects(env, body.payloads, /^api\//, "payload");
       await upsert(env, "runs", RUN_COLUMNS, d1.runs);
       await upsert(env, "calls", CALL_COLUMNS, d1.calls);
       await upsert(env, "annotations", ANNOTATION_COLUMNS, d1.annotations);

@@ -303,7 +303,7 @@ def _cf_sync_hook(store: RunStore) -> Any:
     client = _CF_HOOK_CLIENT
 
     def _push(meta: Any) -> None:
-        if privacy.run_is_holdout(Path(meta.run_dir)):
+        if privacy.run_is_holdout(Path(meta.run_dir), meta.config):
             return
         cf.push_run_events_only(client, store, meta)
 

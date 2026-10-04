@@ -8,6 +8,9 @@
 <meta name="theme-color" content="#0E1012" media="(prefers-color-scheme: dark)">
 <title>orchestral · observatory</title>
 <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+<link rel="icon" href="/favicon.ico" sizes="48x48">
+<link rel="apple-touch-icon" href="/static/brand/apple-touch-icon.png">
+<link rel="manifest" href="/static/site.webmanifest">
 <script>
 /* pre-paint: stored choice, else the shell default (local = system, hosted = paper) */
 (function () {
@@ -21,37 +24,118 @@
 <link rel="stylesheet" href="/static/app.css?v=__V__">
 </head>
 <body>
+<a class="skip-link" href="#main">Skip to main content</a>
 <div id="shell">
   <aside id="rail">
-    <a class="brand" href="#/">
-      <span class="brand-mark">◆</span>
-      <span class="brand-word">orchestral</span>
-      <span class="brand-sub">observatory</span>
-    </a>
-    <nav id="nav">
-      <div class="nav-sec">Explore</div>
-      <a href="#/" data-route="/">Overview</a>
-      <a href="#/runs" data-route="/runs">Runs</a>
-      <a href="#/leaderboard" data-route="/leaderboard">Leaderboard</a>
-      <a href="#/compare" data-route="/compare">Compare</a>
-      <div class="nav-sec">Catalog</div>
-      <a href="#/models" data-route="/models">Models</a>
-      <a href="#/cards" data-route="/cards">Cards</a>
-      <a href="#/about" data-route="/about">About</a>
-      <a class="nav-cta" href="#/new" data-route="/new">+ New run</a>
+  <div class="rail-inner">
+    <div class="rail-head">
+      <a class="brand" href="#/" aria-label="orchestral, Now">
+        <svg class="brand-mark" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path fill="currentColor" d="M1 8h14v2H1zM1 13h14v2H1zM2 2h2v2H2zM4 4h2v2H4zM6 6h2v2H6z"/></svg>
+        <span class="brand-word">orchestral</span>
+        <span class="brand-sub">observatory</span>
+      </a>
+    </div>
+    <nav id="nav" aria-label="Primary">
+      <a href="#/" data-route="/" aria-label="Now"><svg class="i" aria-hidden="true"><use href="#i-overview"/></svg><span class="nav-label">Now</span></a>
+      <a href="#/runs" data-route="/runs" aria-label="Runs"><svg class="i" aria-hidden="true"><use href="#i-runs"/></svg><span class="nav-label">Runs</span></a>
+      <a href="#/leaderboard" data-route="/leaderboard" aria-label="Pairings"><svg class="i" aria-hidden="true"><use href="#i-leaderboard"/></svg><span class="nav-label">Pairings</span></a>
+      <a href="#/compare" data-route="/compare" aria-label="Compare"><svg class="i" aria-hidden="true"><use href="#i-compare"/></svg><span class="nav-label">Compare</span></a>
+      <a href="#/experiment" data-route="/experiment" aria-label="Experiments"><svg class="i" aria-hidden="true"><use href="#i-manifest"/></svg><span class="nav-label">Experiments</span></a>
+      <a href="#/cards" data-route="/cards" aria-label="Publish"><svg class="i" aria-hidden="true"><use href="#i-cards"/></svg><span class="nav-label">Publish</span></a>
+      <a href="#/models" data-route="/models" aria-label="Models"><svg class="i" aria-hidden="true"><use href="#i-models"/></svg><span class="nav-label">Models</span></a>
+      <hr class="nav-rule">
+      <a href="#/new" data-route="/new" aria-label="New run" class="nav-cta" data-needs="launch"><svg class="i" aria-hidden="true"><use href="#i-new-run"/></svg><span class="nav-label">New run</span></a>
+      <a href="#/about" data-route="/about" aria-label="Guide"><svg class="i" aria-hidden="true"><use href="#i-help"/></svg><span class="nav-label">Guide</span></a>
     </nav>
     <div id="rail-live">
       <div class="rail-live-head">Activity</div>
       <div id="rail-jobs"></div>
     </div>
-    <button id="theme-toggle" type="button" aria-label="Colour theme"></button>
+    <div class="rail-tools">
+      <button id="open-palette" class="tool" type="button" data-open-palette aria-label="Search" aria-keyshortcuts="Control+K Meta+K"><svg class="i" aria-hidden="true"><use href="#i-search"/></svg><span class="tool-label">Search</span><kbd class="tool-key">Ctrl K</kbd></button>
+      <button id="open-keymap" class="tool" type="button" data-open-keymap aria-label="Keyboard shortcuts" aria-keyshortcuts="?"><svg class="i" aria-hidden="true"><use href="#i-keyboard"/></svg><span class="tool-label">Shortcuts</span><kbd class="tool-key">?</kbd></button>
+      <button id="theme-toggle" class="tool" type="button" data-theme-cycle aria-label="Colour theme"><svg class="i" aria-hidden="true"><use href="#i-theme"/></svg><span class="tool-label"></span></button>
+    </div>
+  </div>
   </aside>
-  <main id="main">
+  <main id="main" tabindex="-1">
+    <div id="status-line" class="status-line" role="status" aria-live="polite" hidden></div>
     <div id="view"><div class="loading">Loading…</div></div>
   </main>
 </div>
+<nav id="tabbar" aria-label="Mobile">
+  <a href="#/" data-route="/" aria-label="Now"><svg class="i" aria-hidden="true"><use href="#i-overview"/></svg><span>Now</span></a>
+  <a href="#/runs" data-route="/runs" aria-label="Runs"><svg class="i" aria-hidden="true"><use href="#i-runs"/></svg><span>Runs</span></a>
+  <a href="#/leaderboard" data-route="/leaderboard" aria-label="Pairings"><svg class="i" aria-hidden="true"><use href="#i-leaderboard"/></svg><span>Pairings</span></a>
+  <a href="#/cards" data-route="/cards" aria-label="Publish"><svg class="i" aria-hidden="true"><use href="#i-cards"/></svg><span>Publish</span></a>
+  <button id="more-open" type="button" aria-haspopup="dialog" aria-controls="more-sheet"><svg class="i i-up" aria-hidden="true"><use href="#i-chevron"/></svg><span>More</span></button>
+</nav>
+<dialog id="more-sheet" class="sheet" aria-label="More" aria-modal="true">
+  <div class="sheet-head"><h2 class="sheet-title">More</h2><button type="button" class="icon-btn" data-close aria-label="Close"><svg class="i" aria-hidden="true"><use href="#i-close"/></svg></button></div>
+  <nav aria-label="More views" class="sheet-nav">
+    <a href="#/compare" data-route="/compare"><svg class="i" aria-hidden="true"><use href="#i-compare"/></svg>Compare</a>
+    <a href="#/experiment" data-route="/experiment"><svg class="i" aria-hidden="true"><use href="#i-manifest"/></svg>Experiments</a>
+    <a href="#/models" data-route="/models"><svg class="i" aria-hidden="true"><use href="#i-models"/></svg>Models</a>
+    <a href="#/about" data-route="/about"><svg class="i" aria-hidden="true"><use href="#i-help"/></svg>Guide</a>
+    <a href="#/new" data-route="/new" class="nav-cta" data-needs="launch"><svg class="i" aria-hidden="true"><use href="#i-new-run"/></svg>New run</a>
+  </nav>
+  <section class="sheet-live" aria-label="Activity"><div class="rail-live-head">Activity</div><div id="more-jobs"></div></section>
+  <div class="sheet-tools">
+    <button type="button" class="tool" data-open-palette><svg class="i" aria-hidden="true"><use href="#i-search"/></svg><span class="tool-label">Search</span></button>
+    <button type="button" class="tool" data-theme-cycle aria-label="Colour theme"><svg class="i" aria-hidden="true"><use href="#i-theme"/></svg><span class="tool-label"></span></button>
+  </div>
+</dialog>
+<dialog id="palette" class="sheet palette" aria-label="Search"></dialog>
+<dialog id="keymap" class="sheet" aria-label="Keyboard shortcuts"></dialog>
+<div id="live-region" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
 <script src="/static/theme.js?v=__V__"></script>
-<script type="module">import * as F from "/static/js/format.js?v=__V__"; window.OrchFormat = F;</script>
-<script defer src="/static/app.js?v=__V__"></script>
+<script type="importmap">
+{"imports": {
+    "/static/js/api.js": "/static/js/api.js?v=__V__",
+    "/static/js/charts/dumbbell.js": "/static/js/charts/dumbbell.js?v=__V__",
+    "/static/js/charts/frame.js": "/static/js/charts/frame.js?v=__V__",
+    "/static/js/charts/heatmap.js": "/static/js/charts/heatmap.js?v=__V__",
+    "/static/js/charts/index.js": "/static/js/charts/index.js?v=__V__",
+    "/static/js/charts/interval.js": "/static/js/charts/interval.js?v=__V__",
+    "/static/js/charts/scale.js": "/static/js/charts/scale.js?v=__V__",
+    "/static/js/charts/strip.js": "/static/js/charts/strip.js?v=__V__",
+    "/static/js/charts/text.js": "/static/js/charts/text.js?v=__V__",
+    "/static/js/chips.js": "/static/js/chips.js?v=__V__",
+    "/static/js/components/action-dialog.js": "/static/js/components/action-dialog.js?v=__V__",
+    "/static/js/components/artifact-viewer.js": "/static/js/components/artifact-viewer.js?v=__V__",
+    "/static/js/components/dialog.js": "/static/js/components/dialog.js?v=__V__",
+    "/static/js/components/facets.js": "/static/js/components/facets.js?v=__V__",
+    "/static/js/components/json-viewer.js": "/static/js/components/json-viewer.js?v=__V__",
+    "/static/js/components/states.js": "/static/js/components/states.js?v=__V__",
+    "/static/js/components/table.js": "/static/js/components/table.js?v=__V__",
+    "/static/js/components/tabs.js": "/static/js/components/tabs.js?v=__V__",
+    "/static/js/components/timeline.js": "/static/js/components/timeline.js?v=__V__",
+    "/static/js/confirm.js": "/static/js/confirm.js?v=__V__",
+    "/static/js/data.js": "/static/js/data.js?v=__V__",
+    "/static/js/dom.js": "/static/js/dom.js?v=__V__",
+    "/static/js/flags.js": "/static/js/flags.js?v=__V__",
+    "/static/js/format.js": "/static/js/format.js?v=__V__",
+    "/static/js/keys.js": "/static/js/keys.js?v=__V__",
+    "/static/js/live.js": "/static/js/live.js?v=__V__",
+    "/static/js/main.js": "/static/js/main.js?v=__V__",
+    "/static/js/poller.js": "/static/js/poller.js?v=__V__",
+    "/static/js/router.js": "/static/js/router.js?v=__V__",
+    "/static/js/shell.js": "/static/js/shell.js?v=__V__",
+    "/static/js/status.js": "/static/js/status.js?v=__V__",
+    "/static/js/util.js": "/static/js/util.js?v=__V__",
+    "/static/js/views/about.js": "/static/js/views/about.js?v=__V__",
+    "/static/js/views/card.js": "/static/js/views/card.js?v=__V__",
+    "/static/js/views/cards.js": "/static/js/views/cards.js?v=__V__",
+    "/static/js/views/compare.js": "/static/js/views/compare.js?v=__V__",
+    "/static/js/views/experiment.js": "/static/js/views/experiment.js?v=__V__",
+    "/static/js/views/leaderboard.js": "/static/js/views/leaderboard.js?v=__V__",
+    "/static/js/views/models.js": "/static/js/views/models.js?v=__V__",
+    "/static/js/views/new.js": "/static/js/views/new.js?v=__V__",
+    "/static/js/views/now.js": "/static/js/views/now.js?v=__V__",
+    "/static/js/views/run.js": "/static/js/views/run.js?v=__V__",
+    "/static/js/views/runs.js": "/static/js/views/runs.js?v=__V__"
+}}
+</script>
+<script type="module" src="/static/js/main.js?v=__V__"></script>
 </body>
 </html>

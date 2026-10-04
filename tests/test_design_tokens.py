@@ -146,7 +146,7 @@ class TestShellContract(unittest.TestCase):
         self.assertLess(self.html.index("data-theme"), self.html.index('rel="stylesheet"'))
 
     def test_assets_are_versioned(self):
-        for ref in ("tokens.css", "app.css", "app.js"):
+        for ref in ("tokens.css", "app.css", "js/main.js"):
             self.assertRegex(self.html, rf"/static/{re.escape(ref)}\?v=__V__")
 
 
@@ -183,9 +183,7 @@ class TestStaticServing(_Served):
         made = not fonts.exists()
         fonts.mkdir(exist_ok=True)
         probe = fonts / "x.woff2"
-        manifest = server.UI_DIR / "site.webmanifest"
         probe.write_bytes(b"wOF2")
-        manifest.write_text("{}")
         try:
             with patch("mimetypes.guess_type", return_value=(None, None)):
                 cases = {
@@ -193,7 +191,7 @@ class TestStaticServing(_Served):
                     "/static/site.webmanifest": "application/manifest+json",
                     "/static/app.css": "text/css; charset=utf-8",
                     "/static/tokens.css": "text/css; charset=utf-8",
-                    "/static/app.js": "text/javascript; charset=utf-8",
+                    "/static/js/main.js": "text/javascript; charset=utf-8",
                     "/static/favicon.svg": "image/svg+xml",
                 }
                 for path, ctype in cases.items():
@@ -201,7 +199,6 @@ class TestStaticServing(_Served):
                     self.assertEqual((code, got), (200, ctype), path)
         finally:
             probe.unlink()
-            manifest.unlink()
             if made:
                 fonts.rmdir()
 

@@ -123,12 +123,14 @@ class TestJsParity(unittest.TestCase):
 
 
 class TestSpaWiring(unittest.TestCase):
-    def test_app_html_loads_the_shared_formatter_before_app_js(self):
+    def test_formatter_is_a_module_import_not_a_window_global(self):
         html = (ROOT / "ui" / "app.html").read_text(encoding="utf-8")
-        self.assertLess(html.index("/static/js/format.js"), html.index("/static/app.js"))
+        self.assertNotIn("OrchFormat", html)
+        for p in (ROOT / "ui" / "js").rglob("*.js"):
+            self.assertNotIn("OrchFormat", p.read_text(encoding="utf-8"), p.name)
 
-    def test_app_js_has_no_private_number_formatting_left(self):
-        js = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
+    def test_util_js_has_no_private_number_formatting_left(self):
+        js = (ROOT / "ui" / "js" / "util.js").read_text(encoding="utf-8")
         for fn in ("fmtMoney", "fmtPct", "fmtScore", "fmtMs", "fmtTok"):
             body = re.search(rf"function {fn}\(v\) \{{(.*?)\}}", js, re.S)
             self.assertIsNotNone(body, fn)
@@ -173,7 +175,8 @@ class TestBrowserFormatter(unittest.TestCase):
                 pg.goto(f"http://127.0.0.1:{self.port}/")
                 pg.wait_for_selector("h1")
                 got = pg.evaluate(
-                    "(cases) => cases.map(c => window.OrchFormat[c.fn](...c.in))", CASES["cases"])
+                    "async (cases) => { const F = await import(\"/static/js/format.js\"); return cases.map(c => F[c.fn](...c.in)); }",
+                    CASES["cases"])
                 self.assertEqual(got, [c["out"] for c in CASES["cases"]])
                 for route in ("/", "/runs", "/leaderboard", "/compare", "/models", "/cards", "/about"):
                     pg.goto(f"http://127.0.0.1:{self.port}/#{route}")

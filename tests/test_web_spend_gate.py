@@ -76,10 +76,10 @@ class _Server(unittest.TestCase):
     def _get(self, path: str) -> tuple[int, str, str]:
         try:
             with urllib.request.urlopen(f"http://127.0.0.1:{self.port}{path}") as r:
-                return r.status, r.headers.get("Content-Type", ""), r.read().decode()
+                return r.status, r.headers.get("Content-Type", ""), r.read().decode(errors="replace")
         except urllib.error.HTTPError as e:
             with e:
-                return e.code, e.headers.get("Content-Type", ""), e.read().decode()
+                return e.code, e.headers.get("Content-Type", ""), e.read().decode(errors="replace")
 
     def _post(self, path: str, fields: dict[str, str]) -> tuple[int, dict]:
         req = urllib.request.Request(
@@ -294,11 +294,13 @@ class TestIdempotency(_Server):
 
 class TestFaviconAndErrors(_Server):
     def test_favicon(self):
-        for path in ("/favicon.ico", "/static/favicon.svg"):
-            code, ctype, body = self._get(path)
-            self.assertEqual(code, 200, path)
-            self.assertEqual(ctype, "image/svg+xml")
-            self.assertIn("<svg", body)
+        code, ctype, body = self._get("/static/favicon.svg")
+        self.assertEqual(code, 200)
+        self.assertEqual(ctype, "image/svg+xml")
+        self.assertIn("<svg", body)
+        code, ctype, _ = self._get("/favicon.ico")
+        self.assertEqual(code, 200)
+        self.assertEqual(ctype, "image/x-icon")
         _, _, html = self._get("/")
         self.assertIn('rel="icon"', html)
 
@@ -312,7 +314,24 @@ class TestFaviconAndErrors(_Server):
 class TestUiDefaults(unittest.TestCase):
     """Static contract on the SPA source — the browser suite covers behavior."""
 
-    js = (UI / "app.js").read_text()
+    js = "\n".join(p.read_text() for p in sorted((UI / "js").rglob("*.js")))
+
+    def test_no_unconditional_timers_remain(self):
+        # Every live surface goes through ui/js/poller.js, which pauses while hidden.
+        for path in (UI / "js").rglob("*.js"):
+            text = path.read_text()
+            self.assertNotIn("setInterval", text, path.name)
+            if path.name not in {"poller.js", "router.js"}:
+                self.assertNotIn("setTimeout", text, path.name)
+
+    def test_import_map_versions_every_module(self):
+        # Nested imports bust the cache through the map in app.html, so a module
+        # missing from it would be served stale forever.
+        html = (UI / "app.html").read_text()
+        mapped = set(re.findall(r'"(/static/js/[^"]+\.js)": "\1\?v=__V__"', html))
+        modules = {"/static/" + p.relative_to(UI).as_posix() for p in (UI / "js").rglob("*.js")}
+        self.assertEqual(modules - mapped - {"/static/js/main.js"}, set())
+        self.assertEqual(mapped - modules, set())
 
     def test_new_run_defaults_to_dry_run(self):
         tag = re.search(r'<input type="checkbox" name="dry_run"[^>]*>', self.js)

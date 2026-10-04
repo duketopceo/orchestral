@@ -168,8 +168,10 @@ def _hosted_detail(store: RunStore, run_id: str, scrubbed: Path, tasks_dir: Path
                    groups_file: Path) -> dict[str, Any] | None:
     """run_detail_payload over the scrubbed tree + body-free calls ledger."""
     shim = cast(RunStore, _ScrubbedStore(store, run_id, scrubbed))
+    meta = store.get_run(run_id)
     payload = state.run_detail_payload(
-        shim, run_id, tasks_dir=tasks_dir, groups_file=groups_file)
+        shim, run_id, tasks_dir=tasks_dir, groups_file=groups_file, hosted=True,
+        raw_dir=state.resolve_run_dir(store, meta) if meta else None)
     if payload is None:
         return None
     payload["calls"] = _ledger_calls(store, run_id)
@@ -221,6 +223,8 @@ def push_run(client: httpx.Client, store: RunStore, meta: Any,
              tasks_dir: Path, groups_file: Path) -> dict[str, Any]:
     """Scrub + payload + ledger for one run → POST /ingest/run."""
     run_dir = Path(meta.run_dir)
+    if privacy.run_is_holdout(run_dir, meta.config):  # the index row alone can mark it
+        raise HoldoutRunError(f"{meta.run_id} is a holdout run")
     with tempfile.TemporaryDirectory(prefix="orch-scrub-") as tmp:
         scrubbed = scrub_to_dir(run_dir, Path(tmp))
         files = _collect_files(scrubbed)
@@ -277,13 +281,13 @@ def d1_projection(store: RunStore, run_ids: list[str] | None = None) -> dict[str
         if run_ids is not None else store.list_runs(limit=None)
     )
     for m in metas:
-        if privacy.run_is_holdout(Path(m.run_dir)):
+        if privacy.run_is_holdout(Path(m.run_dir), m.config):
             continue  # holdout runs never leave the machine, even as rows
         row = m.to_public_dict()
         runs.append({k: row.get(k) for k in RUN_COLUMNS} | {"holdout": 0})
     calls: list[dict[str, Any]] = []
     for m in metas:
-        if privacy.run_is_holdout(Path(m.run_dir)):
+        if privacy.run_is_holdout(Path(m.run_dir), m.config):
             continue
         calls.extend(_ledger_calls(store, m.run_id))
     # Every field goes through scrub_dict, not just note — `post`
@@ -383,7 +387,7 @@ def sync(store: RunStore, tasks_dir: Path, models_dir: Path, groups_file: Path,
     with httpx.Client(headers=_ingest_headers() if push else {}) as client:
         for meta in metas:
             try:
-                if privacy.run_is_holdout(Path(meta.run_dir)):
+                if privacy.run_is_holdout(Path(meta.run_dir), meta.config):
                     result.skipped_holdout.append(meta.run_id)
                     continue
                 if not Path(meta.run_dir).is_dir():

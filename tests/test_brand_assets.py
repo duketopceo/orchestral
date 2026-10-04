@@ -1,4 +1,4 @@
-"""The Score, U3: Downbeat mark, wordmark, favicon set (DESIGN.md A1-A3).
+"""The Score, U3: Ictus mark, wordmark, favicon set (DESIGN.md A1-A3).
 
 Static checks on the committed brand files plus the served MIME types and the
 shell's link tags. Nothing here reaches a provider or needs a rasteriser: the
@@ -95,9 +95,11 @@ class TestBrandSvgs(unittest.TestCase):
         geo = {n: re.findall(r' d="([^"]+)"', (BRAND / n).read_text())
                for n in ("mark.svg", "mark-24.svg", "mark-16.svg")}
         self.assertEqual(len({tuple(v) for v in geo.values()}), 3)
-        # 16px = two staff lines + baton; 24px masters = three lines + baton.
-        self.assertEqual(geo["mark-16.svg"][0].count("z"), 3)   # 1 line + 2 knockout halves
-        self.assertEqual(geo["mark.svg"][0].count("z"), 4)      # 2 lines + 2 halves
+        # Ictus: two staff lines in every size plus a baton that lands on the top
+        # line: three pixel steps at 16px, a 2u polygon at 24px, a 2.5u one in the master.
+        self.assertEqual(geo["mark-16.svg"][0].count("z"), 5)   # 2 lines + 3 steps
+        self.assertEqual(geo["mark-24.svg"][0].count("z"), 3)   # 2 lines + baton polygon
+        self.assertEqual(geo["mark.svg"][0].count("z"), 3)      # 2 lines + baton polygon
 
     def test_marks_use_currentcolor_only(self):
         for n in ("mark.svg", "mark-16.svg", "mark-24.svg", "wordmark.svg",

@@ -308,6 +308,11 @@ class Runner:
             "seed": run_seed,
             "holdout": is_holdout(task),
             "task_type": task.type,
+            # staleness detection sizes its silence window off this —
+            # a run quiet for its whole exec timeout must not read stale
+            "timeout_seconds": float(
+                task.metadata.get("timeout_seconds") or DEFAULT_TIMEOUT_SECONDS
+            ),
             "orchestrator": orchestrator.to_dict(),
             "worker": worker.to_dict(),
         }
@@ -1234,6 +1239,13 @@ class Runner:
             if not judge_result.get("inconclusive"):
                 meta.judge_score = judge_result.get("score")
                 meta.judge_passed = judge_result.get("passed")
+            # the contract marker makes indexed/aggregate judge_score values
+            # splittable: v2 scores are criteria-derived, v1 are scalar claims
+            if judge_result.get("judge_contract"):
+                meta.config["judge_contract"] = judge_result["judge_contract"]
+                for key in ("claimed_score", "claimed_passed"):
+                    if key in judge_result:
+                        meta.config[key] = judge_result[key]
             meta.latency_ms = (time.perf_counter() - t0) * 1000
             if passes is False:
                 # The judge no longer decides `passes`, so a failure here is a

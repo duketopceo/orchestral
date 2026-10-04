@@ -37,6 +37,7 @@ from typing import Any
 
 import yaml
 
+from orchestral.agentexec import DEFAULT_TIMEOUT_SECONDS
 from orchestral.config import TaskSpec, find_task, load_task
 from orchestral.stats import diff_ci
 from orchestral.storage import RunMeta, RunStore
@@ -64,10 +65,13 @@ ISOLATED_TASK_TYPES = frozenset({"code", "bugfix"})
 # but still count as delivered work). "running" is the only live status.
 TERMINAL_STATUSES = frozenset({"finished", "failed", "cancelled"})
 
-# A "running" row with no activity for this long is a corpse: launches
-# are synchronous inside the driver, so a row that outlives its process
-# is process death, not in-flight work.
-STALE_RUNNING_SECONDS = 600.0
+# A "running" row is a corpse only after its longest legitimate silence:
+# one executor attempt at the recorded timeout plus a margin for the
+# call/judge tail — a window shorter than an in-flight attempt marks a
+# live run stale and relaunches a duplicate into its slot. The floor
+# covers rows that predate the timeout_seconds config field.
+_STALE_MARGIN_SECONDS = 600.0
+STALE_RUNNING_SECONDS = DEFAULT_TIMEOUT_SECONDS + _STALE_MARGIN_SECONDS
 
 CellLauncher = Callable[["Cell", str, int, str, int | None], RunMeta]
 
@@ -302,7 +306,9 @@ def run_is_stale(meta: RunMeta, now: float) -> bool:
             )
     if not candidates:
         return True
-    return now - max(candidates) > STALE_RUNNING_SECONDS
+    recorded = float((meta.config or {}).get("timeout_seconds") or 0)
+    window = max(STALE_RUNNING_SECONDS, recorded + _STALE_MARGIN_SECONDS)
+    return now - max(candidates) > window
 
 
 def _missing_work(
@@ -436,15 +442,35 @@ def run_experiment(
             for orphan in orphans:
                 if orphan.run_id in marked_orphans or orphan.run_id in aborted_runs:
                     continue
+                # the aborted annotation is the cross-process claim on the
+                # slot — it has to be atomic or a racing driver/recover
+                # launches a second replacement into the same replicate
+                try:
+                    claimed = store.claim_aborted(
+                        orphan.run_id,
+                        "orphaned 'running' row — presumed process death",
+                    )
+                except Exception as exc:
+                    emit(
+                        f"[warn] {cell.key}: abort claim for "
+                        f"{orphan.run_id} failed ({type(exc).__name__}: {exc}) "
+                        "— retrying next pass"
+                    )
+                    continue
+                if not claimed:
+                    continue
                 marked_orphans.add(orphan.run_id)
-                # hydrate the corpse's billed calls into runs.* before
-                # it goes on the books as aborted — killed runs would
-                # otherwise meter $0 to coverage and spend reports
-                store.repair_orphan_costs(orphan.run_id)
-                store.set_annotation(
-                    "run", orphan.run_id, "aborted",
-                    note="orphaned 'running' row — presumed process death",
-                )
+                # hydrate the corpse's billed calls into runs.* before it
+                # goes on the books — killed runs would otherwise meter $0
+                # to coverage and spend reports. Best-effort: a transient
+                # store failure must not take the whole cell summary down.
+                try:
+                    store.repair_orphan_costs(orphan.run_id)
+                except Exception as exc:
+                    emit(
+                        f"[warn] {cell.key}: orphan cost repair for "
+                        f"{orphan.run_id} failed ({type(exc).__name__}: {exc})"
+                    )
                 emit(
                     f"[recover] {cell.key} rep {orphan.replicate}: orphan "
                     f"{orphan.run_id} marked aborted — slot reopened"

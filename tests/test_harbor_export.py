@@ -49,6 +49,8 @@ def _mechanical_spec() -> TaskSpec:
     return TaskSpec(
         id="needle-demo", type="html", title="needle",
         prompt="Write a page.",
+        validation=["non_empty", "has_required", "no_forbidden",
+                    "exact_answer"],
         metadata={
             "required": ["FALCON-4417"],
             "forbidden": ["lorem"],
@@ -72,10 +74,12 @@ class TestGuards(unittest.TestCase):
         self.assertIn("--publish-keys", str(cm.exception))
 
     def test_non_fixture_without_checks_refuses(self):
-        spec = TaskSpec(id="bare", type="html", prompt="p")
+        # an unexportable requested check must refuse rather than ship a
+        # verifier weaker than the spec's own contract
+        spec = TaskSpec(id="bare", type="image", prompt="p")
         with tempfile.TemporaryDirectory() as tmp, self.assertRaises(ValueError) as cm:
             export_task(spec, tmp, publish_keys=True)
-        self.assertIn("nothing", str(cm.exception))
+        self.assertIn("no Harbor", str(cm.exception))
 
     def test_missing_fixture_blob_refuses(self):
         with tempfile.TemporaryDirectory() as tmp, self.assertRaises(ValueError) as cm:
@@ -119,29 +123,163 @@ class TestGuards(unittest.TestCase):
             self.assertFalse((Path(tmp) / spec.id).exists())
 
     def test_dict_required_content_exports(self):
-        # required_content is a {path: [tokens]} mapping — dict-shaped
-        # values must flatten into checks.json, not drop silently
-        spec = TaskSpec(id="rc", type="html", prompt="p", metadata={
-            "required_content": {"index.html": ["FALCON-4417", "nav"]},
-        })
+        # required_content is a {path: [tokens]} mapping — the exported
+        # check must keep the path binding, not flatten to global tokens
+        spec = TaskSpec(id="rc", type="html", prompt="p",
+                        validation=["non_empty", "has_content"],
+                        metadata={
+                            "required_content": {
+                                "index.html": ["FALCON-4417", "nav"]
+                            },
+                        })
         with tempfile.TemporaryDirectory() as tmp:
             pkg = export_task(spec, tmp, publish_keys=True)
             checks = json.loads((pkg / "tests/checks.json").read_text())
-        self.assertIn("FALCON-4417", checks["required"])
-        self.assertIn("nav", checks["required"])
+        self.assertEqual(
+            checks["has_content"], {"index.html": ["FALCON-4417", "nav"]}
+        )
+
+    def test_unrequested_metadata_keys_do_not_export(self):
+        # a metadata.required key the spec never asked to check must not
+        # silently become a verifier — validation gates every family
+        spec = TaskSpec(id="unreq", type="html", prompt="p",
+                        validation=["non_empty"],
+                        metadata={"required": ["FALCON-4417"]})
+        with tempfile.TemporaryDirectory() as tmp:
+            pkg = export_task(spec, tmp, publish_keys=True)
+            checks = json.loads((pkg / "tests/checks.json").read_text())
+        self.assertNotIn("has_required", checks)
+        self.assertEqual(checks, {"non_empty": True})
+
+    def test_unsafe_spec_id_refused(self):
+        for bad_id in ("../escape", "a/b", "..", "/abs", 'q"uote', "n\nl"):
+            spec = TaskSpec(id=bad_id, type="html", prompt="p",
+                            validation=["non_empty"])
+            with tempfile.TemporaryDirectory() as tmp:
+                with self.assertRaises(ValueError) as cm:
+                    export_task(spec, tmp, publish_keys=True)
+                self.assertIn("unsafe task id", str(cm.exception))
+                import os
+                self.assertEqual(os.listdir(tmp), [])
+
+    def test_reexport_replaces_package_wholesale(self):
+        # stale files from an earlier export must not survive into a
+        # re-export — the package is a published artifact
+        with tempfile.TemporaryDirectory() as tmp:
+            spec = _mechanical_spec()
+            pkg = export_task(spec, tmp, publish_keys=True)
+            stale = pkg / "tests" / "oracle" / "old.py"
+            stale.parent.mkdir(parents=True)
+            stale.write_text("retired key\n")
+            export_task(spec, tmp, publish_keys=True)
+            self.assertFalse(stale.exists())
+            self.assertTrue((pkg / "tests" / "checks.json").exists())
+
+    def test_verifier_payloads_not_scrubbed(self):
+        # _guest_scrub mangles non-/home/user paths — verifier bytes must
+        # match what the real harness writes, verbatim
+        spec = _fixture_spec()
+        spec.metadata["test_files"] = {
+            "tests/test_oracle.py": "P = '/home/jenkins/lib'\ndef test_x(): pass\n",
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            fixture_root = Path(tmp) / "fixtures"
+            fixture_root.mkdir()
+            _write_fixture(fixture_root)
+            pkg = export_task(spec, Path(tmp) / "out",
+                              publish_keys=True, fixtures_dir=fixture_root)
+            body = (pkg / "tests/oracle/tests/test_oracle.py").read_text()
+        self.assertIn("/home/jenkins/lib", body)
+
+    def test_checks_py_exact_answer_semantics(self):
+        # expected_answer is exact full-artifact equality in the harness —
+        # a substring inside a larger workspace file must fail
+        import subprocess
+        spec = TaskSpec(
+            id="exact", type="html", prompt="p",
+            validation=["exact_answer"],
+            metadata={"expected_answer": "FALCON-4417"},
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            pkg = export_task(spec, tmp, publish_keys=True)
+            work = Path(tmp) / "work"
+            work.mkdir()
+            (work / "out.txt").write_text("prefix FALCON-4417 suffix\n")
+            rc = subprocess.run(
+                ["python3", str(pkg / "tests/checks.py"),
+                 str(work), str(pkg / "tests/checks.json")],
+                capture_output=True, text=True,
+            )
+            self.assertEqual(rc.returncode, 1)
+            (work / "out.txt").write_text("FALCON-4417")
+            rc = subprocess.run(
+                ["python3", str(pkg / "tests/checks.py"),
+                 str(work), str(pkg / "tests/checks.json")],
+                capture_output=True, text=True,
+            )
+            self.assertEqual(rc.returncode, 0, rc.stderr)
+
+    def test_checks_py_path_scoped_content(self):
+        # has_content binds tokens to their declared path — the same
+        # token in a different file must fail
+        import subprocess
+        spec = TaskSpec(
+            id="scoped", type="html", prompt="p",
+            validation=["has_content"],
+            metadata={"required_content": {"a.txt": ["NEEDLE-1"]}},
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            pkg = export_task(spec, tmp, publish_keys=True)
+            work = Path(tmp) / "work"
+            work.mkdir()
+            (work / "b.txt").write_text("NEEDLE-1\n")
+            rc = subprocess.run(
+                ["python3", str(pkg / "tests/checks.py"),
+                 str(work), str(pkg / "tests/checks.json")],
+                capture_output=True, text=True,
+            )
+            self.assertEqual(rc.returncode, 1)
+            (work / "a.txt").write_text("needle-1\n")  # case-insensitive
+            rc = subprocess.run(
+                ["python3", str(pkg / "tests/checks.py"),
+                 str(work), str(pkg / "tests/checks.json")],
+                capture_output=True, text=True,
+            )
+            self.assertEqual(rc.returncode, 0, rc.stderr)
+
+    def test_generated_test_sh_is_valid_bash(self):
+        import subprocess
+        for spec, kwargs in (
+            (_mechanical_spec(), {}),
+            (_fixture_spec(), {"fixtures_dir": Path}),
+        ):
+            with tempfile.TemporaryDirectory() as tmp:
+                if kwargs:
+                    fixture_root = Path(tmp) / "fixtures"
+                    fixture_root.mkdir()
+                    _write_fixture(fixture_root)
+                    kwargs = {"fixtures_dir": fixture_root}
+                pkg = export_task(spec, Path(tmp) / "out",
+                                  publish_keys=True, **kwargs)
+                rc = subprocess.run(
+                    ["bash", "-n", str(pkg / "tests/test.sh")],
+                    capture_output=True, text=True,
+                )
+                self.assertEqual(rc.returncode, 0, rc.stderr)
 
     def test_secret_scan_defense_in_depth(self):
         # is_holdout() passed, but if a holdout key reaches the emitted
         # bytes the scan must still fire — guard-bypass detection
         spec = _mechanical_spec()
         spec.prompt = "p SECRET-CANARY-7 p"
-        with tempfile.TemporaryDirectory() as tmp:
-            with unittest.mock.patch(
-                "orchestral.harbor_export.holdout_secrets",
-                return_value=["SECRET-CANARY-7"],
-            ), self.assertRaises(ValueError) as cm:
-                export_task(spec, tmp, publish_keys=True)
+        with (tempfile.TemporaryDirectory() as tmp, unittest.mock.patch(
+            "orchestral.harbor_export.holdout_secrets",
+            return_value=["SECRET-CANARY-7"],
+        ), self.assertRaises(ValueError) as cm):
+            export_task(spec, tmp, publish_keys=True)
         self.assertIn("secret", str(cm.exception).lower())
+        # scan refusals run pre-write — no half-written package skeleton
+        self.assertFalse((Path(tmp) / spec.id).exists())
 
 
 def _write_fixture(fixture_root: Path, fixture_id: str = "demo-fix") -> None:
@@ -149,10 +287,13 @@ def _write_fixture(fixture_root: Path, fixture_id: str = "demo-fix") -> None:
     the same grading-time contract codeexec/cubeexec rely on."""
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz") as tf:
-        data = b"print('ok')\n"
-        info = tarfile.TarInfo("repo/main.py")
-        info.size = len(data)
-        tf.addfile(info, io.BytesIO(data))
+        for name, data in (
+            ("repo/main.py", b"print('ok')\n"),
+            ("repo/tests/test_suite.py", b"def test_y(): pass\n"),
+        ):
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
     blob = buf.getvalue()
     (fixture_root / f"{fixture_id}.tar.gz").write_bytes(blob)
     (fixture_root / f"{fixture_id}.lock.json").write_text(
@@ -217,6 +358,19 @@ class TestFixtureExport(unittest.TestCase):
             self.assertIn("/home/user/repo", instr)
             self.assertIn("modify files in place", instr)
 
+    def test_protected_manifest_covers_test_members(self):
+        # the exported test-path denylist mirrors run_repo_suite: every
+        # test-owned fixture member is pinned by sha256 so agent edits
+        # or agent-created conftest/toolchain files fail verification
+        with tempfile.TemporaryDirectory() as tmp:
+            pkg = self._export(tmp)
+            manifest = (pkg / "tests/protected.sha256").read_text()
+            self.assertIn("  tests/test_suite.py", manifest)
+            self.assertNotIn("main.py", manifest)
+            sh = (pkg / "tests/test.sh").read_text()
+            self.assertIn("protected.sha256", sh)
+            self.assertIn("unauthorized test/toolchain file", sh)
+
 
 class TestMechanicalExport(unittest.TestCase):
     def test_checks_json_carries_keys(self):
@@ -224,10 +378,12 @@ class TestMechanicalExport(unittest.TestCase):
             pkg = export_task(_mechanical_spec(), Path(tmp) / "out",
                               publish_keys=True)
             checks = json.loads((pkg / "tests/checks.json").read_text())
-            # required + expected_answer dedupe — the same key stated
-            # twice is one check
-            self.assertEqual(checks["required"], ["FALCON-4417"])
-            self.assertEqual(checks["forbidden"], ["lorem"])
+            # check-name-keyed payloads, gated on spec.validation —
+            # exact_answer stays a distinct check, not a substring token
+            self.assertEqual(checks["has_required"], ["FALCON-4417"])
+            self.assertEqual(checks["no_forbidden"], ["lorem"])
+            self.assertEqual(checks["exact_answer"], "FALCON-4417")
+            self.assertEqual(checks["non_empty"], True)
             toml = (pkg / "task.toml").read_text()
             self.assertIn('verifier_mode = "mechanical"', toml)
             # but the key must not leak into task.toml metadata

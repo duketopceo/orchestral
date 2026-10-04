@@ -579,26 +579,53 @@ def cmd_recover(args: argparse.Namespace) -> None:
     worker = _apply_retry_limit(replace(_model_from_arg(meta.worker, args.models_dir, known), role="worker"), args)
     _check_provider_envs(args, orchestrator, worker, judge)
     cfg = meta.config or {}
-    store.repair_orphan_costs(meta.run_id)
-    store.set_annotation(
-        "run", meta.run_id, "aborted",
-        note="orphaned 'running' row — relaunching replacement",
-    )
+    dry_run = bool(meta.dry_run) or bool(getattr(args, "dry_run", False))
+    claimed = False
+    if not dry_run:
+        # the aborted flag is the atomic cross-process claim on the slot —
+        # claim before the (long) replacement launch, not after
+        try:
+            claimed = store.claim_aborted(
+                meta.run_id, "orphaned 'running' row — relaunching replacement",
+            )
+        except Exception:
+            claimed = False
+        if not claimed:
+            print(
+                f"recover: run {meta.run_id} was already claimed for "
+                "recovery — another driver or recover owns the slot",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        # hydrate the corpse's billed calls into runs.* — killed runs
+        # would otherwise meter $0 to coverage and spend reports
+        store.repair_orphan_costs(meta.run_id)
     kwargs = _runner_kwargs(
         args, store,
         run_group=meta.run_group,
         replicate=meta.replicate,
         seed=cfg.get("seed"),
         jev_assist=cfg.get("jev_assist", False),
-        planner=cfg.get("planner", getattr(args, "planner", None)),
-        prompt_variant=cfg.get("prompt_variant"),
-        dry_run=bool(meta.dry_run) or bool(getattr(args, "dry_run", False)),
+        planner=cfg.get("planner") or getattr(args, "planner", None),
+        prompt_variant=cfg.get("prompt_variant") or getattr(args, "prompt_variant", None),
+        dry_run=dry_run,
     )
-    new_meta = Runner(**kwargs).run(task, orchestrator, worker, judge)
-    store.set_annotation(
-        "run", meta.run_id, "aborted",
-        note=f"orphaned 'running' row — superseded by {new_meta.run_id}",
-    )
+    try:
+        new_meta = Runner(**kwargs).run(task, orchestrator, worker, judge)
+    except Exception:
+        # a failed relaunch must not brick the slot — release the claim so
+        # a later recover or driver pass can try again
+        if claimed:
+            store.set_annotation(
+                "run", meta.run_id, "",
+                note="recovery launch failed — slot reopened for retry",
+            )
+        raise
+    if claimed:
+        store.set_annotation(
+            "run", meta.run_id, "aborted",
+            note=f"orphaned 'running' row — superseded by {new_meta.run_id}",
+        )
     print(f"Recovered {meta.run_id} → {new_meta.run_id} [{new_meta.status}]")
     print(f"  Directory: {new_meta.run_dir}")
     print(f"  Cost: ${new_meta.total_cost_usd:.6f} | Passes: {new_meta.passes} | Score: {new_meta.score}")

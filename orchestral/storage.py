@@ -810,6 +810,37 @@ class RunStore:
             ).fetchall()
         return [dict(r) for r in rows]
 
+    def claim_aborted(self, run_id: str, note: str) -> bool:
+        """Atomically mark a run ``aborted`` unless it already is —
+        returns True only for the caller that won the claim.
+
+        The aborted flag is the cross-process claim on an orphaned
+        ``running`` row's replicate slot. set_annotation is a blind
+        upsert, so two relaunchers can both observe "not aborted" and
+        both write it; this form returns False for the loser instead of
+        silently succeeding."""
+        with self._connect() as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO annotations (kind, target, flag, note, updated_at)
+                VALUES ('run', ?, 'aborted', ?, ?)
+                ON CONFLICT (kind, target) DO UPDATE SET
+                    flag = 'aborted',
+                    note = excluded.note,
+                    updated_at = excluded.updated_at
+                WHERE annotations.flag != 'aborted'
+                """,
+                (run_id, note, datetime.now(UTC).isoformat()),
+            )
+            won = cur.rowcount == 1
+            if won:
+                conn.execute(
+                    "INSERT OR REPLACE INTO sync_dirty (run_id, reason, dirty_at)"
+                    " VALUES (?, 'annotation', ?)",
+                    (run_id, datetime.now(UTC).isoformat()),
+                )
+        return won
+
     def debug_log(self, component: str, message: str, **fields: Any) -> None:
         """Append to the root-level runs/debug.jsonl for events that happen
         before a run directory exists (e.g. provider resolution failures)."""

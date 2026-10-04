@@ -345,6 +345,76 @@ class TestDerivedVerdict(unittest.TestCase):
         self.assertFalse(key["satisfied"])
         self.assertEqual(key["engine"], "mechanical")
 
+    def test_all_secret_spec_still_derives(self):
+        # an all-secret spec has no open criteria — the mechanical veto
+        # must still run instead of standing the scalar claim up
+        secret = "sekrit-token-4242"
+        spec = TaskSpec(id="t", type="html", prompt="p", metadata={
+            "required": [secret],
+            "criteria": [
+                {"id": "k", "rubric": f"output includes {secret}"},
+            ],
+        })
+        result, _ = _judge(spec, _client(
+            '{"score": 1.0, "passed": true, "reasoning": "r"}'
+        ), artifact="<html>missing</html>")
+        self.assertFalse(result["criteria"][0]["satisfied"])
+        self.assertFalse(result["passed"])
+        self.assertTrue(result["claimed_passed"])
+        # and the flip side — secret present derives a mechanical pass
+        result, _ = _judge(spec, _client(
+            '{"score": 1.0, "passed": true, "reasoning": "r"}'
+        ), artifact=f"<html>{secret}</html>")
+        self.assertTrue(result["passed"])
+        self.assertEqual(result["score"], 1.0)
+
+    def test_ungradeable_secret_blocks_derivation(self):
+        # an explicit secret:true criterion whose rubric embeds no
+        # >=8-char secret is ungradeable — inconclusive, not fail-closed
+        spec = TaskSpec(id="t", type="html", prompt="p", metadata={
+            "criteria": [
+                {"id": "a", "rubric": "has heading"},
+                {"id": "k", "rubric": "tiny key", "secret": True},
+            ],
+        })
+        result, _ = _judge(spec, _client(self._reply(1.0, True, [
+            {"id": "a", "satisfied": True, "evidence": "<h1>x</h1>"},
+        ])), artifact="<h1>x</h1>")
+        key = next(c for c in result["criteria"] if c["id"] == "k")
+        self.assertIsNone(key["satisfied"])
+        # derivation blocked — the scalar claim stands, not a fabricated fail
+        self.assertNotIn("claimed_passed", result)
+        self.assertTrue(result["passed"])
+
+    def test_case_variant_secret_matches_like_has_required(self):
+        # production has_required/no_forbidden fold case — mechanical
+        # grading must not contradict the run's own mechanical verdict
+        secret = "falcon-4417"
+        # rubric carries the lowercase form; required carries uppercase —
+        # both flag secret via spec_secrets membership, grade case-folded
+        spec2 = TaskSpec(id="t", type="html", prompt="p", metadata={
+            "required": [secret],
+            "criteria": [
+                {"id": "k", "rubric": f"output includes {secret}"},
+            ],
+        })
+        result, _ = _judge(spec2, _client(
+            '{"score": 1.0, "passed": true, "reasoning": "r"}'
+        ), artifact="<h1>FALCON-4417</h1>")
+        self.assertTrue(result["criteria"][0]["satisfied"])
+
+    def test_rollup_records_truncation(self):
+        spec = TaskSpec(id="t", type="html", prompt="p", metadata={
+            "criteria": [{"id": f"c{i}", "rubric": f"rubric {i}"}
+                         for i in range(25)],
+        })
+        result, _ = _judge(spec, _client(self._reply(0.9, True, [
+            {"id": f"c{i}", "satisfied": True, "evidence": "<h1>x</h1>"}
+            for i in range(25)
+        ])), artifact="<h1>x</h1>")
+        self.assertEqual(result["criteria_rollup"]["total"], 20)
+        self.assertEqual(result["criteria_rollup"]["truncated"], 5)
+
 
 class TestDecisionsCriteria(unittest.TestCase):
     def test_decisions_engine_reports_unavailable_not_fabricated(self):

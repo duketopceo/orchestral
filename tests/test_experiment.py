@@ -542,20 +542,59 @@ class TestCmdRecover(unittest.TestCase):
     def test_stale_run_relaunches(self):
         rid = self._orphan(stale=True)
         buf = io.StringIO()
-        with redirect_stdout(buf), redirect_stderr(io.StringIO()):
-            harness.cmd_recover(self._args(rid))
+        fake = _meta(run_id="new1", run_dir="/tmp/new1")
+        with (redirect_stdout(buf), redirect_stderr(io.StringIO()),
+              patch.dict(os.environ, {"OPENROUTER_API_KEY": "x"}),
+              patch("harness.Runner") as mock_runner):
+            mock_runner.return_value.run.return_value = fake
+            harness.cmd_recover(self._args(rid, dry_run=False))
         self.assertIn("Recovered", buf.getvalue())
         aborted = [a for a in self.store.annotations()
                    if a["kind"] == "run" and a["target"] == rid
                    and a["flag"] == "aborted"]
         self.assertEqual(len(aborted), 1)
+        self.assertIn("new1", aborted[0]["note"])
         # the replacement carries the orphan's group, replicate, and seed
-        new = [r for r in self.store.list_runs(limit=None)
-               if r.run_id != rid]
-        self.assertEqual(len(new), 1)
-        self.assertEqual(new[0].run_group, "g:t:o/m:w/m:baseline")
-        self.assertEqual(new[0].replicate, 3)
-        self.assertEqual((new[0].config or {}).get("seed"), 42)
+        kwargs = mock_runner.call_args.kwargs
+        self.assertEqual(kwargs["run_group"], "g:t:o/m:w/m:baseline")
+        self.assertEqual(kwargs["replicate"], 3)
+        self.assertEqual(kwargs["seed"], 42)
+
+    def test_dry_run_recover_leaves_slot_open(self):
+        # a preview must not claim the slot — the aborted flag is the
+        # cross-process record, and writing it would brick real recovery
+        rid = self._orphan(stale=True)
+        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            harness.cmd_recover(self._args(rid))  # args default dry_run=True
+        aborted = [a for a in self.store.annotations()
+                   if a["kind"] == "run" and a["target"] == rid
+                   and a["flag"] == "aborted"]
+        self.assertEqual(aborted, [])
+        # a real recover still works afterwards — the preview did not
+        # burn the slot
+        buf = io.StringIO()
+        fake = _meta(run_id="new1", run_dir="/tmp/new1")
+        with (redirect_stdout(buf), redirect_stderr(io.StringIO()),
+              patch.dict(os.environ, {"OPENROUTER_API_KEY": "x"}),
+              patch("harness.Runner") as mock_runner):
+            mock_runner.return_value.run.return_value = fake
+            harness.cmd_recover(self._args(rid, dry_run=False))
+        self.assertIn("Recovered", buf.getvalue())
+
+    def test_failed_relaunch_reopens_slot(self):
+        # a replacement that raises mid-run must release the aborted
+        # claim — otherwise the orphan is permanently unrecoverable
+        rid = self._orphan(stale=True)
+        fake_err = RuntimeError("provider blew up")
+        with (redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()),
+              patch.dict(os.environ, {"OPENROUTER_API_KEY": "x"}),
+              patch("harness.Runner") as mock_runner,
+              self.assertRaises(RuntimeError)):
+            mock_runner.return_value.run.side_effect = fake_err
+            harness.cmd_recover(self._args(rid, dry_run=False))
+        flags = [a["flag"] for a in self.store.annotations()
+                 if a["kind"] == "run" and a["target"] == rid]
+        self.assertEqual(flags, [""])
 
 
 class TestOrphanCostRepair(unittest.TestCase):

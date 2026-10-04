@@ -69,12 +69,15 @@ Artifact:
 Score the artifact from 0.0 to 1.0 based on how well it satisfies the task,
 then judge each criterion independently. For every satisfied criterion,
 quote the shortest verbatim excerpt from the artifact that proves it —
-no paraphrases, no descriptions of evidence.
+no paraphrases, no descriptions of evidence. Excerpts are verified
+byte-for-byte against the artifact, so quote exactly.
 
 Criteria:
 {criteria_block}
 
-Return only a JSON object with this exact shape:
+Return only a JSON object with this exact shape, with one criteria entry
+for EVERY criterion listed above, in order, echoing each id exactly —
+satisfied or not (use "evidence": null for unsatisfied entries):
 
 {{
   "score": <float between 0.0 and 1.0>,
@@ -175,11 +178,16 @@ def _mechanical_satisfied(
     satisfied iff the artifact avoids them. Forbidden *patterns* are
     regexes: unmatchable-as-substring, so they grade by ``re.search``
     (an invalid pattern can't be graded → None). Every other embedded
-    answer key is a presence requirement."""
+    answer key is a presence requirement. Substring checks fold case to
+    mirror ``has_required``/``no_forbidden``; pattern checks stay verbatim
+    like ``no_pattern``."""
     if not secrets_in_rubric:
         return None
     meta = spec.metadata or {}
-    forbidden_vals = {str(f) for f in meta.get("forbidden") or []}
+    forb = meta.get("forbidden")
+    forbidden_vals = {
+        str(f) for f in ([forb] if isinstance(forb, str) else (forb or []))
+    }
     patterns = {
         str(p)
         for p in (
@@ -189,10 +197,11 @@ def _mechanical_satisfied(
         ) + list(meta.get("forbidden_patterns") or [])
         if p
     }
+    lowered = artifact.lower()
     required = secrets_in_rubric - forbidden_vals - patterns
-    if not all(s in artifact for s in required):
+    if not all(s.lower() in lowered for s in required):
         return False
-    if any(s in artifact for s in secrets_in_rubric & forbidden_vals):
+    if any(s.lower() in lowered for s in secrets_in_rubric & forbidden_vals):
         return False
     for pat in secrets_in_rubric & patterns:
         try:
@@ -203,7 +212,28 @@ def _mechanical_satisfied(
     return True
 
 
-def criteria_rollup(criteria: list[dict[str, Any]]) -> dict[str, int]:
+def _criteria_dropped(spec: TaskSpec) -> int:
+    """Valid metadata.criteria entries past ``MAX_CRITERIA`` that
+    ``task_criteria`` drops — reported in the rollup so consumers can see
+    the contract was narrowed."""
+    raw = (spec.metadata or {}).get("criteria")
+    if not isinstance(raw, list):
+        return 0
+    valid = sum(
+        1
+        for e in raw
+        if (isinstance(e, str) and e.strip())
+        or (
+            isinstance(e, dict)
+            and str(e.get("rubric") or e.get("text") or "").strip()
+        )
+    )
+    return max(0, valid - MAX_CRITERIA)
+
+
+def criteria_rollup(
+    criteria: list[dict[str, Any]], *, truncated: int = 0
+) -> dict[str, int]:
     """Headline counts for a per-criterion result set — the score-tree
     root that travels with ``judge.criteria`` into reports, BI payloads,
     and the hosted mirror."""
@@ -214,6 +244,7 @@ def criteria_rollup(criteria: list[dict[str, Any]]) -> dict[str, int]:
         "unsupported": sum(1 for c in criteria if c.get("supported") is False),
         "unassessed": sum(1 for c in criteria if c.get("satisfied") is None),
         "secret": sum(1 for c in criteria if c.get("secret")),
+        "truncated": truncated,
     }
 
 
@@ -246,7 +277,14 @@ def _merge_criteria(
         cid = crit["id"]
         if crit["secret"]:
             in_rubric = {s for s in secrets if s in crit["rubric"]}
-            mech_satisfied = _mechanical_satisfied(in_rubric, spec, artifact)
+            if is_image:
+                # there is no artifact text to presence-check against —
+                # presence/absence grading is ungradeable, not a fail
+                mech_satisfied = None
+                mech_note = "not verifiable on image artifacts"
+            else:
+                mech_satisfied = _mechanical_satisfied(in_rubric, spec, artifact)
+                mech_note = "secret-bearing — graded by mechanical presence/absence check"
             out.append({
                 "id": cid,
                 # the rubric is the answer key — withheld from results too
@@ -255,7 +293,7 @@ def _merge_criteria(
                 "evidence": [],
                 "engine": "mechanical",
                 "secret": True,
-                "note": "secret-bearing — graded by mechanical presence/absence check",
+                "note": mech_note,
             })
             continue
         satisfied: bool | None
@@ -298,17 +336,21 @@ def _merge_criteria(
             entry["note"] = note
         out.append(entry)
     result["criteria"] = out
-    result["criteria_rollup"] = criteria_rollup(out)
+    result["criteria_rollup"] = criteria_rollup(
+        out, truncated=_criteria_dropped(spec)
+    )
     result["unsupported_criteria"] = unsupported
-    # v2 hard verdict: when every open criterion carries a verdict, the
-    # headline pass/score derives from the criteria — the judge's scalar
-    # claim stays recorded for disagreement analysis. `supported is not
-    # False` is the gate: a satisfied claim contradicted by its evidence
-    # fails; unverifiable evidence (image artifacts) does not.
+    # v2 hard verdict: when every criterion — open or secret — carries a
+    # verdict, the headline pass/score derives from the criteria — the
+    # judge's scalar claim stays recorded for disagreement analysis.
+    # `supported is not False` is the gate on open criteria: a satisfied
+    # claim contradicted by its evidence fails; unverifiable evidence
+    # (image artifacts) does not. An unassessed or ungradeable criterion
+    # blocks derivation rather than fabricating a verdict either way.
     open_crit = [c for c in out if not c.get("secret")]
     if (
-        open_crit
-        and all(c["satisfied"] is not None for c in open_crit)
+        out
+        and all(c["satisfied"] is not None for c in out)
         # an inconclusive scalar verdict stays inconclusive — deriving a
         # pass/fail over it would record a concrete verdict next to a
         # "no answer" flag
@@ -569,7 +611,9 @@ def judge_artifact(
             }
             for c in criteria
         ]
-        result["criteria_rollup"] = criteria_rollup(result["criteria"])
+        result["criteria_rollup"] = criteria_rollup(
+            result["criteria"], truncated=_criteria_dropped(task)
+        )
         result["unsupported_criteria"] = 0
         return result, costs
 

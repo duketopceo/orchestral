@@ -613,12 +613,15 @@ def spec_secrets(spec: TaskSpec) -> set[str]:
 
     # GRADED_KEYS plus per-type answer keys: required/forbidden tokens (the
     # has_required/no_forbidden checks), the hidden test bodies and
-    # reference solutions that grade code/repo specs — all of them are
-    # things a judge must never be shown on *any* spec, holdout or not.
+    # reference solutions that grade code/repo specs, and the verifier
+    # metadata whose args/paths embed answer material (verify.command argv,
+    # setup_commands, expected_paths) — all of them are things a judge
+    # must never be shown on *any* spec, holdout or not.
     for key in (
         GRADED_KEYS | GRADED_METADATA_KEYS
         | {"required", "forbidden", "forbidden_pattern", "forbidden_patterns",
-           "reference", "reference_files", "test_files", "tests", "patch"}
+           "reference", "reference_files", "test_files", "tests", "patch",
+           "verify", "setup_commands", "expected_paths"}
     ):
         _collect(spec.metadata.get(key))
     if is_holdout(spec):

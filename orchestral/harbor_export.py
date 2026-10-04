@@ -12,12 +12,18 @@ Emits a self-contained Harbor package under ``<out_dir>/<task_id>/``::
       fixture.tar.gz    fixture tasks only — copied from fixtures/ so the
                         package builds without this repo
     tests/
-      test.sh           setup_commands → oracle overlay → verify.command →
-                        reward JSON (verdict = exit code)
+      test.sh           setup_commands → oracle overlay → protected-path
+                        check → verify.command → reward JSON
       oracle/           metadata.test_files verbatim, repo-relative — the
                         answer key, which is why export needs --publish-keys
-      checks.json       mechanical required/forbidden keys for non-fixture
-                        types (LLM judges don't fit Harbor's verifier model)
+      protected.sha256  fixture tasks only — sha256 of every test-owned
+                        fixture member + verifier-toolchain names, mirroring
+                        run_repo_suite's denylist so agent-edited or
+                        agent-created test files fail verification
+      checks.json       mechanical checks for non-fixture types, gated on
+                        spec.validation the same way Runner._validate is
+      checks.py         non-fixture verifier — mirrors the harness's check
+                        semantics (per-path content, exact answers, patterns)
 
 Export publishes the answer key — by design. A runnable package embeds
 expected outputs the same way wandr's own packages do. The guards:
@@ -33,18 +39,27 @@ expected outputs the same way wandr's own packages do. The guards:
 - task.toml serializes from a field allowlist, never spec.metadata
   wholesale (metadata can carry ``calls``, seeded haystacks, internal
   notes).
+- The whole package is composed, scrubbed, and scanned before the first
+  write — a refused export leaves nothing on disk, and a re-export
+  replaces the previous package directory wholesale so stale oracle or
+  checks files can't persist into a new package.
 """
 
 from __future__ import annotations
 
+import hashlib
+import io
 import json
+import re
 import shlex
+import shutil
 import stat
-from pathlib import Path
+import tarfile
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from orchestral.config import TaskSpec
-from orchestral.fileset import required_content
+from orchestral.fileset import expected_paths, required_content
 from orchestral.fixtures import (
     FixtureError,
     screen_members,
@@ -62,7 +77,7 @@ _GUEST_PLACEHOLDER = "@GUEST_ROOT@"
 
 
 def _guest_scrub(text: str) -> str:
-    """scrub_text over emitted content, preserving the guest-root paths."""
+    """scrub_text over prose content, preserving the guest-root paths."""
     scrubbed = scrub_text(text.replace(_GUEST_ROOT, _GUEST_PLACEHOLDER))
     return scrubbed.replace(_GUEST_PLACEHOLDER, _GUEST_ROOT)
 
@@ -76,6 +91,11 @@ _METADATA_ALLOWLIST = (
     "expected_paths",
     "workdir",
 )
+
+# spec.id feeds the package directory name and the task.toml name field —
+# restrict it to a safe slug so `..`, `/`, quotes, or newlines in a spec
+# can't escape out_root or inject TOML.
+_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\Z")
 
 
 def _toml_value(value: Any) -> str:
@@ -100,7 +120,7 @@ def _task_toml(spec: TaskSpec, *, verifier_mode: str,
         'schema_version = "1.1"',
         "",
         "[task]",
-        f'name = "orchestral/{spec.id}"',
+        f'name = {_toml_value(f"orchestral/{spec.id}")}',
         f'description = {_toml_value(spec.title or spec.id)}',
         'authors = [{ name = "orchestral" }]',
         f"keywords = {_toml_value(keywords)}",
@@ -145,7 +165,7 @@ def _instruction(spec: TaskSpec, *, fixture: bool) -> str:
     body = spec.prompt.rstrip()
     env = (
         "\n\n## Environment\n\n"
-        "You are working inside a container. "
+        "You are working inside a container with no network access. "
         + (
             f"The repository checkout is at `{_REPO_DIR}` — make your "
             "changes directly in that directory."
@@ -173,6 +193,14 @@ def _dockerfile(*, fixture: bool) -> str:
         "&& rm /tmp/fixture.tar.gz\n"
         f"WORKDIR {_REPO_DIR}\n"
     )
+
+
+# Verifier-toolchain + config files a repo agent must not write — mirrors
+# cubeexec's _VERIFY_TOOLCHAIN_SHADOW/_VERIFY_CONFIG_FILES/conftest rule.
+_TOOLCHAIN_NAMES = frozenset({
+    "conftest.py", "pytest.py", "pytest.ini", "tox.ini",
+    "setup.cfg", "pyproject.toml", "_pytest",
+})
 
 
 def _test_sh(spec: TaskSpec, *, fixture: bool,
@@ -205,6 +233,28 @@ def _test_sh(spec: TaskSpec, *, fixture: bool,
             '  cp -a "$tests_dir/oracle/." "$repo_dir/" || fail "oracle overlay failed" 1',
             "fi",
             "",
+            "# protected paths — mirror of run_repo_suite's denylist: every",
+            "# test-owned fixture member must survive byte-for-byte, and no",
+            "# agent-created test/toolchain file may exist outside it",
+            'if [ -f "$tests_dir/protected.sha256" ]; then',
+            '  while IFS= read -r line; do',
+            '    sha="${line%%  *}"; rel="${line#*  }"',
+            '    f="$repo_dir/$rel"',
+            '    [ -f "$f" ] || fail "protected test file missing: $rel" 1',
+            '    [ "$(sha256sum "$f" | cut -d\' \' -f1)" = "$sha" ] '
+            '|| fail "protected test file modified: $rel" 1',
+            '  done < "$tests_dir/protected.sha256"',
+            '  while IFS= read -r f; do',
+            '    rel="${f#"$repo_dir"/}"',
+            '    grep -qF "  $rel" "$tests_dir/protected.sha256" '
+            '|| fail "unauthorized test/toolchain file: $rel" 1',
+            '  done < <(find "$repo_dir" -type f \\( -path "*/tests/*" '
+            '-o -name "test_*.py" -o -name "*_test.py" '
+            '-o -name "conftest.py" -o -name "pytest.py" '
+            '-o -name "pytest.ini" -o -name "tox.ini" '
+            '-o -name "setup.cfg" -o -name "pyproject.toml" \\) | sort)',
+            "fi",
+            "",
             'cd "$repo_dir" || fail "repo dir missing" 1',
         ]
     else:
@@ -227,7 +277,7 @@ def _test_sh(spec: TaskSpec, *, fixture: bool,
         ]
     else:
         # mechanical content checks — the package carries no LLM judge;
-        # required/forbidden keys ship in checks.json
+        # the requested checks ship in checks.json
         lines += [
             'python3 "$tests_dir/checks.py" "$work_dir" '
             '"$tests_dir/checks.json"',
@@ -238,58 +288,285 @@ def _test_sh(spec: TaskSpec, *, fixture: bool,
     return "\n".join(lines) + "\n"
 
 
-_CHECKS_PY = '''"""Mechanical content checks for a non-fixture Harbor export.
+_CHECKS_PY = '''"""Mechanical verifier for a non-fixture Harbor export.
 
-required[] strings must each appear in some workspace file; forbidden[]
-strings must appear in none — both matched case-insensitively, the same
-rule as the harness's own has_required/no_forbidden checks. This is the
-export's whole verifier — judge-evaluated specs lose semantic grading
-outside orchestral.
+Mirrors orchestral's own Runner._validate semantics: the agent's workspace
+files are the artifact (bodies concatenated), every check family runs only
+because the spec's validation list requested it, has_content tokens stay
+bound to their declared path, and exact_answer is exact full-artifact
+equality — not a substring anywhere in the workspace. Fail-closed like
+the harness: a requested check whose metadata payload is missing fails.
 """
 import json
+import re
 import sys
+from html.parser import HTMLParser
 from pathlib import Path
 
 work = Path(sys.argv[1])
 checks = json.loads(Path(sys.argv[2]).read_text())
-bodies = [p.read_text(errors="replace").lower() for p in work.rglob("*") if p.is_file()]
-missing = [s for s in checks.get("required", []) if not any(s.lower() in b for b in bodies)]
-present = [s for s in checks.get("forbidden", []) if any(s.lower() in b for b in bodies)]
-for s in missing:
-    print(f"required content missing: {s[:80]}")
-for s in present:
-    print(f"forbidden content present: {s[:80]}")
-sys.exit(1 if (missing or present) else 0)
+files = {
+    str(p.relative_to(work)): p.read_text(errors="replace")
+    for p in sorted(work.rglob("*")) if p.is_file()
+}
+artifact = "\\n".join(files.values())
+lowered = artifact.lower()
+errors = []
+
+
+class _Validator(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.errors = []
+
+    def error(self, message):
+        self.errors.append(message)
+
+
+if "html_parses" in checks:
+    parser = _Validator()
+    try:
+        parser.feed(artifact)
+    except Exception as exc:
+        parser.errors.append(str(exc))
+    errors.extend(f"HTML parse error: {e}" for e in parser.errors)
+
+if "non_empty" in checks and not artifact.strip():
+    errors.append("Artifact is empty.")
+
+if "has_title" in checks and "<title>" not in lowered:
+    errors.append("Missing <title>.")
+
+if "has_cta" in checks and not any(
+    token in lowered
+    for token in (
+        "cta", "sign up", "signup", "subscribe", "get started",
+        "buy now", "learn more",
+    )
+):
+    errors.append("Missing call-to-action.")
+
+if "has_form" in checks and "<form" not in lowered:
+    errors.append("Missing <form>.")
+
+if ("has_viewport" in checks
+        and 'name="viewport"' not in lowered
+        and "name='viewport'" not in lowered):
+    errors.append("Missing viewport meta tag.")
+
+if "no_placeholder" in checks and any(
+    token in lowered
+    for token in (
+        "lorem ipsum", "placeholder text", "todo:",
+        "your text here", "[insert",
+    )
+):
+    errors.append("Artifact contains placeholder text.")
+
+if "within_budget" in checks:
+    bounds = checks["within_budget"]
+    if not bounds:
+        errors.append("within_budget requested but no bounds declared.")
+    actual = {
+        "min_chars": len(artifact), "max_chars": len(artifact),
+        "min_words": len(artifact.split()), "max_words": len(artifact.split()),
+    }
+    for key, limit in bounds.items():
+        if (actual[key] < int(limit)) if key.startswith("min") \
+                else (actual[key] > int(limit)):
+            errors.append(f"{key} violated: {actual[key]} vs limit {limit}.")
+
+if "has_required" in checks:
+    required = checks["has_required"]
+    missing = [t for t in required if t.lower() not in lowered]
+    if not required:
+        errors.append("has_required requested but metadata.required is empty.")
+    elif missing:
+        errors.append(f"Missing required token(s): {', '.join(missing)}.")
+
+if "no_forbidden" in checks:
+    forbidden = checks["no_forbidden"]
+    hits = [t for t in forbidden if t.lower() in lowered]
+    if not forbidden:
+        errors.append("no_forbidden requested but metadata.forbidden is empty.")
+    elif hits:
+        errors.append(f"Forbidden token(s) present: {', '.join(hits)}.")
+
+if "exact_answer" in checks:
+    expected = checks["exact_answer"]
+    if expected is None:
+        errors.append("exact_answer requested but metadata.expected_answer is missing.")
+    elif artifact.strip() != str(expected).strip():
+        errors.append("Artifact is not exactly the expected answer.")
+
+if "matches_pattern" in checks:
+    pattern = checks["matches_pattern"]
+    if not pattern:
+        errors.append("matches_pattern requested but metadata.pattern is empty.")
+    else:
+        try:
+            if re.search(str(pattern), artifact, re.DOTALL) is None:
+                errors.append(f"Artifact does not match pattern {pattern!r}.")
+        except re.error as exc:
+            errors.append(f"metadata.pattern is not a valid regex: {exc}.")
+
+if "no_pattern" in checks:
+    patterns = checks["no_pattern"]
+    if not patterns:
+        errors.append("no_pattern requested but metadata.forbidden_pattern is empty.")
+    for pattern in patterns:
+        try:
+            if re.search(str(pattern), artifact, re.DOTALL) is not None:
+                errors.append(f"Artifact matches forbidden pattern {pattern!r}.")
+        except re.error as exc:
+            errors.append(f"metadata.forbidden_pattern is not a valid regex: {exc}.")
+
+if "has_paths" in checks:
+    declared = checks["has_paths"]
+    missing = [p for p in declared if not files.get(p)]
+    if not declared:
+        errors.append("has_paths requested but metadata.expected_paths is empty.")
+    elif missing:
+        errors.append(f"Missing or empty expected files: {', '.join(missing)}.")
+
+if "has_content" in checks:
+    declared = checks["has_content"]
+    absent, unmatched = [], []
+    for path, tokens in sorted(declared.items()):
+        body = files.get(path)
+        if body is None:
+            absent.append(path)
+            continue
+        haystack = body.lower()
+        unmatched.extend(
+            f"{path}:{token}" for token in tokens if token.lower() not in haystack
+        )
+    if not declared:
+        errors.append("has_content requested but metadata.required_content is empty.")
+    if absent:
+        errors.append(f"No file body to read for: {', '.join(absent)}.")
+    if unmatched:
+        errors.append(f"Required token(s) missing from file bodies: {', '.join(unmatched)}.")
+
+for e in errors:
+    print(e)
+sys.exit(1 if errors else 0)
 '''
 
-# mechanical graded keys for non-fixture exports — expected_answer and
-# required/forbidden lists are the checkable part of the v1 contract.
-# required_content is a {path: [tokens]} mapping — the dict shape the
-# canonical fileset parser returns — so it flattens in separately.
-_REQUIRED_KEYS = ("required", "expected_answer")
-_FORBIDDEN_KEYS = ("forbidden",)
+# Validation checks checks.py can faithfully reproduce against a plain
+# workspace. Signature/container checks (zip/png/mp4) can't — a spec that
+# requests one refuses to export rather than shipping a weaker verifier.
+_EXPRESSIBLE_CHECKS = frozenset({
+    "html_parses", "non_empty", "has_title", "has_cta", "has_form",
+    "has_viewport", "no_placeholder", "within_budget",
+    "has_required", "no_forbidden", "exact_answer",
+    "matches_pattern", "no_pattern", "has_paths", "has_content",
+})
+# runner defaults when a spec declares no validation list, keyed where the
+# type overrides the text default
+_TYPE_VALIDATION_DEFAULTS = {
+    "image": {"non_empty", "png_signature"},
+    "video": {"non_empty", "mp4_signature"},
+    "multi-file": {"non_empty", "zip_signature"},
+}
+_DEFAULT_TEXT_VALIDATION = {"html_parses", "non_empty", "has_title"}
 
 
-def _mechanical_checks(spec: TaskSpec) -> dict[str, list[str]]:
+def _requested_checks(spec: TaskSpec) -> set[str]:
+    """The check names Runner._validate would apply for this spec."""
+    if spec.validation:
+        requested = {str(v) for v in spec.validation}
+    else:
+        requested = set(
+            _TYPE_VALIDATION_DEFAULTS.get(spec.type, _DEFAULT_TEXT_VALIDATION)
+        )
+    # "html" is the generated-batch shorthand for html_parses + non_empty
+    if "html" in requested:
+        requested.discard("html")
+        requested |= {"html_parses", "non_empty"}
+    return requested
+
+
+def _mechanical_checks(spec: TaskSpec) -> dict[str, Any]:
+    """checks.json payload — one entry per requested check name, shaped
+    like the check results Runner._validate produces."""
     meta = spec.metadata or {}
-    required: list[str] = []
-    for key in _REQUIRED_KEYS:
-        value = meta.get(key)
-        if isinstance(value, str) and value.strip():
-            required.append(value)
-        elif isinstance(value, list):
-            required.extend(v for v in value if isinstance(v, str) and v.strip())
-    for tokens in required_content(meta).values():
-        required.extend(tokens)
-    forbidden: list[str] = []
-    for key in _FORBIDDEN_KEYS:
-        value = meta.get(key)
-        if isinstance(value, list):
-            forbidden.extend(v for v in value if isinstance(v, str) and v.strip())
-        elif isinstance(value, str) and value.strip():
-            forbidden.append(value)
-    return {"required": list(dict.fromkeys(required)),
-            "forbidden": list(dict.fromkeys(forbidden))}
+    requested = _requested_checks(spec)
+    unexportable = sorted(requested - _EXPRESSIBLE_CHECKS)
+    if unexportable:
+        raise ValueError(
+            f"{spec.id!r} requests validation checks with no Harbor "
+            f"equivalent ({', '.join(unexportable)}) — refusing to ship "
+            "a verifier weaker than the spec's own contract"
+        )
+    checks: dict[str, Any] = {}
+    for name in sorted(requested):
+        if name in ("non_empty", "html_parses", "has_title", "has_cta",
+                    "has_form", "has_viewport", "no_placeholder"):
+            checks[name] = True
+        elif name == "within_budget":
+            checks[name] = {
+                k: meta[k]
+                for k in ("min_chars", "max_chars", "min_words", "max_words")
+                if meta.get(k) is not None
+            }
+        elif name == "has_required":
+            checks[name] = [str(t) for t in meta.get("required") or []]
+        elif name == "no_forbidden":
+            forb = meta.get("forbidden")
+            checks[name] = [
+                str(t)
+                for t in ([forb] if isinstance(forb, str) else (forb or []))
+            ]
+        elif name == "exact_answer":
+            expected = meta.get("expected_answer")
+            checks[name] = str(expected) if expected is not None else None
+        elif name == "matches_pattern":
+            checks[name] = str(meta.get("pattern") or "")
+        elif name == "no_pattern":
+            checks[name] = [
+                str(p)
+                for p in (
+                    [meta.get("forbidden_pattern")]
+                    if meta.get("forbidden_pattern") else []
+                ) + list(meta.get("forbidden_patterns") or [])
+                if p
+            ]
+        elif name == "has_paths":
+            checks[name] = expected_paths(meta)
+        elif name == "has_content":
+            checks[name] = required_content(meta)
+    return checks
+
+
+def _protected_manifest(fixture_blob: bytes) -> str:
+    """``sha256  repo/path`` lines for every test-owned fixture member —
+    mirrors run_repo_suite's repo_tests + toolchain denylist so the
+    exported verifier fails on agent-modified or agent-created test
+    files, not just overwritten oracle files."""
+    lines: list[str] = []
+    try:
+        with tarfile.open(fileobj=io.BytesIO(fixture_blob), mode="r:gz") as ftf:
+            for m in ftf.getmembers():
+                if not (m.isfile() and m.name.startswith("repo/")):
+                    continue
+                rel = m.name[5:]
+                name = PurePosixPath(rel).name
+                if not (
+                    "tests/" in rel
+                    or name.startswith("test_")
+                    or name.endswith("_test.py")
+                    or name in _TOOLCHAIN_NAMES
+                ):
+                    continue
+                body = ftf.extractfile(m)
+                digest = hashlib.sha256(
+                    body.read() if body else b""
+                ).hexdigest()
+                lines.append(f"{digest}  {rel}")
+    except (tarfile.TarError, EOFError, OSError):
+        return ""
+    return "\n".join(sorted(lines)) + ("\n" if lines else "")
 
 
 def export_task(
@@ -302,9 +579,12 @@ def export_task(
     """Write a Harbor package for ``spec`` under ``out_root/<spec.id>/``.
 
     Returns the package directory. Raises ``ValueError`` on guard
-    violations — holdout specs, missing ``--publish-keys``, a fixture
-    blob that isn't fetched, or a non-fixture spec with no mechanical
-    checks to export (there would be nothing to verify).
+    violations — holdout specs, missing ``--publish-keys``, an unsafe
+    spec id, a fixture blob that isn't fetched, unexportable requested
+    checks, or a non-fixture spec with no mechanical checks to export
+    (there would be nothing to verify). All validation happens before the
+    first write: a refused export leaves nothing on disk, and a
+    successful export replaces any previous package directory.
     """
     if is_holdout(spec):
         raise ValueError(
@@ -318,14 +598,22 @@ def export_task(
             "--publish-keys to acknowledge that this spec's expected "
             "outputs become public"
         )
+    if not _ID_RE.fullmatch(spec.id):
+        raise ValueError(
+            f"unsafe task id {spec.id!r} — ids must match "
+            "[A-Za-z0-9][A-Za-z0-9._-]* (they name the package directory "
+            "and the task.toml name field)"
+        )
     meta = spec.metadata or {}
     fixture_id = str(meta.get("fixture") or "")
     fixture = bool(fixture_id)
     timeout_seconds = float(meta.get("timeout_seconds") or 600)
 
-    # all validation before the first mkdir — a refused export must not
+    # all validation before the first write — a refused export must not
     # leave a half-written package skeleton in dist/
     fixture_blob: bytes | None = None
+    oracle: dict[str, str] = {}
+    protected = ""
     if fixture:
         verify = meta.get("verify") or {}
         if not verify.get("command"):
@@ -340,63 +628,89 @@ def export_task(
             fixture_blob = verified_fixture_bytes(fixture_id, fixtures_dir)
         except FixtureError as exc:
             raise ValueError(str(exc)) from exc
-        oracle = {str(k): str(v) for k, v in (meta.get("test_files") or {}).items()}
+        oracle = {
+            str(k): str(v) for k, v in (meta.get("test_files") or {}).items()
+        }
         bad = screen_members(oracle)
         if bad:
             raise ValueError(
                 f"{spec.id!r} test_files carry unsafe member names "
                 f"({', '.join(bad[:5])}) — refusing to export"
             )
+        protected = _protected_manifest(fixture_blob)
     checks = None
     if not fixture:
         checks = _mechanical_checks(spec)
-        if not checks["required"] and not checks["forbidden"]:
+        if not checks:
             raise ValueError(
-                f"{spec.id!r} has no fixture and no mechanical "
-                "required/forbidden keys — there is nothing a Harbor "
-                "verifier could check (LLM judges don't export)"
+                f"{spec.id!r} has no fixture and no requested mechanical "
+                "checks — there is nothing a Harbor verifier could check "
+                "(LLM judges don't export)"
             )
 
-    package = Path(out_root) / spec.id
-    package.mkdir(parents=True, exist_ok=True)
-    env_dir = package / "environment"
-    tests_dir = package / "tests"
-    env_dir.mkdir(exist_ok=True)
-    tests_dir.mkdir(exist_ok=True)
+    out_root_p = Path(out_root)
+    package = out_root_p / spec.id
 
-    emitted: dict[Path, str] = {
-        package / "task.toml": _task_toml(
-            spec, verifier_mode="suite" if fixture else "mechanical",
-            timeout_seconds=timeout_seconds,
-        ),
-        package / "instruction.md": _instruction(spec, fixture=fixture),
-        env_dir / "Dockerfile": _dockerfile(fixture=fixture),
-        tests_dir / "test.sh": _test_sh(
-            spec, fixture=fixture, timeout_seconds=timeout_seconds,
-        ),
-    }
+    emitted: dict[str, str] = {}
+    binary: dict[str, bytes] = {}
+    emitted["task.toml"] = _task_toml(
+        spec, verifier_mode="suite" if fixture else "mechanical",
+        timeout_seconds=timeout_seconds,
+    )
+    emitted["instruction.md"] = _instruction(spec, fixture=fixture)
+    emitted["environment/Dockerfile"] = _dockerfile(fixture=fixture)
+    emitted["tests/test.sh"] = _test_sh(
+        spec, fixture=fixture, timeout_seconds=timeout_seconds,
+    )
     if fixture:
         for rel, body in oracle.items():
-            target = tests_dir / "oracle" / rel
-            target.parent.mkdir(parents=True, exist_ok=True)
-            emitted[target] = body
-        (env_dir / "fixture.tar.gz").write_bytes(fixture_blob or b"")
+            emitted[f"tests/oracle/{rel}"] = body
+        binary["environment/fixture.tar.gz"] = fixture_blob or b""
+        if protected:
+            emitted["tests/protected.sha256"] = protected
     else:
-        emitted[tests_dir / "checks.py"] = _CHECKS_PY
-        emitted[tests_dir / "checks.json"] = json.dumps(checks, indent=2) + "\n"
+        emitted["tests/checks.py"] = _CHECKS_PY
+        emitted["tests/checks.json"] = json.dumps(checks, indent=2) + "\n"
 
+    # scrub + secret-scan everything in memory first — only the prose
+    # surfaces get _guest_scrub (host-path redaction); verifier payloads
+    # (test.sh, checks.*, oracle bodies) must match the bytes the real
+    # harness writes verbatim, so they are scanned but never rewritten.
     secrets = {s for s in holdout_secrets(spec) if s}
-    for path, text in emitted.items():
-        scrubbed = _guest_scrub(text)
+    scrubbed: dict[str, str] = {}
+    for rel, text in emitted.items():
+        out_text = (
+            _guest_scrub(text)
+            if rel in ("instruction.md", "task.toml")
+            else text
+        )
         for secret in secrets:
-            if secret in scrubbed:
+            if secret in out_text:
                 raise ValueError(
-                    f"holdout secret present in emitted {path.name} — "
+                    f"holdout secret present in emitted {rel} — "
                     "the is_holdout guard should have caught this; "
                     "refusing to write"
                 )
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(scrubbed)
-    mode = (tests_dir / "test.sh").stat().st_mode
-    (tests_dir / "test.sh").chmod(mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+        scrubbed[rel] = out_text
+
+    # a re-export replaces the package wholesale — stale oracle or checks
+    # files from a previous export can't survive into a new package
+    if package.exists():
+        shutil.rmtree(package)
+    try:
+        for rel, text in scrubbed.items():
+            path = package / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text)
+        for rel, blob in binary.items():
+            path = package / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(blob)
+    except OSError:
+        shutil.rmtree(package, ignore_errors=True)
+        raise
+    mode = (package / "tests" / "test.sh").stat().st_mode
+    (package / "tests" / "test.sh").chmod(
+        mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
+    )
     return package

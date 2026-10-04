@@ -183,9 +183,7 @@ class TestStaticServing(_Served):
         made = not fonts.exists()
         fonts.mkdir(exist_ok=True)
         probe = fonts / "x.woff2"
-        manifest = server.UI_DIR / "site.webmanifest"
         probe.write_bytes(b"wOF2")
-        manifest.write_text("{}")
         try:
             with patch("mimetypes.guess_type", return_value=(None, None)):
                 cases = {
@@ -201,7 +199,6 @@ class TestStaticServing(_Served):
                     self.assertEqual((code, got), (200, ctype), path)
         finally:
             probe.unlink()
-            manifest.unlink()
             if made:
                 fonts.rmdir()
 
@@ -230,6 +227,119 @@ class TestStaticServing(_Served):
 
     def test_traversal_still_blocked(self):
         self.assertEqual(self.get("/static/../orchestral/config.py")[0], 404)
+
+
+FONTS = UI / "fonts"
+FONT_FACE = re.compile(r"@font-face\s*{(.*?)}", re.S)
+
+
+def _font_faces() -> list[dict[str, str]]:
+    css = re.sub(r"/\*.*?\*/", "", (UI / "tokens.css").read_text(), flags=re.S)
+    return [dict(re.findall(r"([\w-]+)\s*:\s*([^;]+);", body)) for body in FONT_FACE.findall(css)]
+
+
+class TestTypefaceFiles(unittest.TestCase):
+    """U2: self-hosted Instrument Sans and IBM Plex Mono, DESIGN.md 6.2."""
+
+    def test_font_budget_is_110kb_and_four_files(self):
+        files = sorted(FONTS.glob("*.woff2"))
+        self.assertLessEqual(len(files), 4, files)
+        total = sum(f.stat().st_size for f in files)
+        self.assertLessEqual(total, 110 * 1024, f"{total} bytes")
+
+    def test_files_are_woff2(self):
+        for f in FONTS.glob("*.woff2"):
+            self.assertEqual(f.read_bytes()[:4], b"wOF2", f.name)
+
+    def test_every_real_face_swaps_and_resolves_to_a_file(self):
+        real = [f for f in _font_faces() if "url(" in f.get("src", "")]
+        self.assertGreaterEqual(len(real), 4)
+        for face in real:
+            self.assertEqual(face.get("font-display"), "swap", face)
+            urls = re.findall(r'url\("?([^")]+)"?\)', face["src"])
+            self.assertEqual(len(urls), 1, face)
+            self.assertTrue(urls[0].startswith("fonts/"), urls[0])
+            self.assertTrue((UI / urls[0]).is_file(), urls[0])
+        families = {f["font-family"].strip("\"'") for f in real}
+        self.assertEqual(families, {"Instrument Sans", "IBM Plex Mono"})
+
+    def test_every_woff2_is_declared(self):
+        declared = {Path(u).name for f in _font_faces()
+                    for u in re.findall(r'url\("?([^")]+)"?\)', f.get("src", ""))}
+        self.assertEqual({f.name for f in FONTS.glob("*.woff2")}, declared)
+
+    def test_fallback_faces_are_size_adjusted_local_aliases(self):
+        fallbacks = [f for f in _font_faces() if f["font-family"].strip("\"'").endswith("Fallback")]
+        self.assertEqual(len(fallbacks), 2)
+        for face in fallbacks:
+            self.assertIn("local(", face["src"])
+            self.assertNotIn("url(", face["src"])
+            for prop in ("size-adjust", "ascent-override", "descent-override", "line-gap-override"):
+                self.assertIn(prop, face, face)
+
+    def test_font_stack_names_the_fallback_faces(self):
+        css = (UI / "tokens.css").read_text()
+        self.assertRegex(css, r'--font-sans:\s*"Instrument Sans",\s*"Instrument Sans Fallback"')
+        self.assertRegex(css, r'--font-mono:\s*"IBM Plex Mono",\s*"Plex Mono Fallback"')
+
+    def test_license_files_exist_for_both_families(self):
+        for name, marker in (("OFL-InstrumentSans.txt", "Instrument Sans"),
+                             ("OFL-IBMPlexMono.txt", "Plex")):
+            text = (FONTS / name).read_text()
+            self.assertIn("SIL OPEN FONT LICENSE Version 1.1", text, name)
+            self.assertIn(marker, text, name)
+
+    def test_provenance_is_recorded(self):
+        readme = (FONTS / "README.md").read_text()
+        for needle in ("Instrument/instrument-sans", "@ibm/plex-mono", "2.5.0", "subset-fonts.sh"):
+            self.assertIn(needle, readme)
+        self.assertTrue((ROOT / "scripts" / "subset-fonts.sh").is_file())
+
+    def test_type_scale_tokens_follow_design_md(self):
+        css = (UI / "tokens.css").read_text()
+        for tok, size, line in (("display-l", 56, 60), ("display-m", 36, 40), ("title-l", 22, 28),
+                                ("title-m", 17, 24), ("title-s", 14, 20), ("body", 13, 20),
+                                ("body-l", 15, 24), ("label", 12, 16), ("col-head", 11, 14),
+                                ("data", 12.5, 18), ("data-strong", 12.5, 18),
+                                ("metric", 28, 32), ("micro", 11, 14)):
+            self.assertRegex(css, rf"--fs-{tok}:\s*{size}px;", tok)
+            self.assertRegex(css, rf"--lh-{tok}:\s*{line}px;", tok)
+        self.assertRegex(css, r"html\s*{\s*font-variant-numeric:\s*tabular-nums;")
+        self.assertRegex(css, r'font-feature-settings:\s*"zero"')
+
+    def test_nothing_under_11px_in_scale(self):
+        css = (UI / "tokens.css").read_text()
+        for px in re.findall(r"--fs-[\w-]+:\s*([\d.]+)px", css):
+            self.assertGreaterEqual(float(px), 11.0)
+
+    def test_no_cross_origin_font_or_stylesheet_references(self):
+        remote = re.compile(r"(?:url\(\s*[\"']?|@import\s+[\"']?|href=[\"']|src=[\"'])(?:https?:)?//", re.I)
+        for f in (UI / "app.css", UI / "tokens.css", UI / "app.html"):
+            self.assertIsNone(remote.search(f.read_text()), f.name)
+
+    def test_only_instrument_sans_regular_is_preloaded(self):
+        html = (UI / "app.html").read_text()
+        pre = re.findall(r'<link rel="preload"[^>]*>', html)
+        self.assertEqual(len(pre), 1, pre)
+        self.assertIn("InstrumentSans-latin-var.woff2", pre[0])
+        self.assertIn('as="font"', pre[0])
+        self.assertIn("crossorigin", pre[0])
+
+
+class TestTypefaceServing(_Served):
+    def test_every_declared_font_is_served_as_woff2(self):
+        faces = [u for f in _font_faces() for u in re.findall(r'url\("?([^")]+)"?\)', f.get("src", ""))]
+        self.assertTrue(faces)
+        with patch("mimetypes.guess_type", return_value=(None, None)):
+            for rel in faces:
+                code, ctype, body = self.get(f"/static/{rel}")
+                self.assertEqual((code, ctype), (200, "font/woff2"), rel)
+                self.assertEqual(body, (UI / rel).read_bytes(), rel)
+
+    def test_preload_url_is_served(self):
+        html = self.get("/")[2].decode()
+        href = re.search(r'<link rel="preload" href="([^"]+)"', html).group(1)
+        self.assertEqual(self.get(href)[:2], (200, "font/woff2"))
 
 
 try:
@@ -308,6 +418,32 @@ class TestThemeBrowser(_Served):
             self.assertEqual(pg.evaluate("getComputedStyle(document.documentElement).colorScheme"), "light")
             self.assertEqual(pg.evaluate("getComputedStyle(document.body).backgroundColor"), "rgb(247, 248, 248)")
             browser.close()
+
+
+@unittest.skipUnless(HAS_PLAYWRIGHT, "playwright not installed (pip install 'orchestral[shots]')")
+class TestTypefaceBrowser(_Served):
+    def test_faces_apply_and_no_foreign_requests(self):
+        origin = f"http://127.0.0.1:{self.port}"
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch()
+            pg = browser.new_context().new_page()
+            urls: list[str] = []
+            pg.on("request", lambda r: urls.append(r.url))
+            pg.goto(origin + "/")
+            pg.wait_for_selector("#theme-toggle")
+            pg.evaluate("document.body.insertAdjacentHTML('beforeend', '<span id=\"probe\" class=\"mono\">0O 0x1f</span>')")
+            pg.evaluate("document.fonts.ready.then(() => 0)")
+            pg.evaluate("Promise.all([document.fonts.load('13px \"Instrument Sans\"'), document.fonts.load('13px \"IBM Plex Mono\"')])")
+            self.assertTrue(pg.evaluate("document.fonts.check('13px \"Instrument Sans\"')"))
+            self.assertTrue(pg.evaluate("document.fonts.check('13px \"IBM Plex Mono\"')"))
+            self.assertTrue(pg.evaluate("getComputedStyle(document.body).fontFamily").startswith('"Instrument Sans"'))
+            self.assertTrue(pg.evaluate("getComputedStyle(document.getElementById('probe')).fontFamily").startswith('"IBM Plex Mono"'))
+            loaded = pg.evaluate("[...document.fonts].filter(f => f.status === 'loaded').map(f => f.family)")
+            self.assertIn('"Instrument Sans"', [x if x.startswith('"') else f'"{x}"' for x in loaded])
+            browser.close()
+        foreign = [u for u in urls if not u.startswith(origin + "/") and not u.startswith("data:")]
+        self.assertEqual(foreign, [])
+        self.assertTrue(any(u.split("?")[0].endswith("/static/fonts/InstrumentSans-latin-var.woff2") for u in urls))
 
 
 if __name__ == "__main__":

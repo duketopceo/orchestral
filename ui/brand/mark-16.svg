@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="16" height="16" fill="none">
+  <title>orchestral</title>
+  <!-- Optical size for 16px, pixel-snapped: the baton is three 2px steps arriving from
+       the upper left and landing on the top of a two-line staff (rows 8-9, 13-14).
+       Nothing is crossed. -->
+  <path fill="currentColor" d="M1 8h14v2H1zM1 13h14v2H1zM2 2h2v2H2zM4 4h2v2H4zM6 6h2v2H6z"/>
+</svg>

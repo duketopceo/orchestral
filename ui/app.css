@@ -104,7 +104,7 @@ svg.rest { width: 64px; height: 64px; color: var(--ink-3); }
 }
 .rail-head .brand { border-bottom: 1px solid var(--line); }
 .brand:hover { text-decoration: none; }
-.brand-mark { color: var(--accent); font-size: 11px; }
+.brand-mark { color: var(--ink); flex: none; align-self: center; }
 .brand-word { color: var(--text); font-weight: 650; font-size: 14px; letter-spacing: .01em; }
 .brand-sub { color: var(--text-3); font-size: 11px; }
 

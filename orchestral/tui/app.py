@@ -139,8 +139,12 @@ class OrchestralApp(App):
 
     # -- data loading (thread worker → call_from_thread to touch UI) --
 
+    def _summary(self) -> dict[str, Any]:
+        """Index summary with the headline cost read from the provider's bill."""
+        return {**self.store.summary(), "total_cost_usd": self.store.billed_total_usd()}
+
     def _fetch(self) -> tuple[list[Any], dict[str, Any]]:
-        return self.store.list_runs(limit=None), self.store.summary()
+        return self.store.list_runs(limit=None), self._summary()
 
     def _reload(self) -> None:
         def work() -> None:
@@ -169,7 +173,7 @@ class OrchestralApp(App):
                 r.task_id,
                 r.orchestrator,
                 r.worker,
-                fmt_cost(r.total_cost_usd),
+                fmt_cost(r.display_cost_usd),
                 fmt_tokens(r.total_input_tokens + r.total_output_tokens),
                 f"{r.score:.2f}" if r.score is not None else "-",
                 pl,
@@ -212,7 +216,7 @@ class OrchestralApp(App):
     def on_input_changed(self, event: Input.Changed) -> None:
         if event.input.id == "filter-box":
             self._query = event.value
-            self._populate(self._runs, self.store.summary())
+            self._populate(self._runs, self._summary())
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id == "filter-box":
@@ -290,9 +294,15 @@ class OrchestralApp(App):
             self.notify("need at least one task, orchestrator, and worker configured", severity="error")
             return
         self.push_screen(
-            LaunchScreen(tasks, orchestrators, workers, judges),
+            LaunchScreen(tasks, orchestrators, workers, judges,
+                         estimate_fn=self._launch_estimate),
             self._start_job,
         )
+
+    def _launch_estimate(self, spec: dict[str, Any]) -> dict[str, Any]:
+        """The web confirm dialog's estimate payload, so both surfaces show one number."""
+        from orchestral.web.state import launch_estimate
+        return launch_estimate(self.store, self.models_dir, spec)
 
     def _all_models(self) -> list[ModelConfig]:
         try:

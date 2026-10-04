@@ -103,6 +103,34 @@ def fmt_cost(usd: float | None) -> str:
     return "-" if usd is None else f"${usd:.4f}"
 
 
+def fmt_usd_range(lo: float | None, hi: float | None) -> str:
+    if lo is None or hi is None:
+        return "unknown"
+    f = (lambda v: f"{v:.4f}") if hi < 0.01 else (lambda v: f"{v:.2f}")
+    return f"${f(lo)} to ${f(hi)}"
+
+
+def format_spend_estimate(est: dict[str, Any]) -> str:
+    """The launch-estimate payload as plain lines for the confirm panel.
+
+    Same fields the web confirm dialog shows: range, basis, and month-to-date
+    billed spend against the eval cap. `unknown` is never rendered as $0.
+    """
+    runs = est.get("replicates") or 1
+    lines = [
+        f"Estimated cost: {fmt_usd_range(est.get('total_low_usd'), est.get('total_high_usd'))} "
+        f"for {runs} run{'' if runs == 1 else 's'}",
+        str(est.get("basis_label") or ""),
+    ]
+    if est.get("month_to_date_billed_usd") is not None:
+        lines.append(
+            f"Spent this month: ${est['month_to_date_billed_usd']:.2f} of "
+            f"${est.get('monthly_cap_usd', 0):.0f} eval cap (billed, recorded in this index)")
+    if est.get("caveat"):
+        lines.append(str(est["caveat"]))
+    return "\n".join(line for line in lines if line)
+
+
 def fmt_tokens(n: int | None) -> str:
     if not n:
         return "-"

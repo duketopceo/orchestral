@@ -17,6 +17,7 @@ import logging
 import mimetypes
 import os
 import re
+import threading
 import time
 import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -68,6 +69,39 @@ def _asset_version() -> str:
     return format(newest // 1000 & 0xFFFFFFFFFF, "x")
 
 
+IDEMPOTENCY_TTL_S = 600.0
+
+
+class IdempotencyCache:
+    """In-memory replay cache for paid POSTs (KTD10).
+
+    A client-generated key maps to the response of the first request that
+    carried it, for ten minutes, so a retry after a dropped connection returns
+    the same job instead of starting (and billing) a second one. Only
+    successful results are kept: a refused or failed attempt leaves the key
+    free to be retried. The lock is held while the first request runs, so two
+    concurrent requests with one key also start one job.
+    """
+
+    def __init__(self, ttl: float = IDEMPOTENCY_TTL_S, clock: Any = time.monotonic):
+        self._ttl = ttl
+        self._clock = clock
+        self._mu = threading.Lock()
+        self._entries: dict[str, tuple[float, Any]] = {}
+
+    def run(self, key: str, fn: Any, cacheable: Any = lambda value: True) -> Any:
+        with self._mu:
+            now = self._clock()
+            self._entries = {k: v for k, v in self._entries.items() if v[0] >= now}
+            hit = self._entries.get(key)
+            if hit is not None:
+                return hit[1]
+            value = fn()
+            if cacheable(value):
+                self._entries[key] = (now + self._ttl, value)
+            return value
+
+
 class Observatory:
     """Bundles the server's dependencies so the handler stays thin."""
 
@@ -78,6 +112,7 @@ class Observatory:
             runs_dir, tasks_dir, models_dir, self.store,
             allow_agent_exec=allow_agent_exec,
         )
+        self.idempotency = IdempotencyCache()
         self.tasks_dir = Path(tasks_dir)
         self.models_dir = Path(models_dir)
         self.groups_file = Path(tasks_dir).parent / "groups.yaml"
@@ -311,7 +346,8 @@ def make_handler(obs: Observatory) -> type[BaseHTTPRequestHandler]:
             elif path == "/api/thread-estimate":
                 model = (self._q1(qs, "model", "") or "").strip()
                 self._json(state.thread_estimate(
-                    obs.models_dir, model, provider_ready=bool(model) and _provider_ready(model)))
+                    obs.models_dir, model, provider_ready=bool(model) and _provider_ready(model),
+                    store=obs.store))
             elif path == "/api/models-catalog":
                 self._json(catalog.models_catalog_payload(obs.store, obs.models_dir))
             elif path.startswith("/api/run/"):
@@ -530,7 +566,6 @@ def make_handler(obs: Observatory) -> type[BaseHTTPRequestHandler]:
                 lens=form.get("lens") or "overall",
             )
             writer = (form.get("model") or "").strip()
-            client = model = None
             if writer and _provider_ready(writer) and form.get("confirm_spend") != "1":
                 # A configured writer is a paid call: the client must show the
                 # estimate and send confirm_spend=1 after an explicit confirm.
@@ -538,24 +573,33 @@ def make_handler(obs: Observatory) -> type[BaseHTTPRequestHandler]:
                     "error": (f"Writing with {writer} is a paid API call. "
                               "Confirm the estimated cost to continue."),
                     "needs_confirm": True,
-                    "estimate": state.thread_estimate(obs.models_dir, writer, provider_ready=True),
+                    "estimate": state.thread_estimate(obs.models_dir, writer, provider_ready=True,
+                                                      store=obs.store),
                 }, 409)
-            if writer and _provider_ready(writer):
-                model = ModelConfig(slug=writer, name=writer, role="writer",
-                                    input_price_per_mtok=0.0, output_price_per_mtok=0.0)
-                client = provider_for(model)
-            try:
-                out = draft_thread(card=card, client=client, model=model, n=n)
-            finally:
-                if client is not None:
-                    client.close()
+
+            def draft() -> dict[str, Any]:
+                client = model = None
+                if writer and _provider_ready(writer):
+                    model = ModelConfig(slug=writer, name=writer, role="writer",
+                                        input_price_per_mtok=0.0, output_price_per_mtok=0.0)
+                    client = provider_for(model)
+                try:
+                    return draft_thread(card=card, client=client, model=model, n=n)
+                finally:
+                    if client is not None:
+                        client.close()
+
+            key = (form.get("idempotency_key") or "").strip()[:128]
+            out = obs.idempotency.run(f"thread:{key}", draft) if key and writer else draft()
             return self._json(out)
 
         def _post_run(self, json_out: bool) -> None:
             form = self._form()
-            # confirm_spend is a transport field, not a launch field — the
-            # TUI/web LAUNCH_FIELDS parity contract stays untouched.
+            # confirm_spend and idempotency_key are transport fields, not
+            # launch fields — the TUI/web LAUNCH_FIELDS parity contract stays
+            # untouched.
             confirmed = form.pop("confirm_spend", "") == "1"
+            key = (form.pop("idempotency_key", "") or "").strip()[:128]
             spec = {
                 "task": form.get("task", ""),
                 "orchestrator": form.get("orchestrator", ""),
@@ -570,26 +614,34 @@ def make_handler(obs: Observatory) -> type[BaseHTTPRequestHandler]:
                 return self._json({"error": f"unknown fields: {sorted(unknown)}"}, 400)
             if not spec["dry_run"] and not confirmed:
                 # Paid launches need an explicit confirm after the estimate
-                # is shown; a bare POST (or a stale form) cannot spend.
+                # is shown; a bare POST (or a stale form) cannot spend. A
+                # key never stands in for the confirm.
                 return self._json({
                     "error": ("This is a paid run (dry run is off). "
                               "Confirm the estimated cost to launch it."),
                     "needs_confirm": True,
                     "estimate": state.launch_estimate(obs.store, obs.models_dir, spec),
                 }, 409)
-            try:
-                job = obs.registry.launch(spec)
-            except ValueError as exc:
-                return self._json({"error": f"The run could not start: {exc}"}, 400)
-            # The run dir exists once on_run_created fires; poll briefly so
-            # the response can point at the live view instead of nothing.
-            run_id = self._wait_run_id(job)
-            if run_id is None and job.status == state.JobStatus.FAILED:
-                reason = job.detail or "setup failed before a run was created"
-                return self._json({"error": f"The run could not start: {reason}"}, 422)
-            if json_out:
-                self._json({"run_id": run_id, "label": job.label, "status": str(job.status)})
+
+            def launch() -> tuple[int, dict[str, Any]]:
+                try:
+                    job = obs.registry.launch(spec)
+                except ValueError as exc:
+                    return 400, {"error": f"The run could not start: {exc}"}
+                # The run dir exists once on_run_created fires; poll briefly so
+                # the response can point at the live view instead of nothing.
+                run_id = self._wait_run_id(job)
+                if run_id is None and job.status == state.JobStatus.FAILED:
+                    reason = job.detail or "setup failed before a run was created"
+                    return 422, {"error": f"The run could not start: {reason}"}
+                return 200, {"run_id": run_id, "label": job.label, "status": str(job.status)}
+
+            status, body = (obs.idempotency.run(f"run:{key}", launch, lambda r: r[0] < 400)
+                            if key else launch())
+            if status >= 400 or json_out:
+                self._json(body, status)
             else:
+                run_id = body.get("run_id")
                 self._redirect(f"/#/run/{run_id}" if run_id else "/")
 
         @staticmethod

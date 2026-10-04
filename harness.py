@@ -474,6 +474,13 @@ def cmd_validate(args: argparse.Namespace) -> None:
     sys.exit(1 if failures else 0)
 
 
+def _billed(store: RunStore, meta: Any) -> float:
+    """A just-finished run's billed cost (the runner's own meta only carries
+    the rate-card total)."""
+    fresh = store.get_run(meta.run_id)
+    return (fresh or meta).display_cost_usd
+
+
 def cmd_run(args: argparse.Namespace) -> None:
     store, known, judge = _run_preamble(args)
     task = load_task(_task_from_arg(args.task, args.tasks_dir))
@@ -508,7 +515,7 @@ def cmd_run(args: argparse.Namespace) -> None:
                 label += f"  [rep {meta.replicate}/{n_reps}]"
             print(label)
             print(f"  Directory: {meta.run_dir}")
-            print(f"  Cost: ${meta.total_cost_usd:.6f} | Tokens: {meta.total_input_tokens + meta.total_output_tokens} | Latency: {meta.latency_ms:.0f}ms")
+            print(f"  Cost: ${_billed(store, meta):.6f} | Tokens: {meta.total_input_tokens + meta.total_output_tokens} | Latency: {meta.latency_ms:.0f}ms")
             print(f"  Passes: {meta.passes} | Score: {meta.score} | Failure: {meta.failure_reason or '-'}")
         if n_reps > 1:
             cells = aggregate(store.list_runs(run_group=group, task_id=task.id))
@@ -1006,7 +1013,8 @@ def cmd_report(args: argparse.Namespace) -> None:
 
     if getattr(args, "leaderboard", False):
         min_samples = getattr(args, "min_samples", None) or MIN_LEADERBOARD_SAMPLES
-        rows = pairing_leaderboard(runs, min_samples=min_samples)
+        rows = pairing_leaderboard(runs, min_samples=min_samples,
+                                   cost_basis="rate_card" if args.json else "billed")
         if args.json:
             print(json.dumps([r.to_dict() for r in rows], indent=2, default=str))
             return
@@ -1019,7 +1027,7 @@ def cmd_report(args: argparse.Namespace) -> None:
         return
 
     if args.groups:
-        cells = aggregate(runs)
+        cells = aggregate(runs, cost_basis="rate_card" if args.json else "billed")
         if args.json:
             print(json.dumps([c.to_dict() for c in cells], indent=2, default=str))
             return
@@ -1054,11 +1062,11 @@ def cmd_report(args: argparse.Namespace) -> None:
         planner = r.config.get("planner", "raw") if r.config else "raw"
         pass_label = str(r.passes) if r.passes is not None else "-"
         tokens = r.total_input_tokens + r.total_output_tokens
-        print(f"{r.run_id:<13} {planner:<10} {r.orchestrator:<30} {r.task_id:<20} {r.worker:<35} ${r.total_cost_usd:>8.4f} {tokens:>7} {pass_label:>5}")
+        print(f"{r.run_id:<13} {planner:<10} {r.orchestrator:<30} {r.task_id:<20} {r.worker:<35} ${r.display_cost_usd:>8.4f} {tokens:>7} {pass_label:>5}")
 
     print()
     summary = store.summary()
-    print(f"Total runs: {summary['runs']} | Total cost: ${summary['total_cost_usd']:.4f} | Total tokens: {summary['total_tokens']}")
+    print(f"Total runs: {summary['runs']} | Total billed cost: ${store.billed_total_usd():.4f} | Total tokens: {summary['total_tokens']}")
 
 
 def _print_pairing_table(runs: list[Any]) -> None:
@@ -1071,7 +1079,7 @@ def _print_pairing_table(runs: list[Any]) -> None:
 
     rows = []
     for (orch, work), group in groups.items():
-        cost = sum(r.total_cost_usd for r in group)
+        cost = sum(r.display_cost_usd for r in group)
         tokens = sum(r.total_input_tokens + r.total_output_tokens for r in group)
         passed = sum(1 for r in group if r.passes)
         scored = [r.score for r in group if r.score is not None]
@@ -1217,7 +1225,8 @@ def _print_group_delta(store: RunStore, spec: str, *, json_out: bool = False) ->
     def cells(group: str) -> dict[tuple[str, str, str], Any]:
         return {
             (c.task_id, c.orchestrator, c.worker): c
-            for c in aggregate(store.list_runs(run_group=group))
+            for c in aggregate(store.list_runs(run_group=group),
+                               cost_basis="rate_card" if json_out else "billed")
         }
 
     cells_a, cells_b = cells(group_a), cells(group_b)
@@ -1290,7 +1299,8 @@ def cmd_export(args: argparse.Namespace) -> None:
         print("error: --format md/jsonl require --run; plain exports are CSV only", file=sys.stderr)
         sys.exit(2)
     elif args.leaderboard:
-        rows = pairing_leaderboard(store.list_runs(limit=None), min_samples=args.min_samples)
+        rows = pairing_leaderboard(store.list_runs(limit=None), min_samples=args.min_samples,
+                                   cost_basis="rate_card")  # exports keep the rate-card basis
         content = leaderboard_csv(rows)
     else:
         content = runs_csv(store.list_runs(limit=None))

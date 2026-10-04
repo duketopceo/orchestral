@@ -127,6 +127,30 @@ function fmtEstimate(usd) {
 }
 
 function fmtMoney(v) { return v == null ? "—" : `$${Number(v).toFixed(4)}`; }
+// Billed spend (failed runs included). `cost_basis` says whether every call was
+// priced by the provider ("billed") or some were scaled from the rate card.
+function billedOf(r) { return r.billed_cost_usd ?? r.total_cost_usd; }
+function basisNote(r) {
+  return { billed: "Billed by the provider", mixed: "Part billed, part calibrated from the rate card",
+           calibrated: "Calibrated from the rate card" }[r.cost_basis] || "";
+}
+function fmtUsdRange(lo, hi) {
+  if (lo == null || hi == null) return "Unknown";
+  const f = v => (v < 0.01 ? v.toFixed(4) : v.toFixed(2));
+  return `$${f(lo)} to $${f(hi)}`;
+}
+// One key per confirmed action, reused by its retries so a dropped
+// connection can never start a second paid run.
+function newIdempotencyKey() {
+  // randomUUID needs a secure context; plain http on a LAN host falls back
+  return typeof crypto !== "undefined" && crypto.randomUUID
+    ? crypto.randomUUID()
+    : `k${Date.now()}${Math.random().toString(16).slice(2)}`;
+}
+function spendContextRows(est) {
+  if (est.month_to_date_billed_usd == null) return [];
+  return [["Spent this month", `$${Number(est.month_to_date_billed_usd).toFixed(2)} of $${Number(est.monthly_cap_usd).toFixed(0)} eval cap (billed spend recorded in this index)`]];
+}
 function fmtPct(v) { return v == null ? "—" : `${Math.round(v * 100)}%`; }
 function fmtScore(v) { return v == null ? "—" : Number(v).toFixed(2); }
 function fmtMs(v) {
@@ -195,7 +219,7 @@ function runRow(r) {
     <td><a href="#/run/${esc(r.run_id)}">${esc(r.task_title || r.task_id)}</a>${r.task_title ? `<div class="dim sm">${esc(r.task_id)}</div>` : ""}</td>
     <td class="mono">${esc(slug(r.orchestrator))} <span class="dim">→</span> ${esc(slug(r.worker))}</td>
     <td>${judgeChip(r)}</td>
-    <td class="t-num">${fmtMoney(r.total_cost_usd)}</td>
+    <td class="t-num" title="${esc(basisNote(r))}">${fmtMoney(billedOf(r))}${r.cost_basis && r.cost_basis !== "billed" ? ' <span class="dim sm">est.</span>' : ""}</td>
     <td class="t-num">${fmtTok((r.total_input_tokens || 0) + (r.total_output_tokens || 0))}</td>
     <td class="t-num">${fmtMs(r.latency_ms)}</td>
     <td class="dim">${esc(r.run_group || "—")}</td>
@@ -428,7 +452,7 @@ async function viewRun(runId, params) {
           const extra = Object.entries(js).filter(([s]) => s !== (d.report.judge || {}).model);
           return extra.length ? `<span class="chip chip-dim" title="Secondary judge verdicts — the primary axis is ${esc((d.report.judge || {}).model || "unknown")}">${extra.map(([s, j]) => `${esc(slug(s))} ${j && j.score != null ? Number(j.score).toFixed(2) : "—"}`).join(" · ")}</span>` : "";
         })()}
-        ${kv("Cost", fmtMoney(m.total_cost_usd))}
+        ${kv("Cost", `${fmtMoney(billedOf(m))}${m.cost_basis ? ` <span class="dim sm">${esc(basisNote(m))}</span>` : ""}`)}
         ${kv("Tokens", fmtTok((m.total_input_tokens || 0) + (m.total_output_tokens || 0)))}
         ${kv("Duration", fmtMs(m.latency_ms))}
         ${m.failure_reason ? `<div class="stat" title="${esc(m.failure_reason)}"><span class="s-label">Failure</span><span class="s-val">${esc(failureText(m.failure_reason))}</span></div>` : ""}
@@ -895,17 +919,20 @@ async function viewNew() {
   const refresh = async () => {
     btn.textContent = dry.checked ? "Launch dry run" : "Launch paid run";
     line.classList.toggle("paid", !dry.checked);
-    if (dry.checked) { line.textContent = "No API spend. Turn off dry run to call real models."; return; }
+    if (dry.checked) { seq++; btn.disabled = false; line.textContent = "No API spend. Turn off dry run to call real models."; return; }
     const mine = ++seq;
+    btn.disabled = true;
     line.textContent = "Paid run. Estimating cost…";
     try {
       const est = await estimate();
       if (mine !== seq) return;
       line.textContent = est.total_usd == null
         ? `Paid run. Estimated cost: unknown. ${est.basis_label} You will be asked to confirm before launch.`
-        : `Paid run. Estimated cost: ${fmtEstimate(est.total_usd)} for ${est.replicates} run${est.replicates === 1 ? "" : "s"}. You will be asked to confirm before launch.`;
+        : `Paid run. Estimated cost: ${fmtUsdRange(est.total_low_usd, est.total_high_usd)} for ${est.replicates} run${est.replicates === 1 ? "" : "s"}. You will be asked to confirm before launch.`;
     } catch (ex) {
       if (mine === seq) line.textContent = `Paid run. Could not estimate cost: ${ex.message}`;
+    } finally {
+      if (mine === seq) btn.disabled = false;
     }
   };
   form.addEventListener("change", refresh);
@@ -917,6 +944,8 @@ async function viewNew() {
     err.textContent = "";
     const body = formBody();
     const launch = () => api("/api/run", { method: "POST", body });
+    // set once the person confirms; every retry of this launch carries it
+    const keyed = () => { if (!body.has("idempotency_key")) body.set("idempotency_key", newIdempotencyKey()); };
     const confirmPaid = async est => confirmSpend({
       title: "Launch a paid run?",
       rows: [
@@ -925,7 +954,9 @@ async function viewNew() {
         ["Judge", body.get("judge") || "None"],
         ["Runs", String(est.replicates ?? body.get("replicates") ?? 1)],
         ["Estimated cost", est.total_usd == null ? "Unknown" : fmtEstimate(est.total_usd)],
+        ["Range", fmtUsdRange(est.total_low_usd, est.total_high_usd)],
         ["Estimate basis", est.basis_label || "—"],
+        ...spendContextRows(est),
       ],
       note: est.caveat || "",
       confirmLabel: "Spend and launch",
@@ -936,6 +967,7 @@ async function viewNew() {
         const est = await estimate();
         if (!(await confirmPaid(est))) { btn.disabled = false; return; }
         body.set("confirm_spend", "1");
+        keyed();
       }
       let r;
       try { r = await launch(); }
@@ -943,6 +975,7 @@ async function viewNew() {
         // estimate changed or a stale form: the server asks again
         if (ex.status === 409 && ex.body.needs_confirm && await confirmPaid(ex.body.estimate || {})) {
           body.set("confirm_spend", "1");
+          keyed();
           r = await launch();
         } else throw ex;
       }
@@ -1276,8 +1309,10 @@ async function viewCard(params) {
       title: "Write the thread with a paid model?",
       rows: [
         ["Writer model", est.model || model],
-        ["Estimated cost", est.max_usd == null ? "Unknown (model not in models/)" : `up to ${fmtEstimate(est.max_usd).replace("about ", "")}`],
+        ["Estimated cost", est.max_usd == null ? "Unknown (model not in models/)" : `up to ${fmtEstimate(est.high_usd ?? est.max_usd).replace("about ", "")}`],
+        ["Range", est.max_usd == null ? "Unknown" : fmtUsdRange(0, est.high_usd ?? est.max_usd)],
         ["Estimate basis", est.basis_label || "—"],
+        ...spendContextRows(est),
       ],
       note: est.caveat || "",
       confirmLabel: "Spend and write",
@@ -1292,6 +1327,7 @@ async function viewCard(params) {
             return;
           }
           body.set("confirm_spend", "1");
+          if (!body.has("idempotency_key")) body.set("idempotency_key", newIdempotencyKey());
         }
       }
       btn.textContent = "Writing…";
@@ -1300,6 +1336,7 @@ async function viewCard(params) {
       catch (ex) {
         if (ex.status === 409 && ex.body.needs_confirm && await confirmWriter(ex.body.estimate || {})) {
           body.set("confirm_spend", "1");
+          if (!body.has("idempotency_key")) body.set("idempotency_key", newIdempotencyKey());
           out = await api("/api/thread", { method: "POST", body });
         } else throw ex;
       }

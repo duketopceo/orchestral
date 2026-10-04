@@ -10,35 +10,52 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
+from orchestral import design_tokens
 from orchestral.storage import RunStore
 
-STYLE = """
-<style>
-  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 2rem; }
-  a { color: #2563eb; text-decoration: none; }
-  a:hover { text-decoration: underline; }
+_CSS = """
+  *, *::before, *::after { box-sizing: border-box; }
+  html { background: var(--canvas); }
+  body { font-family: var(--font-sans); background: var(--canvas); color: var(--ink); margin: 2rem; line-height: 1.5; }
+  @media (max-width: 600px) { body { margin: 1rem; } table { display: block; overflow-x: auto; } }
+  h1, h2, h3 { font-weight: 600; }
+  a { color: var(--judge-text); text-decoration: underline; text-underline-offset: 2px; }
+  a:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; box-shadow: 0 0 0 4px var(--focus-halo); }
   table { border-collapse: collapse; width: 100%; margin-top: 1rem; }
-  th, td { border: 1px solid #d1d5db; padding: 0.5rem; text-align: left; font-size: 0.9rem; }
-  th { background: #f3f4f6; position: sticky; top: 0; }
-  tr:hover { background: #f9fafb; }
-  .tag { display: inline-block; background: #e5e7eb; border-radius: 999px; padding: 0.1rem 0.5rem; font-size: 0.75rem; }
-  .pass { color: #15803d; background: #dcfce7; }
-  .fail { color: #b91c1c; background: #fee2e2; }
+  th, td { border: 1px solid var(--rule); padding: 0.5rem; text-align: left; font-size: 0.9rem; }
+  th { background: var(--sunken); position: sticky; top: 0; }
+  tr:hover { background: var(--sunken); }
+  .tag { display: inline-block; background: var(--sunken); border: 1px solid var(--rule); padding: 0.1rem 0.5rem; font-size: 0.75rem; }
+  .pass { color: var(--pass-text); background: var(--pass-wash); }
+  .fail { color: var(--fail-text); background: var(--fail-wash); }
   .grid { display: grid; grid-template-columns: 220px 1fr; gap: 1rem; }
   .metric { font-size: 1.25rem; font-weight: 600; }
-  pre, code { font-family: ui-monospace, monospace; font-size: 0.85rem; }
-  pre { background: #1f2937; color: #f3f4f6; padding: 1rem; border-radius: 0.5rem; overflow-x: auto; }
-  .artifact { border: 1px solid #d1d5db; border-radius: 0.5rem; padding: 1rem; background: #fff; }
+  pre, code { font-family: var(--font-mono); font-size: 0.85rem; }
+  pre { background: var(--sunken); color: var(--ink); border: 1px solid var(--rule); padding: 1rem; overflow-x: auto; }
+  .artifact { border: 1px solid var(--rule); padding: 1rem; background: var(--surface); }
   .section { margin-top: 2rem; }
   .summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 1rem; }
-  .card { border: 1px solid #e5e7eb; border-radius: 0.5rem; padding: 1rem; background: #fafafa; }
-  .gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 1rem; }
+  .card { border: 1px solid var(--rule); padding: 1rem; background: var(--surface); }
+  .gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(320px, 100%), 1fr)); gap: 1rem; }
   .gallery .card { padding: 0; overflow: hidden; }
-  .gallery .thumb { width: 100%; height: 240px; border: 0; border-bottom: 1px solid #e5e7eb; display: block; object-fit: cover; object-position: top; background: #fff; }
+  .gallery .thumb { width: 100%; height: 240px; border: 0; border-bottom: 1px solid var(--rule); display: block; object-fit: cover; object-position: top; background: var(--surface); }
   .gallery .meta { padding: 0.75rem; font-size: 0.85rem; }
   .gallery .meta .tags { margin-top: 0.4rem; }
-</style>
+  .bar { background: var(--judge-fill); height: 1rem; }
+  .note { font-size: 0.85rem; color: var(--ink-2); }
+  .nullglyph { display: inline-block; width: 10px; height: 0; border-top: 2px solid var(--ink-3); vertical-align: middle; }
+  .chart { max-width: 720px; width: 100%; height: auto; font-family: var(--font-sans); }
+  .chart .grid-line { stroke: var(--rule); }
+  .chart .axis { stroke: var(--rule-strong); }
+  .chart .tick { font-size: 11px; fill: var(--ink-3); }
+  .chart .axis-title { font-size: 12px; fill: var(--ink-2); }
+  .chart .series-label { font-size: 11px; fill: var(--ink); }
 """
+
+# Reports are paper only and single-file: the token block is read from
+# ui/tokens.css at import and inlined, so nothing is fetched.
+STYLE = "<style>\n" + design_tokens.css_block(("paper",), categorical=True) + "\n" + _CSS + "</style>"
+NULL = "<span class='nullglyph' role='img' aria-label='no data'></span>"
 
 
 def _load_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -129,7 +146,7 @@ def _run_card(run: Any, run_dir: Path) -> str:
   {STYLE}
 </head>
 <body>
-  <a href="index.html">&larr; All runs</a>
+  <a href="index.html">All runs</a>
   <h1>Run {meta.run_id}</h1>
 
   <div class="summary">
@@ -251,11 +268,11 @@ def _index_html(runs: list[Any]) -> str:
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>orchestral — Runs</title>
+  <title>orchestral: Runs</title>
   {STYLE}
 </head>
 <body>
-  <h1>Orchestral — Runs</h1>
+  <h1>Orchestral: Runs</h1>
   <p>Click a run to drill into events, plan, cost, and artifact. <a href="gallery.html">Visual gallery</a> &middot; <a href="dashboard.html">Dashboard</a></p>
   {_groups_table_html(runs)}
   <table>
@@ -296,7 +313,7 @@ def _copy_for_gallery(src: Path, dest: Path) -> bool:
 
 
 def _binary_artifact_label(artifact_path: Path) -> str:
-    """Describe a binary artifact — for a zip, list its members (names only).
+    """Describe a binary artifact; for a zip, list its members (names only).
 
     Names are returned raw; the caller escapes once for HTML.
     """
@@ -378,12 +395,12 @@ def generate_gallery(runs: list[Any], reports_dir: Path, task_id: str | None = N
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>orchestral — Gallery</title>
+  <title>orchestral: Gallery</title>
   {STYLE}
 </head>
 <body>
-  <h1>Orchestral — Gallery</h1>
-  <a href="index.html">&larr; All runs</a> &middot; <a href="dashboard.html">Dashboard</a>
+  <h1>Orchestral: Gallery</h1>
+  <a href="index.html">All runs</a> &middot; <a href="dashboard.html">Dashboard</a>
   {sections}
 </body>
 </html>
@@ -394,7 +411,7 @@ def _bar_html(label: str, value: float, max_value: float) -> str:
     pct = (value / max_value * 100) if max_value else 0
     return (
         f"<tr><td>{_esc(label)}</td>"
-        f"<td style='width:200px'><div style='width:{pct:.1f}%;background:#2563eb;height:1rem;border-radius:0.25rem;'></div></td>"
+        f"<td style='width:200px'><div class='bar' style='width:{pct:.1f}%'></div></td>"
         f"<td>${value:.6f}</td></tr>"
     )
 
@@ -445,12 +462,12 @@ def _dashboard_html(runs: list[Any], summary: dict[str, Any], *, experiment: str
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>orchestral — Dashboard</title>
+  <title>orchestral: Dashboard</title>
   {STYLE}
 </head>
 <body>
-  <h1>Orchestral — Dashboard</h1>
-  <a href="index.html">&larr; Per-run drill-down</a> &middot; <a href="gallery.html">Gallery</a>
+  <h1>Orchestral: Dashboard</h1>
+  <a href="index.html">Per-run drill-down</a> &middot; <a href="gallery.html">Gallery</a>
 
   <div class="summary">
     <div class="card"><div class="metric">{total}</div><small>Runs</small></div>
@@ -539,24 +556,28 @@ def model_history(runs: list[Any]) -> dict[str, dict[str, dict[str, Any]]]:
     return out
 
 
-_SCATTER_PALETTE = ["#2563eb", "#dc2626", "#16a34a", "#d97706", "#9333ea", "#0891b2", "#db2777", "#65a30d"]
+def _unjudged_note(n: int) -> str:
+    if not n:
+        return ""
+    verb = "run without a judge score is" if n == 1 else "runs without a judge score are"
+    return f"{n} {verb} not plotted."
 
 
 def _scatter_svg(runs: list[Any]) -> str:
-    """Cost-vs-quality SVG scatter: x = run cost, y = judge score or pass (1/0)."""
-    pts = [r for r in runs if r.status == "finished"]
-    if not pts:
+    """Cost vs judge score. Only judged runs are plotted: the y axis is the judge
+    score and never mixes in mechanical pass/fail. Unjudged runs are counted in
+    text. Series use the Okabe-Ito order (max 7 hues); further pairings share a
+    neutral mark and are labeled directly."""
+    finished = [r for r in runs if r.status == "finished"]
+    if not finished:
         return "<p>No finished runs yet.</p>"
-    w, h, pad_l, pad_r, pad_t, pad_b = 720, 340, 70, 20, 20, 50
-    xs = [r.total_cost_usd for r in pts]
-    x_max = max(xs) or 1.0
-
-    def quality(r: Any) -> float:
-        if r.judge_score is not None:
-            return r.judge_score
-        if r.score is not None:
-            return r.score
-        return 1.0 if r.passes else 0.0
+    pts = [r for r in finished if r.judge_score is not None]
+    note = _unjudged_note(len(finished) - len(pts))
+    note_html = f"<p class='note'>{note}</p>" if note else ""
+    if not pts:
+        return f"<p>No judged runs to plot.</p>{note_html}"
+    w, h, pad_l, pad_r, pad_t, pad_b = 720, 340, 70, 190, 20, 50
+    x_max = max(r.total_cost_usd for r in pts) or 1.0
 
     def px(v: float) -> float:
         return pad_l + (v / x_max) * (w - pad_l - pad_r)
@@ -564,18 +585,23 @@ def _scatter_svg(runs: list[Any]) -> str:
     def py(q: float) -> float:
         return pad_t + (1 - q) * (h - pad_t - pad_b)
 
-    pairing_colors: dict[str, str] = {}
+    n_hues = len(design_tokens.CATEGORICAL)
+    colors: dict[str, str] = {}
+    best: dict[str, float] = {}
     circles = []
     for r in pts:
-        pairing = f"{r.orchestrator} → {r.worker}"
-        color = pairing_colors.setdefault(pairing, _SCATTER_PALETTE[len(pairing_colors) % len(_SCATTER_PALETTE)])
-        q = quality(r)
-        judged = r.judge_score is not None
-        axis = "judge" if judged else "score" if r.score is not None else "pass"
-        label = f"{_esc(pairing)} · {_esc(r.task_id)} · ${r.total_cost_usd:.4f} · {axis} {q:.2f}"
+        pairing = f"{r.orchestrator} \u2192 {r.worker}"
+        if pairing not in colors:
+            i = len(colors)
+            colors[pairing] = f"var(--cat-{i + 1})" if i < n_hues else "var(--ink-2)"
+        color = colors[pairing]
+        q = float(r.judge_score)
+        best[pairing] = max(best.get(pairing, 0.0), q)
+        label = f"{_esc(pairing)} \u00b7 {_esc(r.task_id)} \u00b7 ${r.total_cost_usd:.4f} \u00b7 judge {q:.2f}"
+        extra = "" if color.startswith("var(--cat") else " stroke-dasharray='2 2'"
         circles.append(
-            f"<circle cx='{px(r.total_cost_usd):.1f}' cy='{py(q):.1f}' r='5' fill='{color}'"
-            f" fill-opacity='{0.85 if judged else 0.4}' stroke='{color}' stroke-width='1'>"
+            f"<circle cx='{px(r.total_cost_usd):.1f}' cy='{py(q):.1f}' r='5'"
+            f" style='fill:{color};fill-opacity:.85;stroke:{color}'{extra}>"
             f"<title>{label}</title></circle>"
         )
 
@@ -584,28 +610,38 @@ def _scatter_svg(runs: list[Any]) -> str:
         yv = i / 4
         y = py(yv)
         ticks.append(
-            f"<line x1='{pad_l}' y1='{y:.1f}' x2='{w - pad_r}' y2='{y:.1f}' stroke='#e5e7eb'/>"
-            f"<text x='{pad_l - 8}' y='{y + 4:.1f}' text-anchor='end' font-size='11' fill='#6b7280'>{yv:.2f}</text>"
+            f"<line class='grid-line' x1='{pad_l}' y1='{y:.1f}' x2='{w - pad_r}' y2='{y:.1f}'/>"
+            f"<text class='tick' x='{pad_l - 8}' y='{y + 4:.1f}' text-anchor='end'>{yv:.2f}</text>"
         )
     for i in range(6):
         xv = x_max * i / 5
-        x = px(xv)
-        ticks.append(f"<text x='{x:.1f}' y='{h - pad_b + 18}' text-anchor='middle' font-size='11' fill='#6b7280'>${xv:.3f}</text>")
+        ticks.append(f"<text class='tick' x='{px(xv):.1f}' y='{h - pad_b + 18}' text-anchor='middle'>${xv:.3f}</text>")
 
-    legend = "".join(
-        f"<span class='tag' style='background:{c}22;color:{c}'>{_esc(pairing)}</span> "
-        for pairing, c in pairing_colors.items()
-    )
+    # direct labels in the right margin, ordered by height with a minimum gap
+    labels = []
+    last_y = -99.0
+    for pairing, q in sorted(best.items(), key=lambda kv: -kv[1]):
+        y = max(py(q) + 4, last_y + 14)
+        last_y = y
+        text = pairing if len(pairing) <= 28 else pairing[:27] + "\u2026"
+        labels.append(
+            f"<text class='series-label' x='{w - pad_r + 18}' y='{y:.1f}'>{_esc(text)}</text>"
+            f"<rect x='{w - pad_r + 6}' y='{y - 8:.1f}' width='8' height='8' style='fill:{colors[pairing]}'/>"
+        )
+
+    desc = f"{len(pts)} judged runs across {len(colors)} pairings, cost per run against judge score."
     return (
-        f"<svg viewBox='0 0 {w} {h}' style='max-width:720px;width:100%;height:auto'>"
+        f"<svg class='chart' viewBox='0 0 {w} {h}' role='img' aria-labelledby='sc-t sc-d'>"
+        "<title id='sc-t'>Cost vs judge score</title>"
+        f"<desc id='sc-d'>{_esc(desc)}</desc>"
         + "".join(ticks)
-        + f"<line x1='{pad_l}' y1='{pad_t}' x2='{pad_l}' y2='{h - pad_b}' stroke='#9ca3af'/>"
-        + f"<line x1='{pad_l}' y1='{h - pad_b}' x2='{w - pad_r}' y2='{h - pad_b}' stroke='#9ca3af'/>"
+        + f"<line class='axis' x1='{pad_l}' y1='{pad_t}' x2='{pad_l}' y2='{h - pad_b}'/>"
+        + f"<line class='axis' x1='{pad_l}' y1='{h - pad_b}' x2='{w - pad_r}' y2='{h - pad_b}'/>"
         + "".join(circles)
-        + f"<text x='{(pad_l + w - pad_r) / 2:.0f}' y='{h - 8}' text-anchor='middle' font-size='12' fill='#374151'>cost per run (USD)</text>"
+        + "".join(labels)
+        + f"<text class='axis-title' x='{(pad_l + w - pad_r) / 2:.0f}' y='{h - 8}' text-anchor='middle'>cost per run (USD)</text>"
         + "</svg>"
-        + "<p style='font-size:0.85rem;color:#6b7280'>y = judge score; unjudged runs plotted as pass 1.0 / fail 0.0 (faded).</p>"
-        + f"<div class='tags'>{legend}</div>"
+        + f"<p class='note'>y = judge score, judged runs only. {note}</p>"
     )
 
 
@@ -634,7 +670,7 @@ def generate_dashboard(
     """Generate a stats dashboard from all stored runs.
 
     When ``matrix_path`` (or the default ``experiments/jev-ab.yaml`` next to
-    the runs dir) exists, an experiment arm-comparison section is included —
+    the runs dir) exists, an experiment arm-comparison section is included;
     mechanical pass is the primary axis; judge deltas are self-referential.
     """
     reports = Path(reports_dir)
@@ -653,7 +689,7 @@ def generate_dashboard(
 
 
 def _experiment_html(store: Any, matrix_path: Path) -> str:
-    """Arm-comparison table for the dashboard — the same cell rows the
+    """Arm-comparison table for the dashboard, the same cell rows the
     observatory's Experiment section renders from /api/experiment."""
     from orchestral.coverage import coverage_rows
     from orchestral.experiment import load_matrix
@@ -664,15 +700,15 @@ def _experiment_html(store: Any, matrix_path: Path) -> str:
         return ""
     body = "".join(
         f"<tr><td>{_esc(r.task_id)}<br><small>{_esc(r.orchestrator)} → {_esc(r.worker)}</small></td>"
-        f"<td>{f'{r.baseline_passes}/{r.baseline_n}' if r.baseline_n else '—'}</td>"
-        f"<td>{f'{r.jev_passes}/{r.jev_n}' if r.jev_n else '—'}</td>"
-        f"<td>{f'[{r.diff[0]:+.2f}, {r.diff[1]:+.2f}]' if r.diff else '—'}</td>"
+        f"<td>{f'{r.baseline_passes}/{r.baseline_n}' if r.baseline_n else NULL}</td>"
+        f"<td>{f'{r.jev_passes}/{r.jev_n}' if r.jev_n else NULL}</td>"
+        f"<td>{f'[{r.diff[0]:+.2f}, {r.diff[1]:+.2f}]' if r.diff else NULL}</td>"
         f"<td>{_esc(r.verdict)}</td><td>{_esc(r.state)}</td>"
-        f"<td>{'✓' if r.posted else ''}</td></tr>"
+        f"<td>{'posted' if r.posted else ''}</td></tr>"
         for r in rows
     )
     return f"""<div class="section">
-    <h2>Experiment — {_esc(matrix.name)}</h2>
+    <h2>Experiment: {_esc(matrix.name)}</h2>
     <p><small>Baseline vs jev-assist, paired replicates. Primary axis: mechanical pass.
     Judge-score deltas are self-referential (the decisions engine assists the
     jev arm and scores both arms).</small></p>

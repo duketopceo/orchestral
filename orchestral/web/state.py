@@ -17,10 +17,12 @@ import subprocess
 import threading
 import uuid
 import zipfile
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
 from urllib.parse import quote
+
+import yaml
 
 from orchestral.agentexec import ExecutorPreflightError, launch_gate
 from orchestral.calibrate import calibration_status
@@ -619,13 +621,107 @@ def overview_payload(
         d["task_title"] = (tmeta.get(r.task_id) or {}).get("title") or ""
         d["judge_state"], d["judge_reason"] = judge_state(r)
         recent.append(d)
+    now = _now()
+    live = live_runs(store, registry, now=now)
+    needs_look = needs_look_items(store, registry.models_dir, live)
     return {
-        "jobs": [_job_row(r) for r in live_runs(store, registry, now=_now())],
+        "generated_at": now.isoformat(),
+        "jobs": [_job_row(r) for r in live],
+        "changes": changes_rows(runs, tmeta),
+        "needs_look": needs_look[:NEEDS_LOOK_CAP],
+        "needs_look_total": len(needs_look),
         "leaderboard": [r.to_dict() for r in lb[:10]],
         "recent": recent,
         "groups": groups_payload(store, groups_file)[:8],
         "taxonomy": dict(sorted(taxonomy.items(), key=lambda kv: -kv[1])),
     }
+
+
+CHANGES_CAP = 500
+CHANGES_WINDOW = timedelta(days=30)
+NEEDS_LOOK_CAP = 50
+# Failure categories that say the environment failed, not the model's output.
+_INFRA_REASONS = frozenset({
+    "rate_limit", "auth", "timeout", "transport", "provider_error", "submitted_job",
+    "config", "executor_preflight", "executor_exit", "executor_timeout",
+    "executor_no_output", "spawn_failed", "workspace",
+})
+
+
+def _is_infra(reason: str | None) -> bool:
+    code = (reason or "").removeprefix("exception:")
+    return code in _INFRA_REASONS or code.endswith("_timeout")
+
+
+def changes_rows(runs: list[Any], tmeta: dict[str, dict[str, str]]) -> list[dict[str, Any]]:
+    """Terminal real runs, newest first, for the client-side "changed since you
+    last looked" band. The watermark lives on the device, so the server only
+    supplies a bounded window. Running rows belong to Live; dry runs are not
+    results."""
+    cutoff = _now() - CHANGES_WINDOW
+    rows: list[tuple[datetime, dict[str, Any]]] = []
+    for r in runs:
+        if r.status == "running" or r.dry_run or not r.finished_at:
+            continue
+        done = _parse_ts(r.finished_at)
+        if done is None or done < cutoff:
+            continue
+        rows.append((done, {
+            "run_id": r.run_id, "task_id": r.task_id,
+            "task_title": (tmeta.get(r.task_id) or {}).get("title") or "",
+            "status": r.status, "passes": r.passes, "failure_reason": r.failure_reason,
+            "cost_usd": r.display_cost_usd, "finished_at": r.finished_at,
+        }))
+    rows.sort(key=lambda t: t[0], reverse=True)
+    return [row for _, row in rows[:CHANGES_CAP]]
+
+
+def needs_look_items(store: RunStore, models_dir: Path | str,
+                     live: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """What deserves a human glance: stalled runs, infra errors, inconclusive
+    judges, flagged items and pricing drift. Each item names its target and
+    links to it; none of them is a verdict about the model."""
+    from orchestral.pricing import pricing_drift
+
+    items: list[dict[str, Any]] = []
+    for row in live:
+        if row["stalled"]:
+            items.append({
+                "kind": "stalled", "run_id": row["run_id"], "title": f"{row['label']} has gone quiet",
+                "detail": "No events for a while. Check whether it is still running.",
+                "href": f"#/run/{row['run_id']}" if row["run_id"] else "#/runs"})
+    for r in store.list_runs(limit=None):
+        if r.dry_run or r.status == "running":
+            continue
+        if r.status == "failed" and _is_infra(r.failure_reason):
+            items.append({
+                "kind": "infra_error", "run_id": r.run_id,
+                "title": f"{r.task_id} hit an infrastructure error",
+                "detail": f"{r.failure_reason}: the run did not get a fair attempt.",
+                "href": f"#/run/{r.run_id}"})
+        elif r.status == "finished" and r.judge_score is None and judge_state(r)[0] == "inconclusive":
+            items.append({
+                "kind": "inconclusive_judge", "run_id": r.run_id,
+                "title": f"The judge was inconclusive on {r.task_id}",
+                "detail": judge_state(r)[1], "href": f"#/run/{r.run_id}"})
+    for a in store.annotations():
+        if a["flag"] != "interesting":
+            continue
+        href = (f"#/runs?group={quote(a['target'], safe='')}" if a["kind"] == "group"
+                else f"#/run/{quote(a['target'], safe='')}" if a["kind"] == "run" else "#/runs")
+        items.append({
+            "kind": "flagged", "run_id": a["target"] if a["kind"] == "run" else None,
+            "title": f"You flagged {a['kind']} {a['target']}", "detail": a["note"] or "Flagged as interesting.",
+            "href": href})
+    models = _configured_models(Path(models_dir))
+    for d in pricing_drift(store.calls_pricing_summary(), models):
+        if d.drifted and d.ratio is not None:
+            items.append({
+                "kind": "pricing_drift", "run_id": None,
+                "title": f"{d.model} bills {d.ratio:.2f}x its rate card",
+                "detail": f"Across {d.api_calls} provider-reported calls. The configured price may be stale.",
+                "href": "#/models"})
+    return items
 
 
 # What the local observatory can do that the hosted mirror cannot (R13). The
@@ -1043,6 +1139,20 @@ def run_detail_payload(
     }
 
 
+_ARMS = ("baseline", "jev")
+
+
+def auto_group_label(group: str) -> str:
+    """Human label for an experiment driver's group key
+    (`matrix:task:orchestrator:worker:arm`) as `experiment · task · orch / worker · arm`.
+    Any other group has no auto-label (empty string)."""
+    parts = group.split(":")
+    if len(parts) != 5 or parts[4] not in _ARMS:
+        return ""
+    matrix, task, orch, worker, arm = parts
+    return f"{matrix} · {task} · {orch.split('/')[-1]} / {worker.split('/')[-1]} · {arm}"
+
+
 def groups_payload(
     store: RunStore, groups_file: Path | str | None = None
 ) -> list[dict[str, Any]]:
@@ -1078,6 +1188,7 @@ def groups_payload(
         out.append({
             **g,
             "label": gm.get("label") or "",
+            "display_label": gm.get("label") or auto_group_label(g["group"]) or g["group"],
             "description": gm.get("description") or "",
             "tasks": len(g["tasks"]),
             "pairings": len(g["pairings"]),
@@ -2624,6 +2735,40 @@ def _arm_block(runs: list[Any]) -> dict[str, Any]:
     }
 
 
+def _matrix_budget(path: Path) -> dict[str, Any]:
+    """The driver takes --budget on the command line and does not record it, so
+    a spec only has one when its author wrote a `budget:` key. Unknown stays
+    unknown; the UI says so rather than inventing a ceiling."""
+    try:
+        raw = yaml.safe_load(path.read_text(encoding="utf-8")).get("budget")
+    except Exception:
+        raw = None
+    if isinstance(raw, (int, float)) and not isinstance(raw, bool) and raw > 0:
+        return {"usd": float(raw), "recorded": True}
+    return {"usd": None, "recorded": False}
+
+
+def experiments_list(store: RunStore, experiments_dir: Path | str,
+                     tasks_dir: Path | str | None = None) -> list[dict[str, Any]]:
+    """One summary row per matrix spec under `experiments/`, name-sorted."""
+    root = Path(experiments_dir)
+    if not root.is_dir():
+        return []
+    out: list[dict[str, Any]] = []
+    for spec in sorted(root.glob("*.yaml")):
+        try:
+            payload = experiment_payload(store, spec, tasks_dir=tasks_dir)
+        except Exception:
+            continue
+        if payload is None:
+            continue
+        summary = payload["summary"]
+        out.append({"name": spec.stem, "matrix": payload["matrix"], "cells": summary["cells"],
+                    "states": summary["states"], "posted": summary["posted"],
+                    "spend": summary["spend"], "budget": payload["budget"]})
+    return out
+
+
 def experiment_payload(
     store: RunStore, matrix_path: str | Path, *,
     diff_eps: float = 0.15, tasks_dir: Path | str | None = None,
@@ -2660,6 +2805,7 @@ def experiment_payload(
         })
     return {
         "matrix": matrix.name,
+        "budget": _matrix_budget(p),
         "summary": coverage_summary(rows),
         "cells": cells,
         "primary_axis": "mechanical pass",

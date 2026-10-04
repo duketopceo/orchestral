@@ -294,10 +294,14 @@ def make_handler(obs: Observatory) -> type[BaseHTTPRequestHandler]:
                 if not re.fullmatch(r"[A-Za-z0-9._-]+", name) or ".." in name:
                     return self._json({"error": "matrix must be a spec name under experiments/"}, 400)
                 payload = state.experiment_payload(
-                    obs.store, obs.tasks_dir.parent / "experiments" / f"{name}.yaml")
+                    obs.store, obs.tasks_dir.parent / "experiments" / f"{name}.yaml",
+                    tasks_dir=obs.tasks_dir)
                 if payload is None:
                     return self._json({"error": f"no experiment matrix '{name}'"}, 404)
                 self._json(payload)
+            elif path == "/api/experiments":
+                self._json(state.experiments_list(
+                    obs.store, obs.tasks_dir.parent / "experiments", tasks_dir=obs.tasks_dir))
             elif path == "/api/flags":
                 self._json(obs.store.annotations())
             elif path == "/api/cards":

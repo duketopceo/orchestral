@@ -294,11 +294,11 @@ class TestStatusBar(unittest.TestCase):
         return str(bar.visual)
 
     def test_counts_render_without_a_note(self):
-        self.assertEqual(self._text(self._bar(runs=3, cost=0.1234)), "3 runs, $0.1234")
+        self.assertEqual(self._text(self._bar(runs=3, cost=0.1234)), "3 runs, $0.123")
 
     def test_note_renders_after_counts(self):
         bar = self._bar(runs=1, cost=0.5, note="2 queued")
-        self.assertEqual(self._text(bar), "1 runs, $0.5000, 2 queued")
+        self.assertEqual(self._text(bar), "1 runs, $0.500, 2 queued")
 
     def test_note_renders_after_jobs(self):
         # test_note_renders_after_counts builds a bar with no jobs, so it pins the
@@ -318,7 +318,7 @@ class TestStatusBar(unittest.TestCase):
         done.transition(JobStatus.RUNNING)
         done.transition(JobStatus.SUCCEEDED)
         bar = self._bar(jobs=[running, done])
-        self.assertEqual(self._text(bar), "0 runs, $0.0000, jobs: t on o/m (running)")
+        self.assertEqual(self._text(bar), "0 runs, $0.00, jobs: t on o/m (running)")
 
     def test_active_jobs_are_capped_at_three_with_a_count(self):
         jobs = []

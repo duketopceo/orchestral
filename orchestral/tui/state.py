@@ -327,7 +327,7 @@ def event_row(ev: dict[str, Any]) -> tuple[str, str, str, str]:
     elif etype == "evaluation.completed":
         detail = f"passes={out.get('passes')} score={out.get('score')}"
     elif etype == "usage.recorded":
-        detail = f"${float(out.get('total_cost_usd') or 0):.4f}"
+        detail = fmt_money(float(out.get('total_cost_usd') or 0))
     elif etype == "artifact.saved":
         detail = str(out.get("path") or out.get("name") or "")[:60]
     elif etype == "llm_call":

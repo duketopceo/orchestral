@@ -28,7 +28,7 @@ from textual.widgets import (
 
 from orchestral.calibrate import calibration_status
 from orchestral.export import leaderboard_csv, run_audit_markdown
-from orchestral.format import NULL_GLYPH, fmt_percent, fmt_score
+from orchestral.format import NULL_GLYPH, fmt_money, fmt_percent, fmt_score
 from orchestral.judge import DEFAULT_JUDGE
 from orchestral.stats import aggregate, pairing_leaderboard
 from orchestral.storage import RunStore
@@ -194,7 +194,7 @@ class GroupsScreen(Screen):
         table.add_columns("Group", "Task", "Orchestrator", "Worker", "n", "Pass %", "Score ± SD", "Cost ± SD", "p50", "p95", "Pass / $", "Failures")
         for c in aggregate(self._store.list_runs(limit=None)):
             score = f"{c.score_mean:.2f}±{c.score_sd:.2f}" if c.score_mean is not None else "-"
-            cost = f"{c.cost_mean:.4f}±{c.cost_sd:.4f}"
+            cost = f"{fmt_money(c.cost_mean)}±{fmt_money(c.cost_sd)}"
             spd = f"{c.successes_per_dollar:.0f}" if c.successes_per_dollar is not None else "-"
             fails = ",".join(f"{k.split(':')[-1]}×{v}" for k, v in sorted(c.failures.items()))[:24]
             table.add_row(

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from textual.widgets import Static
 
+from orchestral.format import fmt_money
 from orchestral.tui.state import Job
 
 
@@ -45,7 +46,7 @@ class StatusBar(Static):
         self._render_text()
 
     def _render_text(self) -> None:
-        parts = [f"{self._runs} runs", f"${self._cost:.4f}"]  # billed total, as the web headline
+        parts = [f"{self._runs} runs", fmt_money(self._cost)]  # billed total, as the web headline
         active = [j for j in self._jobs if j.active]
         if active:
             labels = ", ".join(f"{j.label} ({j.status.value})" for j in active[:3])

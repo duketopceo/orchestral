@@ -139,8 +139,8 @@ export function filterRuns(rows, f = {}) {
     if (f.difficulty && r.difficulty !== f.difficulty) return false;
     if (q && ![r.run_id, r.task_id, r.orchestrator, r.worker, r.run_group, r.status, r.failure_reason]
       .some(v => String(v || "").toLowerCase().includes(q))) return false;
-    if (f.status === "passed") return r.status === "finished" && !!r.passes;
-    if (f.status === "failed") return r.status === "failed" || (r.status === "finished" && !r.passes);
+    if (f.status === "passed") return r.status === "finished" && !!r.passes; // a withheld holdout row has no outcome
+    if (f.status === "failed") return r.status === "failed" || (r.status === "finished" && !r.passes && !r.holdout);
     if (f.status === "stalled") return !!r.stalled;
     if (f.status) return r.status === f.status;
     return true;

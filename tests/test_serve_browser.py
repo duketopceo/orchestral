@@ -448,7 +448,8 @@ class TestSpaRuntimeHosted(_Browser):
 
     def test_runs_filtered_by_status_failed_shows_only_failed_rows(self):
         expected = [r for r in self.snap["runs.json"]
-                    if r["status"] == "failed" or (r["status"] == "finished" and not r["passes"])]
+                    if r["status"] == "failed" or (
+                        r["status"] == "finished" and not r["passes"] and not r.get("holdout"))]
         self.assertTrue(expected)
         pg = self.page()
         pg.goto(f"{self.hbase}/#/runs?status=failed")
@@ -533,6 +534,24 @@ class TestSpaRuntimeHosted(_Browser):
         hosted = self._adapter_calls(hosted_pg)
         self.assertEqual(local_pg.evaluate("document.documentElement.dataset.mode"), "local")
         self.assertEqual(hosted_pg.evaluate("document.documentElement.dataset.mode"), "hosted")
+        # Holdout runs are the one deliberate difference: hosted never aggregates them and
+        # masks their outcome on the runs list (tests/test_privacy_holdout_config.py).
+        held = {r["run_id"] for r in local["runsAll"] if (r.get("config") or {}).get("holdout")}
+        self.assertTrue(held)
+        local["groups"] = [g for g in local["groups"] if g["group"] != "corpus-holdout"]
+        local["cards"] = [c for c in local["cards"] if c != "corpus-holdout"]
+        for rows in (local["runsAll"], local["runsFailed"], local["runsGroup"]):
+            for r in rows:
+                if r["run_id"] in held:
+                    r.update(dict.fromkeys(("passes", "score", "judge_score", "judge_passed",
+                                            "failure_reason")), holdout=True,
+                             judge_state="not_judged", judge_reason="Withheld: holdout arm.")
+        local["runsFailed"] = [r for r in local["runsFailed"]
+                               if not (r["run_id"] in held and r["status"] == "finished")]
+        n_held = len(held)
+        cells = lambda m: sum(c["n"] for t in m["tasks"] for c in t["cells"].values())  # noqa: E731
+        self.assertEqual(cells(local["matrix"]) - n_held, cells(hosted.pop("matrix")))
+        local.pop("matrix")
         for name in local:
             self.assertEqual(local[name], hosted[name], name)
         self.assertGreater(len(local["runsAll"]), 1000)

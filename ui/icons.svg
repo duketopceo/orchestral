@@ -61,7 +61,7 @@
 <!-- Rests (A7): 64px monoline, empty states as silence on purpose -->
 <symbol id="r-empty" viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="square" stroke-linejoin="miter"><path d="M6 24h52M6 32h52M6 40h52"/><path d="M26 32h12v6H26z"/></symbol>
 <symbol id="r-nomatch" viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="square" stroke-linejoin="miter"><path d="M6 42h52M6 49h52M6 56h52"/><circle cx="29" cy="21" r="12"/><path d="M38 30l9 9"/><path d="M22 24a7 7 0 0 1 14 0"/><circle cx="29" cy="24.5" r="1.5" fill="currentColor" stroke="none"/></symbol>
-<symbol id="r-starting" viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="square" stroke-linejoin="miter"><path d="M6 24h52M6 32h52M6 40h52"/><path d="M16 20v24"/><path d="M30 52L52 14"/><circle cx="29" cy="53.5" r="2.5"/></symbol>
+<symbol id="r-starting" viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="square" stroke-linejoin="miter"><path d="M6 24h52M6 32h52M6 40h52"/><path d="M18 6l17 17"/></symbol>
 <symbol id="r-missing" viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="square" stroke-linejoin="miter"><path d="M6 24h52M6 40h52"/><path d="M6 32h20l3-4 6 8 3-4h16"/></symbol>
 <symbol id="r-error" viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="square" stroke-linejoin="miter"><path d="M6 24h52M6 32h52M6 40h52"/><path d="M42 24v16M50 24v16"/><path fill="currentColor" stroke="none" d="M49 24h4v16h-4z"/></symbol>
 </svg>

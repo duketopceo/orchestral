@@ -135,7 +135,7 @@ export async function viewCard(params) {
     </div>
     <div class="xcard" data-card-scope="${esc(kind)}" data-card-lens="${esc(story.lens?.id || lens)}">
       <div class="xc-top">
-        <div class="xc-brand"><span class="mark">◆</span><span class="word">orchestral</span><span class="sub">observatory</span></div>
+        <div class="xc-brand"><span class="mark" aria-hidden="true"><svg viewBox="0 0 16 16" width="16" height="16" fill="none" aria-hidden="true" focusable="false"><path fill="currentColor" d="M1 8h14v2H1zM1 13h14v2H1zM2 2h2v2H2zM4 4h2v2H4zM6 6h2v2H6z"/></svg></span><span class="word">orchestral</span><span class="sub">observatory</span></div>
         <div class="xc-suite">${esc(kind[0].toUpperCase() + kind.slice(1))} card · suite ${esc(d.suite || F.NULL_GLYPH)}</div>
       </div>
       <div class="xc-story-head">

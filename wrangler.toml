@@ -1,0 +1,28 @@
+# Repo-root config for Workers Builds PR previews. Preview builds run
+# `npx wrangler preview` from the repository ROOT (root-directory only
+# applies to production deploys), so wrangler must find a config here.
+# Paths are root-relative; the canonical config — used by production
+# deploys and local development — is infra/cloudflare/observatory/wrangler.toml.
+# Keep the two in sync when bindings or compatibility settings change.
+name = "orchestral-observatory"
+main = "infra/cloudflare/observatory/worker.js"
+compatibility_date = "2026-01-01"
+workers_dev = false
+
+previews = {}
+
+[assets]
+directory = "ui"
+binding = "ASSETS"
+
+[[r2_buckets]]
+binding = "BUCKET"
+bucket_name = "orchestral-artifacts"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "orchestral-runs"
+database_id = "0b6f162d-26a0-4428-ba4a-eaecac0a003a"
+
+[vars]
+INGEST_IDENTITY = "eada3322162f0f00514c838e169b9a6d.access"

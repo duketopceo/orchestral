@@ -26,7 +26,7 @@ from typing import Any, ClassVar, cast
 from urllib.parse import parse_qs, unquote, urlparse
 
 from orchestral.storage import RunStore
-from orchestral.web import catalog, render, state
+from orchestral.web import catalog, render, snapshot, state
 
 # Static SPA assets live in <repo>/ui — server.py is orchestral/web/server.py.
 UI_DIR = Path(__file__).resolve().parents[2] / "ui"
@@ -57,6 +57,8 @@ _STATIC_TYPES = {
     "webmanifest": "application/manifest+json",
     "ico": "image/x-icon",
 }
+_CARD_WITHHELD = ("This card is withheld: it belongs to the holdout arm, which is never "
+                  "published as a card, an image or a preview.")
 _VERSION_TOKEN = "__V__"
 
 
@@ -124,6 +126,16 @@ class Observatory:
         return state.resolve_run_dir(self.store, meta)
 
 
+def published_observatory(obs: Observatory) -> Observatory:
+    """The same observatory reading the published view of its store: holdout
+    runs are not listed, so no aggregate, card or screenshot taken from it can
+    carry one. Captures are always taken from this view."""
+    import copy
+    pub = copy.copy(obs)
+    pub.store = cast(RunStore, snapshot.PublishedStore(obs.store))
+    return pub
+
+
 def _provider_ready(slug: str) -> bool:
     """True when the slug's provider is configured and its API-key env var is
     set — lets POST /api/thread degrade to templates instead of 500ing."""
@@ -163,6 +175,19 @@ def _safe_member(name: str) -> str | None:
 
 
 def make_handler(obs: Observatory) -> type[BaseHTTPRequestHandler]:
+    capture_server: dict[str, ThreadingHTTPServer] = {}
+    capture_lock = threading.Lock()
+
+    def capture_port() -> int:
+        """Port of a private loopback server over the published store. Every
+        screenshot is taken from it, never from the local, holdout-bearing view."""
+        with capture_lock:
+            if "srv" not in capture_server:
+                srv = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(published_observatory(obs)))
+                threading.Thread(target=srv.serve_forever, daemon=True).start()
+                capture_server["srv"] = srv
+            return capture_server["srv"].server_port
+
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "orchestral-observatory"
@@ -286,7 +311,10 @@ def make_handler(obs: Observatory) -> type[BaseHTTPRequestHandler]:
                     groups_file=obs.groups_file,
                 ))
             elif path == "/api/groups":
-                self._json(state.groups_payload(obs.store, obs.groups_file))
+                published = (self._q1(qs, "published", "") or "") == "1"
+                self._json(state.groups_payload(
+                    cast(RunStore, snapshot.PublishedStore(obs.store)) if published else obs.store,
+                    obs.groups_file))
             elif path == "/api/matrix":
                 self._json(state.task_matrix_payload(obs.store, obs.tasks_dir))
             elif path == "/api/compare":
@@ -314,7 +342,7 @@ def make_handler(obs: Observatory) -> type[BaseHTTPRequestHandler]:
             elif path == "/api/cards":
                 flagged = (self._q1(qs, "flagged", "0") or "0").lower() in {"1", "true", "yes"}
                 self._json(state.card_catalog_payload(
-                    obs.store,
+                    snapshot.PublishedStore(obs.store),  # type: ignore[arg-type]
                     tasks_dir=obs.tasks_dir,
                     groups_file=obs.groups_file,
                     group=self._q1(qs, "group"),
@@ -325,8 +353,10 @@ def make_handler(obs: Observatory) -> type[BaseHTTPRequestHandler]:
             elif path == "/api/card":
                 kind = self._q1(qs, "kind", "group") or "group"
                 target = self._q1(qs, "target", "") or ""
+                if kind == "run" and snapshot.withheld_run(obs.store, target):
+                    return self._json({"error": _CARD_WITHHELD}, 404)
                 payload = state.card_payload(
-                    obs.store, kind, target,
+                    cast(RunStore, snapshot.PublishedStore(obs.store)), kind, target,
                     group=self._q1(qs, "group"), tasks_dir=obs.tasks_dir,
                     groups_file=obs.groups_file,
                     lens=self._q1(qs, "lens", "overall") or "overall",
@@ -369,29 +399,62 @@ def make_handler(obs: Observatory) -> type[BaseHTTPRequestHandler]:
                 self._json({"error": f"not found: {path}"}, 404)
 
         def _shot_png(self, qs: dict[str, list[str]]) -> None:
-            """X-ready PNG of an SPA view — playwright screenshots the live
-            page this same server is hosting. Cards capture just the
-            ``.xcard`` node; other routes capture the settled ``#view``.
+            """PNG of an SPA view, taken by playwright from the live page this
+            same server is hosting. Cards load in capture mode (``capture=1``)
+            and capture just the ``.xcard`` node at its fixed 1200x675 size,
+            2x; other routes capture the settled ``#view``.
             """
             route = self._q1(qs, "route", "/") or "/"
             if not route.startswith("/") or route.startswith("//"):
                 return self._json({"error": "route must be an app path like /card?kind=..."}, 400)
+            is_card = route.startswith("/card")
+            if not self._route_publishable(route):
+                return self._json({"error": _CARD_WITHHELD, "code": "withheld"}, 404)
+            from orchestral import shots
             try:
-                from orchestral.shots import ScreenshotUnavailable, capture_page, shot_name
-                element = ".xcard" if route.startswith("/card") else None
-                png = capture_page(
-                    f"http://127.0.0.1:{cast(ThreadingHTTPServer, self.server).server_port}/#{route}",
-                    element=element,
-                )
-            except ScreenshotUnavailable as exc:
-                return self._json({"error": str(exc)}, 503)
-            name = shot_name(route)
+                port = capture_port()
+                if is_card:
+                    sep = "&" if "?" in route else "?"
+                    png = shots.optimize_png(shots.capture_page(
+                        f"http://127.0.0.1:{port}/#{route}{sep}capture=1",
+                        element=".xcard", scale=shots.CARD_SCALE,
+                        width=shots.CARD_VIEWPORT[0], height=shots.CARD_VIEWPORT[1]))
+                else:
+                    png = shots.capture_page(f"http://127.0.0.1:{port}/#{route}", element=None)
+            except shots.ScreenshotUnavailable as exc:
+                return self._json({
+                    "error": str(exc), "code": exc.code,
+                    "install": shots.INSTALL_COMMAND.get(exc.code, "")}, 503)
+            except shots.CaptureError as exc:
+                return self._json(
+                    {"error": str(exc), "code": exc.code}, 504 if exc.code == "timeout" else 502)
+            name = shots.shot_name(route)
             self.send_response(200)
             self.send_header("Content-Type", "image/png")
             self.send_header("Content-Disposition", f'attachment; filename="{name}"')
             self.send_header("Content-Length", str(len(png)))
             self.end_headers()
             self.wfile.write(png)
+
+        def _route_publishable(self, route: str) -> bool:
+            """A route is capturable only when the published view of the store
+            can build it: holdout runs, and groups or pairings made only of
+            them, are withheld before any browser starts."""
+            path = route.partition("?")[0]
+            if path.startswith("/run/"):
+                return not snapshot.withheld_run(obs.store, unquote(path.split("/")[2]))
+            if not path.startswith("/card"):
+                return True
+            params = parse_qs(route.partition("?")[2])
+            kind = (params.get("kind") or ["group"])[0]
+            target = (params.get("target") or [""])[0]
+            if kind == "run" and snapshot.withheld_run(obs.store, target):
+                return False
+            return state.card_payload(
+                cast(RunStore, snapshot.PublishedStore(obs.store)), kind, target,
+                group=(params.get("group") or [""])[0] or None, tasks_dir=obs.tasks_dir,
+                groups_file=obs.groups_file,
+            ) is not None
 
         def _api_run(self, path: str, qs: dict[str, list[str]]) -> None:
             parts = path.strip("/").split("/")  # api/run/<id>[/<sub>[/<member>]]

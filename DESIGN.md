@@ -1,6 +1,9 @@
 # orchestral design system: "The Score"
 
-Status: research and specification only. Nothing in this file is implemented yet.
+Status: specification. Sections 2.2, 2.3, 2.5 and 3.1 below were corrected after
+PR #120 (spend guards, favicon, contrast, readable errors); the token foundation
+(`ui/tokens.css`, themes, static serving) landed in unit U1, see "Implementation
+notes" at the end. Everything else is still to build.
 Audited against `origin/main` @ `15b482e` (merge of #118). The checked-out branch
 `docs/cloudflare-observatory-plan` has no code delta from `origin/main`; its plan
 (`docs/plans/2026-10-02-001-feat-cloudflare-hosted-observatory-plan.md`) is read
@@ -73,9 +76,10 @@ tokens. This is the root problem; everything else is a symptom.
 
 - One radius (`6px`) but chips are `99px` pills, cards `12-18px`: no documented
   radius rule.
-- `--text-3: #57636f` on `--bg #0b0d10` is **3.17:1**, on `--bg-raised` **2.98:1**.
-  It is used for every table header, section label, timestamp, metadata line and
-  hint: the most-read small text in the product fails WCAG AA.
+- `--text-3` was `#57636f` (**3.17:1** on `--bg #0b0d10`, **2.98:1** on
+  `--bg-raised`) for every table header, section label, timestamp and hint.
+  Fixed in #120 (`#7d8996`, 5.46:1 on `--bg`). The palette is still Tailwind-default
+  and is replaced wholesale by `ui/tokens.css` (U1).
 - Accent `#22d3ee` is Tailwind cyan-400 verbatim; semantics are Tailwind
   emerald-400 / red-400 / amber-400 / blue-400 verbatim. Recognisably default.
 - Fonts: `system-ui` and a platform mono fallback list, so the product looks
@@ -86,8 +90,9 @@ tokens. This is the root problem; everything else is a symptom.
 
 **Shell / rail** (`ui/app.html`)
 - Brand is a `◆` glyph + the word "orchestral" + "observatory". No logo exists.
-- No favicon: `GET /favicon.ico` returns **404**. No `<meta name="theme-color">`,
-  no OG tags, title uses `·`.
+- Favicon: #120 added a neutral `favicon.svg` placeholder and `GET /favicon.ico`
+  now answers with it (was 404). U1 adds `color-scheme` and paired `theme-color`
+  metas. Still missing: a real mark, OG tags; title uses `·`.
 - At <=860px the rail collapses to the *first letter* of each nav label
   (`#nav a::first-letter`): "O R L C M C A +". Two "C"s (Compare, Cards) are
   indistinguishable; there are no icons to fall back on.
@@ -156,16 +161,17 @@ tokens. This is the root problem; everything else is a symptom.
   1440 viewport the card's **right edge is clipped**.
 - When proof is missing (common), two large "Unavailable" panels consume ~45% of
   the card, the most expensive pixels in a social image spent saying "nothing".
-- The toolbar pre-fills `moonshotai/kimi-k2` as the thread writer, so **one click
-  on "Write thread" spends money** on a paid model with no estimate and no confirm.
+- Thread writer: fixed in #120. The field is no longer pre-filled and "Write
+  thread" goes through the spend-confirm dialog. (Previously it pre-filled
+  `moonshotai/kimi-k2`, so one click spent money with no estimate.)
 - Card brand is the same `◆ orchestral observatory` text lockup; the exported PNGs
   in `reports/cards/` use an older layout (hero numbers + task table) so published
   cards do not look like a series.
 
 **New run** (`viewNew`)
-- "Dry run" is unchecked by default and there is no cost estimate before launch,
-  although `experiment --dry-run` already knows how to price a plan. A paid
-  launch is one click from a default form.
+- Dry run default: fixed in #120. "Dry run" is checked by default; unchecking it
+  shows an estimate from recorded paid history (or "unknown") and launching
+  requires an explicit confirm.
 - Labels sit above inputs (good); the task picker is a bare `<select>` of ~150
   ids with no search, type, or difficulty.
 
@@ -209,7 +215,8 @@ raw ms, no low-n marker, no glyphs.
 4. **"Publish this."** Leaderboard -> lens -> Create card -> card clipped at
    1440 -> Download PNG (headless capture) -> optional paid thread. No preview of
    what the PNG will look like at feed size, no alt text produced.
-5. **"Launch."** New run defaults to a paid run with no estimate.
+5. **"Launch."** (Fixed in #120: dry run by default, estimate and confirm before a
+   paid run.) Remaining friction is the unsearchable ~150-id task picker.
 
 ---
 
@@ -221,7 +228,7 @@ raw ms, no low-n marker, no glyphs.
 |---|---|---|---|
 | Social preview 1280x640 | `docs/assets/social.png` | **Redo** | Treble-clef emoji as logo; olive palette unrelated to the product; describes the product as "Multi-agent task orchestration: DAGs" (it is an eval harness); fake status "4 done · 1 running" |
 | Brand mark | `◆` text glyph in `ui/app.html`, `.xcard .xc-brand` | **Redo** | Not a logo; renders differently per font |
-| Favicon / app icons | none | **Missing** | 404 on `/favicon.ico` |
+| Favicon / app icons | `ui/favicon.svg` neutral placeholder (#120) | **Redo** | Placeholder, not the mark; no PNG/ICO set |
 | Fonts | none (system stacks) | **Missing** | No identity, cross-OS drift |
 | Icons | Unicode only: `◆ ★ ∅ ↗ → ▸ ⚠ ✓ ✕` | **Redo** | Inconsistent metrics, ambiguous meaning (`∅` = "not interesting"), not keyboard/AT friendly |
 | Charts: leaderboard scatter | `lbScatter()` in `ui/app.js` | **Redo** | Collisions, no ticks, scale drift, click-only |
@@ -1006,3 +1013,42 @@ Wilke, Fundamentals of Data Visualization
 (https://oreilly.com/library/view/fundamentals-of-data/9781492031079), Instrument
 Sans (https://github.com/Instrument/instrument-sans), local
 `awesome-design-md/design-md/{ibm,clickhouse,linear.app,vercel,sentry,warp}/DESIGN.md`.
+
+---
+
+## Implementation notes
+
+Deltas recorded while landing U1 (tokens, themes, static serving). Where this
+list and a section above disagree, this list wins.
+
+- **Token names.** Section 6.1 writes `--pass` with "fill / text" cells. In
+  `ui/tokens.css` these are split into `--pass-fill`, `--pass-text` and
+  `--pass-wash` (same for `fail`, `judge`, `live`) so a name never means two
+  things. Added: `--on-fill` and `--on-judge` (text on evidence fills), `--white`
+  (constant white for artifact frames), `--focus-ring`, `--focus-halo`,
+  `--shadow-pop`, `--scrim`.
+- **Theme-invariant tokens** (font families, `--s-*`, radii, durations, easings)
+  sit in an `html { }` block so the paper and stage blocks stay key-for-key
+  identical; a test enforces that parity, and that the OS-dark copy of the stage
+  block equals the explicit `[data-theme="stage"]` copy.
+- **Theme switching.** `html[data-theme]` is `system`, `paper` or `stage`. A tiny
+  inline script in `app.html` sets it before first paint from
+  `localStorage["orchestral.theme"]`, else from `data-default-theme` on `<html>`
+  (local server: `system`; hosted Worker must serve `paper`). `ui/theme.js`
+  cycles the choice from the rail button. Stage under the OS preference is
+  guarded by `:root:not([data-theme="paper"])`.
+- **Live fill contrast.** Paper `--live-fill` (`#E69F00`) is 2.25:1 on surface.
+  Section 6.1 claims 3:1 only for pass and fail fills; `--live-fill` is never the
+  sole carrier (it travels with `--live-text`, a glyph or a word), and tests
+  assert 3:1 for pass, fail and judge fills only.
+- **`theme-color` metas** carry hex literals (a meta attribute cannot reference a
+  CSS variable). They are the only literals outside `tokens.css` in `app.html`,
+  and a test pins them to the paper and stage `--canvas`.
+- **Legacy aliases.** `ui/app.css` keeps its old variable names (`--bg`, `--text`,
+  `--accent`, `--pass`...) as aliases onto the role tokens so existing screens
+  render while later units restyle them. `--accent` now aliases `--ink` (the
+  cyan accent is gone); `--pass`/`--fail`/`--warn`/`--info` alias the `-text`
+  tokens and mark fills use the `-fill` tokens directly.
+- **Static serving.** `/static/*` uses an explicit MIME map (woff2, webmanifest,
+  ico, css and js with charset) before `mimetypes`. `app.html` references
+  `/static/*.css|js?v=__V__`; the server substitutes the newest `ui/` mtime.

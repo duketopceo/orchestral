@@ -46,6 +46,27 @@ _ARTIFACT_TYPES = {
     "txt": "text/plain; charset=utf-8",
 }
 
+# Static SPA assets (KTD6). Explicit so CPython without /etc/mime.types still
+# serves woff2 as font/woff2 rather than application/octet-stream.
+_STATIC_TYPES = {
+    **_ARTIFACT_TYPES,
+    "mjs": "text/javascript; charset=utf-8",
+    "woff2": "font/woff2",
+    "woff": "font/woff",
+    "webmanifest": "application/manifest+json",
+    "ico": "image/x-icon",
+}
+_VERSION_TOKEN = "__V__"
+
+
+def _asset_version() -> str:
+    """Short cache-busting token for ``?v=``: newest mtime under ``ui/``."""
+    try:
+        newest = max(p.stat().st_mtime_ns for p in UI_DIR.rglob("*") if p.is_file())
+    except (OSError, ValueError):
+        return "0"
+    return format(newest // 1000 & 0xFFFFFFFFFF, "x")
+
 
 class Observatory:
     """Bundles the server's dependencies so the handler stays thin."""
@@ -147,7 +168,8 @@ def make_handler(obs: Observatory) -> type[BaseHTTPRequestHandler]:
             path lands here and the client decides what to render."""
             app = UI_DIR / "app.html"
             if app.exists():
-                self._send(app.read_bytes())
+                html = app.read_text(encoding="utf-8").replace(_VERSION_TOKEN, _asset_version())
+                self._send(html.encode("utf-8"))
             else:
                 self._send(render.render_bad_request("ui/app.html missing"), 500)
 
@@ -158,9 +180,9 @@ def make_handler(obs: Observatory) -> type[BaseHTTPRequestHandler]:
             f = UI_DIR / name
             if not f.is_file():
                 return self._not_found(path)
-            ctype = mimetypes.guess_type(name)[0] or "application/octet-stream"
-            if name.endswith(".svg"):
-                ctype = "image/svg+xml"
+            ext = f.suffix.lstrip(".").lower()
+            ctype = (_STATIC_TYPES.get(ext) or mimetypes.guess_type(name)[0]
+                     or "application/octet-stream")
             self._send(f.read_bytes(), 200, ctype)
 
         # -- GET ----------------------------------------------------------

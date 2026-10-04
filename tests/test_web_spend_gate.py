@@ -22,6 +22,7 @@ from types import SimpleNamespace
 from typing import ClassVar
 from unittest.mock import patch
 
+from orchestral import design_tokens
 from orchestral.config import ModelConfig, TaskSpec
 from orchestral.runner import Runner
 from orchestral.storage import RunStore
@@ -236,12 +237,16 @@ def _contrast(a: str, b: str) -> float:
 
 
 class TestMutedTextContrast(unittest.TestCase):
+    """The full DESIGN.md 6.1 table lives in tests/test_design_tokens.py; this
+    keeps the original regression (muted text readable) against the new
+    token source in both themes."""
+
     def test_text_3_meets_aa_on_every_surface(self):
-        css = (UI / "app.css").read_text()
-        tokens = dict(re.findall(r"--([a-z0-9-]+):\s*(#[0-9a-fA-F]{6})", css))
-        for surface in ("bg", "bg-raised", "bg-inset", "bg-hover"):
-            ratio = _contrast(tokens["text-3"], tokens[surface])
-            self.assertGreaterEqual(ratio, 4.5, f"--text-3 on --{surface}: {ratio:.2f}")
+        toks = design_tokens.load(UI)
+        for theme in ("paper", "stage"):
+            for surface in ("canvas", "surface"):
+                ratio = _contrast(toks[theme]["--ink-3"], toks[theme][f"--{surface}"])
+                self.assertGreaterEqual(ratio, 4.5, f"{theme} --ink-3 on --{surface}: {ratio:.2f}")
 
 
 try:

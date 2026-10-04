@@ -4,6 +4,7 @@ only — all data access goes through loader functions and RunStore."""
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -39,6 +40,7 @@ from orchestral.tui.state import (
     fmt_elapsed,
     fmt_ms,
     fmt_tokens,
+    format_spend_estimate,
     live_totals,
     run_phase,
     sort_leaderboard,
@@ -119,7 +121,7 @@ class RunDetailScreen(Screen):
         lines = [
             f"[b]{meta.run_id}[/b]  {meta.status}  ·  {meta.task_id}",
             f"{meta.orchestrator} → {meta.worker}",
-            f"cost {fmt_cost(meta.total_cost_usd)} · tokens {fmt_tokens(meta.total_input_tokens + meta.total_output_tokens)} · latency {fmt_ms(meta.latency_ms)}",
+            f"cost {fmt_cost(meta.display_cost_usd)} · tokens {fmt_tokens(meta.total_input_tokens + meta.total_output_tokens)} · latency {fmt_ms(meta.latency_ms)}",
             f"pass {meta.passes} · score {meta.score} · failure {meta.failure_reason or '-'}",
             f"group {meta.run_group or '-'} · rep {meta.replicate or '-'} · {meta.started_at}",
             f"[dim]{meta.run_dir}[/dim]",
@@ -499,8 +501,11 @@ class LaunchScreen(ModalScreen):
         orchestrators: list[str],
         workers: list[str],
         judges: list[str],
+        estimate_fn: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
     ) -> None:
         super().__init__()
+        # spec -> launch-estimate payload; None only in tests of the bare form
+        self._estimate_fn = estimate_fn
         self._task_ids = task_ids
         self._orchestrators = orchestrators
         self._workers = workers
@@ -526,34 +531,37 @@ class LaunchScreen(ModalScreen):
             yield Label("Seed (optional)")
             yield Input(placeholder="e.g. 42", id="launch-seed", type="integer")
             yield Checkbox("Dry run (no API calls)", value=True, id="launch-dry")
+            yield Static("", id="launch-estimate")
+            confirm = Input(placeholder='type "run" to spend', id="launch-confirm")
+            confirm.display = False
+            yield confirm
             with Vertical():
                 yield Button("Launch", id="launch-go", variant="primary")
                 yield Button("Cancel", id="launch-cancel")
 
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "launch-cancel":
-            self.dismiss(None)
-            return
+    def _spec(self) -> dict[str, Any] | None:
+        """The launch spec from the form, or None (with a notification) when
+        it is incomplete or malformed."""
         task = self.query_one("#launch-task", Select).value
         orch = self.query_one("#launch-orch", Select).value
         worker = self.query_one("#launch-worker", Select).value
         judge = self.query_one("#launch-judge", Select).value or None
         if task is Select.BLANK or orch is Select.BLANK or worker is Select.BLANK:
             self.app.notify("task, orchestrator and worker are required", severity="error")
-            return
+            return None
         reps_raw = self.query_one("#launch-reps", Input).value
         seed_raw = self.query_one("#launch-seed", Input).value
         try:
             reps = max(1, int(reps_raw)) if reps_raw else 1
         except ValueError:
             self.app.notify("replicates must be an integer", severity="error")
-            return
+            return None
         try:
             seed = int(seed_raw) if seed_raw else None
         except ValueError:
             self.app.notify("seed must be an integer", severity="error")
-            return
-        self.dismiss({
+            return None
+        return {
             "task": task,
             "orchestrator": orch,
             "worker": worker,
@@ -561,7 +569,64 @@ class LaunchScreen(ModalScreen):
             "replicates": reps,
             "seed": seed,
             "dry_run": self.query_one("#launch-dry", Checkbox).value,
-        })
+        }
+
+    def _refresh_estimate(self) -> None:
+        """Show the same estimate the web confirm dialog shows whenever the
+        run would spend, and the typed-confirm field with it."""
+        dry = self.query_one("#launch-dry", Checkbox).value
+        confirm = self.query_one("#launch-confirm", Input)
+        panel = self.query_one("#launch-estimate", Static)
+        confirm.display = not dry
+        if dry or self._estimate_fn is None:
+            panel.update("")
+            return
+        task = self.query_one("#launch-task", Select).value
+        orch = self.query_one("#launch-orch", Select).value
+        worker = self.query_one("#launch-worker", Select).value
+        spec = {"task": "" if task is Select.BLANK else task,
+                "orchestrator": "" if orch is Select.BLANK else orch,
+                "worker": "" if worker is Select.BLANK else worker,
+                "judge": self.query_one("#launch-judge", Select).value or None,
+                "replicates": self.query_one("#launch-reps", Input).value or "1",
+                "dry_run": False}
+        try:
+            panel.update(format_spend_estimate(self._estimate_fn(spec)))
+        except Exception as exc:
+            panel.update(f"Could not estimate the cost: {exc}")
+
+    def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
+        self._refresh_estimate()
+
+    def on_select_changed(self, event: Select.Changed) -> None:
+        self._refresh_estimate()
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if event.input.id == "launch-reps":
+            self._refresh_estimate()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id == "launch-confirm":
+            self._launch()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "launch-cancel":
+            self.dismiss(None)
+            return
+        self._launch()
+
+    def _launch(self) -> None:
+        spec = self._spec()
+        if spec is None:
+            return
+        # A paid run needs the estimate on screen and the word typed.
+        # Enter on a field or a bare button press never spends.
+        if not spec["dry_run"] and self.query_one("#launch-confirm", Input).value.strip() != "run":
+            self._refresh_estimate()
+            self.app.notify('this run is paid: type "run" in the confirm field to spend',
+                            severity="warning")
+            return
+        self.dismiss(spec)
 
     def action_cancel(self) -> None:
         self.dismiss(None)

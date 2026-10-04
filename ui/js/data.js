@@ -71,6 +71,8 @@ export function localAdapter() {
       group: f.group, status: f.status, task: f.task, q: f.q, pairing: f.pairing, judge: f.judge,
       type: f.type, difficulty: f.difficulty, sort: f.sort, dir: f.dir })}`, o),
     groups: o => get("/api/groups", o),
+  // the groups a card may be made from: holdout groups are never offered
+  publishGroups: o => get("/api/groups?published=1", o),
     matrix: o => get("/api/matrix", o),
     experiments: o => get("/api/experiments", o),
     experiment: (name, o) => get(`/api/experiment${qs({ matrix: name })}`, o),
@@ -175,6 +177,7 @@ export function hostedAdapter() {
     overview: o => get(HOSTED_KEYS.overview(), o),
     runs: async (f = {}, o) => filterRuns(await get(HOSTED_KEYS.runs(), o), f),
     groups: o => get(HOSTED_KEYS.groups(), o),
+    publishGroups: o => get(HOSTED_KEYS.groups(), o),
     matrix: o => get(HOSTED_KEYS.matrix(), o),
     experiments: o => get(HOSTED_KEYS.experiments(), o),
     experiment: (name, o) => get(HOSTED_KEYS.experiment(name), o,

@@ -15,6 +15,7 @@ prompt: |
 
   Return a JSON object {"files": [{"path": "tokenizer.py", "content": "..."}]}.
 metadata:
+  canary: "orc-canary-f96f59ebfe81dc9d"
   module: tokenizer.py
   expected_paths: [tokenizer.py]
   timeout_seconds: 30

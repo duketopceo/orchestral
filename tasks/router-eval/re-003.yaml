@@ -10,6 +10,7 @@ prompt: |
 validation: []
 assets: []
 metadata:
+  canary: "orc-canary-5e2e4bfe09b0da53"
   difficulty: easy
   fields:
     choice: {type: str, required: true, enum: ["browser", "terminal", "files", "vscode"]}

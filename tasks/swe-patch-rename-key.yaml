@@ -12,6 +12,7 @@ prompt: |
   The patch must apply cleanly with `patch -p1` semantics against the
   provided files.
 metadata:
+  canary: "orc-canary-ef2a13019d3b8c99"
   difficulty: easy
   module: config.py
   timeout_seconds: 30

@@ -15,6 +15,7 @@ validation:
 - no_forbidden
 assets: []
 metadata:
+  canary: "orc-canary-5aa47e98a111930f"
   difficulty: medium
   document: '§PREAMBLE
 

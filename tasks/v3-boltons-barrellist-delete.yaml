@@ -48,6 +48,7 @@ prompt: 'You are contributing to `boltons` (a library of Python stdlib
 
   project''s test suite.'
 metadata:
+  canary: "orc-canary-77766ecc37de9ee3"
   fixture: boltons-barrellist
   workdir: repo
   expected_paths:

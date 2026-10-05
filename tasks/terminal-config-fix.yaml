@@ -19,6 +19,7 @@ prompt: |
   - scripts/start.sh references `app_main`, not `old_module`
   - a new file READY exists containing the text `deploy-ok`
 metadata:
+  canary: "orc-canary-59473b82ccaa8f1a"
   difficulty: medium
   fs:
     app.ini: |

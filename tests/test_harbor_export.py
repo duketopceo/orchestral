@@ -13,6 +13,7 @@ import json
 import tarfile
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 import harness

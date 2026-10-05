@@ -27,6 +27,7 @@ metadata: {}                  # optional free-form map (video tasks read generat
 | `assets` | list[str] | `[]` | Reserved; not consumed by the runner yet |
 | `metadata` | map | `{}` | Free-form; carried into run records. `video` tasks read `duration`, `resolution`, `aspect_ratio`, `generate_audio`, `seed`; `multi-file` tasks read `expected_paths` and `required_content`; `code` tasks read `module`, `tests`, `timeout_seconds`, `expected_paths`, plus quality bounds `max_code_lines`, `max_functions`, `max_complexity_lite`, `no_unsafe`, `no_external_deps`, `forbidden_patterns`; every type reads `version` to label a spec revision (recorded as `task_version`) |
 | `metadata.holdout` | bool | `false` | Marks the spec as part of the unpublished holdout arm. See below. |
+| `metadata.canary` | str | - | Memorization tripwire: an opaque `orc-canary-<16 hex>` token that lives in the spec but never in the prompt. `report --contamination` flags any run artifact that echoes one. Generated holdout specs get a deterministic canary per `(seed, index)` automatically; `audit` warns when a spec lacks one. |
 
 ## The holdout arm
 

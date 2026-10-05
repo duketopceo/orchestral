@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from orchestral.agentexec import ExecutorPreflightError, launch_gate
-from orchestral.audit import audit_tree, default_holdout_probe
+from orchestral.audit import audit_tree, default_holdout_probe, load_specs
 from orchestral.calibrate import (
     MIN_CALIBRATION_PAIRS,
     agreement_metrics,
@@ -27,6 +27,7 @@ from orchestral.calibrate import (
     load_labels,
     persist_calibration,
 )
+from orchestral.canary import canary_echoes, canary_index
 from orchestral.cli_table import (
     Column,
     Note,
@@ -1140,10 +1141,16 @@ def cmd_report(args: argparse.Namespace) -> None:
 
     if getattr(args, "contamination", False):
         arms = contamination_gap(runs)
+        echoes = canary_echoes(
+            runs, canary_index([s for _, s in load_specs(args.tasks_dir)]))
         if args.json:
-            print(json.dumps([r.to_dict() for r in arms], indent=2, default=str))
+            print(json.dumps({
+                "arms": [r.to_dict() for r in arms],
+                "canary_echoes": [h.to_dict() for h in echoes],
+            }, indent=2, default=str))
             return
         _print_contamination(arms)
+        _print_canary_echoes(echoes)
         return
 
     if getattr(args, "leaderboard", False):
@@ -1334,6 +1341,22 @@ def _print_contamination(rows: list[Any]) -> None:
             + ", ".join(f"{r.task_type} ({r.published_n}/{r.holdout_n})" for r in thin)
             + "; read these as anecdote."
         )
+
+
+def _print_canary_echoes(echoes: list[Any]) -> None:
+    """Runs whose artifacts recite a spec's canary - memorization, not reasoning."""
+    print()
+    if not echoes:
+        print("canary echoes: none - no artifact recites a spec's canary.")
+        return
+    print(f"canary echoes: {len(echoes)} - a canary lives in metadata, never in the")
+    print("prompt, so an artifact that echoes one reproduced spec text it was never shown.")
+    print_table(
+        [Column("run", max_width=14), Column("task", max_width=28),
+         Column("kind", max_width=8), Column("owner", max_width=28),
+         Column("artifact", max_width=14)],
+        [[h.run_id, h.task_id, h.kind, h.owner_task_id or "?", h.artifact]
+         for h in echoes])
 
 
 def _print_groups_table(cells: list[Any]) -> None:

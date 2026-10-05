@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .canary import CANARY_RE, spec_canary
 from .config import TaskSpec, load_task
 from .fileset import expected_paths, required_content
 
@@ -513,6 +514,69 @@ def check_validation_names(spec: TaskSpec, path: Path | None = None) -> list[Fin
                 f"dropped without comment. Implemented: {sorted(known)}."
             ),
         )
+    ]
+
+
+def check_canary(spec: TaskSpec, path: Path | None = None) -> list[Finding]:
+    """The memorization tripwire: `metadata.canary` present, well-formed, out of the prompt.
+
+    A canary is a token the model is never shown — the only way an artifact
+    can echo it is if the spec text reached the model outside this harness.
+    Absent means the spec is untrippable (a warning: foreign task dirs opt
+    out by omission); malformed or prompt-visible means the tripwire is
+    armed wrong (an error).
+    """
+    where = str(path) if path else None
+    raw = (spec.metadata or {}).get("canary")
+    findings: list[Finding] = []
+    if raw in (None, ""):
+        findings.append(Finding(
+            rule="missing_canary", severity=WARN, task_id=spec.id, path=where,
+            detail=(
+                "no metadata.canary — a model reciting this spec's text cannot be "
+                "distinguished from one reasoning to the answer. Stamp a token like "
+                "orc-canary-<16 hex>."
+            ),
+        ))
+        return findings
+    if not isinstance(raw, str) or not CANARY_RE.fullmatch(raw):
+        findings.append(Finding(
+            rule="malformed_canary", severity=ERROR, task_id=spec.id, path=where,
+            detail=(
+                f"metadata.canary {raw!r} does not match {CANARY_RE.pattern!r} — the "
+                "echo scan only recognizes that shape."
+            ),
+        ))
+        return findings
+    if raw in (spec.prompt or ""):
+        findings.append(Finding(
+            rule="canary_in_prompt", severity=ERROR, task_id=spec.id, path=where,
+            detail=(
+                "the canary appears in prompt text, so a model that echoes it is "
+                "doing exactly what was asked — the tripwire proves nothing. Keep "
+                "canary in metadata only."
+            ),
+        ))
+    return findings
+
+
+def check_canary_collisions(specs: list[TaskSpec]) -> list[Finding]:
+    """A canary shared by two specs cannot name which text leaked."""
+    owners: dict[str, list[str]] = {}
+    for spec in specs:
+        token = spec_canary(spec)
+        if token:
+            owners.setdefault(token, []).append(spec.id)
+    return [
+        Finding(
+            rule="duplicate_canary", severity=ERROR,
+            task_id=None, path=None,
+            detail=(
+                f"canary {token} is shared by {sorted(ids)} — an echo would not "
+                "say which spec leaked. Canaries must be unique per spec."
+            ),
+        )
+        for token, ids in owners.items() if len(ids) > 1
     ]
 
 
@@ -1926,6 +1990,7 @@ def check_fixture_contract(spec: TaskSpec, path: Path | None = None) -> list[Fin
 
 PER_SPEC_RULES = (
     check_validation_names,
+    check_canary,
     check_inert_metadata_required,
     check_absent_grading_contract,
     check_presence_only_extract_contract,
@@ -2029,6 +2094,8 @@ def audit_suite(
     for finding in find_duplicate_families(readable, min_family=min_family, similarity=similarity):
         report.add(finding)
     for finding in check_holdout_arm(readable, probe=holdout_probe):
+        report.add(finding)
+    for finding in check_canary_collisions(readable):
         report.add(finding)
     return report
 

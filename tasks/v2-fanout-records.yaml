@@ -29,6 +29,7 @@ prompt: |
 
   Return a JSON object {"files": [{"path": "aggregate.py", "content": "..."}]}.
 metadata:
+  canary: "orc-canary-c9189506581b5eb5"
   module: aggregate.py
   expected_paths: [aggregate.py]
   timeout_seconds: 30

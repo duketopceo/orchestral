@@ -1,6 +1,6 @@
 """Server-rendered error pages for the observatory's non-API paths.
 
-The UI itself is the static SPA in ``ui/`` (app.html + app.css + app.js).
+The UI itself is the static SPA in ``ui/`` (app.html + app.css + js modules).
 These pages are single-file and need nothing else: the design tokens
 (``ui/tokens.css`` via ``design_tokens.py``) and one Rest drawing from
 ``ui/icons.svg`` are inlined, nothing is fetched, and no JavaScript runs.

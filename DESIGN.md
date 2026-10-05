@@ -1,9 +1,11 @@
 # orchestral design system: "The Score"
 
-Status: specification. Sections 2.2, 2.3, 2.5 and 3.1 below were corrected after
-PR #120 (spend guards, favicon, contrast, readable errors); the token foundation
-(`ui/tokens.css`, themes, static serving) landed in unit U1, see "Implementation
-notes" at the end. Everything else is still to build.
+Status: **shipped** (PR #145, 2026-10-04). This document is the design's
+historical specification — the rationale, references, and decisions that
+produced the current SPA. Sections that describe an audit of the
+*pre-redesign* UI refer to that UI, not to what shipped; the living
+surface is `ui/` itself.
+
 Audited against `origin/main` @ `15b482e` (merge of #118). The checked-out branch
 `docs/cloudflare-observatory-plan` has no code delta from `origin/main`; its plan
 (`docs/plans/2026-10-02-001-feat-cloudflare-hosted-observatory-plan.md`) is read

@@ -57,6 +57,20 @@ same suite, so the Playwright tests execute there instead of skipping. It is not
 a required check and the `test` job does not wait on it. To run them locally, build
 the venv with `BROWSER=1 scripts/bootstrap-venv.sh /tmp/my-venv`.
 
+Two UI verification scripts sit alongside the suite:
+
+- `scripts/capture-ui-matrix.py` screenshots every SPA route in both
+  themes against the fixture corpus — use it before/after visual
+  changes to spot regressions the assertions miss.
+- `scripts/e2e-hosted.py` builds the fixture corpus, renders what
+  `sync --push` would send, loads it into `wrangler dev --local`
+  through the test-only `/__seed` route of `infra/cloudflare/
+  observatory/wrangler.e2e.toml`, and drives the SPA through every
+  route against the hosted adapter — no Cloudflare login needed.
+- `ui/og/` holds the HTML templates the OG/social images render from
+  (`harness.py cards --og` and `scripts/render-readme-assets.py`
+  consume them); edit them like SPA views, not static assets.
+
 
 ## Conventions
 

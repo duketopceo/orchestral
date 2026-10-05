@@ -88,9 +88,11 @@ orchestral dashboard               # reports/dashboard.html
 |---|---|
 | `init` | Create the runs directory and SQLite index |
 | `validate` | Parse all task/model specs and check per-type metadata contracts (exit 1 on problems) |
+| `doctor` | Preflight the isolated code runtime: env contract, SDK surface, `api.<domain>` DNS/TLS, and a real sandbox create/exec/destroy probe |
 | `run` | One orchestrator × worker pairing on one task |
 | `grid` | Every orchestrator × worker pairing on one task (`--orchestrators`, `--workers`, `--jobs`) |
 | `batch` | One pairing across many tasks (`--batch-dir` or `--batch-tasks`, `--jobs`) |
+| `recover` | Relaunch the slot an orphaned `running` run left behind: marks the corpse aborted, relaunches with the same task, pairing, group, replicate, and seed |
 | `ablate` | Sweep one knob for a pairing (`--sweep retry_limit=0,1,2` or `prompt_variant=terse,detailed`) |
 | `experiment` | Batched A/B driver: paired baseline/jev-assist arms per matrix cell, cost-scaled reps, spend + evidence gates (`--matrix`, `--budget`, `--batch-size`, `--jobs`) |
 | `coverage` | Experiment ledger: matrix cells vs stored runs: done/pending/aborted + posted marks (`--matrix`, `--json`) |
@@ -99,19 +101,26 @@ orchestral dashboard               # reports/dashboard.html
 | `history` | Per-model aggregates across all stored runs |
 | `report` | List/compare runs (`--pairings`, `--leaderboard`, `--groups`, `--compare A,B`, `--html`, `--sort`, `--json`) |
 | `export` | CSV run/leaderboard export, Markdown run audit, JSONL trace (`--format`, `--run`, `--out`) |
+| `dataset` | RL-ready JSONL dataset: one record per LLM call joined to run outcome and judge rewards |
+| `holdout` | Generate a seeded holdout arm into a run-scoped directory (never into git) |
 | `prices` | Pricing drift check: provider-reported `api_cost_usd` vs configured rates (`--threshold`, `--json`) |
 | `dashboard` | Static HTML dashboard with cost-vs-quality scatter |
 | `shots` | Screenshot stored HTML artifacts (needs `[shots]` extra) |
+| `cards` | Batch-export publish-ready PNG cards (leaderboard + every group/pairing card) via playwright |
 | `tui` | Interactive terminal UI: browse/inspect/launch runs (needs `[tui]` extra) |
 | `serve` | Local web observatory: same views in a browser, launch/cancel runs (localhost only) |
+| `sync` | Push observatory payloads + scrubbed run artifacts to the hosted mirror (`--push`, `--verify`), see [docs/hosted-observatory.md](docs/hosted-observatory.md) |
+| `models` | Model catalog: sync the provider's full model list for the observatory catalog view |
 | `scrub` | Redact secrets/paths from `runs/` into `runs-pub/` + `manifest.json`, withholding the answer key |
-| `calibrate` | Judge-vs-human agreement from a labels file (`--labels`, `--json`) |
-| `audit` | Static task-spec audit: fail-open checks, structural-only graders, contamination risk (`--json`, `--strict`), see [docs/task-audit.md](docs/task-audit.md) |
-| `selfcheck` | Spec self-verification: replays each spec's own reference through its graders (`--execute` runs hidden tests against spec references; `--runs` flags wall/ceiling checks across stored runs) |
-| `scrub` | Redact secrets/paths from `runs/` into `runs-pub/` + `manifest.json` |
 | `calibrate` | Judge-vs-human agreement; `--emit <group>` writes a label skeleton, `--labels` computes + persists (`--json`) |
+| `judge` | Retroactively judge artifacts of finished runs (writes judge result into `report.json` + index score) |
 | `revalidate` | Replay mechanical validators on stored artifacts (no model calls): repairs `score`/`passes`/`checks` on report + index, stamps `report.revalidated` with old values |
 | `review` | Frontier-model audit of run evidence: per-run `review.json` + `reports/review-*.md` (`--model`, `--group`, `--dry-run`) |
+| `audit` | Static task-spec audit: fail-open checks, structural-only graders, contamination risk (`--json`, `--strict`), see [docs/task-audit.md](docs/task-audit.md) |
+| `specaudit` | Decisions-engine audit of the task suite: lowball/sound/difficulty/adversarial per spec |
+| `claimsaudit` | Decisions-engine audit of claims in `audit/claims.yaml` |
+| `selfcheck` | Spec self-verification: replays each spec's own reference through its graders (`--execute` runs hidden tests against spec references; `--runs` flags wall/ceiling checks across stored runs) |
+| `harbor` | Export task specs as self-contained Harbor packages (instruction + environment + verifier) |
 
 Shared run flags (on `run`, `grid`, `batch`, `ablate`): `--planner raw|ce-plan`,
 `--judge <slug>`, `--no-judge-cache`, `--retry-limit N`, `--prompt-variant NAME`,
@@ -245,13 +254,17 @@ rollup. `runs/index.db` powers the list and leaderboard queries.
 
 `orchestral serve --port 8787` (add `--open` to launch a browser) serves
 the same observatory over HTTP on `127.0.0.1`, stdlib only, no extra
-dependencies. Pages: an overview with the live-run banner, leaderboard,
-and recent runs; `/runs` history with filtering; `/run/<id>` detail with
-the same inspection tabs; `/run/<id>/live` tailing `events.jsonl` (~1s
-polling); `/leaderboard`; and `/new`, a form that launches runs
-(including `--dry-run` equivalents) on background threads. Cancel buttons
-stop runs this `serve` process started, same mechanism and same limit
-as the TUI.
+dependencies. Views: **Now** (live runs, spend, what changed);
+**Runs** (history with filtering); **Pairings** (per-pairing evidence
+with mechanical-pass and judge-score lenses kept separate);
+**Compare** (task-level side-by-side); **Experiment** (A/B matrices);
+**Publish** (story cards and flagged runs); **Models** (the catalog);
+**New** (launch runs, including `--dry-run` equivalents); **Guide**
+(in-app reference). `Ctrl K` opens a command palette over all of it.
+Cancel and mark-abandoned buttons stop runs this `serve` process
+started, same mechanism and same limit as the TUI. `harness.py sync
+--push` mirrors the read-only view to a hosted deployment - see
+[docs/hosted-observatory.md](docs/hosted-observatory.md).
 
 Global flags: `--runs-dir`, `--tasks-dir`, `--models-dir`. They work before
 the subcommand (`orchestral --runs-dir X scrub`) and, for the commands that
@@ -332,6 +345,13 @@ credentials/paths/endpoints, preserves binary files byte-for-byte, and writes a
 the reference solution, and `llm_call` message bodies do not survive a publish,
 so a published run is a result artifact and not a re-runnable benchmark. See
 [docs/publishing.md](docs/publishing.md).
+
+Two publish surfaces sit on top of that: `orchestral cards` exports
+publish-ready PNG cards (leaderboard, per-group, per-pairing) through
+playwright, and `orchestral sync --push` mirrors the observatory
+(payloads + scrubbed artifacts) to a hosted read-only deployment -
+`sync --verify` reports drift either way. Setup and limits live in
+[docs/hosted-observatory.md](docs/hosted-observatory.md).
 
 ## GitHub Action
 

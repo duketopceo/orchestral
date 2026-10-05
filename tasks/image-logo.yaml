@@ -11,5 +11,6 @@ validation:
   - png_signature
 assets: []
 metadata:
+  canary: "orc-canary-8fcb68ab5052e89e"
   difficulty: medium
   estimated_subtasks: 2

@@ -2266,9 +2266,10 @@ class TestDocumentedClaimsAreExecuted(TestCase):
 # rather than trusting this tuple: the hand-written version omitted
 # `expected_answer`, which two rules read.
 _METADATA_KEYS = (
-    "calls", "difficulty", "expected", "expected_answer", "fields", "fixture",
-    "holdout", "module", "patch", "pattern", "reference", "reference_sql",
-    "required", "setup_commands", "test_files", "tests", "verify", "workdir",
+    "calls", "canary", "difficulty", "expected", "expected_answer", "fields",
+    "fixture", "holdout", "module", "patch", "pattern", "reference",
+    "reference_sql", "required", "setup_commands", "test_files", "tests",
+    "verify", "workdir",
 )
 
 _HOSTILE_VALUES = (

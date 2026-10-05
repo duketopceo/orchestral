@@ -16,6 +16,7 @@ prompt: |
   Return a JSON object {"files": [{"path": "calc.py", "content": "..."}]}
   with the complete module. No test file needed — the harness runs its own.
 metadata:
+  canary: "orc-canary-57419ef1ca55a599"
   module: calc.py
   expected_paths: [calc.py]
   timeout_seconds: 30

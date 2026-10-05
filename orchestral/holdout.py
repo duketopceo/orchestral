@@ -35,6 +35,7 @@ from typing import Any
 
 import yaml
 
+from orchestral.canary import canary_token
 from orchestral.config import TaskSpec
 from orchestral.privacy import GRADED_KEYS, GRADED_METADATA_KEYS
 
@@ -540,7 +541,11 @@ def generate_spec(index: int, *, seed: int = DEFAULT_SEED, task_type: str | None
     chosen = task_type or HOLDOUT_TYPES[index % len(HOLDOUT_TYPES)]
     if chosen not in _BUILDERS:
         raise ValueError(f"cannot generate a holdout spec of type {chosen!r}")
-    return _BUILDERS[chosen](_stream(seed, index), index, seed)
+    spec = _BUILDERS[chosen](_stream(seed, index), index, seed)
+    # The canary keys on (seed, index), not the spec id: two seeds are two
+    # problems under one id, and each needs its own tripwire.
+    spec.metadata["canary"] = canary_token(f"holdout:{seed}:{index}")
+    return spec
 
 
 def generate_arm(

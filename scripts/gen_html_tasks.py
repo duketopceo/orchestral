@@ -27,10 +27,16 @@ from __future__ import annotations
 
 import argparse
 import re
+import sys
 from itertools import product
 from pathlib import Path
 
 import yaml
+
+REPO = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO))
+
+from orchestral.canary import canary_token  # noqa: E402
 
 PRODUCTS = [
     "coffee roaster",
@@ -149,8 +155,9 @@ def _task_for(i: int, product: str, audience: str, index_offset: int) -> dict[st
     # A spec whose pattern does not compile would fail every artifact at grade
     # time with an opaque error, so refuse to emit it.
     re.compile(pattern)
+    task_id = f"html-batch-{i + index_offset:03d}"
     return {
-        "id": f"html-batch-{i + index_offset:03d}",
+        "id": task_id,
         "type": "html",
         "prompt": (
             f"Create a landing page for a {product} targeted at {audience}. "
@@ -158,7 +165,12 @@ def _task_for(i: int, product: str, audience: str, index_offset: int) -> dict[st
             "and a call-to-action button. Output a single self-contained HTML file with inline CSS."
         ),
         "validation": ["html", "has_required", "matches_pattern"],
-        "metadata": {"difficulty": "easy", "required": [required], "pattern": pattern},
+        "metadata": {
+            "canary": canary_token(task_id),
+            "difficulty": "easy",
+            "required": [required],
+            "pattern": pattern,
+        },
     }
 
 

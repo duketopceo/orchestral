@@ -12,6 +12,7 @@ validation:
   - mp4_signature
 assets: []
 metadata:
+  canary: "orc-canary-5c8eaf7ea40df93a"
   difficulty: medium
   estimated_subtasks: 2
   duration: 4

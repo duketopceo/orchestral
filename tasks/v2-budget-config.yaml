@@ -9,6 +9,7 @@ prompt: 'A deployed app has three wrong settings in `app.ini`: `debug =
 validation: []
 assets: []
 metadata:
+  canary: "orc-canary-c11cc864cc4f30a3"
   difficulty: easy
   fs:
     app.ini: "[server]\ndebug = true\nworkers = 1\nlog_level = verbose\nport = 8080\n"

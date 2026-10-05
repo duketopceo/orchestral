@@ -17,6 +17,7 @@ prompt: |
 validation: []
 assets: []
 metadata:
+  canary: "orc-canary-e63ec68935b8f2fa"
   difficulty: medium
   strict: true
   stub:

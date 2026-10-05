@@ -16,6 +16,7 @@ validation:
 - exact_answer
 assets: []
 metadata:
+  canary: "orc-canary-4e586697e8eda048"
   difficulty: hard
   document: '===== app.log (excerpt) =====
     2025-07-14T03:12:44Z ERROR worker-pool: task backlog 41,209 —

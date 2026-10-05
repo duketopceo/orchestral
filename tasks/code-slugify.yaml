@@ -14,6 +14,7 @@ prompt: |
   Return a JSON object {"files": [{"path": "slugify.py", "content": "..."}]}
   with the complete module. No test file needed — the harness runs its own.
 metadata:
+  canary: "orc-canary-995a81175b3df1d3"
   module: slugify.py
   expected_paths: [slugify.py]
   timeout_seconds: 30

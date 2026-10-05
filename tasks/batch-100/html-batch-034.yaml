@@ -9,6 +9,7 @@ validation:
 - has_required
 - matches_pattern
 metadata:
+  canary: "orc-canary-a6bc41ac2db1f8f1"
   difficulty: easy
   required:
   - automat

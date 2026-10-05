@@ -16,6 +16,7 @@ validation:
   - has_content
 assets: []
 metadata:
+  canary: "orc-canary-efd562e2a856ee24"
   difficulty: medium
   estimated_subtasks: 2
   expected_paths:

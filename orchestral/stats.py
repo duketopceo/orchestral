@@ -507,3 +507,84 @@ def diff_verdict(
     if (hi - lo) / 2 <= eps:
         return "resolved"
     return "inconclusive"
+
+
+def bradley_terry(
+    battles: Iterable[tuple[str, str, str]],
+) -> dict[str, dict[str, float]]:
+    """Fit Bradley-Terry ratings over pairwise battle outcomes.
+
+    ``battles`` is an iterable of ``(player_a, player_b, outcome)`` where
+    outcome is ``"a"``, ``"b"``, or ``"tie"``. Ties contribute a half-win
+    to each side — the standard Rao-Kupper-free approximation, adequate at
+    the battle counts a judge budget produces. Same-player battles are
+    dropped.
+
+    Ratings are exponentiated log-strengths normalized to geometric mean
+    1 (MM iteration). ``theta_se`` is the observed-Fisher-information
+    standard error on the log scale — it understates the true interval
+    when a player wins or loses every battle (perfect separation), so
+    treat the interval as a floor, not a ceiling.
+    """
+    players: list[str] = []
+    seen: set[str] = set()
+    wins: dict[str, float] = {}
+    played: dict[tuple[str, str], int] = {}
+    for a, b, outcome in battles:
+        if a == b or outcome not in ("a", "b", "tie"):
+            continue
+        for p in (a, b):
+            if p not in seen:
+                seen.add(p)
+                players.append(p)
+                wins[p] = 0.0
+        pair = (a, b) if a < b else (b, a)
+        played[pair] = played.get(pair, 0) + 1
+        if outcome == "tie":
+            wins[a] += 0.5
+            wins[b] += 0.5
+        else:
+            wins[a if outcome == "a" else b] += 1.0
+    if not players:
+        return {}
+
+    # A weak anchor keeps perfect separation finite: every player carries
+    # _PRIOR pseudo-battles tied against a fixed strength-1 opponent, so an
+    # undefeated player tops out instead of diverging (and the winless
+    # never hit 0).
+    _PRIOR = 1.0
+    wins_obs = dict(wins)
+    for p in players:
+        wins[p] += _PRIOR / 2
+
+    strength = dict.fromkeys(players, 1.0)
+    for _ in range(200):
+        prev = dict(strength)
+        for p in players:
+            denom = _PRIOR / (strength[p] + 1.0)
+            for (a, b), n in played.items():
+                if p in (a, b):
+                    other = b if p == a else a
+                    denom += n / (strength[p] + strength[other])
+            strength[p] = wins[p] / denom if denom > 0 else prev[p]
+        geo = math.exp(sum(math.log(max(v, 1e-300)) for v in strength.values()) / len(players))
+        strength = {p: v / geo for p, v in strength.items()}
+        if max(abs(strength[p] - prev[p]) for p in players) < 1e-9:
+            break
+
+    out: dict[str, dict[str, float]] = {}
+    for p in players:
+        info = _PRIOR * strength[p] / (strength[p] + 1.0) ** 2
+        for (a, b), n in played.items():
+            if p in (a, b):
+                other = b if p == a else a
+                info += n * strength[p] * strength[other] / (strength[p] + strength[other]) ** 2
+        theta = math.log(max(strength[p], 1e-300))
+        out[p] = {
+            "rating": strength[p],
+            "theta": theta,
+            "theta_se": (1.0 / info) ** 0.5 if info > 0 else float("inf"),
+            "wins": wins_obs[p],
+            "battles": sum(n for pair, n in played.items() if p in pair),
+        }
+    return out

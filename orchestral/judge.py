@@ -18,10 +18,11 @@ import hashlib
 import json
 import random
 import re
+import threading
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from orchestral.calibrate import _coerce_score, _coerce_verdict
 from orchestral.config import ModelConfig, TaskSpec, find_task, load_task
@@ -760,6 +761,188 @@ class _NoJudgeableArtifact(Exception):
     """Run dir has no artifact the judge path can consume."""
 
 
+JUDGE_PAIRWISE_PROMPT = """You are an expert judge comparing two artifacts produced for the same task.
+
+Task: {prompt}
+
+Artifact A:
+{artifact_a}
+
+Artifact B:
+{artifact_b}
+
+Decide which artifact better satisfies the task. Judge each criterion
+independently for both artifacts:
+
+Criteria:
+{criteria_block}
+
+Return only a JSON object with this exact shape:
+
+{{
+  "winner": "A" | "B" | "tie",
+  "reasoning": "<concise explanation naming the deciding criterion>"
+}}
+"""
+
+PAIRWISE_CONTRACT = "pairwise-v1"
+
+
+def _pair_artifact_section(text: str) -> str:
+    body = text[:JUDGE_CHAT_ARTIFACT_CAP]
+    return (
+        f"```\n{body}\n```"
+        + ("\n[artifact truncated for review]" if len(text) > JUDGE_CHAT_ARTIFACT_CAP else "")
+    )
+
+
+def judge_pair(
+    *,
+    logger: EventLogger,
+    step: int,
+    task: TaskSpec,
+    artifact_a: str,
+    artifact_b: str,
+    judge: ModelConfig,
+    client: Provider | None,
+    dry_run: bool,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Judge two artifacts for the same task, position-swapped.
+
+    Returns ``(result, costs)`` where ``result["winner"]`` is ``"a"``,
+    ``"b"``, or ``"tie"`` in CALLER order — each call asks about A/B but
+    the second swaps which artifact fills A, and the verdict is mapped
+    back before it is combined. The two orderings disagreeing is recorded
+    as ``"tie"`` with ``split_verdict: true``; a parse failure on either
+    side makes the whole battle ``inconclusive``. Image artifacts are out
+    of scope: callers pass text only.
+    """
+    criteria = task_criteria(task)
+    llm_criteria = [c for c in criteria if not c["secret"]]
+
+    if dry_run or client is None:
+        # deterministic stand-in: content-hash ordering decides, so dry
+        # battles exercise the whole BT path without spend
+        ha = hashlib.sha256(artifact_a.encode()).hexdigest()
+        hb = hashlib.sha256(artifact_b.encode()).hexdigest()
+        winner = "a" if ha < hb else ("b" if hb < ha else "tie")
+        result: dict[str, Any] = {
+            "winner": winner,
+            "reasoning": "Dry-run pairwise verdict.",
+            "model": judge.slug,
+            "judge_contract": PAIRWISE_CONTRACT,
+        }
+        logger.log_llm_call(
+            phase="judge", step=step, model=judge.slug, role="judge",
+            messages=[{"role": "user", "content": "pairwise dry-run"}],
+            completion=result, reasoning=result["reasoning"],
+            input_tokens=0, output_tokens=0, cost_usd=0.0,
+            latency_ms=random.uniform(80, 300), pricing_source="none",
+        )
+        return result, [{
+            "phase": "judge", "model": judge.slug,
+            "input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0,
+            "pricing_source": "none", "usage": None,
+        }]
+
+    verdicts: list[dict[str, Any]] = []
+    costs: list[dict[str, Any]] = []
+    for swap in (False, True):
+        first, second = (artifact_b, artifact_a) if swap else (artifact_a, artifact_b)
+        prompt_text = JUDGE_PAIRWISE_PROMPT.format(
+            prompt=task.prompt,
+            artifact_a=_pair_artifact_section(first),
+            artifact_b=_pair_artifact_section(second),
+            criteria_block=_criteria_block(llm_criteria) or "(no rubric criteria)",
+        )
+        messages = [
+            {"role": "system", "content": "You are an expert judge. Return only a JSON object."},
+            {"role": "user", "content": prompt_text},
+        ]
+        completion = client.chat(
+            model=judge.slug, messages=messages, max_tokens=1024, temperature=0.2
+        )
+        content = completion["content"]
+        usage = token_usage_from_raw(completion["usage"])
+        cost_usd, _ = compute_cost(usage, judge)
+        api_cost_usd = completion.get("api_cost_usd")
+        pricing_source = pricing_source_for(
+            api_cost_usd if isinstance(api_cost_usd, (int, float)) else None
+        )
+        try:
+            parsed = _extract_json(content)
+            w_raw = parsed.get("winner") if isinstance(parsed, dict) else None
+            if w_raw not in ("A", "B", "tie"):
+                raise ValueError(f"bad winner: {_response_fingerprint(content)}")
+            parsed["inconclusive"] = False
+        except (TypeError, ValueError, AttributeError) as exc:
+            parsed = {
+                "winner": None,
+                "reasoning": f"Could not parse judge response: {exc}",
+                "inconclusive": True,
+            }
+        verdicts.append(parsed)
+        logger.log_llm_call(
+            phase="judge", step=step, model=judge.slug, role="judge",
+            messages=messages,
+            completion={
+                "content": content, "usage": usage.to_dict(),
+                "id": completion.get("id"),
+            },
+            reasoning=str(parsed.get("reasoning") or ""),
+            input_tokens=usage.prompt_tokens,
+            output_tokens=usage.completion_tokens,
+            cost_usd=cost_usd, latency_ms=completion["latency_ms"],
+            pricing_source=pricing_source,
+            api_cost_usd=api_cost_usd if isinstance(api_cost_usd, (int, float)) else None,
+        )
+        costs.append({
+            "phase": "judge", "model": judge.slug,
+            "input_tokens": usage.prompt_tokens,
+            "output_tokens": usage.completion_tokens,
+            "cost_usd": cost_usd,
+            "pricing_source": pricing_source,
+            "api_cost_usd": api_cost_usd,
+            "usage": usage.to_dict(),
+        })
+
+    # map each call's A/B back to caller order, then combine
+    def _to_caller(v: dict[str, Any], swapped: bool) -> str | None:
+        w = v.get("winner")
+        if w is None or v.get("inconclusive"):
+            return None
+        if w == "tie":
+            return "tie"
+        a_won = (w == "A") != swapped
+        return "a" if a_won else "b"
+
+    first_v = _to_caller(verdicts[0], swapped=False)
+    second_v = _to_caller(verdicts[1], swapped=True)
+    if first_v is None or second_v is None:
+        result = {
+            "winner": None,
+            "inconclusive": True,
+            "reasoning": "; ".join(
+                str(v.get("reasoning") or "") for v in verdicts if v.get("inconclusive")
+            ),
+        }
+    elif first_v == second_v:
+        result = {
+            "winner": first_v,
+            "reasoning": str(verdicts[0].get("reasoning") or ""),
+        }
+    else:
+        result = {
+            "winner": "tie",
+            "split_verdict": True,
+            "reasoning": "Orderings disagreed; recorded as tie.",
+        }
+    result["model"] = judge.slug
+    result["judge_contract"] = PAIRWISE_CONTRACT
+    result["swapped"] = True
+    return result, costs
+
+
 def _judge_input(run_dir: Path) -> tuple[bytes | None, str | None, str]:
     """Rebuild the judge's view of a stored artifact — same shapes the live
     path produces: image bytes for image tasks, a content-free member listing
@@ -1397,5 +1580,230 @@ def backfill_judgments(
         "skipped": len(results) - len(judged) - sum(1 for r in results if r.get("judged") == "dry-run"),
         "dry_run_judged": sum(1 for r in results if r.get("judged") == "dry-run"),
         "judge": judge.slug,
+        "results": results,
+    }
+
+
+def pairing_of(meta: Any) -> str:
+    """The player label a run battles under — `orchestrator|worker`."""
+    return f"{meta.orchestrator}|{meta.worker}"
+
+
+def pairwise_battles(
+    metas: list[Any],
+) -> list[tuple[Any, Any]]:
+    """Index-pair runs of the same task across distinct pairings.
+
+    A battle exists wherever two pairings each produced a run of the same
+    task: the i-th run of one pairing (ordered by start time) battles the
+    i-th run of the other. Same-pairing runs never battle each other —
+    arm deltas inside a pairing belong to ``diff_verdict``, not BT.
+    """
+    by_task: dict[str, dict[str, list[Any]]] = {}
+    for m in metas:
+        by_task.setdefault(m.task_id, {}).setdefault(pairing_of(m), []).append(m)
+    pairs: list[tuple[Any, Any]] = []
+    for players in by_task.values():
+        labels = sorted(players)
+        for i, pa in enumerate(labels):
+            runs_a = sorted(players[pa], key=lambda m: (m.started_at or "", m.run_id))
+            for pb in labels[i + 1:]:
+                runs_b = sorted(players[pb], key=lambda m: (m.started_at or "", m.run_id))
+                pairs.extend(zip(runs_a, runs_b, strict=False))
+    return pairs
+
+
+def pairwise_verdicts(report: dict[str, Any]) -> list[dict[str, Any]]:
+    """The battle records stored on a run's report.json."""
+    pw = report.get("pairwise")
+    return pw if isinstance(pw, list) else []
+
+
+def stored_battles(
+    metas: list[Any], read_report: Any = None,
+) -> list[tuple[str, str, str]]:
+    """All recorded battles over `metas` as BT triples.
+
+    Each battle lives on both runs' reports; dedupe by the unordered
+    run-id pair AND judge slug — a multi-judge panel records independent
+    verdicts on the same battle, and each counts. ``outcome`` is from the
+    alphabetically-first player's seat so ``bradley_terry`` gets a
+    consistent (a, b, winner) frame.
+    """
+    if read_report is None:
+        def read_report(run_dir: str) -> dict[str, Any]:
+            try:
+                return json.loads((Path(run_dir) / "report.json").read_text())
+            except Exception:
+                return {}
+    seen: set[tuple[frozenset[str], str]] = set()
+    out: list[tuple[str, str, str]] = []
+    for m in metas:
+        player = pairing_of(m)
+        for rec in pairwise_verdicts(read_report(m.run_dir)):
+            key = (frozenset((m.run_id, rec.get("vs", ""))),
+                   str(rec.get("judge") or ""))
+            if key in seen:
+                continue
+            seen.add(key)
+            other = rec.get("vs_player") or ""
+            if not other or other == player:
+                continue
+            a, b = sorted((player, other))
+            w = rec.get("winner")
+            if w == "self":
+                outcome = "a" if player == a else "b"
+            elif w == "opponent":
+                outcome = "a" if other == a else "b"
+            elif w == "tie":
+                outcome = "tie"
+            else:
+                continue
+            out.append((a, b, outcome))
+    return out
+
+
+def pairwise_judge(
+    store: Any,
+    judge: ModelConfig,
+    client: Provider | None,
+    *,
+    run_group: str | None = None,
+    task_id: str | None = None,
+    orchestrator: str | None = None,
+    worker: str | None = None,
+    limit: int | None = None,
+    jobs: int = 4,
+    dry_run: bool = False,
+    force: bool = False,
+    tasks_dir: Path | str = "tasks",
+) -> dict[str, Any]:
+    """Judge head-to-head battles between pairings' artifacts.
+
+    Battles are ``pairwise_battles(metas)`` — index-paired runs of the
+    same task across distinct pairings. Each verdict is position-swapped
+    (two judge calls, disagreement → tie) and recorded on BOTH runs'
+    report.json under ``pairwise`` as ``{"vs", "vs_player", "winner",
+    "judge"}`` — a (vs, judge) slot is replaced rather than duplicated on
+    re-judges, so --force actually takes effect on stored evidence. A
+    battle's cost is split between the two runs' totals so neither
+    pairing absorbs the whole judging bill.
+    """
+    metas = [
+        m for m in store.list_runs(
+            orchestrator=orchestrator, worker=worker,
+            task_id=task_id, run_group=run_group,
+        )
+        if m.status == "finished" and not m.dry_run
+    ]
+    spec_cache: dict[str, TaskSpec] = {}
+
+    def _spec(tid: str) -> TaskSpec:
+        if tid not in spec_cache:
+            path = find_task(tid, tasks_dir)
+            if path is None:
+                raise FileNotFoundError(f"task spec not found: {tid}")
+            spec_cache[tid] = load_task(path)
+        return spec_cache[tid]
+
+    def _report(run_dir: Path) -> dict[str, Any]:
+        try:
+            return json.loads((run_dir / "report.json").read_text())
+        except Exception:
+            return {}
+
+    def _judged_before(a: Any, b: Any) -> bool:
+        return any(
+            r.get("vs") == b.run_id and r.get("judge") == judge.slug
+            for r in pairwise_verdicts(_report(Path(a.run_dir)))
+        )
+
+    all_pairs = pairwise_battles(metas)
+    pairs = all_pairs if force else [p for p in all_pairs if not _judged_before(*p)]
+    targets = pairs[:limit] if limit else pairs
+    write_lock = threading.Lock()
+
+    def _one(a: Any, b: Any) -> dict[str, Any]:
+        try:
+            task = _spec(a.task_id)
+            ta = _judge_input(Path(a.run_dir))
+            tb = _judge_input(Path(b.run_dir))
+            if ta[0] is not None or tb[0] is not None:
+                return {"a": a.run_id, "b": b.run_id, "skipped": "image artifact"}
+            text_a, text_b = ta[1] or "", tb[1] or ""
+        except _NoJudgeableArtifact as exc:
+            return {"a": a.run_id, "b": b.run_id, "skipped": str(exc)}
+        except Exception as exc:
+            return {"a": a.run_id, "b": b.run_id, "skipped": str(exc)}
+        logger = EventLogger(Path(a.run_dir), store=store, run_id=a.run_id, dry_run=dry_run)
+        try:
+            payload = f"{len(text_a)}:{text_a}{text_b}".encode()
+            sha = judge_cache_key(task, payload)
+            with store.judge_lock((task.id, judge.slug, sha)):
+                cached = None if dry_run else store.get_judge_result(task.id, judge.slug, sha)
+                if cached is not None:
+                    result, costs = cached, cast(list[dict[str, Any]], [])
+                else:
+                    result, costs = judge_pair(
+                        logger=logger, step=0, task=task,
+                        artifact_a=text_a, artifact_b=text_b,
+                        judge=judge, client=client, dry_run=dry_run,
+                    )
+                    if not dry_run and not result.get("inconclusive"):
+                        store.put_judge_result(task.id, judge.slug, sha, result)
+            if dry_run:
+                return {"a": a.run_id, "b": b.run_id, "judged": "dry-run",
+                        "winner": result.get("winner")}
+            if result.get("inconclusive"):
+                return {"a": a.run_id, "b": b.run_id, "skipped": "inconclusive"}
+
+            pa, pb = pairing_of(a), pairing_of(b)
+            w = result["winner"]  # "a" | "b" | "tie" in caller order
+            battle_cost = sum(c.get("cost_usd") or 0.0 for c in costs)
+            # a run battles several opponents — serialize report writes or
+            # concurrent read-modify-writes lose verdicts
+            with write_lock:
+                for me, other, other_player, seat in (
+                    (a, b, pb, "a"), (b, a, pa, "b"),
+                ):
+                    rpath = Path(me.run_dir) / "report.json"
+                    report = _report(Path(me.run_dir))
+                    pw = [r for r in pairwise_verdicts(report)
+                          if not (r.get("vs") == other.run_id
+                                  and r.get("judge") == judge.slug)]
+                    pw.append({
+                        "vs": other.run_id,
+                        "vs_player": other_player,
+                        "winner": "tie" if w == "tie" else ("self" if w == seat else "opponent"),
+                        "judge": judge.slug,
+                        "judge_contract": PAIRWISE_CONTRACT,
+                        "reasoning": str(result.get("reasoning") or "")[:500],
+                    })
+                    report["pairwise"] = pw
+                    rpath.write_text(json.dumps(report, indent=2, default=str))
+                for m in (a, b):
+                    m.total_cost_usd += battle_cost / 2
+                    store.update_meta(m)
+            return {"a": a.run_id, "b": b.run_id, "judged": judge.slug,
+                    "winner": result.get("winner")}
+        finally:
+            logger.close()
+
+    results: list[dict[str, Any]] = []
+    with ThreadPoolExecutor(max_workers=jobs) as pool:
+        for r in pool.map(lambda p: _one(*p), targets):
+            results.append(r)
+
+    from orchestral.stats import bradley_terry
+
+    judged = [r for r in results if "judged" in r and r["judged"] != "dry-run"]
+    return {
+        "battles_seen": len(all_pairs),
+        "already_judged": len(all_pairs) - len(pairs),
+        "judged": len(judged),
+        "skipped": len(results) - len(judged) - sum(1 for r in results if r.get("judged") == "dry-run"),
+        "dry_run_judged": sum(1 for r in results if r.get("judged") == "dry-run"),
+        "judge": judge.slug,
+        "bt": bradley_terry(stored_battles(metas)),
         "results": results,
     }

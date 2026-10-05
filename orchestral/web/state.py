@@ -47,10 +47,16 @@ from orchestral.format import (
     is_low_n_best,
     is_low_n_cell,
 )
-from orchestral.judge import DEFAULT_JUDGE
+from orchestral.judge import DEFAULT_JUDGE, stored_battles
 from orchestral.privacy import run_is_holdout
 from orchestral.runner import Runner
-from orchestral.stats import aggregate, mean, pairing_leaderboard, wilson_interval
+from orchestral.stats import (
+    aggregate,
+    bradley_terry,
+    mean,
+    pairing_leaderboard,
+    wilson_interval,
+)
 from orchestral.storage import RunStore
 from orchestral.tui.state import (
     Job,
@@ -1739,6 +1745,7 @@ def pairings_payload(
     each pairing appears in, and an orchestrator×worker matrix."""
     metas = _runs_for_group(store, group)
     rows = pairing_leaderboard(metas, unmetered_workers=store.unmetered_workers())
+    bt = bradley_terry(stored_battles(metas))
     types = _task_types(store, tasks_dir)
     default_group = None if group else default_pairing_group(metas)
 
@@ -1769,6 +1776,7 @@ def pairings_payload(
         d.update({
             "target": f"{r.orchestrator}|{r.worker}",
             "pass_ci": _wilson(r.passed, r.finished),
+            "bt": bt.get(f"{r.orchestrator}|{r.worker}"),
             "top_failure": top_failure,
             "groups": groups,
             "type_split": {t: {"passed": p, "finished": n} for t, (p, n) in per_type.items()},

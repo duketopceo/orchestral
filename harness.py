@@ -1739,7 +1739,7 @@ def cmd_review(args: argparse.Namespace) -> None:
 
 def cmd_judge(args: argparse.Namespace) -> None:
     """Retroactively judge artifacts of finished runs (score axis without re-running)."""
-    from orchestral.judge import backfill_judgments
+    from orchestral.judge import backfill_judgments, pairwise_judge
 
     judge = _judge_from_arg(args)
     if judge is None:
@@ -1748,18 +1748,37 @@ def cmd_judge(args: argparse.Namespace) -> None:
     _check_provider_envs(args, judge)
     client = None if args.dry_run else provider_for(judge)
     try:
-        result = backfill_judgments(
-            RunStore(args.runs_dir), judge, client,
-            run_group=args.group, task_id=args.task,
-            orchestrator=args.orchestrator, worker=args.worker,
-            limit=args.limit, jobs=args.jobs, dry_run=args.dry_run,
-            force=args.force, tasks_dir=Path(args.tasks_dir),
-        )
+        if args.pairwise:
+            result = pairwise_judge(
+                RunStore(args.runs_dir), judge, client,
+                run_group=args.group, task_id=args.task,
+                orchestrator=args.orchestrator, worker=args.worker,
+                limit=args.limit, jobs=args.jobs, dry_run=args.dry_run,
+                force=args.force, tasks_dir=Path(args.tasks_dir),
+            )
+        else:
+            result = backfill_judgments(
+                RunStore(args.runs_dir), judge, client,
+                run_group=args.group, task_id=args.task,
+                orchestrator=args.orchestrator, worker=args.worker,
+                limit=args.limit, jobs=args.jobs, dry_run=args.dry_run,
+                force=args.force, tasks_dir=Path(args.tasks_dir),
+            )
     finally:
         if client is not None:
             client.close()
     if args.json:
         print(json.dumps(result, indent=2, default=str))
+        return
+    if args.pairwise:
+        print(f"judged {result['judged']} battles with {result['judge']} "
+              f"({result['skipped']} skipped, {result['dry_run_judged']} dry-run stubs)")
+        bt = result.get("bt") or {}
+        if bt:
+            print("bradley-terry ratings:")
+            for player, row in sorted(bt.items(), key=lambda kv: -kv[1]["rating"]):
+                print(f"  {player:48s} {row['rating']:.2f} "
+                      f"({int(row['battles'])} battles, {row['wins']:.1f} wins)")
         return
     print(f"judged {result['judged']} runs with {result['judge']} "
           f"({result['skipped']} skipped, {result['dry_run_judged']} dry-run stubs)")
@@ -2511,6 +2530,7 @@ def build_parser() -> argparse.ArgumentParser:
     judge.add_argument("--limit", type=int, default=None, help="Cap the number of runs judged")
     judge.add_argument("--jobs", type=int, default=4, help="Parallel judge calls")
     judge.add_argument("--force", action="store_true", help="Re-judge runs that already have a judge result")
+    judge.add_argument("--pairwise", action="store_true", help="Judge head-to-head battles between pairings' artifacts (position-swapped); verdicts land on both runs' report.json and feed Bradley-Terry ratings")
     judge.add_argument("--dry-run", action="store_true", help="Exercise the path without calling the provider or writing results")
     judge.add_argument("--json", action="store_true", help="Emit the full result as JSON")
     judge.set_defaults(func=cmd_judge)

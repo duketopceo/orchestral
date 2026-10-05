@@ -130,7 +130,7 @@ export async function viewLeaderboard(params) {
     <h2>Ranking: ${esc(lens.label)}</h2>
     <div class="panel"><table class="data rank"><thead><tr>
       <th>#</th><th>Pairing</th><th class="t-num">Runs</th>
-      <th class="t-num">Pass</th><th class="t-num">95% CI</th><th class="t-num">Judge</th>
+      <th class="t-num">Pass</th><th class="t-num" data-pri="2" title="Macro-averaged pass rate: mean of per-task rates, every task equal weight">Macro</th><th class="t-num">95% CI</th><th class="t-num">Judge</th>
       ${rows.some(r => r.bt) ? '<th class="t-num" data-pri="2" title="Bradley-Terry rating from position-swapped judge battles on the same tasks; 1.0 is average strength">BT</th>' : ""}
       <th class="t-num">Fail</th><th class="t-num">Cost / pass</th><th class="t-num">Cost</th>
       <th class="t-num" data-pri="3">p50</th><th class="t-num" data-pri="3">p90</th>
@@ -144,6 +144,7 @@ export async function viewLeaderboard(params) {
           ${r.low_n_best ? ` <span class="chip chip-dim">${icon("low-n")}Low n</span>` : ""}${r.target === lens.selected_target ? ' <span class="chip chip-acc">Selected</span>' : ""}</td>
         <td class="t-num">${r.finished ?? 0}/${r.runs ?? 0}</td>
         <td class="t-num mech-axis">${fmtPct(r.pass_rate)}</td>
+        <td class="t-num" title="${r.macro_pass_rate_ci ? `bootstrap 95% CI ${fmtPct(r.macro_pass_rate_ci[0])} to ${fmtPct(r.macro_pass_rate_ci[1])}` : "mean of per-task pass rates"}">${r.macro_pass_rate != null ? fmtPct(r.macro_pass_rate) : NIL}</td>
         <td class="t-num dim">${r.pass_ci ? F.rangePct(r.pass_ci[0], r.pass_ci[1]) : NIL}</td>
         <td class="t-num judge-axis" title="${r.judged ? `${r.judged} judged run${r.judged === 1 ? "" : "s"}` : "No judged runs"}">${fmtScore(r.judge_score_median)}${r.judged ? `<span class="dim sm">·${r.judged}</span>` : ""}</td>
         ${rows.some(r => r.bt) ? `<td class="t-num" title="${r.bt ? `${r.bt.battles} battles, ${r.bt.wins} wins; theta ${r.bt.theta.toFixed(2)} ± ${r.bt.theta_se === Infinity ? "inf" : (1.96 * r.bt.theta_se).toFixed(2)}` : "no battles"}">${r.bt ? r.bt.rating.toFixed(2) : NIL}</td>` : ""}

@@ -141,6 +141,24 @@ class TestConsumers(unittest.TestCase):
         self.assertIsInstance(d["score_mean_ci"], list)
         self.assertEqual(len(d["score_mean_ci"]), 2)
 
+    def test_macro_pass_rate_is_per_task_mean_not_pooled(self):
+        """Pooled pass rate is spend-weighted: a task with 8 runs counts 8x.
+        Macro must equal the plain mean of each task's own rate."""
+        runs = []
+        for i in range(8):   # t-a: 8/8 pass -> 1.0, overrepresented
+            runs.append(_run(f"a{i}", task="t-a", passes=True))
+        for i in range(2):   # t-b: 1/2 pass -> 0.5, underrepresented
+            runs.append(_run(f"b{i}", task="t-b", passes=i == 0, task_type="sql"))
+        row = pairing_leaderboard(runs)[0]
+        self.assertAlmostEqual(row.pass_rate or 0, 0.9)         # pooled
+        self.assertAlmostEqual(row.macro_pass_rate or 0, 0.75)  # (1.0+0.5)/2
+
+    def test_macro_pass_rate_ci_when_bootstrapped(self):
+        row = pairing_leaderboard(self._corpus(), bootstrap=200)[0]
+        assert row.macro_pass_rate_ci is not None
+        self.assertLessEqual(row.macro_pass_rate_ci[0], row.macro_pass_rate or 0)
+        self.assertLessEqual(row.macro_pass_rate or 0, row.macro_pass_rate_ci[1])
+
 
 if __name__ == "__main__":
     unittest.main()

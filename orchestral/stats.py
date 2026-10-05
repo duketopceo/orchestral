@@ -123,6 +123,21 @@ def _cost_per_pass(rs: list[RunMeta], cost_basis: str) -> float | None:
     return cost / passed if passed and cost > 0 else None
 
 
+def _macro_pass(rs: list[RunMeta]) -> float | None:
+    """Mean of per-task pass rates — every task weighs the same regardless
+    of how much spend it attracted."""
+    per_task: dict[str, list[int]] = {}
+    for r in rs:
+        if r.status != "finished":
+            continue
+        st = per_task.setdefault(r.task_id, [0, 0])
+        st[1] += 1
+        st[0] += 1 if r.passes else 0
+    if not per_task:
+        return None
+    return statistics.fmean(p / n for p, n in per_task.values())
+
+
 def aggregate(runs: Iterable[RunMeta], *, by_group: bool = True,
               cost_basis: str = "billed", bootstrap: int = 0) -> list[CellAggregate]:
     """Group runs into cells and summarize each.
@@ -210,6 +225,8 @@ class PairingAggregate:
     passed: int = 0
     tasks_covered: int = 0
     pass_rate: float | None = None
+    macro_pass_rate: float | None = None
+    macro_pass_rate_ci: tuple[float, float] | None = None
     score_median: float | None = None
     score_mean: float | None = None
     judge_score_median: float | None = None
@@ -238,6 +255,9 @@ class PairingAggregate:
             "passed": self.passed,
             "tasks_covered": self.tasks_covered,
             "pass_rate": self.pass_rate,
+            "macro_pass_rate": self.macro_pass_rate,
+            "macro_pass_rate_ci": list(self.macro_pass_rate_ci)
+                if self.macro_pass_rate_ci else None,
             "score_median": self.score_median,
             "score_mean": self.score_mean,
             "judge_score_median": self.judge_score_median,
@@ -349,6 +369,17 @@ def pairing_leaderboard(
             passed=passed,
             tasks_covered=len({r.task_id for r in cell}),
             pass_rate=passed / len(finished) if finished else None,
+            # pooled pass rate silently weighs tasks by where spend went;
+            # macro gives every task equal say — the publishable headline
+            macro_pass_rate=_macro_pass(finished),
+            macro_pass_rate_ci=(
+                bootstrap_ci(
+                    finished, _macro_pass,
+                    clusters=lambda r: (run_task_type(r), r.task_id),
+                    n_boot=bootstrap,
+                    seed=_seed_for("macro", orch, worker))
+                if bootstrap and finished else None
+            ),
             score_median=statistics.median(scored) if scored else None,
             score_mean=mean(scored) if scored else None,
             judge_score_median=statistics.median(judge_scores) if judge_scores else None,

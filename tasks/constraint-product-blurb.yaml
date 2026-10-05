@@ -18,6 +18,7 @@ validation:
   - no_pattern
 assets: []
 metadata:
+  canary: "orc-canary-275a75866181293b"
   difficulty: easy
   min_words: 30
   max_words: 60

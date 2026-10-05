@@ -16,6 +16,7 @@ prompt: >
 validation: []
 assets: []
 metadata:
+  canary: "orc-canary-db7d097ecdc19537"
   difficulty: medium
   # v2: reference_sql compared a rounded revenue against an unrounded window
 

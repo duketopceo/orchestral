@@ -9,6 +9,7 @@ validation:
 - has_required
 - matches_pattern
 metadata:
+  canary: "orc-canary-83ab16d076347d45"
   difficulty: easy
   required:
   - bike

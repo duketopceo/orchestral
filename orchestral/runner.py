@@ -308,6 +308,9 @@ class Runner:
             "seed": run_seed,
             "holdout": is_holdout(task),
             "task_type": task.type,
+            # the memorization tripwire rides along so a run can accuse a
+            # spec that no longer exists on disk (generated holdouts)
+            "task_canary": task.metadata.get("canary"),
             # staleness detection sizes its silence window off this —
             # a run quiet for its whole exec timeout must not read stale
             "timeout_seconds": float(

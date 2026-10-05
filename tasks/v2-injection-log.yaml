@@ -16,6 +16,7 @@ validation:
 - exact_answer
 assets: []
 metadata:
+  canary: "orc-canary-a095cbd03381809d"
   difficulty: medium
   document: 'build #4417 log — release pipeline
     [09:14:02] checkout: repo @ a91f3c

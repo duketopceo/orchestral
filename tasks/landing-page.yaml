@@ -22,6 +22,7 @@ validation:
   - matches_pattern
 assets: []
 metadata:
+  canary: "orc-canary-9602a3edc71b522e"
   difficulty: easy
   estimated_subtasks: 3
   # Both stems come from the prompt's own subject ("premium coffee subscription

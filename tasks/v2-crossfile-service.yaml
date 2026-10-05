@@ -43,6 +43,7 @@ prompt: |
   Return a JSON object {"files": [{"path": "...", "content": "..."}]}
   containing service.py, client.py, and config.py.
 metadata:
+  canary: "orc-canary-13810ec910edf133"
   module: service.py
   expected_paths: [service.py, client.py, config.py]
   timeout_seconds: 30

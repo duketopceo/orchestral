@@ -18,6 +18,7 @@ prompt: >
 validation: []
 assets: []
 metadata:
+  canary: "orc-canary-08b4feab4965c058"
   difficulty: hard
   ordered: true
   schema:

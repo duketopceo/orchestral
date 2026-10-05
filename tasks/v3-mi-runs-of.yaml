@@ -5,6 +5,7 @@ type: code
 prompt: "You are contributing to the `more-itertools` library (a\nwidely-used extension of Python's itertools utilities). A maintainer has\nasked for a **run locator** in a new module.\n\nCreate `more_itertools/runs.py` exposing exactly one public function:\n\n    def runs_of(iterable, pred) -> list[tuple[int, int]]\n\nContract:\n- Return a list of ``(start_index, length)`` tuples, one per maximal run of\n  consecutive items for which ``pred(item)`` is truthy, preserving order.\n- ``runs_of([], bool)`` returns ``[]``;\n  ``runs_of([1, 1, 0, 1, 1, 1, 0], bool)`` returns ``[(0, 2), (3, 3)]``.\n- Works on any iterable, consumed lazily in a single pass — do not\n  materialize the input (``runs_of(iter([0, 1, 1]), bool)`` must work).\n- Empty runs are never reported; a run of length 0 does not appear.\n- Module must import cleanly with no third-party dependencies (stdlib and\n  ``more_itertools`` internals are allowed).\n- Match library style: a short docstring, snake_case name.\n\nReturn a JSON\
   \ object `{\"files\": [{\"path\": \"more_itertools/runs.py\",\n\"content\": \"...\"}]}` with the complete module. The harness overlays your\nfiles onto a full repo checkout and runs the project's test suite."
 metadata:
+  canary: "orc-canary-de5648d2a564bb96"
   fixture: more-itertools-10.8
   workdir: repo
   expected_paths:

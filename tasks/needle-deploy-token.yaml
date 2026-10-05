@@ -13,6 +13,7 @@ validation:
 - exact_answer
 assets: []
 metadata:
+  canary: "orc-canary-2f9748765a5dc1c6"
   difficulty: medium
   document: '2025-03-05T12:41:03Z auth DEBUG request handled id=22337 ms=377
 

@@ -90,6 +90,7 @@ _METADATA_ALLOWLIST = (
     "contamination_risk",
     "expected_paths",
     "workdir",
+    "canary",
 )
 
 # spec.id feeds the package directory name and the task.toml name field —

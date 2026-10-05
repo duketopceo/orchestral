@@ -73,7 +73,7 @@ class TestErrorPages(CleanPage, unittest.TestCase):
         self.assertNotIn("r-error", pages["not_found"])
         self.assertIn('href="#r-error"', pages["server_error"])
         self.assertIn('id="r-error"', pages["server_error"])
-        # r-starting is pending the logo decision (PR #127): never used here
+        # r-starting lives in the SPA Rest set, not in the error pages
         for page in pages.values():
             self.assertNotIn("r-starting", page)
             self.assertNotIn("r-empty", page)

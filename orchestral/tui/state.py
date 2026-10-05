@@ -116,7 +116,7 @@ def fmt_usd_range(lo: float | None, hi: float | None) -> str:
 def format_spend_estimate(est: dict[str, Any]) -> str:
     """The launch-estimate payload as the confirm panel's lines.
 
-    Row for row what the web confirm dialog shows (``ui/app.js``): runs,
+    Row for row what the web confirm dialog shows (``ui/js/views/new.js``): runs,
     estimated cost ("about" a figure, ``$0.00`` for a dry run, "Unknown" when
     there is no billed history, never $0), range, basis, month-to-date billed
     spend against the eval cap, then the caveat.

@@ -305,6 +305,8 @@ table.data td {
 table.data tbody tr:hover { background: var(--bg-hover); }
 table.data tbody tr:last-child td { border-bottom: none; }
 table.data .num, table.data td.t-num { font-family: var(--mono); font-variant-numeric: tabular-nums; text-align: right; }
+table.data tr.row-thin td { color: var(--text-3); }
+table.data td.e { color: var(--fail); }
 table.data th.t-num { text-align: right; }
 table.data td.warn { color: var(--warn); }
 tr.cat-group th {

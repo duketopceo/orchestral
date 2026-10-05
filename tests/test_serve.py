@@ -469,6 +469,23 @@ class TestHttpRoutes(unittest.TestCase):
             self.assertEqual(code, 200, path)
             self.assertIn("<", body)
 
+    def test_bare_routes_redirect_to_hash(self):
+        # every SPA route has a bare-path alias so pasted/bookmarked
+        # URLs survive (the hash itself never reaches the server)
+        opener = urllib.request.build_opener(_NoRedirect())
+        for path in (
+            "/runs", "/leaderboard", "/compare", "/new",
+            "/experiment", "/cards", "/card", "/models", "/about",
+        ):
+            req = urllib.request.Request(f"http://127.0.0.1:{self.port}{path}")
+            try:
+                with opener.open(req) as r:
+                    code, loc = r.status, r.headers.get("Location", "")
+            except urllib.error.HTTPError as e:
+                code, loc = e.code, e.headers.get("Location", "")
+            self.assertIn(code, (301, 302, 303), path)
+            self.assertEqual(loc, f"/#{path}", path)
+
     def test_run_detail_and_tabs(self):
         code, _ = self._get(f"/run/{self.rid}")
         self.assertEqual(code, 200)

@@ -8,8 +8,10 @@ so a pairing comparison carries variance instead of single runs.
 from __future__ import annotations
 
 import math
+import random
 import statistics
-from collections.abc import Iterable
+import zlib
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -63,6 +65,7 @@ class CellAggregate:
     latency_p95: float = 0.0
     tokens_mean: float = 0.0
     successes_per_dollar: float | None = None
+    successes_per_dollar_ci: tuple[float, float] | None = None
     failures: dict[str, int] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -86,6 +89,8 @@ class CellAggregate:
             "latency_p95": self.latency_p95,
             "tokens_mean": self.tokens_mean,
             "successes_per_dollar": self.successes_per_dollar,
+            "successes_per_dollar_ci": list(self.successes_per_dollar_ci)
+                if self.successes_per_dollar_ci else None,
             "failures": self.failures,
         }
 
@@ -100,8 +105,26 @@ def run_cost(run: RunMeta, cost_basis: str = "billed") -> float:
     return run.display_cost_usd
 
 
+def _passes_per_cost(rs: list[RunMeta], cost_basis: str) -> float | None:
+    """Successes per dollar of a resampled cell; None on zero cost."""
+    passed = sum(1 for r in rs if r.passes)
+    cost = math.fsum(run_cost(r, cost_basis) for r in rs)
+    return passed / cost if cost > 0 else None
+
+
+def _scored_mean(rs: list[RunMeta]) -> float | None:
+    xs = [r.score for r in rs if r.score is not None]
+    return statistics.fmean(xs) if xs else None
+
+
+def _cost_per_pass(rs: list[RunMeta], cost_basis: str) -> float | None:
+    passed = sum(1 for r in rs if r.passes)
+    cost = math.fsum(run_cost(r, cost_basis) for r in rs)
+    return cost / passed if passed and cost > 0 else None
+
+
 def aggregate(runs: Iterable[RunMeta], *, by_group: bool = True,
-              cost_basis: str = "billed") -> list[CellAggregate]:
+              cost_basis: str = "billed", bootstrap: int = 0) -> list[CellAggregate]:
     """Group runs into cells and summarize each.
 
     Costs read billed spend by default; `cost_basis="rate_card"` keeps the
@@ -158,6 +181,13 @@ def aggregate(runs: Iterable[RunMeta], *, by_group: bool = True,
             latency_p95=percentile(latencies, 95),
             tokens_mean=mean(tokens),
             successes_per_dollar=passed / cost_total if cost_total > 0 else None,
+            successes_per_dollar_ci=(
+                bootstrap_ci(
+                    cell, lambda rs: _passes_per_cost(rs, cost_basis),
+                    n_boot=bootstrap,
+                    seed=_seed_for("spd", group, task_id, orch, worker))
+                if bootstrap else None
+            ),
             failures=failures,
         ))
     out.sort(key=lambda c: (c.run_group, c.task_id, c.orchestrator, c.worker))
@@ -192,6 +222,8 @@ class PairingAggregate:
     duration_p90_ms: float = 0.0
     failure_rate: float | None = None
     cost_per_pass: float | None = None
+    score_mean_ci: tuple[float, float] | None = None
+    cost_per_pass_ci: tuple[float, float] | None = None
     failures: dict[str, int] = field(default_factory=dict)
     low_sample: bool = True
     holdout_runs: int = 0
@@ -218,6 +250,8 @@ class PairingAggregate:
             "duration_p90_ms": self.duration_p90_ms,
             "failure_rate": self.failure_rate,
             "cost_per_pass": self.cost_per_pass,
+            "score_mean_ci": list(self.score_mean_ci) if self.score_mean_ci else None,
+            "cost_per_pass_ci": list(self.cost_per_pass_ci) if self.cost_per_pass_ci else None,
             "failures": self.failures,
             "low_sample": self.low_sample,
             "holdout_runs": self.holdout_runs,
@@ -241,6 +275,7 @@ def pairing_leaderboard(
     min_samples: int = MIN_LEADERBOARD_SAMPLES,
     unmetered_workers: Iterable[str] | None = None,
     cost_basis: str = "billed",
+    bootstrap: int = 0,
 ) -> list[PairingAggregate]:
     """Aggregate runs into leaderboard rows keyed on (orchestrator, worker).
 
@@ -329,6 +364,22 @@ def pairing_leaderboard(
                 None
                 if worker in unmetered or not passed or cost_total <= 0
                 else cost_total / passed
+            ),
+            score_mean_ci=(
+                bootstrap_ci(
+                    finished, _scored_mean,
+                    clusters=lambda r: (run_task_type(r), r.task_id),
+                    n_boot=bootstrap,
+                    seed=_seed_for("score", orch, worker))
+                if bootstrap and finished else None
+            ),
+            cost_per_pass_ci=(
+                bootstrap_ci(
+                    cell, lambda rs: _cost_per_pass(rs, cost_basis),
+                    clusters=lambda r: (run_task_type(r), r.task_id),
+                    n_boot=bootstrap,
+                    seed=_seed_for("cpp", orch, worker))
+                if bootstrap else None
             ),
             failures=failures,
             low_sample=len(finished) < min_samples,
@@ -588,3 +639,99 @@ def bradley_terry(
             "battles": sum(n for pair, n in played.items() if p in pair),
         }
     return out
+
+
+def _seed_for(*parts: str) -> int:
+    """Deterministic per-entity seed — Python's hash() is salted per process,
+    so a stable CRC keeps bootstrap draws reproducible across invocations."""
+    return zlib.crc32("|".join(parts).encode())
+
+
+def bootstrap_ci(
+    items: Iterable[Any],
+    stat: Callable[[list[Any]], float | None],
+    *,
+    clusters: Callable[[Any], tuple[str, ...]] | None = None,
+    n_boot: int = 999,
+    alpha: float = 0.05,
+    seed: int = 0,
+) -> tuple[float, float] | None:
+    """Percentile bootstrap interval for ``stat(items)``.
+
+    With ``clusters`` — a callable returning each item's hierarchy path,
+    outermost first (e.g. ``(task_type, task_id)``) — this is a hierarchical
+    bootstrap: every level resamples with replacement inside its parent, so
+    the interval reflects between-cluster variance, not just within-cell
+    noise. Without it, items resample flat. Draws where ``stat`` returns
+    ``None`` drop out; an all-None distribution returns ``None`` rather than
+    inventing a zero-width interval on no evidence.
+    """
+    items = list(items)
+    if not items:
+        return None
+    rng = random.Random(seed)
+
+    if clusters is None:
+        def draw() -> list[Any]:
+            return [rng.choice(items) for _ in items]
+    else:
+        leaf_key = "\x00items"
+        root: dict[str, Any] = {}
+        for it in items:
+            node = root
+            for key in clusters(it):
+                node = node.setdefault(key, {})
+            node.setdefault(leaf_key, []).append(it)
+
+        def draw() -> list[Any]:
+            out: list[Any] = []
+
+            def walk(node: dict[str, Any]) -> None:
+                keys = [k for k in node if k != leaf_key]
+                for _ in keys:
+                    walk(node[rng.choice(keys)])
+                leaf = node.get(leaf_key)
+                if leaf:
+                    out.extend(rng.choice(leaf) for _ in leaf)
+
+            walk(root)
+            return out
+
+    draws: list[float] = []
+    for _ in range(n_boot):
+        v = stat(draw())
+        if v is not None:
+            draws.append(v)
+    if not draws:
+        return None
+    return (percentile(draws, alpha / 2 * 100),
+            percentile(draws, (1 - alpha / 2) * 100))
+
+
+def bootstrap_diff_ci(
+    items_a: Iterable[Any],
+    items_b: Iterable[Any],
+    stat: Callable[[list[Any]], float | None],
+    *,
+    n_boot: int = 999,
+    alpha: float = 0.05,
+    seed: int = 0,
+) -> tuple[float, float] | None:
+    """Percentile bootstrap interval for ``stat(b) - stat(a)``.
+
+    Each draw resamples each side independently — the right frame when the
+    two samples are unpaired (baseline vs candidate arm, same task cell)."""
+    a, b = list(items_a), list(items_b)
+    if not a or not b:
+        return None
+    rng = random.Random(seed)
+    draws: list[float] = []
+    for _ in range(n_boot):
+        sa = stat([rng.choice(a) for _ in a])
+        sb = stat([rng.choice(b) for _ in b])
+        if sa is not None and sb is not None:
+            draws.append(sb - sa)
+    if not draws:
+        return None
+    return (percentile(draws, alpha / 2 * 100),
+            percentile(draws, (1 - alpha / 2) * 100))

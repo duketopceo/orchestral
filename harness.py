@@ -1452,6 +1452,55 @@ def _print_group_delta(store: RunStore, spec: str, *, json_out: bool = False) ->
     print(f"Cost: {group_a}={fmt_money(total_a)}  {group_b}={fmt_money(total_b)}")
 
 
+def cmd_gate(args: argparse.Namespace) -> None:
+    """CI gate: non-zero exit when the candidate group regresses.
+
+    Verdicts come from ``compare_payload`` verbatim — the same Wilson-overlap
+    rule the observatory's compare view shows, so a cell the UI calls
+    "regressed" is exactly the cell that fails the gate. The gate fails on
+    three shapes of evidence: any cell verdict named by ``--fail-on``
+    (default ``regressed``), fewer than ``--min-shared`` two-sided cells
+    (an empty comparison must not pass), or a ``--max-cost-increase``
+    breach when given.
+    """
+    from orchestral.web.state import compare_payload
+
+    store = RunStore(args.runs_dir)
+    payload = compare_payload(store, args.baseline, args.candidate)
+    fail_on = {v.strip() for v in args.fail_on.split(",") if v.strip()}
+    failures: list[str] = []
+    if payload.get("blocked"):
+        failures.append(payload["blocked"])
+    if payload["shared"] < args.min_shared:
+        failures.append(
+            f"only {payload['shared']} shared cell(s), need {args.min_shared} - "
+            "a gate that sees nothing cannot pass")
+    failed_cells = [c for c in payload["cells"] if c["verdict"] in fail_on]
+    failures.extend(
+        f"{c['task_id']} {c['orchestrator']}|{c['worker']}: {c['verdict']} "
+        f"(pass {fmt_percent(c['pass_a'])} -> {fmt_percent(c['pass_b'])})"
+        for c in failed_cells)
+    if (args.max_cost_increase is not None and payload["cost_a"] > 0
+            and payload["cost_b"] > payload["cost_a"] * (1 + args.max_cost_increase)):
+        failures.append(
+            f"cost increase {payload['cost_b'] / payload['cost_a'] - 1:+.0%} exceeds "
+            f"--max-cost-increase {args.max_cost_increase:.0%}")
+    if args.json:
+        print(json.dumps({**payload, "fail_on": sorted(fail_on),
+                          "gate_failures": failures}, indent=2, default=str))
+    else:
+        print(f"gate {args.baseline} -> {args.candidate}: "
+              + (", ".join(f"{k}={v}" for k, v in sorted(payload["verdicts"].items()))
+                 or "no cells"))
+        print(f"shared cells {payload['shared']}, "
+              f"cost {fmt_money(payload['cost_a'])} -> {fmt_money(payload['cost_b'])}")
+        for f in failures:
+            print(f"FAIL {f}")
+        print("gate: " + ("FAILED" if failures else "passed"))
+    if failures:
+        sys.exit(1)
+
+
 def cmd_export(args: argparse.Namespace) -> None:
     """Export run data: CSV for analysis, Markdown for human audit."""
     store = RunStore(args.runs_dir)
@@ -2447,6 +2496,21 @@ def build_parser() -> argparse.ArgumentParser:
     report.add_argument("--limit", type=int, default=None, help="Limit number of rows")
     report.add_argument("--json", action="store_true", help="Output as JSON")
     report.set_defaults(func=cmd_report)
+
+    gate = sub.add_parser(
+        "gate",
+        help="CI eval gate: exit 1 when a candidate run group regresses on any shared cell",
+    )
+    gate.add_argument("--baseline", required=True, help="Reference run_group")
+    gate.add_argument("--candidate", required=True, help="Run_group under test")
+    gate.add_argument("--fail-on", default="regressed",
+                      help="Comma-separated verdicts that fail the gate (default: regressed)")
+    gate.add_argument("--min-shared", type=int, default=1,
+                      help="Fail unless at least N cells exist on both sides (default: 1)")
+    gate.add_argument("--max-cost-increase", type=float, default=None,
+                      help="Fail when candidate cost exceeds baseline by more than this fraction")
+    gate.add_argument("--json", action="store_true", help="Emit the full compare payload plus gate_failures")
+    gate.set_defaults(func=cmd_gate)
 
     prices = sub.add_parser("prices", help="Pricing drift check: provider-reported cost vs configured rate card")
     prices.add_argument("--threshold", type=float, default=DEFAULT_DRIFT_THRESHOLD, help="Drift fraction that flags a model (default 0.15)")

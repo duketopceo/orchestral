@@ -99,7 +99,8 @@ orchestral dashboard               # reports/dashboard.html
 | `publish-mark` | Check a cell or run off as published (`--target`, `--url`, `--clear`) |
 | `fixtures` | Pinned-repo fixture registry for v3 tasks (`list`, `fetch`, `check`): see [docs/v3-task-family.md](docs/v3-task-family.md) |
 | `history` | Per-model aggregates across all stored runs |
-| `report` | List/compare runs (`--pairings`, `--leaderboard`, `--groups`, `--compare A,B`, `--html`, `--sort`, `--json`) |
+| `report` | List/compare runs (`--pairings`, `--leaderboard`, `--groups`, `--compare A,B`, `--contamination`, `--html`, `--sort`, `--json`) |
+| `gate` | CI eval gate: exit 1 when a candidate run group regresses on any shared cell (`--baseline`, `--candidate`, `--fail-on`, `--min-shared`, `--max-cost-increase`) |
 | `export` | CSV run/leaderboard export, Markdown run audit, JSONL trace (`--format`, `--run`, `--out`) |
 | `dataset` | RL-ready JSONL dataset: one record per LLM call joined to run outcome and judge rewards |
 | `holdout` | Generate a seeded holdout arm into a run-scoped directory (never into git) |

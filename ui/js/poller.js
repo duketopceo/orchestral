@@ -65,6 +65,10 @@ export function stopScope(scope = "route") {
   for (const t of [...tasks.values()]) if (t.scope === scope) stop(t.key);
 }
 
+/* Introspection for browser tests (test_serve_browser.py imports this module
+   dynamically to assert a stopped task leaves the registry). */
+export const active = () => [...tasks.keys()];
+
 if (typeof document !== "undefined") {
   document.addEventListener("visibilitychange", () => {
     for (const t of tasks.values()) {

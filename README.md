@@ -113,7 +113,7 @@ orchestral dashboard               # reports/dashboard.html
 | `models` | Model catalog: sync the provider's full model list for the observatory catalog view |
 | `scrub` | Redact secrets/paths from `runs/` into `runs-pub/` + `manifest.json`, withholding the answer key |
 | `calibrate` | Judge-vs-human agreement; `--emit <group>` writes a label skeleton, `--labels` computes + persists (`--json`) |
-| `judge` | Retroactively judge artifacts of finished runs (writes judge result into `report.json` + index score) |
+| `judge` | Retroactively judge artifacts of finished runs (writes judge result into `report.json` + index score); `--pairwise` runs position-swapped head-to-head battles between pairings' same-task artifacts and prints Bradley-Terry ratings |
 | `revalidate` | Replay mechanical validators on stored artifacts (no model calls): repairs `score`/`passes`/`checks` on report + index, stamps `report.revalidated` with old values |
 | `review` | Frontier-model audit of run evidence: per-run `review.json` + `reports/review-*.md` (`--model`, `--group`, `--dry-run`) |
 | `audit` | Static task-spec audit: fail-open checks, structural-only graders, contamination risk (`--json`, `--strict`), see [docs/task-audit.md](docs/task-audit.md) |

@@ -65,8 +65,6 @@ export function stopScope(scope = "route") {
   for (const t of [...tasks.values()]) if (t.scope === scope) stop(t.key);
 }
 
-export const active = () => [...tasks.keys()];
-
 if (typeof document !== "undefined") {
   document.addEventListener("visibilitychange", () => {
     for (const t of tasks.values()) {

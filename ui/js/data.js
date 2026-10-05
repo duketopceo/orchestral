@@ -18,7 +18,6 @@ let ACTIVE = null; // the AbortSignal of the render in flight
 let adapter = null;
 
 export const meta = () => META;
-export const mode = () => META.mode;
 export const can = cap => !!META.capabilities?.[cap];
 export const isHosted = () => META.mode === "hosted";
 

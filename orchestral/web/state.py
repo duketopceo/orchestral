@@ -320,20 +320,6 @@ def live_payload(run_dir: Path, after: int, started_at: str | None = None,
     }
 
 
-def run_sections(run_dir: Path) -> dict[str, Any]:
-    """Detail-tab contents: events, metrics, report, plan, manifest."""
-    run_dir = Path(run_dir)
-    events, _ = tail_events(run_dir / "events.jsonl", 0)
-    plan_path = run_dir / "plan.md"
-    return {
-        "events": [event_row(ev) for ev in events],
-        "metrics": read_json(run_dir / "metrics.json"),
-        "report": read_json(run_dir / "report.json"),
-        "plan": plan_path.read_text(encoding="utf-8", errors="replace") if plan_path.exists() else None,
-        "manifest": read_json(run_dir / "manifest.json"),
-    }
-
-
 def _public_run(r: Any) -> dict[str, Any]:
     """`RunMeta.to_public_dict()` plus the billed cost and how it was derived.
 
@@ -762,10 +748,6 @@ def meta_payload(
         "capabilities": dict.fromkeys(CAPABILITY_FLAGS, local),
         "low_n": {"cell": LOW_N_CELL, "best": LOW_N_BEST},
     }
-
-
-def history_rows(store: RunStore, query: str = "") -> list[Any]:
-    return filter_runs(store.list_runs(limit=None), query)
 
 
 def task_choices(tasks_dir: Path) -> list[str]:

@@ -90,33 +90,13 @@ class TestPureLayer(unittest.TestCase):
             p2 = state.live_payload(run_dir, p0["next"] + 999)
             self.assertEqual(len(p2["rows"]), p0["next"])
 
-    def test_run_sections_degrade_on_missing_files(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            run_dir = Path(tmp) / "r-missing"
-            run_dir.mkdir()
-            sections = state.run_sections(run_dir)
-            self.assertEqual(sections["events"], [])
-            self.assertIsNone(sections["report"])
-            self.assertIsNone(sections["manifest"])
-
-    def test_run_sections_malformed_events_dont_raise(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            run_dir = Path(tmp) / "r-bad"
-            run_dir.mkdir()
-            (run_dir / "events.jsonl").write_text('{"type":"x"}\nnot-json\n{"type":"y"}\n')
-            sections = state.run_sections(run_dir)
-            self.assertEqual(len(sections["events"]), 3)
-
-    def test_leaderboard_and_history_rows(self):
+    def test_leaderboard_rows(self):
         with tempfile.TemporaryDirectory() as tmp:
             _seed_run(tmp)
             store = RunStore(tmp)
             rows = state.leaderboard_rows(store)
             self.assertEqual(len(rows), 1)
             self.assertEqual(rows[0]["orchestrator"], "o/model")
-            hist = state.history_rows(store)
-            self.assertEqual(len(hist), 1)
-            self.assertEqual(state.history_rows(store, "nomatch"), [])
 
     def test_annotation_roundtrip_upsert_and_validation(self):
         with tempfile.TemporaryDirectory() as tmp:

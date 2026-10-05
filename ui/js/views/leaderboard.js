@@ -80,7 +80,7 @@ export async function viewLeaderboard(params) {
       row: c.orchestrator, col: c.worker, value: c.pass_rate, n: c.finished ?? c.runs,
       href: cardHref("pairing", `${c.orchestrator}|${c.worker}`),
       selected: `${c.orchestrator}|${c.worker}` === lens.selected_target,
-      title: `${c.orchestrator} to ${c.worker}: pass ${fmtPct(c.pass_rate)}, ${c.finished ?? c.runs} finished${c.low_sample ? ", low n" : ""}${c.score_mean != null ? `, score mean ${fmtScore(c.score_mean)}${c.score_mean_ci ? ` (bootstrap 95% CI ${fmtScore(c.score_mean_ci[0])}–${fmtScore(c.score_mean_ci[1])})` : ""}` : ""}`,
+      title: `${c.orchestrator} to ${c.worker}: pass ${fmtPct(c.pass_rate)}, ${c.finished ?? c.runs} finished${c.low_sample ? ", low n" : ""}${c.score_mean != null ? `, score mean ${fmtScore(c.score_mean)}${c.score_mean_ci ? ` (bootstrap 95% CI ${fmtScore(c.score_mean_ci[0])} to ${fmtScore(c.score_mean_ci[1])})` : ""}` : ""}`,
     })),
   }) : `<div class="empty">No pairings in this scope yet.</div>`;
 

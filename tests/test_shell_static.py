@@ -66,10 +66,10 @@ class TestIconWiring(unittest.TestCase):
         self.assertIn('icon("stalled"', JS[UI / "js" / "components" / "states.js"])
         self.assertIn("liveGlyph", JS[UI / "js" / "live.js"])
 
-    def test_starting_rest_is_not_used_until_the_logo_decision(self) -> None:
-        for p, src in JS.items():
-            self.assertNotIn("r-starting", _code(src), p.name)
-        self.assertIn("#127", JS[UI / "js" / "components" / "states.js"])
+    def test_starting_rest_uses_the_shipped_glyph(self) -> None:
+        src = JS[UI / "js" / "components" / "states.js"]
+        self.assertIn('starting: "starting"', src)
+        self.assertIn("r-starting", SYMBOLS)
 
     def test_hatch_pattern_takes_its_colour_from_css(self) -> None:
         self.assertRegex(CSS, r"#hatch\s*\{[^}]*color:\s*var\(--ink-2\)")

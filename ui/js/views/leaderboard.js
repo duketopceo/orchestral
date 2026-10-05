@@ -1,6 +1,6 @@
 import * as F from "../format.js";
 import { $view } from "../dom.js";
-import { data } from "../data.js";
+import { can, data } from "../data.js";
 import { bindFlags, flagWidget, loadFlags } from "../flags.js";
 import { icon } from "../components/states.js";
 import { NIL, esc, fmtMoney, fmtMs, fmtPct, fmtScore, slug } from "../util.js";
@@ -99,7 +99,7 @@ export async function viewLeaderboard(params) {
           </label>
         </div>
         <div class="story-control-actions">
-          <a class="btn" href="/api/shot.png?route=${encodeURIComponent(leaderboardHash.slice(1))}" download>Download view</a>
+          ${can("png_capture") ? `<a class="btn" href="/api/shot.png?route=${encodeURIComponent(leaderboardHash.slice(1))}" download>Download view</a>` : ""}
           ${group ? `<a class="btn" href="${cardHref("group", group)}">Cohort card</a>` : ""}
         </div>
       </div>

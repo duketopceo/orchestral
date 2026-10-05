@@ -80,7 +80,7 @@ export async function viewLeaderboard(params) {
       row: c.orchestrator, col: c.worker, value: c.pass_rate, n: c.finished ?? c.runs,
       href: cardHref("pairing", `${c.orchestrator}|${c.worker}`),
       selected: `${c.orchestrator}|${c.worker}` === lens.selected_target,
-      title: `${c.orchestrator} to ${c.worker}: pass ${fmtPct(c.pass_rate)}, ${c.finished ?? c.runs} finished${c.low_sample ? ", low n" : ""}`,
+      title: `${c.orchestrator} to ${c.worker}: pass ${fmtPct(c.pass_rate)}, ${c.finished ?? c.runs} finished${c.low_sample ? ", low n" : ""}${c.score_mean != null ? `, score mean ${fmtScore(c.score_mean)}${c.score_mean_ci ? ` (bootstrap 95% CI ${fmtScore(c.score_mean_ci[0])}–${fmtScore(c.score_mean_ci[1])})` : ""}` : ""}`,
     })),
   }) : `<div class="empty">No pairings in this scope yet.</div>`;
 
@@ -148,7 +148,7 @@ export async function viewLeaderboard(params) {
         <td class="t-num judge-axis" title="${r.judged ? `${r.judged} judged run${r.judged === 1 ? "" : "s"}` : "No judged runs"}">${fmtScore(r.judge_score_median)}${r.judged ? `<span class="dim sm">·${r.judged}</span>` : ""}</td>
         ${rows.some(r => r.bt) ? `<td class="t-num" title="${r.bt ? `${r.bt.battles} battles, ${r.bt.wins} wins; theta ${r.bt.theta.toFixed(2)} ± ${r.bt.theta_se === Infinity ? "inf" : (1.96 * r.bt.theta_se).toFixed(2)}` : "no battles"}">${r.bt ? r.bt.rating.toFixed(2) : NIL}</td>` : ""}
         <td class="t-num${(r.failure_rate ?? 0) > 0.15 ? ' e' : ''}">${r.failure_rate != null ? fmtPct(r.failure_rate) : NIL}</td>
-        <td class="t-num">${costWord(r)}</td>
+        <td class="t-num" title="${r.cost_per_pass_ci ? `bootstrap 95% CI ${fmtMoney(r.cost_per_pass_ci[0])} to ${fmtMoney(r.cost_per_pass_ci[1])}` : ""}">${costWord(r)}</td>
         <td class="t-num">${fmtMoney(r.cost_total)}</td>
         <td class="t-num">${fmtMs(r.duration_median_ms)}</td>
         <td class="t-num">${fmtMs(r.duration_p90_ms)}</td>

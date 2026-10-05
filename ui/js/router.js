@@ -10,6 +10,7 @@ import { setConnection } from "./status.js";
 import { esc } from "./util.js";
 import { markNav } from "./shell.js";
 import { stateHtml } from "./components/states.js";
+import { crossfade, skeleton } from "./motion.js";
 import { viewExperiment } from "./views/experiment.js";
 import { viewAbout } from "./views/about.js";
 import { viewCard } from "./views/card.js";
@@ -98,6 +99,8 @@ export async function route() {
   const path = pathQ || "/";
   markNav(path);
   delete $view.dataset.ready;
+  $view.setAttribute("aria-busy", "true");
+  $view.innerHTML = skeleton();
 
   for (let attempt = 0; ; attempt++) {
     try {
@@ -105,7 +108,9 @@ export async function route() {
       if (ctl.signal.aborted) return;
       setConnection("ok");
       titleFromView();
+      $view.removeAttribute("aria-busy");
       $view.dataset.ready = "ok";
+      crossfade($view);
       return;
     } catch (e) {
       if (ctl.signal.aborted || isAbort(e)) return;
@@ -116,6 +121,7 @@ export async function route() {
       }
       if (isTransient(e)) setConnection("offline");
       renderError(e instanceof ApiError ? e : new ApiError(e?.message || "Something went wrong while drawing this view.", -1, {}));
+      $view.removeAttribute("aria-busy");
       $view.dataset.ready = "error";
       return;
     }

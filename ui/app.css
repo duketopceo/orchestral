@@ -313,6 +313,8 @@ table.data td {
 table.data tbody tr:hover { background: var(--bg-hover); }
 table.data tbody tr:last-child td { border-bottom: none; }
 table.data .num, table.data td.t-num { font-family: var(--mono); font-variant-numeric: tabular-nums; text-align: right; }
+table.data tr.row-thin td { color: var(--text-3); }
+table.data td.e { color: var(--fail); }
 table.data th.t-num { text-align: right; }
 table.data td.warn { color: var(--warn); }
 tr.cat-group th {
@@ -895,12 +897,48 @@ td > .state { margin: 0; }
   .look-item a, .look-why { white-space: normal; }
 }
 
+/* ---------- Motion (U20, DESIGN.md 6.7): transform and opacity only ---------- */
+
+/* Press */
+button:active:not(:disabled), .btn:active:not(.disabled) { transform: translateY(1px); }
+
+/* Number tick: the changed digits are an inline-block so they can slide */
+.tk { display: inline-block; }
+
+/* Row insert: 4px entry plus a --live wash that fades over 1.2s */
+.row-new { position: relative; animation: row-in var(--dur-panel) var(--ease-out) both; }
+.row-new::after {
+  content: ""; position: absolute; inset: 0; pointer-events: none;
+  background: var(--live-wash); animation: row-wash 1.2s var(--ease-out) both;
+}
+@keyframes row-in { from { transform: translateY(4px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+@keyframes row-wash { from { opacity: 1; } to { opacity: 0; } }
+
+/* Phase advance: a new lane bar fills left to right; the live lane's label is the heavier one */
+.ln-new { transform-origin: 0 50%; animation: ph-fill var(--dur-panel) var(--ease-out) both; }
+@keyframes ph-fill { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+.ln-row[data-live] .ln-label { font-weight: 600; }
+
+/* Route skeleton: rows are exactly --row-h tall, shown only after 120ms */
+.skeleton { opacity: 0; animation: skel-in var(--dur-micro) var(--ease-out) var(--dur-micro) forwards; }
+.skel-title { height: 28px; width: 160px; margin: 0 0 16px; background: var(--sunken); }
+.skel-panel { border: 1px solid var(--rule); background: var(--surface); }
+.skel-row { position: relative; height: var(--row-h); border-bottom: 1px solid var(--rule); }
+.skel-row::before { content: ""; position: absolute; left: 12px; top: 50%; width: 30%; height: 8px; margin-top: -4px; background: var(--sunken); }
+.skel-row:last-child { border-bottom: 0; }
+@keyframes skel-in { from { opacity: 0; } to { opacity: 1; } }
+#runs-body tr { height: var(--row-h); }
+
 @media (prefers-reduced-motion: reduce) {
   /* the ring keeps its static dot and the word "live"; nothing moves */
   .live-ring { animation: none; }
   .live-ring::after { display: none; }
-  .row-expand .i { transition: none; }
-  * { scroll-behavior: auto !important; }
+  *, *::before, *::after {
+    animation-duration: 0s !important; animation-delay: 0s !important; animation-iteration-count: 1 !important;
+    transition-duration: 0s !important; transition-delay: 0s !important;
+    scroll-behavior: auto !important;
+  }
+  button:active:not(:disabled), .btn:active:not(.disabled) { transform: none; }
 }
 
 @media (prefers-contrast: more) {

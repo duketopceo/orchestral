@@ -215,6 +215,9 @@ html {
   --dur-route: 320ms;
   --ease-out: cubic-bezier(.2, 0, 0, 1);
   --ease-in: cubic-bezier(.4, 0, 1, 1);
+
+  /* Runs table row height; the route skeleton draws rows of exactly this height. */
+  --row-h: 39px;
 }
 
 /* Numerals line up everywhere; Plex Mono ids and hashes get the slashed zero. */

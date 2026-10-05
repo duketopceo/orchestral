@@ -369,7 +369,11 @@ export default {
       const asset = new URL(url.pathname.slice("/static".length), url);
       return env.ASSETS.fetch(new Request(asset, request));
     }
-    if (["/runs", "/leaderboard", "/compare", "/new"].includes(url.pathname)) {
+    if (
+      ["/runs", "/leaderboard", "/compare", "/new", "/experiment", "/cards", "/card", "/models", "/about"].includes(
+        url.pathname
+      )
+    ) {
       return Response.redirect(`${url.origin}/#${url.pathname}`, 302);
     }
     if (url.pathname.startsWith("/run/")) {

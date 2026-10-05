@@ -19,11 +19,8 @@ export function rest(name) {
   return `<svg class="rest" width="64" height="64" viewBox="0 0 64 64" aria-hidden="true" focusable="false"><use href="#r-${name}"/></svg>`;
 }
 
-/* kind -> Rest drawing.
-   TODO(#127): `starting` should use #r-starting (staff with a rising baton). Its
-   drawing is pending the logo decision in orchestral PR #127, so the slot uses
-   #r-empty until then. */
-const RESTS = { empty: "empty", nomatch: "nomatch", starting: "empty", missing: "missing", error: "error" };
+/* kind -> Rest drawing. */
+const RESTS = { empty: "empty", nomatch: "nomatch", starting: "starting", missing: "missing", error: "error" };
 export const STATE_KINDS = Object.keys(RESTS);
 
 /* action: { label, href } renders a link, { label, id } a button, and

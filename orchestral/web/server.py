@@ -269,7 +269,10 @@ def make_handler(obs: Observatory) -> type[BaseHTTPRequestHandler]:
                 # Browsers request /favicon.ico regardless of <link rel=icon>;
                 # answer with the real 16/32/48 ICO (ui/favicon.ico).
                 self._static("/static/favicon.ico")
-            elif path in ("/runs", "/leaderboard", "/compare", "/new"):
+            elif path in (
+                "/runs", "/leaderboard", "/compare", "/new",
+                "/experiment", "/cards", "/card", "/models", "/about",
+            ):
                 # legacy bookmarks → hash equivalents (hash isn't sent to
                 # the server, so the SPA itself must own the target path)
                 self._redirect(f"/#{path}")

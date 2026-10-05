@@ -66,7 +66,7 @@ async function renderCompare(a, b) {
         a: { passed: c.passed_a, finished: c.finished_a, ci: c.ci_a },
         b: { passed: c.passed_b, finished: c.finished_b, ci: c.ci_b } })}</div>
       <div class="cmp-nums">
-        <span class="cell-delta">${two ? F.delta(c.delta, "pp") : esc(side(c))}</span>
+        <span class="cell-delta" title="${c.delta_ci ? `bootstrap 95% CI ${F.delta(c.delta_ci[0], "pp")} to ${F.delta(c.delta_ci[1], "pp")}` : ""}">${two ? F.delta(c.delta, "pp") : esc(side(c))}</span>
         <span class="dim sm">${noise ? "within noise · " : ""}${two ? `cost ${F.delta(c.cost_delta, "money")}` : ""}${low ? " · low n" : ""}</span>
       </div>
       <span class="chip ${CHIP[c.verdict]}">${icon(GLYPH[c.verdict])}${LABEL[c.verdict]}</span>

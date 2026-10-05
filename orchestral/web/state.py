@@ -51,7 +51,9 @@ from orchestral.judge import DEFAULT_JUDGE, stored_battles
 from orchestral.privacy import run_is_holdout
 from orchestral.runner import Runner
 from orchestral.stats import (
+    _seed_for,
     aggregate,
+    bootstrap_diff_ci,
     bradley_terry,
     mean,
     pairing_leaderboard,
@@ -1744,7 +1746,8 @@ def pairings_payload(
     per-task-type strength/weakness, the dominant failure class, the groups
     each pairing appears in, and an orchestrator×worker matrix."""
     metas = _runs_for_group(store, group)
-    rows = pairing_leaderboard(metas, unmetered_workers=store.unmetered_workers())
+    rows = pairing_leaderboard(metas, unmetered_workers=store.unmetered_workers(),
+                               bootstrap=500)
     bt = bradley_terry(stored_battles(metas))
     types = _task_types(store, tasks_dir)
     default_group = None if group else default_pairing_group(metas)
@@ -1800,6 +1803,7 @@ def pairings_payload(
                 "runs": (c["runs"] if c else 0),
                 "finished": (c["finished"] if c else 0),
                 "score_mean": (c["score_mean"] if c else None),
+                "score_mean_ci": (c["score_mean_ci"] if c else None),
                 "low_sample": (c["low_sample"] if c else False),
             }
             for o in orchs for w in workers
@@ -1859,6 +1863,14 @@ def _wilson(passes: int, n: int) -> list[float] | None:
     a share card owes its audience when n is small."""
     ci = wilson_interval(passes, n)
     return [round(ci[0], 3), round(ci[1], 3)] if ci else None
+
+
+def _pass_rate_stat(rs: list[Any]) -> float | None:
+    """Pass rate over finished runs — the stat compare diffs bootstrap."""
+    fin = [r for r in rs if r.status == "finished"]
+    if not fin:
+        return None
+    return sum(1 for r in fin if r.passes) / len(fin)
 
 
 def _verdict_line(mech_pass: bool | None, judge_passed: bool | None,
@@ -3120,7 +3132,14 @@ def compare_payload(store: RunStore, group_a: str, group_b: str) -> dict[str, An
             for c in aggregate(_runs_for_group(store, group) if group else [])
         }
 
+    def runs_by_cell(group: str) -> dict[tuple[str, str, str], list[Any]]:
+        out: dict[tuple[str, str, str], list[Any]] = {}
+        for r in _runs_for_group(store, group) if group else []:
+            out.setdefault((r.task_id, r.orchestrator, r.worker), []).append(r)
+        return out
+
     cells_a, cells_b = cells(group_a), cells(group_b)
+    runs_a, runs_b = runs_by_cell(group_a), runs_by_cell(group_b)
     keys = sorted(set(cells_a) | set(cells_b))
     rows: list[dict[str, Any]] = []
     for task_id, orch, worker in keys:
@@ -3145,6 +3164,15 @@ def compare_payload(store: RunStore, group_a: str, group_b: str) -> dict[str, An
         cost_a = a.cost_total if a else None
         cost_b = b.cost_total if b else None
         two_sided = verdict != "one-sided"
+        delta_ci = (
+            bootstrap_diff_ci(
+                runs_a.get((task_id, orch, worker), []),
+                runs_b.get((task_id, orch, worker), []),
+                _pass_rate_stat,
+                n_boot=500,
+                seed=_seed_for("cmp", task_id, orch, worker))
+            if two_sided else None
+        )
         rows.append({
             "task_id": task_id, "orchestrator": orch, "worker": worker,
             "n_a": a.runs if a else 0, "pass_a": pa, "cost_a": cost_a,
@@ -3153,6 +3181,7 @@ def compare_payload(store: RunStore, group_a: str, group_b: str) -> dict[str, An
             "passed_b": b.passed if b else 0, "finished_b": b.finished if b else 0,
             "ci_a": ci_a, "ci_b": ci_b, "low_n": low_n,
             "delta": (pb - pa) if two_sided and pa is not None and pb is not None else None,
+            "delta_ci": list(delta_ci) if delta_ci else None,
             "cost_delta": (cost_b or 0) - (cost_a or 0) if two_sided else None,
             "side": side,
             "verdict": verdict,

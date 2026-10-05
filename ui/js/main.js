@@ -6,10 +6,12 @@ import { route } from "./router.js";
 import { startRail } from "./live.js";
 import { initShell } from "./shell.js";
 import { initKeys } from "./keys.js";
+import { initErrors } from "./errors.js";
 import { watchTables } from "./components/table.js";
 import { initStatus } from "./status.js";
 import { $view } from "./dom.js";
 
+initErrors();
 const meta = await loadMeta();
 document.documentElement.dataset.mode = meta.mode;
 await initShell();

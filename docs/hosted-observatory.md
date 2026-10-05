@@ -154,3 +154,21 @@ render `shot.png` captures — every mutating or live-state endpoint
 returns an explicit 501 pointing back at `harness.py`. If a view looks
 stale, run `sync --push`; if it's still stale, `sync --verify` will say
 which side drifted.
+
+## Error tracking
+
+Browser errors on `obs.shippedit.dev` report to the project GlitchTip
+(`errors.pacehq.io`, project `orchestral-observatory`) through
+`ui/js/errors.js` — a ~90-line Sentry-envelope reporter, no SDK
+dependency. It is silent everywhere else (local dev, clones), dedupes
+per fingerprint, and caps at five events per session. The DSN key in
+the source is ingest-only.
+
+A scheduled workflow (`.github/workflows/error-triage.yml`, every
+30 min) runs `scripts/glitchtip_to_issues.py`: it lists unresolved
+GlitchTip issues, files a GitHub issue per new one (dedup marker
+`<!-- glitchtip:<id> -->` in the body), and scrubs URLs, query strings,
+and run-id-shaped tokens first — the repository is public while the
+observatory is Access-private. Filing caps at ten issues per run. The
+`GLITCHTIP_TOKEN` repo secret is a read-only GlitchTip API token
+(omaseal `glitchtip/orchestral-ci-poller`).

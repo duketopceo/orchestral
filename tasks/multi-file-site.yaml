@@ -16,6 +16,7 @@ validation:
   - has_content
 assets: []
 metadata:
+  human_minutes: 60
   canary: "orc-canary-efd562e2a856ee24"
   difficulty: medium
   estimated_subtasks: 2

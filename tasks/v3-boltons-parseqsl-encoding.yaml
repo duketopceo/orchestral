@@ -42,6 +42,7 @@ prompt: 'You are contributing to `boltons` (a library of Python stdlib
 
   project''s test suite.'
 metadata:
+  human_minutes: 30
   canary: "orc-canary-aa3aafd8ff3ee6fc"
   fixture: boltons-parseqsl
   workdir: repo

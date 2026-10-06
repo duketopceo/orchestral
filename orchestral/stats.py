@@ -464,6 +464,67 @@ def _quality(r: PairingAggregate) -> float | None:
     return r.macro_pass_rate if r.macro_pass_rate is not None else r.pass_rate
 
 
+def horizon_fit(points: list[tuple[float, bool]]) -> dict[str, Any] | None:
+    """METR-style time-horizon fit: logistic p(pass) over log task minutes.
+
+    ``points`` are (human_minutes, passed) per finished run. Returns t50 —
+    the task length where the pairing passes half the time — plus slope
+    and counts, or None when the fit is undefined: fewer than two
+    distinct durations, a single outcome class, too few points, or a
+    non-negative slope (success that does not decay with length has no
+    horizon to name). Newton-Raphson on two parameters; no new deps.
+    """
+    pts = [(math.log(m), 1.0 if ok else 0.0) for m, ok in points if m > 0]
+    if len(pts) < 6 or len({x for x, _ in pts}) < 2 or len({y for _, y in pts}) < 2:
+        return None
+    # exact MLE first; ridge-regularized retry only when the unpenalized
+    # fit diverges (quasi-separated outcomes collapse the Hessian)
+    fit = _logit2(pts, 0.0)
+    if fit is None:
+        fit = _logit2(pts, 1.0)
+    if fit is None or fit[1] >= -1e-9:
+        return None
+    b0, b1 = fit
+    return {
+        "t50_minutes": math.exp(-b0 / b1),
+        "slope": b1,
+        "n": len(pts),
+        "tasks": len({x for x, _ in pts}),
+    }
+
+
+def _logit2(pts: list[tuple[float, float]], lam: float) -> tuple[float, float] | None:
+    """Newton-Raphson for intercept/slope; None when it cannot converge."""
+    b0 = b1 = 0.0
+    for _ in range(50):
+        g0 = g1 = h01 = 0.0
+        h00 = h11 = lam
+        for x, y in pts:
+            z = b0 + b1 * x
+            # stable sigmoid — separable data drives |z| to overflow
+            p = 1.0 / (1.0 + math.exp(-z)) if z >= 0 else math.exp(z) / (1.0 + math.exp(z))
+            w = p * (1 - p)
+            g0 += y - p
+            g1 += (y - p) * x
+            h00 += w
+            h01 += w * x
+            h11 += w * x * x
+        g0 -= lam * b0
+        g1 -= lam * b1
+        det = h00 * h11 - h01 * h01
+        if abs(det) < 1e-12:
+            return None
+        d0 = (g0 * h11 - g1 * h01) / det
+        d1 = (g1 * h00 - g0 * h01) / det
+        b0 += d0
+        b1 += d1
+        if not (math.isfinite(b0) and math.isfinite(b1)):
+            return None
+        if abs(d0) < 1e-9 and abs(d1) < 1e-9:
+            return b0, b1
+    return None
+
+
 def run_task_type(run: RunMeta) -> str:
     """The task type a run graded, or "" when the run predates the field."""
     return str((run.config or {}).get("task_type") or "")

@@ -8,6 +8,12 @@ import { heatmap, laneStrip } from "../charts/index.js";
 
 let strip = null; // ResizeObserver of the strip plot currently on screen
 
+function fmtMinutes(m) {
+  if (m < 90) return `${Math.round(m)}min`;
+  const h = m / 60;
+  return `${h >= 10 ? Math.round(h) : h.toFixed(1)}h`;
+}
+
 function costWord(r) {
   if (r.cost_per_pass != null) return fmtMoney(r.cost_per_pass);
   if (!((r.cost_total || 0) > 0)) return `<span class="dim">unmetered</span>`;
@@ -141,7 +147,8 @@ export async function viewLeaderboard(params) {
       return `<tr data-target="${esc(r.target)}" class="${r.low_sample ? "row-thin" : ""}${r.target === lens.selected_target ? "story-selected" : ""}">
         <td class="dim">${rowRank == null ? NIL : `${rowRank}<span class="dim sm"> / ${ranked}</span>`}</td>
         <td class="mono">${esc(slug(r.orchestrator))} <span class="dim">→</span> ${esc(slug(r.worker))}
-          ${r.low_n_best ? ` <span class="chip chip-dim">${icon("low-n")}Low n</span>` : ""}${r.on_frontier ? ` <span class="chip" title="Pareto frontier: no pairing with a credible sample is both better on macro pass rate and cheaper per pass">${icon("frontier")}Frontier</span>` : ""}${r.target === lens.selected_target ? ' <span class="chip chip-acc">Selected</span>' : ""}</td>
+          ${r.low_n_best ? ` <span class="chip chip-dim">${icon("low-n")}Low n</span>` : ""}${r.on_frontier ? ` <span class="chip" title="Pareto frontier: no pairing with a credible sample is both better on macro pass rate and cheaper per pass">${icon("frontier")}Frontier</span>` : ""}${r.target === lens.selected_target ? ' <span class="chip chip-acc">Selected</span>' : ""}
+          ${r.horizon ? `<div class="dim sm" title="Time-horizon fit: pass rate vs task length says this pairing passes half of ~${fmtMinutes(r.horizon.t50_minutes)} tasks (logistic fit, n=${r.horizon.n} runs over ${r.horizon.tasks} timed tasks)">t50 ~${fmtMinutes(r.horizon.t50_minutes)}</div>` : ""}</td>
         <td class="t-num">${r.finished ?? 0}/${r.runs ?? 0}</td>
         <td class="t-num mech-axis">${fmtPct(r.pass_rate)}</td>
         <td class="t-num" title="${r.macro_pass_rate_ci ? `bootstrap 95% CI ${fmtPct(r.macro_pass_rate_ci[0])} to ${fmtPct(r.macro_pass_rate_ci[1])}` : "mean of per-task pass rates"}">${r.macro_pass_rate != null ? fmtPct(r.macro_pass_rate) : NIL}</td>

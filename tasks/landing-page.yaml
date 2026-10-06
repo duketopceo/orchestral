@@ -22,6 +22,7 @@ validation:
   - matches_pattern
 assets: []
 metadata:
+  human_minutes: 40
   canary: "orc-canary-9602a3edc71b522e"
   difficulty: easy
   estimated_subtasks: 3

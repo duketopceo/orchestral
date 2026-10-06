@@ -15,6 +15,7 @@ prompt: |
   Return a JSON object {"files": [{"path": "fizzbuzz.py", "content": "..."}]}
   with the complete module. No test file needed — the harness runs its own.
 metadata:
+  human_minutes: 5
   canary: "orc-canary-d3038a1a19355c88"
   module: fizzbuzz.py
   expected_paths: [fizzbuzz.py]

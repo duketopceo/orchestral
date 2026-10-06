@@ -12,7 +12,7 @@ from orchestral.config import ModelConfig, TaskSpec
 from orchestral.export import leaderboard_csv, run_audit_markdown, runs_csv
 from orchestral.logger import LIFECYCLE_EVENTS, EventLogger
 from orchestral.runner import Runner
-from orchestral.stats import MIN_LEADERBOARD_SAMPLES, pairing_leaderboard
+from orchestral.stats import MIN_LEADERBOARD_SAMPLES, horizon_fit, pairing_leaderboard
 from orchestral.storage import RunMeta, RunStore
 
 
@@ -350,6 +350,39 @@ class TestLeaderboard(unittest.TestCase):
         self.assertFalse(board["o/zero"].on_frontier)
         self.assertTrue(board["o/good"].on_frontier)
         self.assertTrue(board["o/good"].to_dict()["on_frontier"])
+
+
+class TestHorizonFit(unittest.TestCase):
+    """METR-style t50: logistic pass rate over log task minutes."""
+
+    def test_recovers_known_horizon(self):
+        # pass short tasks, fail long ones; crossover at ~30 minutes
+        pts = [(5.0, True)] * 4 + [(15.0, True)] * 4 + [(15.0, False)]
+        pts += [(45.0, False)] * 3 + [(45.0, True)]
+        pts += [(90.0, False)] * 4 + [(180.0, False)] * 4
+        fit = horizon_fit(pts)
+        self.assertIsNotNone(fit)
+        self.assertGreater(fit["t50_minutes"], 15.0)
+        self.assertLess(fit["t50_minutes"], 90.0)
+        self.assertLess(fit["slope"], 0)
+        self.assertEqual(fit["tasks"], 5)
+
+    def test_single_outcome_or_duration_returns_none(self):
+        self.assertIsNone(horizon_fit([(10.0, True)] * 10))          # all pass
+        self.assertIsNone(horizon_fit([(10.0, True), (10.0, False)] * 5))  # one duration
+        self.assertIsNone(horizon_fit([(10.0, True), (20.0, False)]))      # too few
+
+    def test_no_decline_returns_none(self):
+        # longer tasks pass more often: no decay, no horizon
+        pts = [(5.0, False)] * 4 + [(60.0, True)] * 4
+        self.assertIsNone(horizon_fit(pts))
+
+    def test_zero_or_missing_minutes_ignored(self):
+        pts = ([(0.0, True)] * 3 + [(10.0, True)] * 3 + [(10.0, False)]
+               + [(90.0, False)] * 4)
+        fit = horizon_fit(pts)
+        self.assertIsNotNone(fit)
+        self.assertEqual(fit["n"], 8)  # the zero-minute points dropped
 
 
 class TestExport(unittest.TestCase):

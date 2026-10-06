@@ -40,6 +40,7 @@ prompt: 'You are contributing to `boltons` (a library of Python stdlib
 
   project''s test suite.'
 metadata:
+  human_minutes: 35
   canary: "orc-canary-87fa4ecce08c3437"
   fixture: boltons-bits
   workdir: repo

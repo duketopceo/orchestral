@@ -100,7 +100,10 @@ class TestBrowserSmoke(unittest.TestCase):
                 pg.wait_for_selector("#view[data-ready='ok']")
                 self.assertIn("lens=divergence", pg.url)
                 pg.locator(".pub-preview a.primary").click()
-                pg.wait_for_selector(".xcard")
+                # .xcard and ready='ok' both exist on the cards page (the
+                # preview embeds a full card), so neither can witness the
+                # navigation — wait for the editor's own unique element
+                pg.wait_for_selector("#alt-text")
                 self.assertIn("run group", pg.inner_text("body").lower())
                 self.assertEqual(pg.locator(".xcard .pc-measure").count(), 3)
             finally:

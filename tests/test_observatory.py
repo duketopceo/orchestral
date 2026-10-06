@@ -302,6 +302,55 @@ class TestLeaderboard(unittest.TestCase):
         board = pairing_leaderboard(runs)
         self.assertEqual(board[0].orchestrator, "o/hi")   # 100% > 67% despite 100x cost
 
+    def test_pareto_frontier_marks_non_dominated_rows(self):
+        """Frontier = nobody is both better on quality and cheaper per pass.
+        The expensive-but-best and cheap-but-good rows both stay; the
+        worst-of-both row is dominated out."""
+        runs = (
+            [_meta(run_id=f"a{i}", orchestrator="o/big", worker="w/big",
+                   passes=True, total_cost_usd=0.10) for i in range(3)]
+            + [_meta(run_id=f"b{i}", orchestrator="o/mid", worker="w/mid",
+                     passes=i < 2, total_cost_usd=0.02) for i in range(3)]
+            + [_meta(run_id=f"c{i}", orchestrator="o/bad", worker="w/bad",
+                     passes=i == 0, total_cost_usd=0.05) for i in range(3)]
+        )
+        board = {p.orchestrator: p for p in pairing_leaderboard(runs)}
+        self.assertTrue(board["o/big"].on_frontier)    # best quality
+        self.assertTrue(board["o/mid"].on_frontier)    # cheapest credible
+        self.assertFalse(board["o/bad"].on_frontier)   # dominated by both
+
+    def test_frontier_excludes_thin_and_unmetered_rows(self):
+        """A lucky 1/1 cheap pairing is an anecdote and an unmetered row has
+        no price — neither can nominate a frontier point, so the credible
+        middle row keeps the mark either way."""
+        runs = (
+            [_meta(run_id="lucky", orchestrator="o/lucky", worker="w/lucky",
+                   passes=True, total_cost_usd=0.001)]
+            + [_meta(run_id=f"m{i}", orchestrator="o/mid", worker="w/mid",
+                     passes=i < 2, total_cost_usd=0.02) for i in range(3)]
+            + [_meta(run_id=f"u{i}", orchestrator="o/free", worker="w/free",
+                     passes=True, total_cost_usd=0.0) for i in range(3)]
+        )
+        board = {p.orchestrator: p
+                 for p in pairing_leaderboard(runs, unmetered_workers=["w/free"])}
+        self.assertFalse(board["o/lucky"].on_frontier)  # low_sample
+        self.assertFalse(board["o/free"].on_frontier)   # no measured price
+        self.assertTrue(board["o/mid"].on_frontier)
+
+    def test_zero_pass_pairing_is_off_frontier(self):
+        """No passes means no cost_per_pass — an always-fail pairing cannot
+        be a defensible pick at any price."""
+        runs = (
+            [_meta(run_id=f"z{i}", orchestrator="o/zero", worker="w/zero",
+                   passes=False, total_cost_usd=0.001) for i in range(3)]
+            + [_meta(run_id=f"g{i}", orchestrator="o/good", worker="w/good",
+                     passes=True, total_cost_usd=0.05) for i in range(3)]
+        )
+        board = {p.orchestrator: p for p in pairing_leaderboard(runs)}
+        self.assertFalse(board["o/zero"].on_frontier)
+        self.assertTrue(board["o/good"].on_frontier)
+        self.assertTrue(board["o/good"].to_dict()["on_frontier"])
+
 
 class TestExport(unittest.TestCase):
     def test_runs_csv(self):

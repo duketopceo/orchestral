@@ -81,6 +81,7 @@ _ICONS: tuple[Glyph, ...] = (
     _g("close", "close", "×", "x", "close", "ink"),
     _g("keyboard", "keyboard shortcuts", "▭", "kbd", "keys", "ink"),
     _g("theme", "theme toggle", "◐", "o|", "theme", "ink"),
+    _g("frontier", "Pareto frontier (staircase)", "◢", "\\\\", "frontier", "ink"),
 )
 
 GLYPHS: dict[str, Glyph] = {g.name: g for g in _STATES + _ICONS}

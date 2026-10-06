@@ -30,6 +30,7 @@
 <symbol id="i-not-judged" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="square" stroke-linejoin="miter"><circle cx="8" cy="8" r="5.25"/></symbol>
 <symbol id="i-judge" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="square" stroke-linejoin="miter"><path d="M2.25 12.25a5.75 5.75 0 0 1 11.5 0zM8 12.25l2.75-4"/></symbol>
 <symbol id="i-low-n" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="square" stroke-linejoin="miter"><path d="M2.75 2.75h10.5v10.5H2.75zM4.5 7.5l3-3M4.5 11.5l7-7M8.5 11.5l3-3"/></symbol>
+<symbol id="i-frontier" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="square" stroke-linejoin="miter"><path d="M2.5 13.5v-3h3.5v-3h3.5v-3h4M2.5 13.5H14"/></symbol>
 
 <!-- measures -->
 <symbol id="i-cost" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="square" stroke-linejoin="miter"><path d="M5 4h6M3.5 8h9M2 12h12"/></symbol>

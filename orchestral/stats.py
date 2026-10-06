@@ -13,7 +13,7 @@ import statistics
 import zlib
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
 from orchestral.storage import RunMeta
 
@@ -245,6 +245,7 @@ class PairingAggregate:
     low_sample: bool = True
     holdout_runs: int = 0
     holdout_only: bool = False
+    on_frontier: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -276,6 +277,7 @@ class PairingAggregate:
             "low_sample": self.low_sample,
             "holdout_runs": self.holdout_runs,
             "holdout_only": self.holdout_only,
+            "on_frontier": self.on_frontier,
         }
 
 
@@ -426,7 +428,40 @@ def pairing_leaderboard(
         p.cost_per_pass is None, p.cost_per_pass or 0.0,
         p.orchestrator, p.worker,
     ))
+    mark_pareto_front(out)
     return out + holdout_only
+
+
+def mark_pareto_front(rows: list[PairingAggregate]) -> None:
+    """Flag rows on the quality/cost Pareto frontier (``on_frontier``).
+
+    A row is frontier when no other eligible row is at least as good on
+    macro pass rate AND at most as expensive per pass, strictly better on
+    one. Eligibility requires a measured quality number and a metered
+    ``cost_per_pass`` from a credible sample: unmetered and low_sample
+    rows cannot nominate a frontier point because their evidence is a
+    subsidy or a guess, not a trade-off. Identical twins co-exist —
+    neither strictly dominates the other.
+    """
+    eligible = [
+        r for r in rows
+        if not r.low_sample and not r.holdout_only
+        and r.cost_per_pass is not None
+        and _quality(r) is not None
+    ]
+    pts = [(cast(float, _quality(r)), cast(float, r.cost_per_pass), r)
+           for r in eligible]
+    for r in rows:
+        r.on_frontier = False
+    for q, c, r in pts:
+        r.on_frontier = not any(
+            o is not r and oq >= q and oc <= c and (oq > q or oc < c)
+            for oq, oc, o in pts)
+
+
+def _quality(r: PairingAggregate) -> float | None:
+    """The frontier's quality axis: macro pass rate, pooled as fallback."""
+    return r.macro_pass_rate if r.macro_pass_rate is not None else r.pass_rate
 
 
 def run_task_type(run: RunMeta) -> str:

@@ -11,6 +11,7 @@ export const TERMS = {
   ci: ["CI", "The Wilson 95% interval for a pass rate. It is wide on small samples by design."],
   replicates: ["Replicates", "How many times the same task and pairing run. More than one creates a run group so the runs can be compared as a set."],
   pairing: ["Pairing", "An orchestrator that plans and delegates, plus a worker that executes. The leaderboard ranks pairings, not single models."],
+  frontier: ["Frontier", "The Pareto frontier on quality versus cost. A pairing is on it when no credible peer is both better on macro pass rate and cheaper per pass. Every point on the frontier is a defensible choice; anything off it is dominated."],
 };
 
 let seq = 0;

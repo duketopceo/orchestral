@@ -39,6 +39,7 @@ ICON_NAMES = (
     "latency",
     "tokens",
     "low-n",
+    "frontier",
     "flag-interesting",
     "flag-dismiss",
     "artifact",

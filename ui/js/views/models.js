@@ -31,13 +31,13 @@ export async function viewModels(params = new URLSearchParams()) {
   const teleCell = m => {
     const t = m.telemetry || {};
     if (!t.tok_s_p50) return `<td class="t-num dim" title="${esc(m.slug)}: no timed calls">${NIL}</td>`;
-    return `<td class="t-num" title="measured output tok/s — p50 ${t.tok_s_p50}, p90 ${t.tok_s_p90}, over ${t.calls} call(s)">${t.tok_s_p50}</td>`;
+    return `<td class="t-num" title="measured output tok/s, p50 ${t.tok_s_p50}, p90 ${t.tok_s_p90}, over ${t.calls} call(s)">${t.tok_s_p50}</td>`;
   };
   const billCell = m => {
     const t = m.telemetry || {};
     if (t.billed_ratio == null) return `<td class="t-num dim" title="${esc(m.slug)}: no provider-reported billing">${NIL}</td>`;
     const warn = t.billed_ratio > 1.15 ? " warn" : "";
-    return `<td class="t-num${warn}" title="billed ${fmtMoney(t.billed_usd)} vs rate-card ${fmtMoney(t.ratecard_usd)} — provider-reported api_cost_usd / configured-rate estimate">${t.billed_ratio}×</td>`;
+    return `<td class="t-num${warn}" title="billed ${fmtMoney(t.billed_usd)} vs rate-card ${fmtMoney(t.ratecard_usd)}; provider-reported api_cost_usd / configured-rate estimate">${t.billed_ratio}×</td>`;
   };
   const row = m => {
     const spend = Object.values(m.usage).reduce((s, u) => s + (u.cost_usd || 0), 0);
@@ -74,7 +74,7 @@ export async function viewModels(params = new URLSearchParams()) {
     <div class="panel"><table class="data"><thead><tr>
       <th>Model</th><th data-pri="3">Declared</th><th>Qualified for</th><th data-pri="3">Out modalities</th>
       ${d.roles.map(r => `<th class="t-num">${esc(r)}</th>`).join("")}
-      <th class="t-num" title="Measured output tok/s — median over timed calls (p90 in tooltip)">Tok/s</th>
+      <th class="t-num" title="Measured output tok/s, median over timed calls (p90 in tooltip)">Tok/s</th>
       <th class="t-num" title="Provider-reported billed cost / configured rate-card estimate. >1 means billed above card">Billed/card</th>
       <th class="t-num">Spend</th>
     </tr></thead><tbody>${body}</tbody></table></div>`;

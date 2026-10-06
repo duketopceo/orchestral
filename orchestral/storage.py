@@ -714,6 +714,49 @@ class RunStore:
             ).fetchall()
         return {r[0] for r in rows}
 
+    def model_telemetry(self) -> dict[str, dict[str, Any]]:
+        """Per-model measured telemetry: tok/s percentiles + billed ratio.
+
+        tok/s is ``output_tokens / latency`` per call — the provider's
+        observed throughput, not the advertised spec. ``billed_ratio`` is
+        provider-reported ``api_cost_usd`` over the rate-card ``cost_usd``
+        estimate; >1 means the provider billed above card. Calls with no
+        latency or output, dry runs, and NULL-model rows are excluded.
+        """
+        from orchestral.stats import percentile
+        speeds: dict[str, list[float]] = {}
+        billed: dict[str, list[float]] = {}
+        calls: dict[str, int] = {}
+        with self._connect() as conn:
+            for model, out_tok, lat in conn.execute(
+                "SELECT model, output_tokens, latency_ms FROM calls "
+                "WHERE COALESCE(dry_run, 0) = 0 AND model IS NOT NULL "
+                "AND model != '' AND latency_ms > 0 AND output_tokens > 0"
+            ):
+                calls[model] = calls.get(model, 0) + 1
+                speeds.setdefault(model, []).append(out_tok * 1000.0 / lat)
+            for model, api, rate in conn.execute(
+                "SELECT model, SUM(api_cost_usd), SUM(cost_usd) FROM calls "
+                "WHERE COALESCE(dry_run, 0) = 0 AND model IS NOT NULL "
+                "AND model != '' AND api_cost_usd IS NOT NULL "
+                "GROUP BY model"
+            ):
+                if rate:
+                    billed[model] = [float(api or 0.0), float(rate)]
+        out: dict[str, dict[str, Any]] = {}
+        for model in set(speeds) | set(billed):
+            row: dict[str, Any] = {"calls": calls.get(model, 0)}
+            if speeds.get(model):
+                row["tok_s_p50"] = round(percentile(speeds[model], 50), 1)
+                row["tok_s_p90"] = round(percentile(speeds[model], 90), 1)
+            if billed.get(model):
+                api, rate = billed[model]
+                row["billed_ratio"] = round(api / rate, 3)
+                row["billed_usd"] = round(api, 4)
+                row["ratecard_usd"] = round(rate, 4)
+            out[model] = row
+        return out
+
     def mean_cell_cost(
         self, task_id: str, orchestrator: str, worker: str, *, arm: str = "baseline"
     ) -> float | None:

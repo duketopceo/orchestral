@@ -28,6 +28,17 @@ export async function viewModels(params = new URLSearchParams()) {
     m.expires ? cap("stalled", `exp ${m.expires}`, "Listed expiry: preview or stealth entry") : "",
   ].filter(Boolean).join(" ");
   const srcLabel = d.source_labels || {};
+  const teleCell = m => {
+    const t = m.telemetry || {};
+    if (!t.tok_s_p50) return `<td class="t-num dim" title="${esc(m.slug)}: no timed calls">${NIL}</td>`;
+    return `<td class="t-num" title="measured output tok/s, p50 ${t.tok_s_p50}, p90 ${t.tok_s_p90}, over ${t.calls} call(s)">${t.tok_s_p50}</td>`;
+  };
+  const billCell = m => {
+    const t = m.telemetry || {};
+    if (t.billed_ratio == null) return `<td class="t-num dim" title="${esc(m.slug)}: no provider-reported billing">${NIL}</td>`;
+    const warn = t.billed_ratio > 1.15 ? " warn" : "";
+    return `<td class="t-num${warn}" title="billed ${fmtMoney(t.billed_usd)} vs rate-card ${fmtMoney(t.ratecard_usd)}; provider-reported api_cost_usd / configured-rate estimate">${t.billed_ratio}×</td>`;
+  };
   const row = m => {
     const spend = Object.values(m.usage).reduce((s, u) => s + (u.cost_usd || 0), 0);
     const errs = Object.values(m.usage).reduce((s, u) => s + (u.errors || 0), 0);
@@ -38,13 +49,15 @@ export async function viewModels(params = new URLSearchParams()) {
       <td>${qualChips(m)}${capChips(m) ? " " + capChips(m) : ""}</td>
       <td class="dim sm">${(m.modalities || []).map(esc).join(", ") || F.NULL_GLYPH}</td>
       ${d.roles.map(r => roleCell(m, r)).join("")}
+      ${teleCell(m)}
+      ${billCell(m)}
       <td class="t-num">${spend ? fmtMoney(spend) : NIL}${errs ? ` <span class="dim sm" title="calls that returned an error">${errs} err</span>` : ""}</td>
     </tr>`;
   };
   const body = (d.sources || []).map(src => {
     const ms = d.models.filter(m => m.source === src);
     if (!ms.length) return "";
-    return `<tr class="cat-group"><th colspan="${5 + d.roles.length}">${esc(srcLabel[src] || src)} · ${ms.length}</th></tr>`
+    return `<tr class="cat-group"><th colspan="${7 + d.roles.length}">${esc(srcLabel[src] || src)} · ${ms.length}</th></tr>`
       + ms.map(row).join("");
   }).join("");
   const sync = d.provider_sync || { state: d.provider_synced_at ? "synced" : "never", synced_at: d.provider_synced_at, source: d.provider_source };
@@ -61,6 +74,8 @@ export async function viewModels(params = new URLSearchParams()) {
     <div class="panel"><table class="data"><thead><tr>
       <th>Model</th><th data-pri="3">Declared</th><th>Qualified for</th><th data-pri="3">Out modalities</th>
       ${d.roles.map(r => `<th class="t-num">${esc(r)}</th>`).join("")}
+      <th class="t-num" title="Measured output tok/s, median over timed calls (p90 in tooltip)">Tok/s</th>
+      <th class="t-num" title="Provider-reported billed cost / configured rate-card estimate. >1 means billed above card">Billed/card</th>
       <th class="t-num">Spend</th>
     </tr></thead><tbody>${body}</tbody></table></div>`;
   const box = document.getElementById("cat-q");

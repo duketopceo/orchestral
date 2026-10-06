@@ -229,6 +229,53 @@ class TestModelsCatalog(unittest.TestCase):
         self.assertNotIn("ce-work", brain["qualified"])
         self.assertAlmostEqual(brain["usage"]["ce-work"]["cost_usd"], 0.02)
 
+    def test_telemetry_measures_tok_s_and_billed_ratio(self):
+        # 100 output tokens in 2s = 50 tok/s; billed 2x the rate card
+        self.store.record_call(run_id="rt", phase="work", step=0,
+                               role="worker", model="acme/hands",
+                               output_tokens=100, latency_ms=2000.0,
+                               cost_usd=0.01, api_cost_usd=0.02)
+        d = models_catalog_payload(self.store, self.models_dir)
+        tele = self._by_slug(d, "acme/hands")["telemetry"]
+        self.assertEqual(tele["calls"], 1)
+        self.assertAlmostEqual(tele["tok_s_p50"], 50.0)
+        self.assertAlmostEqual(tele["tok_s_p90"], 50.0)
+        self.assertAlmostEqual(tele["billed_ratio"], 2.0)
+        self.assertAlmostEqual(tele["billed_usd"], 0.02)
+        self.assertAlmostEqual(tele["ratecard_usd"], 0.01)
+
+    def test_telemetry_empty_when_no_timed_calls(self):
+        self.store.record_call(run_id="rt2", phase="work", step=0,
+                               role="worker", model="acme/hands",
+                               cost_usd=0.01)
+        d = models_catalog_payload(self.store, self.models_dir)
+        tele = self._by_slug(d, "acme/hands")["telemetry"]
+        # no latency/output -> no speed or billing stats at all
+        self.assertNotIn("tok_s_p50", tele)
+        self.assertNotIn("billed_ratio", tele)
+
+    def test_telemetry_excludes_dry_run_calls(self):
+        self.store.record_call(run_id="rtd", phase="work", step=0,
+                               role="worker", model="acme/hands",
+                               output_tokens=100, latency_ms=1000.0,
+                               cost_usd=0.01, api_cost_usd=0.01,
+                               dry_run=True)
+        d = models_catalog_payload(self.store, self.models_dir)
+        tele = self._by_slug(d, "acme/hands")["telemetry"]
+        self.assertNotIn("tok_s_p50", tele)
+        self.assertNotIn("billed_ratio", tele)
+
+    def test_telemetry_ratio_needs_both_costs(self):
+        # api_cost_usd with NULL/0 rate card must not divide-by-zero
+        self.store.record_call(run_id="rtz", phase="work", step=0,
+                               role="worker", model="acme/hands",
+                               output_tokens=10, latency_ms=1000.0,
+                               cost_usd=0.0, api_cost_usd=0.05)
+        d = models_catalog_payload(self.store, self.models_dir)
+        tele = self._by_slug(d, "acme/hands")["telemetry"]
+        self.assertNotIn("billed_ratio", tele)
+        self.assertAlmostEqual(tele["tok_s_p50"], 10.0)
+
     def test_malformed_provider_rows_are_skipped_not_fatal(self):
         # a hand-edited or corrupted snapshot must degrade row-by-row,
         # never 500 the endpoint

@@ -1514,11 +1514,12 @@ def cmd_export(args: argparse.Namespace) -> None:
             if meta is None:
                 print(f"No run found with id {args.run}", file=sys.stderr)
                 sys.exit(1)
-            groups = {inspect_group_key(meta): [meta]}
+            metas = [meta]
         else:
-            groups: dict[tuple[str, str, str, str], list] = {}
-            for meta in store.list_runs(limit=None):
-                groups.setdefault(inspect_group_key(meta), []).append(meta)
+            metas = store.list_runs(limit=None)
+        groups: dict[tuple[str, str, str, str], list] = {}
+        for meta in metas:
+            groups.setdefault(inspect_group_key(meta), []).append(meta)
         if out_path and (out_path.suffix == ".json" or len(groups) == 1):
             target = out_path if out_path.suffix == ".json" else out_path / "export.json"
             metas = next(iter(groups.values()))

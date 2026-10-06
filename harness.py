@@ -1502,9 +1502,38 @@ def cmd_gate(args: argparse.Namespace) -> None:
 
 
 def cmd_export(args: argparse.Namespace) -> None:
-    """Export run data: CSV for analysis, Markdown for human audit."""
+    """Export run data: CSV for analysis, Markdown for human audit,
+    Inspect eval-log JSON for `inspect view` interop."""
     store = RunStore(args.runs_dir)
     out_path = Path(args.out) if args.out else None
+
+    if args.format == "inspect":
+        from orchestral.export import inspect_eval_log, inspect_group_key, inspect_log_name
+        if args.run:
+            meta = store.get_run(args.run)
+            if meta is None:
+                print(f"No run found with id {args.run}", file=sys.stderr)
+                sys.exit(1)
+            metas = [meta]
+        else:
+            metas = store.list_runs(limit=None)
+        groups: dict[tuple[str, str, str, str], list] = {}
+        for meta in metas:
+            groups.setdefault(inspect_group_key(meta), []).append(meta)
+        if out_path and (out_path.suffix == ".json" or len(groups) == 1):
+            target = out_path if out_path.suffix == ".json" else out_path / "export.json"
+            metas = next(iter(groups.values()))
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(json.dumps(inspect_eval_log(metas), indent=2), encoding="utf-8")
+            print(f"Exported {len(metas)} sample(s) to {target}")
+            return
+        out_dir = out_path or Path("reports") / "inspect-logs"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        for key, metas in sorted(groups.items()):
+            target = out_dir / inspect_log_name(key)
+            target.write_text(json.dumps(inspect_eval_log(metas), indent=2), encoding="utf-8")
+        print(f"Exported {len(groups)} eval log(s) to {out_dir}; open with `inspect view {out_dir}`")
+        return
 
     if args.run:
         meta = store.get_run(args.run)
@@ -2517,10 +2546,10 @@ def build_parser() -> argparse.ArgumentParser:
     prices.add_argument("--json", action="store_true", help="Emit JSON")
     prices.set_defaults(func=cmd_prices)
 
-    export = sub.add_parser("export", help="Export runs as CSV, or a single run as Markdown/JSONL")
+    export = sub.add_parser("export", help="Export runs as CSV, Inspect eval logs, or a single run as Markdown/JSONL")
     _add_global_dir_flag(export, "--runs-dir", "Root directory for run data")
-    export.add_argument("--format", choices=["csv", "md", "jsonl"], default="csv", help="Export format")
-    export.add_argument("--run", default=None, help="Export a single run id (md audit or jsonl events)")
+    export.add_argument("--format", choices=["csv", "md", "jsonl", "inspect"], default="csv", help="Export format")
+    export.add_argument("--run", default=None, help="Export a single run id (md audit, jsonl events, or inspect log)")
     export.add_argument("--leaderboard", action="store_true", help="Export pairing leaderboard as CSV")
     export.add_argument("--min-samples", type=int, default=MIN_LEADERBOARD_SAMPLES, help="Leaderboard low-evidence floor")
     export.add_argument("--out", default=None, help="Write to this file instead of stdout")

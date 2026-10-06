@@ -1503,7 +1503,7 @@ def cmd_gate(args: argparse.Namespace) -> None:
 
 def cmd_export(args: argparse.Namespace) -> None:
     """Export run data: CSV for analysis, Markdown for human audit,
-    Inspect AI eval-log JSON for `inspect view` interop."""
+    Inspect eval-log JSON for `inspect view` interop."""
     store = RunStore(args.runs_dir)
     out_path = Path(args.out) if args.out else None
 
@@ -2546,7 +2546,7 @@ def build_parser() -> argparse.ArgumentParser:
     prices.add_argument("--json", action="store_true", help="Emit JSON")
     prices.set_defaults(func=cmd_prices)
 
-    export = sub.add_parser("export", help="Export runs as CSV, Inspect AI eval logs, or a single run as Markdown/JSONL")
+    export = sub.add_parser("export", help="Export runs as CSV, Inspect eval logs, or a single run as Markdown/JSONL")
     _add_global_dir_flag(export, "--runs-dir", "Root directory for run data")
     export.add_argument("--format", choices=["csv", "md", "jsonl", "inspect"], default="csv", help="Export format")
     export.add_argument("--run", default=None, help="Export a single run id (md audit, jsonl events, or inspect log)")

@@ -101,7 +101,7 @@ orchestral dashboard               # reports/dashboard.html
 | `history` | Per-model aggregates across all stored runs |
 | `report` | List/compare runs (`--pairings`, `--leaderboard`, `--groups`, `--compare A,B`, `--contamination`, `--html`, `--sort`, `--json`) |
 | `gate` | CI eval gate: exit 1 when a candidate run group regresses on any shared cell (`--baseline`, `--candidate`, `--fail-on`, `--min-shared`, `--max-cost-increase`) |
-| `export` | CSV run/leaderboard export, Markdown run audit, JSONL trace, Inspect AI eval logs (`--format csv|md|jsonl|inspect`, `--run`, `--out`) |
+| `export` | CSV run/leaderboard export, Markdown run audit, JSONL trace, Inspect eval logs (`--format csv|md|jsonl|inspect`, `--run`, `--out`) |
 | `dataset` | RL-ready JSONL dataset: one record per LLM call joined to run outcome and judge rewards |
 | `holdout` | Generate a seeded holdout arm into a run-scoped directory (never into git) |
 | `prices` | Pricing drift check: provider-reported `api_cost_usd` vs configured rates (`--threshold`, `--json`) |

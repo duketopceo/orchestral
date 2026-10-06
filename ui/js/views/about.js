@@ -19,6 +19,7 @@ const GLYPHS = [
   ["not-judged", "Not judged", "No judge score exists for this run."],
   ["judge", "Judge", "A judge score: the gauge, then the number."],
   ["low-n", "Low n", "Too few samples. Shown hatched."],
+  ["frontier", "Frontier", "Pareto frontier: best quality at its price."],
   ["flag-interesting", "Flagged", "Marked to hold here (a fermata)."],
 ];
 
@@ -100,6 +101,11 @@ export async function viewAbout(params = new URLSearchParams()) {
         <p>The Wilson 95% interval around a pass rate. It is wide on small samples by design.</p>
         <h3 id="s-low-n" tabindex="-1">Low n ${termHelp("low-n")}</h3>
         <p>Rows under the minimum sample size are dimmed and sorted below full-evidence rows. Marks drawn from too few runs are hatched.</p>
+        <h3 id="s-frontier" tabindex="-1">Frontier ${termHelp("frontier")}</h3>
+        <p>The Pareto frontier on quality versus cost. A pairing is marked when no
+        credible peer is both better on macro pass rate <i>and</i> cheaper per pass.
+        Every frontier point is a defensible pick; anything off it is dominated by
+        at least one frontier row. Thin and unmetered rows cannot nominate a point.</p>
       </section>
 
       <section>

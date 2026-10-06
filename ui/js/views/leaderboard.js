@@ -141,7 +141,7 @@ export async function viewLeaderboard(params) {
       return `<tr data-target="${esc(r.target)}" class="${r.low_sample ? "row-thin" : ""}${r.target === lens.selected_target ? "story-selected" : ""}">
         <td class="dim">${rowRank == null ? NIL : `${rowRank}<span class="dim sm"> / ${ranked}</span>`}</td>
         <td class="mono">${esc(slug(r.orchestrator))} <span class="dim">→</span> ${esc(slug(r.worker))}
-          ${r.low_n_best ? ` <span class="chip chip-dim">${icon("low-n")}Low n</span>` : ""}${r.target === lens.selected_target ? ' <span class="chip chip-acc">Selected</span>' : ""}</td>
+          ${r.low_n_best ? ` <span class="chip chip-dim">${icon("low-n")}Low n</span>` : ""}${r.on_frontier ? ` <span class="chip" title="Pareto frontier: no pairing with a credible sample is both better on macro pass rate and cheaper per pass">${icon("frontier")}Frontier</span>` : ""}${r.target === lens.selected_target ? ' <span class="chip chip-acc">Selected</span>' : ""}</td>
         <td class="t-num">${r.finished ?? 0}/${r.runs ?? 0}</td>
         <td class="t-num mech-axis">${fmtPct(r.pass_rate)}</td>
         <td class="t-num" title="${r.macro_pass_rate_ci ? `bootstrap 95% CI ${fmtPct(r.macro_pass_rate_ci[0])} to ${fmtPct(r.macro_pass_rate_ci[1])}` : "mean of per-task pass rates"}">${r.macro_pass_rate != null ? fmtPct(r.macro_pass_rate) : NIL}</td>

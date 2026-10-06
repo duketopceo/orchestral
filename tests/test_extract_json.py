@@ -1,6 +1,6 @@
-"""Tests for `_extract_json`: three named faults, and no model text in a message.
+"""Tests for `_extract_json`: the named faults, and no model text in a message.
 
-A failed plan parse has to say which of three things went wrong — the model
+A failed plan parse has to say which thing went wrong — the model
 sent no JSON, the response was cut off, or the model broke the JSON contract —
 because those need different responses from whoever reads the log. And no
 message may republish the model's words: an exception string reaches CI logs
@@ -56,6 +56,32 @@ class TestExtractJsonStillParses(unittest.TestCase):
         self.assertEqual(_extract_json(r'{"q": "say \"hi\""}'), {"q": 'say "hi"'})
 
 
+class TestTrailingJsonFaults(unittest.TestCase):
+    """A second JSON blob after a complete block is a restarted generation:
+    the first candidate parses but is not trustworthy, so it must fault
+    rather than pass silently (issue #84). Prose after the block is fine."""
+
+    def test_second_object_faults(self):
+        msg = _message('{"a": 1}{"b": 2')
+        self.assertIn("Trailing JSON", msg)
+
+    def test_second_array_faults(self):
+        msg = _message('{"a": 1}[{"b": ')
+        self.assertIn("Trailing JSON", msg)
+
+    def test_complete_second_block_still_faults(self):
+        msg = _message('{"a": 1}{"b": 2}')
+        self.assertIn("Trailing JSON", msg)
+
+    def test_trailing_prose_still_parses(self):
+        self.assertEqual(_extract_json('{"a": 1}\nDone!'), {"a": 1})
+        self.assertEqual(_extract_json('{"a": 1}\nLet me know if {x} changes.'), {"a": 1})
+
+    def test_trailing_fault_is_a_value_error(self):
+        with self.assertRaises(ValueError):
+            _extract_json('{"a": 1}{"b": 2')
+
+
 class TestThreeNamedFaults(unittest.TestCase):
     def test_no_json_anywhere(self):
         msg = _message("Here is the plan you asked for, in prose.")
@@ -74,7 +100,7 @@ class TestThreeNamedFaults(unittest.TestCase):
         self.assertIn("Expecting value", msg)
         self.assertIn("position 9", msg)
 
-    def test_the_three_messages_are_distinct(self):
+    def test_each_fault_message_is_distinct(self):
         msgs = {
             _message("prose only, no delimiters"),
             _message('{"plan": "cut off mid'),

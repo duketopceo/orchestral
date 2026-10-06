@@ -248,10 +248,10 @@ _SKELETON_CHARS = frozenset('{}[]()",:\\')
 _SKELETON_EDGE_CHARS = 200
 _DIGEST_CHARS = 12
 
-# The three ways a model response can fail to become JSON. A truncation is a
-# transport fault and re-running may fix it; the other two are the model
+# The four ways a model response can fail to become JSON. A truncation is a
+# transport fault and re-running may fix it; the other three are the model
 # breaking the output contract, and re-running just costs the same call twice.
-PlanParseFaultKind = Literal["no_json", "unbalanced", "balanced_invalid"]
+PlanParseFaultKind = Literal["no_json", "unbalanced", "balanced_invalid", "trailing_json"]
 
 
 class PlanParseFault(ValueError):
@@ -316,7 +316,7 @@ def _response_fingerprint(text: str) -> str:
 def _extract_json(content: str) -> Any:
     """Parse JSON from a model response, tolerating code fences and extra text.
 
-    The three failure branches name three different faults, because a
+    The failure branches name their faults, because a
     transient provider response and a model that broke the output contract
     need different responses from whoever reads the log: the first is a
     transport fault to re-run, the second is a contract fault to escalate.
@@ -363,7 +363,7 @@ def _extract_json(content: str) -> Any:
             if depth == 0:
                 block = text[start : i + 1]
                 try:
-                    return json.loads(block)
+                    parsed = json.loads(block)
                 except json.JSONDecodeError as exc:
                     # delimiters balanced, so the response is whole; the model
                     # emitted something that is not valid JSON
@@ -372,6 +372,19 @@ def _extract_json(content: str) -> Any:
                         f"{exc.pos} of the block at offset {start}: {_response_fingerprint(block)}",
                         "balanced_invalid",
                     ) from exc
+                # a second JSON-shaped blob after a complete block means the
+                # model restarted mid-stream; the first candidate is a
+                # plausible-but-wrong plan and must fault, not pass silently.
+                # Trailing prose ("Hope that helps.") is still fine - only a
+                # leading { or [ names a restart.
+                if text[i + 1 :].strip().startswith(("{", "[")):
+                    raise PlanParseFault(
+                        f"Trailing JSON in model response: a second candidate begins at offset "
+                        f"{i + 1} after a complete block, so generation restarted and neither "
+                        f"plan can be trusted whole: {_response_fingerprint(text)}",
+                        "trailing_json",
+                    )
+                return parsed
     # a delimiter was found but never closed: the response was cut off, or a
     # brace inside a string escaped the matcher
     raise PlanParseFault(

@@ -58,6 +58,10 @@ def models_catalog_payload(store: RunStore, models_dir: Path) -> dict[str, Any]:
     except Exception:
         models = []
     usage = store.model_role_usage()
+    try:
+        telemetry = store.model_telemetry()
+    except Exception:
+        telemetry = {}
 
     # Demonstrated roles count toward "qualified" only when they name a
     # real catalog role — a NULL-role call buckets as 'unknown' and a
@@ -76,6 +80,7 @@ def models_catalog_payload(store: RunStore, models_dir: Path) -> dict[str, Any]:
             "context": 0, "input_price_per_mtok": 0.0,
             "output_price_per_mtok": 0.0,
             "usage": u, "default": False,
+            "telemetry": telemetry.get(slug) or {},
         }
         row.update(kw)
         return row

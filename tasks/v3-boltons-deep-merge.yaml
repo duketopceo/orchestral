@@ -30,6 +30,7 @@ prompt: |
   The harness overlays your files onto a full repo checkout and runs the
   project's test suite.
 metadata:
+  human_minutes: 45
   canary: "orc-canary-b42df797a2f78fc7"
   fixture: boltons-25.1
   workdir: repo

@@ -30,6 +30,7 @@ prompt: |
   "content": "..."}]}` with the complete module. The harness overlays your
   files onto a full repo checkout and runs the project's test suite.
 metadata:
+  human_minutes: 25
   canary: "orc-canary-fabd0e07fe350fd0"
   fixture: more-itertools-10.8
   workdir: repo

@@ -55,6 +55,7 @@ from orchestral.stats import (
     aggregate,
     bootstrap_diff_ci,
     bradley_terry,
+    horizon_fit,
     mean,
     pairing_leaderboard,
     wilson_interval,
@@ -1589,13 +1590,14 @@ def task_matrix_payload(
     return {"pairings": pairings, "tasks": rows}
 
 
-def _task_meta(store: RunStore, tasks_dir: Path | str | None) -> dict[str, dict[str, str]]:
-    """task_id → {type, title, blurb}, resolved from specs on disk. Missing
-    specs are skipped so the pairing breakdown never crashes on a pruned task."""
+def _task_meta(store: RunStore, tasks_dir: Path | str | None) -> dict[str, dict[str, Any]]:
+    """task_id → {type, title, blurb, human_minutes}, resolved from specs on
+    disk. Missing specs are skipped so the pairing breakdown never crashes
+    on a pruned task."""
     if not tasks_dir:
         return {}
     from orchestral.config import load_task
-    out: dict[str, dict[str, str]] = {}
+    out: dict[str, dict[str, Any]] = {}
     for path in Path(tasks_dir).rglob("*.yaml"):
         try:
             spec = load_task(path)
@@ -1604,6 +1606,7 @@ def _task_meta(store: RunStore, tasks_dir: Path | str | None) -> dict[str, dict[
                 "type": spec.type, "title": spec.title, "blurb": spec.blurb,
                 "difficulty": str(md.get("difficulty") or ""),
                 "archetype": str(md.get("archetype") or ""),
+                "human_minutes": md.get("human_minutes"),
             }
         except Exception:
             continue
@@ -1750,6 +1753,11 @@ def pairings_payload(
                                bootstrap=500)
     bt = bradley_terry(stored_battles(metas))
     types = _task_types(store, tasks_dir)
+    task_minutes = {
+        tid: float(m["human_minutes"])
+        for tid, m in _task_meta(store, tasks_dir).items()
+        if isinstance(m.get("human_minutes"), (int, float))
+    }
     default_group = None if group else default_pairing_group(metas)
 
     by_pair: dict[tuple[str, str], list[Any]] = {}
@@ -1787,6 +1795,11 @@ def pairings_payload(
             "worst_type": worst[0] if worst else None,
             "why": _pairing_why(r, best, worst, top_failure),
             "low_n_best": is_low_n_best(r.finished),
+            "horizon": horizon_fit([
+                (task_minutes[m.task_id], bool(m.passes))
+                for m in cell
+                if m.status == "finished" and m.task_id in task_minutes
+            ]),
         })
         enriched.append(d)
 

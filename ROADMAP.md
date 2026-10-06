@@ -1,5 +1,10 @@
 # orchestral Roadmap
 
+**Program index:** [`docs/plans/2026-10-05-001-docs-program-roadmap-plan.md`](docs/plans/2026-10-05-001-docs-program-roadmap-plan.md)
+— Now/Next/Later units (U-IDs) with per-unit status, evidence, and links to
+every child plan. This file stays the prose orientation; that file is the
+unit ledger.
+
 **What this is:** an eval harness for orchestrator→worker model pairs over
 OpenRouter — does a cheap planner plus cheap workers produce frontier-quality
 output at a fraction of the cost?

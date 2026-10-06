@@ -695,6 +695,7 @@ CLI uses the same glyphs, colors only when `isatty` and `NO_COLOR` unset):
 | not judged | hollow circle | `○ not judged` | ink-3 |
 | judge score | gauge + number | `◖0.83` | judge |
 | low n | hatch square | `░ low n` | ink-2 |
+| frontier | staircase icon on web | `◢ frontier` | ink |
 | flag: interesting | fermata | `𝄐`-shaped icon on web; `* flagged` in terminal | ink |
 
 CLI tables: use `rich.table.Table` (already a dependency) with column overflow

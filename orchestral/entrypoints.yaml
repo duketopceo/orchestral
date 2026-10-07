@@ -1,516 +1,624 @@
 # Entry-point registry — reachability roots the static call graph
-# cannot see. Regenerate with `scripts/audit_entrypoints.py --write`;
+# cannot see. Regenerate with `python3 scripts/audit_entrypoints.py --write`;
 # tests/test_entrypoints.py fails when the scan drifts from this file.
+#
+# How to read this file:
+#   - Join rule: a symbol whose name appears here (or matches a `patterns`
+#     kind) is NOT a dead-code candidate, whatever its inbound count says.
+#   - Name grammar per kind: cli_command/console_script/audit_rule/
+#     textual_handler are dotted symbols (module.function or module.Class.method);
+#     http_route names are path literals (not symbols — includes prefixes and
+#     redirect fragments, not just exact routes); http_handler, getattr_table,
+#     js_view and module_exports names are `path:symbol` (js_view uses `::` and
+#     is relative to ui/js/); main_guard names are file paths (the whole file
+#     is reachable).
+#   - The scanner enumerates known kinds only. A new wiring pattern that none
+#     of them recognize produces no drift failure — absence from this file is
+#     not proof of unreachability. Extend the scanner when you add a mechanism.
+#   - Parity is checked on (name, kind) pairs; `via` is advisory only.
 schema: 1
 patterns:
-  - kind: dunder_protocol
-    match: 'any __x__ attribute (methods, dataclass hooks, descriptors)'
-    why: 'Python protocol dispatch — never a dead-code candidate.'
-  - kind: unittest_discovery
-    match: 'tests/**: Test* classes and test_* methods'
-    why: 'unittest discovery, not static calls.'
-  - kind: callback_argument
-    match: 'any function object passed by name as a call argument'
-    why: 'The graph records CALLS only; an argument-position reference (e.g. set_authorizer(_fixture_authorizer)) leaves zero inbound CALLS edges on a live callback. U3 must check USAGE edges too.'
-  - kind: getattr_proxy
-    match: 'attributes resolved through __getattr__ delegates'
-    why: 'orchestral/web/snapshot.py _PublishedStore.__getattr__ forwards every RunStore method — the wrapped methods have no visible caller.'
+- kind: dunder_protocol
+  match: any __x__ attribute (methods, dataclass hooks, descriptors)
+  why: Python protocol dispatch — never a dead-code candidate.
+- kind: unittest_discovery
+  match: 'tests/**: Test* classes and test_* methods'
+  why: unittest discovery, not static calls.
+- kind: callback_argument
+  match: any function object passed by name as a call argument
+  why: The graph records CALLS only; an argument-position reference (e.g. set_authorizer(_fixture_authorizer))
+    leaves zero inbound CALLS edges on a live callback. U3 must check USAGE edges
+    too.
+- kind: getattr_proxy
+  match: any symbol reached through a __getattr__ delegate or getattr(obj, name) dispatch
+  why: e.g. orchestral/web/snapshot.py _PublishedStore.__getattr__ forwards every
+    RunStore method — the wrapped methods have no visible caller.
+- kind: lazy_import
+  match: any symbol imported by a function-scope import inside a registered root
+  why: 'Registered roots are reachability seeds, not a closure: e.g. harness.py cmd_sync
+    does `from orchestral import cf` inside the function, so cf.* callees can show
+    zero inbound edges while fully live. U3 must treat the import closure of every
+    entry point as reachable, not just the listed name.'
 entry_points:
-  - name: 'orchestral.audit.check_absent_grading_contract'
-    kind: audit_rule
-    via: 'PER_SPEC_RULES tuple'
-  - name: 'orchestral.audit.check_answer_derivable'
-    kind: audit_rule
-    via: 'PER_SPEC_RULES tuple'
-  - name: 'orchestral.audit.check_canary'
-    kind: audit_rule
-    via: 'PER_SPEC_RULES tuple'
-  - name: 'orchestral.audit.check_fixture_contract'
-    kind: audit_rule
-    via: 'PER_SPEC_RULES tuple'
-  - name: 'orchestral.audit.check_inert_metadata_required'
-    kind: audit_rule
-    via: 'PER_SPEC_RULES tuple'
-  - name: 'orchestral.audit.check_judge_gated_media'
-    kind: audit_rule
-    via: 'PER_SPEC_RULES tuple'
-  - name: 'orchestral.audit.check_memorization_risk'
-    kind: audit_rule
-    via: 'PER_SPEC_RULES tuple'
-  - name: 'orchestral.audit.check_missing_reference'
-    kind: audit_rule
-    via: 'PER_SPEC_RULES tuple'
-  - name: 'orchestral.audit.check_presence_only_extract_contract'
-    kind: audit_rule
-    via: 'PER_SPEC_RULES tuple'
-  - name: 'orchestral.audit.check_prompt_states_answer'
-    kind: audit_rule
-    via: 'PER_SPEC_RULES tuple'
-  - name: 'orchestral.audit.check_structural_only'
-    kind: audit_rule
-    via: 'PER_SPEC_RULES tuple'
-  - name: 'orchestral.audit.check_unanchored_fileset'
-    kind: audit_rule
-    via: 'PER_SPEC_RULES tuple'
-  - name: 'orchestral.audit.check_unlabeled_difficulty'
-    kind: audit_rule
-    via: 'PER_SPEC_RULES tuple'
-  - name: 'orchestral.audit.check_validation_names'
-    kind: audit_rule
-    via: 'PER_SPEC_RULES tuple'
-  - name: 'harness.cmd_ablate'
-    kind: cli_command
-    via: 'subparser "ablate"'
-  - name: 'harness.cmd_audit'
-    kind: cli_command
-    via: 'subparser "audit"'
-  - name: 'harness.cmd_batch'
-    kind: cli_command
-    via: 'subparser "batch"'
-  - name: 'harness.cmd_calibrate'
-    kind: cli_command
-    via: 'subparser "calibrate"'
-  - name: 'harness.cmd_cards'
-    kind: cli_command
-    via: 'subparser "cards"'
-  - name: 'harness.cmd_claimsaudit'
-    kind: cli_command
-    via: 'subparser "claimsaudit"'
-  - name: 'harness.cmd_coverage'
-    kind: cli_command
-    via: 'subparser "coverage"'
-  - name: 'harness.cmd_dashboard'
-    kind: cli_command
-    via: 'subparser "dashboard"'
-  - name: 'harness.cmd_dataset'
-    kind: cli_command
-    via: 'subparser "dataset"'
-  - name: 'harness.cmd_doctor'
-    kind: cli_command
-    via: 'subparser "doctor"'
-  - name: 'harness.cmd_experiment'
-    kind: cli_command
-    via: 'subparser "experiment"'
-  - name: 'harness.cmd_export'
-    kind: cli_command
-    via: 'subparser "export"'
-  - name: 'harness.cmd_fixtures'
-    kind: cli_command
-    via: 'subparser "fixtures"'
-  - name: 'harness.cmd_gate'
-    kind: cli_command
-    via: 'subparser "gate"'
-  - name: 'harness.cmd_grid'
-    kind: cli_command
-    via: 'subparser "grid"'
-  - name: 'harness.cmd_harbor'
-    kind: cli_command
-    via: 'subparser "harbor"'
-  - name: 'harness.cmd_history'
-    kind: cli_command
-    via: 'subparser "history"'
-  - name: 'harness.cmd_holdout'
-    kind: cli_command
-    via: 'subparser "holdout"'
-  - name: 'harness.cmd_init'
-    kind: cli_command
-    via: 'subparser "init"'
-  - name: 'harness.cmd_judge'
-    kind: cli_command
-    via: 'subparser "judge"'
-  - name: 'harness.cmd_models'
-    kind: cli_command
-    via: 'subparser "models"'
-  - name: 'harness.cmd_prices'
-    kind: cli_command
-    via: 'subparser "prices"'
-  - name: 'harness.cmd_publish_mark'
-    kind: cli_command
-    via: 'subparser "publish-mark"'
-  - name: 'harness.cmd_recover'
-    kind: cli_command
-    via: 'subparser "recover"'
-  - name: 'harness.cmd_report'
-    kind: cli_command
-    via: 'subparser "report"'
-  - name: 'harness.cmd_revalidate'
-    kind: cli_command
-    via: 'subparser "revalidate"'
-  - name: 'harness.cmd_review'
-    kind: cli_command
-    via: 'subparser "review"'
-  - name: 'harness.cmd_run'
-    kind: cli_command
-    via: 'subparser "run"'
-  - name: 'harness.cmd_scrub'
-    kind: cli_command
-    via: 'subparser "scrub"'
-  - name: 'harness.cmd_selfcheck'
-    kind: cli_command
-    via: 'subparser "selfcheck"'
-  - name: 'harness.cmd_serve'
-    kind: cli_command
-    via: 'subparser "serve"'
-  - name: 'harness.cmd_shots'
-    kind: cli_command
-    via: 'subparser "shots"'
-  - name: 'harness.cmd_specaudit'
-    kind: cli_command
-    via: 'subparser "specaudit"'
-  - name: 'harness.cmd_sync'
-    kind: cli_command
-    via: 'subparser "sync"'
-  - name: 'harness.cmd_tui'
-    kind: cli_command
-    via: 'subparser "tui"'
-  - name: 'harness.cmd_validate'
-    kind: cli_command
-    via: 'subparser "validate"'
-  - name: 'harness:main'
-    kind: console_script
-    via: '[project.scripts] "orchestral"'
-  - name: 'orchestral.web.server.<handler>.do_GET'
-    kind: http_handler
-    via: 'BaseHTTPRequestHandler method dispatch'
-  - name: 'orchestral.web.server.<handler>.do_POST'
-    kind: http_handler
-    via: 'BaseHTTPRequestHandler method dispatch'
-  - name: '/'
-    kind: http_route
-    via: 'path literal in _route_get/_route_post'
-  - name: '/#'
-    kind: http_route
-    via: 'path literal in _route_get/_route_post'
-  - name: '/#/run/'
-    kind: http_route
-    via: 'path literal in _route_get/_route_post'
-  - name: '//'
-    kind: http_route
-    via: 'path literal in _route_get/_route_post'
-  - name: '/about'
-    kind: http_route
-    via: 'path literal in _route_get/_route_post'
-  - name: '/api/'
-    kind: http_route
-    via: 'path literal in _route_get/_route_post'
-  - name: '/api/card'
-    kind: http_route
-    via: 'path literal in _route_get/_route_post'
-  - name: '/api/cards'
-    kind: http_route
-    via: 'path literal in _route_get/_route_post'
-  - name: '/api/compare'
-    kind: http_route
-    via: 'path literal in _route_get/_route_post'
-  - name: '/api/estimate'
-    kind: http_route
-    via: 'path literal in _route_get/_route_post'
-  - name: '/api/experiment'
-    kind: http_route
-    via: 'path literal in _route_get/_route_post'
-  - name: '/api/experiments'
-    kind: http_route
-    via: 'path literal in _route_get/_route_post'
-  - name: '/api/flag'
-    kind: http_route
-    via: 'path literal in _route_get/_route_post'
-  - name: '/api/flags'
-    kind: http_route
-    via: 'path literal in _route_get/_route_post'
-  - name: '/api/groups'
-    kind: http_route
-    via: 'path literal in _route_get/_route_post'
-  - name: '/api/leaderboard'
-    kind: http_route
-    via: 'path literal in _route_get/_route_post'
-  - name: '/api/matrix'
-    kind: http_route
-    via: 'path literal in _route_get/_route_post'
-  - name: '/api/meta'
-    kind: http_route
-    via: 'path literal in _route_get/_route_post'
-  - name: '/api/models'
-    kind: http_route
-    via: 'path literal in _route_get/_route_post'
-  - name: '/api/models-catalog'
-    kind: http_route
-    via: 'path literal in _route_get/_route_post'
-  - name: '/api/overview'
-    kind: http_route
-    via: 'path literal in _route_get/_route_post'
-  - name: '/api/pairings'
-    kind: http_route
-    via: 'path literal in _route_get/_route_post'
-  - name: '/api/run'
-    kind: http_route
-    via: 'path literal in _route_get/_route_post'
-  - name: '/api/run/'
-    kind: http_route
-    via: 'path literal in _route_get/_route_post'
-  - name: '/api/runs'
-    kind: http_route
-    via: 'path literal in _route_get/_route_post'
-  - name: '/api/shot.png'
-    kind: http_route
-    via: 'path literal in _route_get/_route_post'
-  - name: '/api/task-picker'
-    kind: http_route
-    via: 'path literal in _route_get/_route_post'
-  - name: '/api/tasks'
-    kind: http_route
-    via: 'path literal in _route_get/_route_post'
-  - name: '/api/thread'
-    kind: http_route
-    via: 'path literal in _route_get/_route_post'
-  - name: '/api/thread-estimate'
-    kind: http_route
-    via: 'path literal in _route_get/_route_post'
-  - name: '/card'
-    kind: http_route
-    via: 'path literal in _route_get/_route_post'
-  - name: '/cards'
-    kind: http_route
-    via: 'path literal in _route_get/_route_post'
-  - name: '/compare'
-    kind: http_route
-    via: 'path literal in _route_get/_route_post'
-  - name: '/experiment'
-    kind: http_route
-    via: 'path literal in _route_get/_route_post'
-  - name: '/favicon.ico'
-    kind: http_route
-    via: 'path literal in _route_get/_route_post'
-  - name: '/leaderboard'
-    kind: http_route
-    via: 'path literal in _route_get/_route_post'
-  - name: '/models'
-    kind: http_route
-    via: 'path literal in _route_get/_route_post'
-  - name: '/new'
-    kind: http_route
-    via: 'path literal in _route_get/_route_post'
-  - name: '/run'
-    kind: http_route
-    via: 'path literal in _route_get/_route_post'
-  - name: '/run/'
-    kind: http_route
-    via: 'path literal in _route_get/_route_post'
-  - name: '/runs'
-    kind: http_route
-    via: 'path literal in _route_get/_route_post'
-  - name: '/static/'
-    kind: http_route
-    via: 'path literal in _route_get/_route_post'
-  - name: '/static/favicon.ico'
-    kind: http_route
-    via: 'path literal in _route_get/_route_post'
-  - name: 'views/about.js::viewAbout'
-    kind: js_view
-    via: 'router.js import'
-  - name: 'views/card.js::viewCard'
-    kind: js_view
-    via: 'router.js import'
-  - name: 'views/cards.js::viewCards'
-    kind: js_view
-    via: 'router.js import'
-  - name: 'views/compare.js::viewCompare'
-    kind: js_view
-    via: 'router.js import'
-  - name: 'views/experiment.js::viewExperiment'
-    kind: js_view
-    via: 'router.js import'
-  - name: 'views/leaderboard.js::viewLeaderboard'
-    kind: js_view
-    via: 'router.js import'
-  - name: 'views/models.js::viewModels'
-    kind: js_view
-    via: 'router.js import'
-  - name: 'views/new.js::viewNew'
-    kind: js_view
-    via: 'router.js import'
-  - name: 'views/now.js::viewNow'
-    kind: js_view
-    via: 'router.js import'
-  - name: 'views/run.js::viewRun'
-    kind: js_view
-    via: 'router.js import'
-  - name: 'views/runs.js::viewRuns'
-    kind: js_view
-    via: 'router.js import'
-  - name: 'demo/capture/observatory.py'
-    kind: main_guard
-    via: 'if __name__ == "__main__"'
-  - name: 'harness.py'
-    kind: main_guard
-    via: 'if __name__ == "__main__"'
-  - name: 'orchestral/budget.py'
-    kind: main_guard
-    via: 'if __name__ == "__main__"'
-  - name: 'scripts/audit_entrypoints.py'
-    kind: main_guard
-    via: 'if __name__ == "__main__"'
-  - name: 'scripts/build-fixture-corpus.py'
-    kind: main_guard
-    via: 'if __name__ == "__main__"'
-  - name: 'scripts/build-hosted-assets.py'
-    kind: main_guard
-    via: 'if __name__ == "__main__"'
-  - name: 'scripts/build-static-snapshot.py'
-    kind: main_guard
-    via: 'if __name__ == "__main__"'
-  - name: 'scripts/capture-ui-matrix.py'
-    kind: main_guard
-    via: 'if __name__ == "__main__"'
-  - name: 'scripts/e2e-hosted.py'
-    kind: main_guard
-    via: 'if __name__ == "__main__"'
-  - name: 'scripts/gen_html_tasks.py'
-    kind: main_guard
-    via: 'if __name__ == "__main__"'
-  - name: 'scripts/gen_router_eval.py'
-    kind: main_guard
-    via: 'if __name__ == "__main__"'
-  - name: 'scripts/glitchtip_to_issues.py'
-    kind: main_guard
-    via: 'if __name__ == "__main__"'
-  - name: 'scripts/pull_swebench.py'
-    kind: main_guard
-    via: 'if __name__ == "__main__"'
-  - name: 'scripts/render-readme-assets.py'
-    kind: main_guard
-    via: 'if __name__ == "__main__"'
-  - name: 'scripts/serve_laya.py'
-    kind: main_guard
-    via: 'if __name__ == "__main__"'
-  - name: 'orchestral/cli_table.py:Cell,Column,Note,Style,detect_style,fmt_duration_compact,format_error,glyph,n_cell,print_table,render_table,verdict_cell'
-    kind: module_exports
-    via: '__all__'
-  - name: 'orchestral.tui.app.OrchestralApp.action_cancel_job'
-    kind: textual_handler
-    via: 'Textual message/action dispatch'
-  - name: 'orchestral.tui.app.OrchestralApp.action_export'
-    kind: textual_handler
-    via: 'Textual message/action dispatch'
-  - name: 'orchestral.tui.app.OrchestralApp.action_filter'
-    kind: textual_handler
-    via: 'Textual message/action dispatch'
-  - name: 'orchestral.tui.app.OrchestralApp.action_groups'
-    kind: textual_handler
-    via: 'Textual message/action dispatch'
-  - name: 'orchestral.tui.app.OrchestralApp.action_help'
-    kind: textual_handler
-    via: 'Textual message/action dispatch'
-  - name: 'orchestral.tui.app.OrchestralApp.action_new_run'
-    kind: textual_handler
-    via: 'Textual message/action dispatch'
-  - name: 'orchestral.tui.app.OrchestralApp.action_refresh'
-    kind: textual_handler
-    via: 'Textual message/action dispatch'
-  - name: 'orchestral.tui.app.OrchestralApp.action_show_history'
-    kind: textual_handler
-    via: 'Textual message/action dispatch'
-  - name: 'orchestral.tui.app.OrchestralApp.action_show_leaderboard'
-    kind: textual_handler
-    via: 'Textual message/action dispatch'
-  - name: 'orchestral.tui.app.OrchestralApp.action_show_live'
-    kind: textual_handler
-    via: 'Textual message/action dispatch'
-  - name: 'orchestral.tui.app.OrchestralApp.action_toggle_theme'
-    kind: textual_handler
-    via: 'Textual message/action dispatch'
-  - name: 'orchestral.tui.app.OrchestralApp.compose'
-    kind: textual_handler
-    via: 'Textual message/action dispatch'
-  - name: 'orchestral.tui.app.OrchestralApp.on_data_table_row_selected'
-    kind: textual_handler
-    via: 'Textual message/action dispatch'
-  - name: 'orchestral.tui.app.OrchestralApp.on_input_changed'
-    kind: textual_handler
-    via: 'Textual message/action dispatch'
-  - name: 'orchestral.tui.app.OrchestralApp.on_input_submitted'
-    kind: textual_handler
-    via: 'Textual message/action dispatch'
-  - name: 'orchestral.tui.app.OrchestralApp.on_mount'
-    kind: textual_handler
-    via: 'Textual message/action dispatch'
-  - name: 'orchestral.tui.app.OrchestralApp.on_resize'
-    kind: textual_handler
-    via: 'Textual message/action dispatch'
-  - name: 'orchestral.tui.screens.GroupsScreen.action_back'
-    kind: textual_handler
-    via: 'Textual message/action dispatch'
-  - name: 'orchestral.tui.screens.GroupsScreen.compose'
-    kind: textual_handler
-    via: 'Textual message/action dispatch'
-  - name: 'orchestral.tui.screens.GroupsScreen.on_mount'
-    kind: textual_handler
-    via: 'Textual message/action dispatch'
-  - name: 'orchestral.tui.screens.HelpScreen.compose'
-    kind: textual_handler
-    via: 'Textual message/action dispatch'
-  - name: 'orchestral.tui.screens.LaunchScreen.action_cancel'
-    kind: textual_handler
-    via: 'Textual message/action dispatch'
-  - name: 'orchestral.tui.screens.LaunchScreen.compose'
-    kind: textual_handler
-    via: 'Textual message/action dispatch'
-  - name: 'orchestral.tui.screens.LaunchScreen.on_button_pressed'
-    kind: textual_handler
-    via: 'Textual message/action dispatch'
-  - name: 'orchestral.tui.screens.LaunchScreen.on_checkbox_changed'
-    kind: textual_handler
-    via: 'Textual message/action dispatch'
-  - name: 'orchestral.tui.screens.LaunchScreen.on_input_changed'
-    kind: textual_handler
-    via: 'Textual message/action dispatch'
-  - name: 'orchestral.tui.screens.LaunchScreen.on_input_submitted'
-    kind: textual_handler
-    via: 'Textual message/action dispatch'
-  - name: 'orchestral.tui.screens.LaunchScreen.on_select_changed'
-    kind: textual_handler
-    via: 'Textual message/action dispatch'
-  - name: 'orchestral.tui.screens.LeaderboardScreen.action_back'
-    kind: textual_handler
-    via: 'Textual message/action dispatch'
-  - name: 'orchestral.tui.screens.LeaderboardScreen.action_cycle_sort'
-    kind: textual_handler
-    via: 'Textual message/action dispatch'
-  - name: 'orchestral.tui.screens.LeaderboardScreen.action_export_csv'
-    kind: textual_handler
-    via: 'Textual message/action dispatch'
-  - name: 'orchestral.tui.screens.LeaderboardScreen.compose'
-    kind: textual_handler
-    via: 'Textual message/action dispatch'
-  - name: 'orchestral.tui.screens.LeaderboardScreen.on_mount'
-    kind: textual_handler
-    via: 'Textual message/action dispatch'
-  - name: 'orchestral.tui.screens.LiveRunScreen.action_back'
-    kind: textual_handler
-    via: 'Textual message/action dispatch'
-  - name: 'orchestral.tui.screens.LiveRunScreen.action_cancel_run'
-    kind: textual_handler
-    via: 'Textual message/action dispatch'
-  - name: 'orchestral.tui.screens.LiveRunScreen.action_export_run'
-    kind: textual_handler
-    via: 'Textual message/action dispatch'
-  - name: 'orchestral.tui.screens.LiveRunScreen.compose'
-    kind: textual_handler
-    via: 'Textual message/action dispatch'
-  - name: 'orchestral.tui.screens.LiveRunScreen.on_data_table_row_highlighted'
-    kind: textual_handler
-    via: 'Textual message/action dispatch'
-  - name: 'orchestral.tui.screens.LiveRunScreen.on_mount'
-    kind: textual_handler
-    via: 'Textual message/action dispatch'
-  - name: 'orchestral.tui.screens.RunDetailScreen.action_back'
-    kind: textual_handler
-    via: 'Textual message/action dispatch'
-  - name: 'orchestral.tui.screens.RunDetailScreen.action_export_run'
-    kind: textual_handler
-    via: 'Textual message/action dispatch'
-  - name: 'orchestral.tui.screens.RunDetailScreen.compose'
-    kind: textual_handler
-    via: 'Textual message/action dispatch'
-  - name: 'orchestral.tui.screens.RunDetailScreen.on_mount'
-    kind: textual_handler
-    via: 'Textual message/action dispatch'
+- name: orchestral.audit.check_absent_grading_contract
+  kind: audit_rule
+  via: PER_SPEC_RULES tuple
+- name: orchestral.audit.check_answer_derivable
+  kind: audit_rule
+  via: PER_SPEC_RULES tuple
+- name: orchestral.audit.check_canary
+  kind: audit_rule
+  via: PER_SPEC_RULES tuple
+- name: orchestral.audit.check_fixture_contract
+  kind: audit_rule
+  via: PER_SPEC_RULES tuple
+- name: orchestral.audit.check_inert_metadata_required
+  kind: audit_rule
+  via: PER_SPEC_RULES tuple
+- name: orchestral.audit.check_judge_gated_media
+  kind: audit_rule
+  via: PER_SPEC_RULES tuple
+- name: orchestral.audit.check_memorization_risk
+  kind: audit_rule
+  via: PER_SPEC_RULES tuple
+- name: orchestral.audit.check_missing_reference
+  kind: audit_rule
+  via: PER_SPEC_RULES tuple
+- name: orchestral.audit.check_presence_only_extract_contract
+  kind: audit_rule
+  via: PER_SPEC_RULES tuple
+- name: orchestral.audit.check_prompt_states_answer
+  kind: audit_rule
+  via: PER_SPEC_RULES tuple
+- name: orchestral.audit.check_structural_only
+  kind: audit_rule
+  via: PER_SPEC_RULES tuple
+- name: orchestral.audit.check_unanchored_fileset
+  kind: audit_rule
+  via: PER_SPEC_RULES tuple
+- name: orchestral.audit.check_unlabeled_difficulty
+  kind: audit_rule
+  via: PER_SPEC_RULES tuple
+- name: orchestral.audit.check_validation_names
+  kind: audit_rule
+  via: PER_SPEC_RULES tuple
+- name: harness.cmd_ablate
+  kind: cli_command
+  via: subparser "ablate"
+- name: harness.cmd_audit
+  kind: cli_command
+  via: subparser "audit"
+- name: harness.cmd_batch
+  kind: cli_command
+  via: subparser "batch"
+- name: harness.cmd_calibrate
+  kind: cli_command
+  via: subparser "calibrate"
+- name: harness.cmd_cards
+  kind: cli_command
+  via: subparser "cards"
+- name: harness.cmd_claimsaudit
+  kind: cli_command
+  via: subparser "claimsaudit"
+- name: harness.cmd_coverage
+  kind: cli_command
+  via: subparser "coverage"
+- name: harness.cmd_dashboard
+  kind: cli_command
+  via: subparser "dashboard"
+- name: harness.cmd_dataset
+  kind: cli_command
+  via: subparser "dataset"
+- name: harness.cmd_doctor
+  kind: cli_command
+  via: subparser "doctor"
+- name: harness.cmd_experiment
+  kind: cli_command
+  via: subparser "experiment"
+- name: harness.cmd_export
+  kind: cli_command
+  via: subparser "export"
+- name: harness.cmd_fixtures
+  kind: cli_command
+  via: subparser "fixtures"
+- name: harness.cmd_gate
+  kind: cli_command
+  via: subparser "gate"
+- name: harness.cmd_grid
+  kind: cli_command
+  via: subparser "grid"
+- name: harness.cmd_harbor
+  kind: cli_command
+  via: subparser "harbor"
+- name: harness.cmd_history
+  kind: cli_command
+  via: subparser "history"
+- name: harness.cmd_holdout
+  kind: cli_command
+  via: subparser "holdout"
+- name: harness.cmd_init
+  kind: cli_command
+  via: subparser "init"
+- name: harness.cmd_judge
+  kind: cli_command
+  via: subparser "judge"
+- name: harness.cmd_models
+  kind: cli_command
+  via: subparser "models"
+- name: harness.cmd_prices
+  kind: cli_command
+  via: subparser "prices"
+- name: harness.cmd_publish_mark
+  kind: cli_command
+  via: subparser "publish-mark"
+- name: harness.cmd_recover
+  kind: cli_command
+  via: subparser "recover"
+- name: harness.cmd_report
+  kind: cli_command
+  via: subparser "report"
+- name: harness.cmd_revalidate
+  kind: cli_command
+  via: subparser "revalidate"
+- name: harness.cmd_review
+  kind: cli_command
+  via: subparser "review"
+- name: harness.cmd_run
+  kind: cli_command
+  via: subparser "run"
+- name: harness.cmd_scrub
+  kind: cli_command
+  via: subparser "scrub"
+- name: harness.cmd_selfcheck
+  kind: cli_command
+  via: subparser "selfcheck"
+- name: harness.cmd_serve
+  kind: cli_command
+  via: subparser "serve"
+- name: harness.cmd_shots
+  kind: cli_command
+  via: subparser "shots"
+- name: harness.cmd_specaudit
+  kind: cli_command
+  via: subparser "specaudit"
+- name: harness.cmd_sync
+  kind: cli_command
+  via: subparser "sync"
+- name: harness.cmd_tui
+  kind: cli_command
+  via: subparser "tui"
+- name: harness.cmd_validate
+  kind: cli_command
+  via: subparser "validate"
+- name: harness:main
+  kind: console_script
+  via: '[project.scripts] "orchestral"'
+- name: demo/capture/observatory.py:capture
+  kind: getattr_table
+  via: UPPER_CASE table string matching a local def
+- name: orchestral/runner.py:_validate
+  kind: getattr_table
+  via: UPPER_CASE table string matching a local def
+- name: orchestral/runner.py:_validate_api
+  kind: getattr_table
+  via: UPPER_CASE table string matching a local def
+- name: orchestral/runner.py:_validate_extract
+  kind: getattr_table
+  via: UPPER_CASE table string matching a local def
+- name: orchestral/runner.py:_validate_patch
+  kind: getattr_table
+  via: UPPER_CASE table string matching a local def
+- name: orchestral/runner.py:_validate_sql
+  kind: getattr_table
+  via: UPPER_CASE table string matching a local def
+- name: orchestral/runner.py:_validate_terminal
+  kind: getattr_table
+  via: UPPER_CASE table string matching a local def
+- name: orchestral/web/state.py:launch
+  kind: getattr_table
+  via: UPPER_CASE table string matching a local def
+- name: orchestral/apistub.py:_StubHandler.do_DELETE
+  kind: http_handler
+  via: handler method alias assignment
+- name: orchestral/apistub.py:_StubHandler.do_GET
+  kind: http_handler
+  via: handler method alias assignment
+- name: orchestral/apistub.py:_StubHandler.do_PATCH
+  kind: http_handler
+  via: handler method alias assignment
+- name: orchestral/apistub.py:_StubHandler.do_POST
+  kind: http_handler
+  via: handler method alias assignment
+- name: orchestral/apistub.py:_StubHandler.do_PUT
+  kind: http_handler
+  via: handler method alias assignment
+- name: orchestral/web/server.py:Handler.do_GET
+  kind: http_handler
+  via: BaseHTTPRequestHandler method dispatch
+- name: orchestral/web/server.py:Handler.do_POST
+  kind: http_handler
+  via: BaseHTTPRequestHandler method dispatch
+- name: scripts/serve_laya.py:Handler.do_GET
+  kind: http_handler
+  via: BaseHTTPRequestHandler method dispatch
+- name: scripts/serve_laya.py:Handler.do_POST
+  kind: http_handler
+  via: BaseHTTPRequestHandler method dispatch
+- name: /
+  kind: http_route
+  via: path literal in orchestral/apistub.py:_StubHandler methods
+- name: /#
+  kind: http_route
+  via: path literal in orchestral/web/server.py:Handler methods
+- name: /#/run/
+  kind: http_route
+  via: path literal in orchestral/web/server.py:Handler methods
+- name: //
+  kind: http_route
+  via: path literal in orchestral/web/server.py:Handler methods
+- name: /about
+  kind: http_route
+  via: path literal in orchestral/web/server.py:Handler methods
+- name: /api/
+  kind: http_route
+  via: path literal in orchestral/web/server.py:Handler methods
+- name: /api/card
+  kind: http_route
+  via: path literal in orchestral/web/server.py:Handler methods
+- name: /api/cards
+  kind: http_route
+  via: path literal in orchestral/web/server.py:Handler methods
+- name: /api/compare
+  kind: http_route
+  via: path literal in orchestral/web/server.py:Handler methods
+- name: /api/estimate
+  kind: http_route
+  via: path literal in orchestral/web/server.py:Handler methods
+- name: /api/experiment
+  kind: http_route
+  via: path literal in orchestral/web/server.py:Handler methods
+- name: /api/experiments
+  kind: http_route
+  via: path literal in orchestral/web/server.py:Handler methods
+- name: /api/flag
+  kind: http_route
+  via: path literal in orchestral/web/server.py:Handler methods
+- name: /api/flags
+  kind: http_route
+  via: path literal in orchestral/web/server.py:Handler methods
+- name: /api/groups
+  kind: http_route
+  via: path literal in orchestral/web/server.py:Handler methods
+- name: /api/leaderboard
+  kind: http_route
+  via: path literal in orchestral/web/server.py:Handler methods
+- name: /api/matrix
+  kind: http_route
+  via: path literal in orchestral/web/server.py:Handler methods
+- name: /api/meta
+  kind: http_route
+  via: path literal in orchestral/web/server.py:Handler methods
+- name: /api/models
+  kind: http_route
+  via: path literal in orchestral/web/server.py:Handler methods
+- name: /api/models-catalog
+  kind: http_route
+  via: path literal in orchestral/web/server.py:Handler methods
+- name: /api/overview
+  kind: http_route
+  via: path literal in orchestral/web/server.py:Handler methods
+- name: /api/pairings
+  kind: http_route
+  via: path literal in orchestral/web/server.py:Handler methods
+- name: /api/run
+  kind: http_route
+  via: path literal in orchestral/web/server.py:Handler methods
+- name: /api/run/
+  kind: http_route
+  via: path literal in orchestral/web/server.py:Handler methods
+- name: /api/runs
+  kind: http_route
+  via: path literal in orchestral/web/server.py:Handler methods
+- name: /api/shot.png
+  kind: http_route
+  via: path literal in orchestral/web/server.py:Handler methods
+- name: /api/task-picker
+  kind: http_route
+  via: path literal in orchestral/web/server.py:Handler methods
+- name: /api/tasks
+  kind: http_route
+  via: path literal in orchestral/web/server.py:Handler methods
+- name: /api/thread
+  kind: http_route
+  via: path literal in orchestral/web/server.py:Handler methods
+- name: /api/thread-estimate
+  kind: http_route
+  via: path literal in orchestral/web/server.py:Handler methods
+- name: /card
+  kind: http_route
+  via: path literal in orchestral/web/server.py:Handler methods
+- name: /cards
+  kind: http_route
+  via: path literal in orchestral/web/server.py:Handler methods
+- name: /compare
+  kind: http_route
+  via: path literal in orchestral/web/server.py:Handler methods
+- name: /experiment
+  kind: http_route
+  via: path literal in orchestral/web/server.py:Handler methods
+- name: /favicon.ico
+  kind: http_route
+  via: path literal in orchestral/web/server.py:Handler methods
+- name: /leaderboard
+  kind: http_route
+  via: path literal in orchestral/web/server.py:Handler methods
+- name: /models
+  kind: http_route
+  via: path literal in orchestral/web/server.py:Handler methods
+- name: /new
+  kind: http_route
+  via: path literal in orchestral/web/server.py:Handler methods
+- name: /run
+  kind: http_route
+  via: path literal in orchestral/web/server.py:Handler methods
+- name: /run/
+  kind: http_route
+  via: path literal in orchestral/web/server.py:Handler methods
+- name: /runs
+  kind: http_route
+  via: path literal in orchestral/web/server.py:Handler methods
+- name: /static/
+  kind: http_route
+  via: path literal in orchestral/web/server.py:Handler methods
+- name: /static/favicon.ico
+  kind: http_route
+  via: path literal in orchestral/web/server.py:Handler methods
+- name: /v1/models
+  kind: http_route
+  via: path literal in scripts/serve_laya.py:Handler methods
+- name: views/about.js::viewAbout
+  kind: js_view
+  via: router.js import
+- name: views/card.js::viewCard
+  kind: js_view
+  via: router.js import
+- name: views/cards.js::viewCards
+  kind: js_view
+  via: router.js import
+- name: views/compare.js::viewCompare
+  kind: js_view
+  via: router.js import
+- name: views/experiment.js::viewExperiment
+  kind: js_view
+  via: router.js import
+- name: views/leaderboard.js::viewLeaderboard
+  kind: js_view
+  via: router.js import
+- name: views/models.js::viewModels
+  kind: js_view
+  via: router.js import
+- name: views/new.js::viewNew
+  kind: js_view
+  via: router.js import
+- name: views/now.js::viewNow
+  kind: js_view
+  via: router.js import
+- name: views/run.js::viewRun
+  kind: js_view
+  via: router.js import
+- name: views/runs.js::viewRuns
+  kind: js_view
+  via: router.js import
+- name: demo/capture/observatory.py
+  kind: main_guard
+  via: if __name__ == "__main__"
+- name: harness.py
+  kind: main_guard
+  via: if __name__ == "__main__"
+- name: orchestral/budget.py
+  kind: main_guard
+  via: if __name__ == "__main__"
+- name: scripts/audit_entrypoints.py
+  kind: main_guard
+  via: if __name__ == "__main__"
+- name: scripts/build-fixture-corpus.py
+  kind: main_guard
+  via: if __name__ == "__main__"
+- name: scripts/build-hosted-assets.py
+  kind: main_guard
+  via: if __name__ == "__main__"
+- name: scripts/build-static-snapshot.py
+  kind: main_guard
+  via: if __name__ == "__main__"
+- name: scripts/capture-ui-matrix.py
+  kind: main_guard
+  via: if __name__ == "__main__"
+- name: scripts/e2e-hosted.py
+  kind: main_guard
+  via: if __name__ == "__main__"
+- name: scripts/gen_html_tasks.py
+  kind: main_guard
+  via: if __name__ == "__main__"
+- name: scripts/gen_router_eval.py
+  kind: main_guard
+  via: if __name__ == "__main__"
+- name: scripts/glitchtip_to_issues.py
+  kind: main_guard
+  via: if __name__ == "__main__"
+- name: scripts/pull_swebench.py
+  kind: main_guard
+  via: if __name__ == "__main__"
+- name: scripts/render-readme-assets.py
+  kind: main_guard
+  via: if __name__ == "__main__"
+- name: scripts/serve_laya.py
+  kind: main_guard
+  via: if __name__ == "__main__"
+- name: orchestral/cli_table.py:Cell
+  kind: module_exports
+  via: __all__
+- name: orchestral/cli_table.py:Column
+  kind: module_exports
+  via: __all__
+- name: orchestral/cli_table.py:Note
+  kind: module_exports
+  via: __all__
+- name: orchestral/cli_table.py:Style
+  kind: module_exports
+  via: __all__
+- name: orchestral/cli_table.py:detect_style
+  kind: module_exports
+  via: __all__
+- name: orchestral/cli_table.py:fmt_duration_compact
+  kind: module_exports
+  via: __all__
+- name: orchestral/cli_table.py:format_error
+  kind: module_exports
+  via: __all__
+- name: orchestral/cli_table.py:glyph
+  kind: module_exports
+  via: __all__
+- name: orchestral/cli_table.py:n_cell
+  kind: module_exports
+  via: __all__
+- name: orchestral/cli_table.py:print_table
+  kind: module_exports
+  via: __all__
+- name: orchestral/cli_table.py:render_table
+  kind: module_exports
+  via: __all__
+- name: orchestral/cli_table.py:verdict_cell
+  kind: module_exports
+  via: __all__
+- name: orchestral.tui.app.OrchestralApp._on_theme_changed
+  kind: textual_handler
+  via: Textual message/action dispatch
+- name: orchestral.tui.app.OrchestralApp.action_cancel_job
+  kind: textual_handler
+  via: Textual message/action dispatch
+- name: orchestral.tui.app.OrchestralApp.action_export
+  kind: textual_handler
+  via: Textual message/action dispatch
+- name: orchestral.tui.app.OrchestralApp.action_filter
+  kind: textual_handler
+  via: Textual message/action dispatch
+- name: orchestral.tui.app.OrchestralApp.action_groups
+  kind: textual_handler
+  via: Textual message/action dispatch
+- name: orchestral.tui.app.OrchestralApp.action_help
+  kind: textual_handler
+  via: Textual message/action dispatch
+- name: orchestral.tui.app.OrchestralApp.action_new_run
+  kind: textual_handler
+  via: Textual message/action dispatch
+- name: orchestral.tui.app.OrchestralApp.action_refresh
+  kind: textual_handler
+  via: Textual message/action dispatch
+- name: orchestral.tui.app.OrchestralApp.action_show_history
+  kind: textual_handler
+  via: Textual message/action dispatch
+- name: orchestral.tui.app.OrchestralApp.action_show_leaderboard
+  kind: textual_handler
+  via: Textual message/action dispatch
+- name: orchestral.tui.app.OrchestralApp.action_show_live
+  kind: textual_handler
+  via: Textual message/action dispatch
+- name: orchestral.tui.app.OrchestralApp.action_toggle_theme
+  kind: textual_handler
+  via: Textual message/action dispatch
+- name: orchestral.tui.app.OrchestralApp.compose
+  kind: textual_handler
+  via: Textual message/action dispatch
+- name: orchestral.tui.app.OrchestralApp.on_data_table_row_selected
+  kind: textual_handler
+  via: Textual message/action dispatch
+- name: orchestral.tui.app.OrchestralApp.on_input_changed
+  kind: textual_handler
+  via: Textual message/action dispatch
+- name: orchestral.tui.app.OrchestralApp.on_input_submitted
+  kind: textual_handler
+  via: Textual message/action dispatch
+- name: orchestral.tui.app.OrchestralApp.on_mount
+  kind: textual_handler
+  via: Textual message/action dispatch
+- name: orchestral.tui.app.OrchestralApp.on_resize
+  kind: textual_handler
+  via: Textual message/action dispatch
+- name: orchestral.tui.screens.GroupsScreen.action_back
+  kind: textual_handler
+  via: Textual message/action dispatch
+- name: orchestral.tui.screens.GroupsScreen.compose
+  kind: textual_handler
+  via: Textual message/action dispatch
+- name: orchestral.tui.screens.GroupsScreen.on_mount
+  kind: textual_handler
+  via: Textual message/action dispatch
+- name: orchestral.tui.screens.HelpScreen.compose
+  kind: textual_handler
+  via: Textual message/action dispatch
+- name: orchestral.tui.screens.LaunchScreen.action_cancel
+  kind: textual_handler
+  via: Textual message/action dispatch
+- name: orchestral.tui.screens.LaunchScreen.compose
+  kind: textual_handler
+  via: Textual message/action dispatch
+- name: orchestral.tui.screens.LaunchScreen.on_button_pressed
+  kind: textual_handler
+  via: Textual message/action dispatch
+- name: orchestral.tui.screens.LaunchScreen.on_checkbox_changed
+  kind: textual_handler
+  via: Textual message/action dispatch
+- name: orchestral.tui.screens.LaunchScreen.on_input_changed
+  kind: textual_handler
+  via: Textual message/action dispatch
+- name: orchestral.tui.screens.LaunchScreen.on_input_submitted
+  kind: textual_handler
+  via: Textual message/action dispatch
+- name: orchestral.tui.screens.LaunchScreen.on_select_changed
+  kind: textual_handler
+  via: Textual message/action dispatch
+- name: orchestral.tui.screens.LeaderboardScreen.action_back
+  kind: textual_handler
+  via: Textual message/action dispatch
+- name: orchestral.tui.screens.LeaderboardScreen.action_cycle_sort
+  kind: textual_handler
+  via: Textual message/action dispatch
+- name: orchestral.tui.screens.LeaderboardScreen.action_export_csv
+  kind: textual_handler
+  via: Textual message/action dispatch
+- name: orchestral.tui.screens.LeaderboardScreen.compose
+  kind: textual_handler
+  via: Textual message/action dispatch
+- name: orchestral.tui.screens.LeaderboardScreen.on_mount
+  kind: textual_handler
+  via: Textual message/action dispatch
+- name: orchestral.tui.screens.LiveRunScreen.action_back
+  kind: textual_handler
+  via: Textual message/action dispatch
+- name: orchestral.tui.screens.LiveRunScreen.action_cancel_run
+  kind: textual_handler
+  via: Textual message/action dispatch
+- name: orchestral.tui.screens.LiveRunScreen.action_export_run
+  kind: textual_handler
+  via: Textual message/action dispatch
+- name: orchestral.tui.screens.LiveRunScreen.compose
+  kind: textual_handler
+  via: Textual message/action dispatch
+- name: orchestral.tui.screens.LiveRunScreen.on_data_table_row_highlighted
+  kind: textual_handler
+  via: Textual message/action dispatch
+- name: orchestral.tui.screens.LiveRunScreen.on_mount
+  kind: textual_handler
+  via: Textual message/action dispatch
+- name: orchestral.tui.screens.RunDetailScreen.action_back
+  kind: textual_handler
+  via: Textual message/action dispatch
+- name: orchestral.tui.screens.RunDetailScreen.action_export_run
+  kind: textual_handler
+  via: Textual message/action dispatch
+- name: orchestral.tui.screens.RunDetailScreen.compose
+  kind: textual_handler
+  via: Textual message/action dispatch
+- name: orchestral.tui.screens.RunDetailScreen.on_mount
+  kind: textual_handler
+  via: Textual message/action dispatch

@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Regenerate and check ``orchestral/entrypoints.yaml``.
 
 The dead-code pipeline trusts codebase-memory zero-inbound queries, but the
@@ -17,19 +18,47 @@ Two layers:
   (dunders, unittest discovery, callbacks passed by reference, getattr
   proxies). These cannot be enumerated; U3's report must treat any symbol
   matching them as reachable.
+
+Parity contract: drift is checked on ``(name, kind)`` pairs only — ``via`` is
+advisory documentation and does not participate in staleness checks.
 """
 
 from __future__ import annotations
 
 import ast
 import re
+import subprocess
 import sys
 import tomllib
 from dataclasses import dataclass
+from functools import cache
 from pathlib import Path
+
+import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 REGISTRY = ROOT / "orchestral" / "entrypoints.yaml"
+
+_HEADER = """\
+# Entry-point registry — reachability roots the static call graph
+# cannot see. Regenerate with `python3 scripts/audit_entrypoints.py --write`;
+# tests/test_entrypoints.py fails when the scan drifts from this file.
+#
+# How to read this file:
+#   - Join rule: a symbol whose name appears here (or matches a `patterns`
+#     kind) is NOT a dead-code candidate, whatever its inbound count says.
+#   - Name grammar per kind: cli_command/console_script/audit_rule/
+#     textual_handler are dotted symbols (module.function or module.Class.method);
+#     http_route names are path literals (not symbols — includes prefixes and
+#     redirect fragments, not just exact routes); http_handler, getattr_table,
+#     js_view and module_exports names are `path:symbol` (js_view uses `::` and
+#     is relative to ui/js/); main_guard names are file paths (the whole file
+#     is reachable).
+#   - The scanner enumerates known kinds only. A new wiring pattern that none
+#     of them recognize produces no drift failure — absence from this file is
+#     not proof of unreachability. Extend the scanner when you add a mechanism.
+#   - Parity is checked on (name, kind) pairs; `via` is advisory only.
+"""
 
 PATTERNS = (
     {
@@ -53,10 +82,21 @@ PATTERNS = (
     },
     {
         "kind": "getattr_proxy",
-        "match": "attributes resolved through __getattr__ delegates",
+        "match": "any symbol reached through a __getattr__ delegate or getattr(obj, name) dispatch",
         "why": (
-            "orchestral/web/snapshot.py _PublishedStore.__getattr__ forwards "
+            "e.g. orchestral/web/snapshot.py _PublishedStore.__getattr__ forwards "
             "every RunStore method — the wrapped methods have no visible caller."
+        ),
+    },
+    {
+        "kind": "lazy_import",
+        "match": "any symbol imported by a function-scope import inside a registered root",
+        "why": (
+            "Registered roots are reachability seeds, not a closure: e.g. "
+            "harness.py cmd_sync does `from orchestral import cf` inside the "
+            "function, so cf.* callees can show zero inbound edges while fully "
+            "live. U3 must treat the import closure of every entry point as "
+            "reachable, not just the listed name."
         ),
     },
 )
@@ -69,8 +109,16 @@ class Entry:
     via: str
 
 
+@cache
+def _parse(path: Path) -> ast.Module:
+    # Memoized per process; callers that mutate files between scans must
+    # call _parse.cache_clear() first or rescans serve stale trees.
+    return ast.parse(path.read_text())
+
+
 def _cli_commands(harness: Path) -> list[Entry]:
-    tree = ast.parse(harness.read_text())
+    tree = _parse(harness)
+    # `x = sub.add_parser("name")` binds the subparser var to its CLI name.
     subparser_names: dict[str, str] = {}
     for node in ast.walk(tree):
         if (
@@ -114,42 +162,72 @@ def _console_scripts(pyproject: Path) -> list[Entry]:
     ]
 
 
-def _http_surface(server: Path) -> list[Entry]:
-    tree = ast.parse(server.read_text())
+def _http_surface(root: Path) -> list[Entry]:
+    # Any class holding do_* handlers — defs or alias assignments like
+    # `do_GET = _handle` — is an HTTP dispatch surface. All tracked files are
+    # scanned, not just web/server.py (apistub.py, scripts/serve_laya.py).
     entries = []
-    for node in ast.walk(tree):
-        if isinstance(node, ast.FunctionDef) and node.name.startswith("do_"):
-            entries.append(
-                Entry(
-                    name=f"orchestral.web.server.<handler>.{node.name}",
-                    kind="http_handler",
-                    via="BaseHTTPRequestHandler method dispatch",
-                )
-            )
-    seen: set[str] = set()
-    for node in ast.walk(tree):
-        for child in ast.walk(node):
-            if (
-                isinstance(child, ast.Constant)
-                and isinstance(child.value, str)
-                and child.value.startswith("/")
-                and "\n" not in child.value
-                and child.value not in seen
-            ):
-                seen.add(child.value)
-                entries.append(
-                    Entry(
-                        name=child.value,
-                        kind="http_route",
-                        via="path literal in _route_get/_route_post",
+    seen_routes: set[str] = set()
+    for rel in _tracked_py(root):
+        if rel.startswith("tests/"):
+            continue
+        path = root / rel
+        for node in ast.walk(_parse(path)):
+            if not isinstance(node, ast.ClassDef):
+                continue
+            handler = False
+            for item in node.body:
+                if (
+                    isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    and item.name.startswith("do_")
+                ):
+                    handler = True
+                    entries.append(
+                        Entry(
+                            name=f"{rel}:{node.name}.{item.name}",
+                            kind="http_handler",
+                            via="BaseHTTPRequestHandler method dispatch",
+                        )
                     )
-                )
+                elif isinstance(item, ast.Assign) and any(
+                    isinstance(t, ast.Name) and t.id.startswith("do_") for t in item.targets
+                ):
+                    handler = True
+                    for t in item.targets:
+                        if isinstance(t, ast.Name) and t.id.startswith("do_"):
+                            entries.append(
+                                Entry(
+                                    name=f"{rel}:{node.name}.{t.id}",
+                                    kind="http_handler",
+                                    via="handler method alias assignment",
+                                )
+                            )
+            if not handler:
+                continue
+            for item in node.body:
+                if not isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                for child in ast.walk(item):
+                    if (
+                        isinstance(child, ast.Constant)
+                        and isinstance(child.value, str)
+                        and child.value.startswith("/")
+                        and "\n" not in child.value
+                        and child.value not in seen_routes
+                    ):
+                        seen_routes.add(child.value)
+                        entries.append(
+                            Entry(
+                                name=child.value,
+                                kind="http_route",
+                                via=f"path literal in {rel}:{node.name} methods",
+                            )
+                        )
     return entries
 
 
 def _audit_rules(audit: Path) -> list[Entry]:
-    tree = ast.parse(audit.read_text())
-    for node in ast.walk(tree):
+    for node in ast.walk(_parse(audit)):
         if not isinstance(node, ast.Assign):
             continue
         for target in node.targets:
@@ -172,17 +250,20 @@ def _audit_rules(audit: Path) -> list[Entry]:
 
 def _textual_handlers(tui_dir: Path) -> list[Entry]:
     entries = []
-    for path in sorted(tui_dir.glob("*.py")):
-        tree = ast.parse(path.read_text())
-        for node in ast.walk(tree):
+    root = tui_dir.parent.parent
+    for path in sorted(tui_dir.rglob("*.py")):
+        if "__pycache__" in path.parts:
+            continue
+        dotted = ".".join(path.relative_to(root).with_suffix("").parts)
+        for node in ast.walk(_parse(path)):
             if isinstance(node, ast.ClassDef):
                 for item in node.body:
-                    if isinstance(item, ast.FunctionDef) and re.match(
-                        r"^(on_|action_|compose$|watch_|validate_)", item.name
-                    ):
+                    if isinstance(
+                        item, (ast.FunctionDef, ast.AsyncFunctionDef)
+                    ) and re.match(r"^(_?on_|action_|compose$|watch_|validate_)", item.name):
                         entries.append(
                             Entry(
-                                name=f"orchestral.tui.{path.stem}.{node.name}.{item.name}",
+                                name=f"{dotted}.{node.name}.{item.name}",
                                 kind="textual_handler",
                                 via="Textual message/action dispatch",
                             )
@@ -193,23 +274,86 @@ def _textual_handlers(tui_dir: Path) -> list[Entry]:
 def _js_views(router: Path) -> list[Entry]:
     entries = []
     for m in re.finditer(
-        r'import\s*\{\s*(\w+)\s*\}\s*from\s*"(\./views/[\w.]+\.js)"',
+        r'import\s*\{([^}]+)\}\s*from\s*["\'](\./views/[\w.]+\.js)["\']',
         router.read_text(),
     ):
-        entries.append(
-            Entry(name=f"{m.group(2)[2:]}::{m.group(1)}", kind="js_view", via="router.js import")
-        )
+        for name in m.group(1).split(","):
+            name = name.strip().split(" as ")[0].strip()
+            if name:
+                entries.append(
+                    Entry(
+                        name=f"{m.group(2)[2:]}::{name}",
+                        kind="js_view",
+                        via="router.js import",
+                    )
+                )
     return entries
 
 
-def _main_guards() -> list[Entry]:
+def _getattr_tables(root: Path) -> list[Entry]:
+    # String values in module-level UPPER_CASE table constants that match a
+    # def in the same file are getattr-dispatch targets (e.g. runner.py's
+    # _CANDIDATE_TASKS -> _validate_* methods, invoked via getattr(self, name)).
     entries = []
-    for path in sorted(ROOT.glob("**/*.py")):
-        parts = path.relative_to(ROOT).parts
-        if parts[0] in {"tests", ".venv", "node_modules"} or "__pycache__" in parts:
+    for rel in _tracked_py(root):
+        if rel.startswith("tests/"):
             continue
-        tree = ast.parse(path.read_text())
-        for node in ast.walk(tree):
+        path = root / rel
+        tree = _parse(path)
+        defined = {
+            n.name
+            for n in ast.walk(tree)
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+        }
+        for node in tree.body:
+            value: ast.expr | None
+            if isinstance(node, ast.Assign):
+                targets = [t for t in node.targets if isinstance(t, ast.Name)]
+                value = node.value
+            elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+                targets, value = [node.target], node.value
+            else:
+                continue
+            if not any(t.id.isupper() for t in targets) or value is None:
+                continue
+            for child in ast.walk(value):
+                if (
+                    isinstance(child, ast.Constant)
+                    and isinstance(child.value, str)
+                    and child.value in defined
+                ):
+                    entries.append(
+                        Entry(
+                            name=f"{rel}:{child.value}",
+                            kind="getattr_table",
+                            via="UPPER_CASE table string matching a local def",
+                        )
+                    )
+    return entries
+
+
+def _tracked_py(root: Path, prefix: str = "") -> list[str]:
+    # Tracked files only — a filesystem glob would sweep gitignored trees
+    # (runs/, worktrees, .venv) and make the registry machine-dependent.
+    out = subprocess.run(
+        ["git", "ls-files", "--", "*.py"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    return sorted(
+        line for line in out.splitlines() if line.startswith(prefix)
+    )
+
+
+def _main_guards(root: Path) -> list[Entry]:
+    entries = []
+    for line in _tracked_py(root):
+        path = root / line
+        if line.split("/", 1)[0] == "tests":
+            continue
+        for node in ast.walk(_parse(path)):
             if isinstance(node, ast.If) and isinstance(node.test, ast.Compare):
                 left, comps = node.test.left, node.test.comparators
                 if (
@@ -220,22 +364,17 @@ def _main_guards() -> list[Entry]:
                     and comps[0].value == "__main__"
                 ):
                     entries.append(
-                        Entry(
-                            name=path.relative_to(ROOT).as_posix(),
-                            kind="main_guard",
-                            via='if __name__ == "__main__"',
-                        )
+                        Entry(name=line, kind="main_guard", via='if __name__ == "__main__"')
                     )
     return entries
 
 
-def _module_exports() -> list[Entry]:
+def _module_exports(root: Path) -> list[Entry]:
     entries = []
-    for path in sorted(ROOT.glob("orchestral/**/*.py")):
-        if "__pycache__" in path.parts:
-            continue
-        tree = ast.parse(path.read_text())
-        for node in ast.walk(tree):
+    for line in _tracked_py(root, "orchestral/"):
+        rel = line
+        path = root / line
+        for node in ast.walk(_parse(path)):
             if not isinstance(node, ast.Assign):
                 continue
             for target in node.targets:
@@ -244,18 +383,15 @@ def _module_exports() -> list[Entry]:
                     and target.id == "__all__"
                     and isinstance(node.value, (ast.List, ast.Tuple))
                 ):
-                    names = [
-                        str(e.value)
-                        for e in node.value.elts
-                        if isinstance(e, ast.Constant)
-                    ]
-                    entries.append(
-                        Entry(
-                            name=f"{path.relative_to(ROOT).as_posix()}:{','.join(names)}",
-                            kind="module_exports",
-                            via="__all__",
-                        )
-                    )
+                    for e in node.value.elts:
+                        if isinstance(e, ast.Constant) and isinstance(e.value, str):
+                            entries.append(
+                                Entry(
+                                    name=f"{rel}:{e.value}",
+                                    kind="module_exports",
+                                    via="__all__",
+                                )
+                            )
     return entries
 
 
@@ -263,50 +399,30 @@ def scan(root: Path = ROOT) -> list[Entry]:
     entries = (
         _cli_commands(root / "harness.py")
         + _console_scripts(root / "pyproject.toml")
-        + _http_surface(root / "orchestral" / "web" / "server.py")
+        + _http_surface(root)
         + _audit_rules(root / "orchestral" / "audit.py")
         + _textual_handlers(root / "orchestral" / "tui")
         + _js_views(root / "ui" / "js" / "router.js")
-        + _main_guards()
-        + _module_exports()
+        + _getattr_tables(root)
+        + _main_guards(root)
+        + _module_exports(root)
     )
     return sorted(set(entries), key=lambda e: (e.kind, e.name))
 
 
 def render(entries: list[Entry]) -> str:
-    lines = [
-        "# Entry-point registry — reachability roots the static call graph",
-        "# cannot see. Regenerate with `scripts/audit_entrypoints.py --write`;",
-        "# tests/test_entrypoints.py fails when the scan drifts from this file.",
-        "schema: 1",
-        "patterns:",
-    ]
-    for p in PATTERNS:
-        lines.append(f"  - kind: {p['kind']}")
-        lines.append(f"    match: {p['match']!r}")
-        lines.append(f"    why: {p['why']!r}")
-    lines.append("entry_points:")
-    for e in entries:
-        lines.append(f"  - name: {e.name!r}")
-        lines.append(f"    kind: {e.kind}")
-        lines.append(f"    via: {e.via!r}")
-    return "\n".join(lines) + "\n"
+    doc = {
+        "schema": 1,
+        "patterns": list(PATTERNS),
+        "entry_points": [{"name": e.name, "kind": e.kind, "via": e.via} for e in entries],
+    }
+    return _HEADER + yaml.safe_dump(doc, sort_keys=False, allow_unicode=True)
 
 
 def parse_registry(text: str) -> set[tuple[str, str]]:
-    """Read the checked-in registry without a YAML dependency for callers."""
-    entries: set[tuple[str, str]] = set()
-    name = kind = None
-    for line in text.splitlines():
-        s = line.strip()
-        if s.startswith("- name:"):
-            name = s.split(":", 1)[1].strip().strip("'\"")
-        elif s.startswith("kind:"):
-            kind = s.split(":", 1)[1].strip()
-            if name and kind:
-                entries.add((name, kind))
-                name = kind = None
-    return entries
+    return {
+        (e["name"], e["kind"]) for e in (yaml.safe_load(text) or {}).get("entry_points", [])
+    }
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -316,11 +432,12 @@ def main(argv: list[str] | None = None) -> int:
         REGISTRY.write_text(rendered)
         print(f"wrote {REGISTRY}")
         return 0
-    current = REGISTRY.read_text() if REGISTRY.exists() else ""
-    if parse_registry(current) != parse_registry(rendered):
+    scanned = parse_registry(rendered)
+    current = parse_registry(REGISTRY.read_text()) if REGISTRY.exists() else set()
+    if current != scanned:
         print("entrypoints.yaml is stale — run scripts/audit_entrypoints.py --write")
         return 1
-    print(f"registry current: {len(parse_registry(rendered))} entry points")
+    print(f"registry current: {len(scanned)} entry points")
     return 0
 
 

@@ -67,6 +67,21 @@ which builds an ad-hoc `ModelConfig` — so `~typesafe/jev-latest` works as
 model file entry. Quote the slug in shells (`'~typesafe/jev-latest'`) to
 avoid `~` home expansion.
 
+**`--judge` accepts a comma-separated list** (run/batch/grid/recover):
+the first slug is the primary judge (`report.judge`, index columns) and
+each additional slug is a second-opinion judge whose verdict lands under
+`report.judges[<slug>]` with its own model/engine/cost provenance.
+`models/pplx-decider.yaml` registers `perplexity/pplx-decider-v1.1-27b`
+as a second decisions engine (`metadata.engine: decisions`) —
+`--judge '~typesafe/jev-latest,perplexity/pplx-decider-v1.1-27b'` runs
+both for ~$0.0001/run. `harness.py report --judge-agreement` reports
+per-pair verdict agreement, noul/score deltas, and the divergent-run list
+across the judges map. `harness.py cluster --model` embeds plans or
+artifacts through a small embedding-model registry (Ollama tier free and
+local; `pplx/*` entries degrade to `skipped:` without their dep/key) with
+per-model marked caches under `runs/_embeddings/`; `--compare a,b` prints
+the cross-model table.
+
 **In A/B experiments the judge is held constant across arms.** The
 `experiment` command takes no `--judge` flag: every cell is scored by the
 decisions-engine judge so a judge change can't masquerade as an arm

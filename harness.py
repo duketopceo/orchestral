@@ -963,6 +963,75 @@ def cmd_coverage(args: argparse.Namespace) -> None:
     print_table(cols, table, st)
 
 
+def cmd_cluster(args: argparse.Namespace) -> None:
+    """Embed plan/artifact texts through a model registry and cluster or
+    compare across models — every output names the embedding model."""
+    from orchestral import clusters
+    store = RunStore(args.runs_dir)
+    metas = store.list_runs()
+    kind = "artifacts" if args.artifacts else "plans"
+    docs = clusters.extract_docs(metas, kind)
+    slugs = [s.strip() for s in (args.compare or args.model).split(",") if s.strip()]
+    if args.compare and len(slugs) < 2:
+        print("error: --compare needs at least two models", file=sys.stderr)
+        raise SystemExit(1)
+    results: list[tuple[Any, list[Any]]] = []
+    skipped: list[dict[str, str]] = []
+    for slug in slugs:
+        try:
+            emb = clusters.embedder_for(slug)
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            raise SystemExit(1) from exc
+        reason = emb.unavailable_reason()
+        if reason:
+            skipped.append({"model": slug, "skipped": reason})
+            continue
+        try:
+            vectors = clusters.embed_docs(
+                emb, docs, args.runs_dir, args.ollama_url or clusters.OLLAMA_URL)
+        except Exception as exc:
+            skipped.append({"model": slug, "skipped": str(exc)[:160]})
+            continue
+        results.append((emb, vectors))
+    if args.compare:
+        out = clusters.compare_models(
+            [e for e, _ in results], docs,
+            {e.slug: v for e, v in results})
+        out["skipped"] = skipped
+        out["kind"] = kind
+        if args.json:
+            print(json.dumps(out, indent=2, default=str))
+            return
+        print(f"cluster --compare over {len(docs)} {kind} docs")
+        print_table(
+            [Column("Model", max_width=40), Column("Clusters @.86", "r"),
+             Column("Clusters @.92", "r"), Column("Same-task sim", "r"),
+             Column("Diff-task sim", "r")],
+            [[m["model"], m["cluster_counts"].get("0.86"),
+              m["cluster_counts"].get("0.92"),
+              f"{m['same_task_mean']:.3f}" if m["same_task_mean"] is not None else None,
+              f"{m['diff_task_mean']:.3f}" if m["diff_task_mean"] is not None else None]
+             for m in out["models"]])
+        for s in skipped:
+            print(f"  skipped {s['model']}: {s['skipped']}")
+        return
+    reports = [clusters.cluster_report(e, docs, v, args.thresh)
+               for e, v in results]
+    if args.json:
+        print(json.dumps({"kind": kind, "reports": reports, "skipped": skipped},
+                         indent=2, default=str))
+        return
+    for rep in reports:
+        print(f"\n== {rep['model']} ({rep['kind']}) — {rep['docs']} {kind} docs, "
+              f"{rep['clusters']} clusters @ {rep['threshold']}")
+        for c in rep["cluster_list"][:8]:
+            print(f"  n={c['size']} tasks={c['tasks']} orchs={c['orchs']}")
+            print(f"    e.g. {c['example']}")
+    for s in skipped:
+        print(f"  skipped {s['model']}: {s['skipped']}")
+
+
 def cmd_publish_mark(args: argparse.Namespace) -> None:
     """Check-off surface: 'did this cell/run get published' lives in the
     annotations table, so coverage and the observatory read the same mark."""
@@ -2542,6 +2611,16 @@ def build_parser() -> argparse.ArgumentParser:
     coverage.add_argument("--diff-eps", type=float, default=0.15, help="Difference-CI half-width at which a cell counts as resolved")
     coverage.add_argument("--json", action="store_true", help="Emit JSON")
     coverage.set_defaults(func=cmd_coverage)
+
+    cluster = sub.add_parser("cluster", help="Embed plans/artifacts through a model registry and cluster or compare across embedding models")
+    cluster.add_argument("--model", default="ollama/embeddinggemma", help="Embedding model slug(s), comma-separated (registry: ollama/embeddinggemma, ollama/bge-m3, pplx/v2-late-0.6b, pplx/embed-v1-4b)")
+    cluster.add_argument("--compare", default=None, metavar="A,B,…", help="Compare ≥2 embedding models over the same corpus (cluster counts, same/diff-task similarity means)")
+    cluster.add_argument("--plans", action="store_true", help="Cluster plan texts (default)")
+    cluster.add_argument("--artifacts", action="store_true", help="Cluster artifact texts instead of plans")
+    cluster.add_argument("--thresh", type=float, default=0.86, help="Cosine cluster threshold")
+    cluster.add_argument("--ollama-url", default=None, help="Ollama base URL override")
+    cluster.add_argument("--json", action="store_true", help="Output as JSON")
+    cluster.set_defaults(func=cmd_cluster)
 
     publish = sub.add_parser("publish-mark", help="Mark a cell or run as published: the 'did we post this' check-off")
     publish.add_argument("--target", required=True, help="Cell key (task:orchestrator:worker) or run id")

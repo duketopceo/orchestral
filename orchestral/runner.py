@@ -215,17 +215,24 @@ class Runner:
         orchestrator: ModelConfig,
         worker: ModelConfig,
         judge: ModelConfig | None,
+        extra_judges: list[ModelConfig] | None = None,
     ) -> dict[str, Any]:
         """Map each role to a Provider, deduplicating by provider config.
 
         Roles sharing a provider config share one client; injected clients win
-        over resolution. Returns {} for dry runs (call sites pass None).
+        over resolution. Additional judges resolve under ``judge:<slug>`` keys
+        so the extra-judge loop finds them without colliding with the primary
+        ``judge`` slot. Returns {} for dry runs (call sites pass None).
         """
         if self.dry_run:
             return {}
         resolved: dict[str, Any] = {}
         cache: dict[tuple[str, str, str], Any] = {}
-        for role, model in (("orchestrator", orchestrator), ("worker", worker), ("judge", judge)):
+        pairs: list[tuple[str, ModelConfig | None]] = [
+            ("orchestrator", orchestrator), ("worker", worker), ("judge", judge),
+        ]
+        pairs += [(f"judge:{m.slug}", m) for m in (extra_judges or [])]
+        for role, model in pairs:
             if model is None:
                 continue
             if role in self._injected_clients:
@@ -270,13 +277,13 @@ class Runner:
             worker, task, allow_agent_exec=self.allow_agent_exec, probe=False,
         )
 
-    def run(self, task: TaskSpec, orchestrator: ModelConfig, worker: ModelConfig, judge: ModelConfig | None = None) -> RunMeta:
+    def run(self, task: TaskSpec, orchestrator: ModelConfig, worker: ModelConfig, judge: ModelConfig | None = None, extra_judges: list[ModelConfig] | None = None) -> RunMeta:
         # Resolve providers before the run dir exists — a bad provider config
         # fails fast instead of leaving a run stuck at "running". Pre-run
         # failures have no run dir to log to, so they land in the store's
         # root-level debug.jsonl instead.
         try:
-            role_clients = self._resolve_clients(orchestrator, worker, judge)
+            role_clients = self._resolve_clients(orchestrator, worker, judge, extra_judges)
         except Exception as exc:
             with contextlib.suppress(Exception):
                 self.store.debug_log(
@@ -1182,6 +1189,46 @@ class Runner:
                     # stored verdict is mechanical-only; judge evidence lives
                     # on the judge_* fields and report.judge.
 
+            # Second-opinion judges: each verdict lands under its own
+            # report.judges[slug]; report.judge stays the primary judge's.
+            # Same conditions as the primary (video artifacts skip judging
+            # entirely); a failure marks that judge inconclusive without
+            # losing other verdicts.
+            if extra_judges and judge is not None and not is_video:
+                for extra in extra_judges:
+                    try:
+                        ex_result, ex_costs = self._judge_with_cache(
+                            logger=logger,
+                            step=assembly_step + 4,
+                            task=task,
+                            client=role_clients.get(f"judge:{extra.slug}"),
+                            artifact_bytes=judge_bytes,
+                            artifact_text=judge_text,
+                            judge=extra,
+                            language="text" if is_multi else "html",
+                        )
+                    except Exception as exc:
+                        logger.log(
+                            phase="judge",
+                            step=assembly_step + 4,
+                            event_type="judge_error",
+                            model=extra.slug,
+                            role="judge",
+                            input_data={"task": task.id},
+                            output_data={},
+                            error=str(exc),
+                            reasoning="Extra judge call failed; keeping other verdicts.",
+                        )
+                        report.setdefault("judge_errors", {})[extra.slug] = str(exc)
+                        ex_result = {
+                            "score": None, "passed": None, "inconclusive": True,
+                            "model": extra.slug,
+                            "judge_contract": JUDGE_CONTRACT,
+                            "reasoning": f"judge call failed: {str(exc)[:200]}",
+                        }
+                    else:
+                        ledger.add_many(ex_costs)
+                    report.setdefault("judges", {})[extra.slug] = ex_result
 
             logger.lifecycle(
                 "evaluation.completed", phase="validate", role="judge" if judge else "harness",

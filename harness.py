@@ -136,14 +136,30 @@ def _task_from_arg(task_id: str, tasks_dir: str = "tasks") -> Path:
     return path
 
 
+def _judge_slugs(args: argparse.Namespace) -> list[str]:
+    """``--judge`` accepts a comma-separated list — the first slug is the
+    primary judge (``report.judge``), the rest are second-opinion judges
+    (``report.judges[slug]``)."""
+    raw = getattr(args, "judge", None) or DEFAULT_JUDGE
+    slugs = [s.strip() for s in str(raw).split(",") if s.strip()]
+    return slugs or [DEFAULT_JUDGE]
+
+
 def _judge_from_arg(args: argparse.Namespace, known: dict[str, ModelConfig] | None = None) -> ModelConfig | None:
     """Judge by default (KTD8): ``--judge`` overrides, ``--no-judge`` opts
     out. The shared resolver makes ``~`` decisions-engine slugs resolvable
     here the same as on web/TUI launches."""
     if getattr(args, "no_judge", False):
         return None
-    slug = getattr(args, "judge", None) or DEFAULT_JUDGE
-    return resolve_judge(slug, getattr(args, "models_dir", "models"), known)
+    return resolve_judge(_judge_slugs(args)[0], getattr(args, "models_dir", "models"), known)
+
+
+def _extra_judges_from_arg(args: argparse.Namespace, known: dict[str, ModelConfig] | None = None) -> list[ModelConfig]:
+    """Second-opinion judges — every ``--judge`` slug after the first."""
+    if getattr(args, "no_judge", False):
+        return []
+    models_dir = getattr(args, "models_dir", "models")
+    return [resolve_judge(s, models_dir, known) for s in _judge_slugs(args)[1:]]
 
 
 def _check_prompt_variant(args: argparse.Namespace) -> None:
@@ -158,9 +174,10 @@ def _check_prompt_variant(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
-def _run_preamble(args: argparse.Namespace) -> tuple[RunStore, dict[str, ModelConfig], ModelConfig | None]:
+def _run_preamble(args: argparse.Namespace) -> tuple[RunStore, dict[str, ModelConfig], ModelConfig | None, list[ModelConfig]]:
     """Shared command preamble: prompt-variant check, model map,
-    one RunStore (primes WAL before parallel runners), and the optional judge."""
+    one RunStore (primes WAL before parallel runners), the optional judge,
+    and any second-opinion judges from a multi-slug ``--judge``."""
     if getattr(args, "retry_limit", None) is not None and not 0 <= args.retry_limit <= 10:
         print("--retry-limit must be between 0 and 10", file=sys.stderr)
         sys.exit(1)
@@ -175,7 +192,7 @@ def _run_preamble(args: argparse.Namespace) -> tuple[RunStore, dict[str, ModelCo
     store = RunStore(args.runs_dir)
     _budget_check(args, store, 1)
     known = _model_map(args.models_dir)
-    return store, known, _judge_from_arg(args, known)
+    return store, known, _judge_from_arg(args, known), _extra_judges_from_arg(args, known)
 
 
 def _env_float(name: str, default: float) -> float:
@@ -504,7 +521,7 @@ def _billed(store: RunStore, meta: Any) -> float:
 
 
 def cmd_run(args: argparse.Namespace) -> None:
-    store, known, judge = _run_preamble(args)
+    store, known, judge, extra_judges = _run_preamble(args)
     task = load_task(_task_from_arg(args.task, args.tasks_dir))
     orchestrator = replace(_model_from_arg(args.orchestrator, args.models_dir, known), role="orchestrator")
     worker = _apply_retry_limit(replace(_model_from_arg(args.worker, args.models_dir, known), role="worker"), args)
@@ -521,7 +538,7 @@ def cmd_run(args: argparse.Namespace) -> None:
         rep = i if n_reps > 1 else getattr(args, "replicate", None)
         try:
             _spend_recheck(args, store)
-            metas.append(Runner(**_rep_kwargs(args, store, group, rep)).run(task, orchestrator, worker, judge))
+            metas.append(Runner(**_rep_kwargs(args, store, group, rep)).run(task, orchestrator, worker, judge, extra_judges=extra_judges))
         except Exception as exc:
             # Runner.record_failure persists the failed run before re-raising;
             # keep going so one flake doesn't lose the remaining replicates
@@ -561,7 +578,7 @@ def cmd_recover(args: argparse.Namespace) -> None:
     complete by policy) and fresh 'running' rows (possibly live
     elsewhere) unless --force.
     """
-    store, known, judge = _run_preamble(args)
+    store, known, judge, extra_judges = _run_preamble(args)
     meta = store.get_run(args.run_id)
     if meta is None:
         print(f"recover: no run {args.run_id!r} in the index", file=sys.stderr)
@@ -638,7 +655,7 @@ def cmd_recover(args: argparse.Namespace) -> None:
         dry_run=dry_run,
     )
     try:
-        new_meta = Runner(**kwargs).run(task, orchestrator, worker, judge)
+        new_meta = Runner(**kwargs).run(task, orchestrator, worker, judge, extra_judges=extra_judges)
     except Exception:
         # a failed relaunch must not brick the slot - release the claim so
         # a later recover or driver pass can try again
@@ -661,7 +678,7 @@ def cmd_recover(args: argparse.Namespace) -> None:
 
 
 def cmd_grid(args: argparse.Namespace) -> None:
-    store, known, judge = _run_preamble(args)
+    store, known, judge, extra_judges = _run_preamble(args)
     task = load_task(_task_from_arg(args.task, args.tasks_dir))
 
     def _configured_workers() -> list[ModelConfig]:
@@ -692,7 +709,7 @@ def cmd_grid(args: argparse.Namespace) -> None:
         orchestrator = replace(orchestrator, role="orchestrator")
         worker = _apply_retry_limit(replace(worker, role="worker"), args)
         kwargs = _rep_kwargs(args, store, group, rep if n_reps > 1 else getattr(args, "replicate", None))
-        meta = Runner(**kwargs).run(task, orchestrator, worker, judge)
+        meta = Runner(**kwargs).run(task, orchestrator, worker, judge, extra_judges=extra_judges)
         return {
             "orchestrator": orchestrator.slug,
             "worker": worker.slug,
@@ -751,7 +768,7 @@ def _task_index(tasks_dir: str) -> dict[str, Path]:
 
 
 def cmd_batch(args: argparse.Namespace) -> None:
-    store, known, judge = _run_preamble(args)
+    store, known, judge, extra_judges = _run_preamble(args)
 
     if not args.batch_dir and not args.batch_tasks:
         print("Pass either --batch-dir or --batch-tasks")
@@ -788,7 +805,7 @@ def cmd_batch(args: argparse.Namespace) -> None:
         _spend_recheck(args, store)
         task = load_task(path)
         kwargs = _rep_kwargs(args, store, group, rep if n_reps > 1 else getattr(args, "replicate", None))
-        meta = Runner(**kwargs).run(task, orchestrator, worker, judge)
+        meta = Runner(**kwargs).run(task, orchestrator, worker, judge, extra_judges=extra_judges)
         return {
             "task_id": task.id,
             "task_path": str(path),
@@ -861,7 +878,7 @@ def cmd_experiment(args: argparse.Namespace) -> None:
                   f"{target:>7} {state:>9}")
         return
 
-    store, known, judge = _run_preamble(args)
+    store, known, judge, extra_judges = _run_preamble(args)
     models: dict[str, ModelConfig] = {}
     for slug in matrix.orchestrators + matrix.workers:
         models[slug] = resolve_model(slug, args.models_dir, known)
@@ -879,7 +896,7 @@ def cmd_experiment(args: argparse.Namespace) -> None:
             args, store, run_group=group, replicate=rep, seed=seed,
             jev_assist=(arm == "jev"),
         )
-        return Runner(**kwargs).run(tasks[cell.task_id], orchestrator, worker, judge)
+        return Runner(**kwargs).run(tasks[cell.task_id], orchestrator, worker, judge, extra_judges=extra_judges)
 
     result = run_experiment(
         store, matrix,
@@ -989,7 +1006,7 @@ def cmd_ablate(args: argparse.Namespace) -> None:
             print(f"Unknown prompt variant(s) {bad}. Available: {', '.join(known_variants) or '(none)'}", file=sys.stderr)
             sys.exit(1)
 
-    store, known, judge = _run_preamble(args)
+    store, known, judge, extra_judges = _run_preamble(args)
     task = load_task(_task_from_arg(args.task, args.tasks_dir))
     orchestrator = replace(_model_from_arg(args.orchestrator, args.models_dir, known), role="orchestrator")
     base_worker = _model_from_arg(args.worker, args.models_dir, known)
@@ -1008,7 +1025,7 @@ def cmd_ablate(args: argparse.Namespace) -> None:
         kwargs["sweep"] = {"knob": knob, "value": value}
         if knob == "prompt_variant":
             kwargs["prompt_variant"] = value
-        meta = Runner(**kwargs).run(task, orchestrator, worker, judge)
+        meta = Runner(**kwargs).run(task, orchestrator, worker, judge, extra_judges=extra_judges)
         return {
             "value": value,
             "replicate": rep if n_reps > 1 else meta.replicate,
@@ -1138,6 +1155,40 @@ def cmd_report(args: argparse.Namespace) -> None:
         descending=args.desc,
         limit=args.limit,
     )
+
+    if getattr(args, "judge_agreement", False):
+        from orchestral.judge import judge_agreement
+        rows = []
+        for m in runs:
+            if not m.run_dir:
+                continue
+            try:
+                rep = json.loads((Path(m.run_dir) / "report.json").read_text())
+            except Exception:
+                continue
+            rows.append({"run_id": m.run_id, "task_id": m.task_id,
+                         "judges": rep.get("judges")})
+        out = judge_agreement(rows)
+        if args.json:
+            print(json.dumps(out, indent=2, default=str))
+            return
+        print(f"judge agreement over {out['runs_considered']} runs "
+              f"({out['runs_multi_judged']} judged by ≥2 engines)")
+        for pair in out["pairs"]:
+            a, b = pair["judges"]
+            agr = f"{pair['verdict_agreement'] * 100:.0f}%" if pair["verdict_agreement"] is not None else "n/a"
+            nd = f"{pair['mean_noul_delta']:.3f}" if pair["mean_noul_delta"] is not None else "n/a"
+            sd = f"{pair['mean_score_delta']:.3f}" if pair["mean_score_delta"] is not None else "n/a"
+            print(f"\n  {a}\n  vs {b}\n    compared {pair['compared']}, "
+                  f"verdict agreement {agr}, mean |Δnoul| {nd}, mean |Δscore| {sd}")
+            if pair["divergent"]:
+                print("    divergent runs (by |Δnoul|):")
+                for d in pair["divergent"][:25]:
+                    delta = f"{d['noul_delta']:.2f}" if d["noul_delta"] is not None else "n/a"
+                    print(f"      {d['run_id']:<32} {d['task_id']:<24} |Δnoul| {delta}")
+                if len(pair["divergent"]) > 25:
+                    print(f"      … {len(pair['divergent']) - 25} more (--json for all)")
+        return
 
     if getattr(args, "contamination", False):
         arms = contamination_gap(runs)
@@ -2381,7 +2432,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     def _add_run_flags(sp: argparse.ArgumentParser) -> None:
         sp.add_argument("--planner", default="raw", choices=["raw", "ce-plan"], help="Orchestrator planning strategy: raw or ce-plan")
-        sp.add_argument("--judge", default=None, help=f"Judge model slug (default {DEFAULT_JUDGE}, the decisions engine; vision-capable slugs for image tasks)")
+        sp.add_argument("--judge", default=None, help=f"Judge model slug — comma list allowed (first is primary report.judge, the rest land in report.judges; default {DEFAULT_JUDGE}; vision-capable slugs for image tasks)")
         sp.add_argument("--no-judge", action="store_true", help="Skip the judge pass entirely: mechanical verdict only")
         sp.add_argument("--no-judge-cache", action="store_true", help="Bypass judge result cache reads (still writes)")
         sp.add_argument("--jev-assist", action="store_true",
@@ -2519,6 +2570,7 @@ def build_parser() -> argparse.ArgumentParser:
     report.add_argument("--groups", action="store_true", help="Aggregate by run_group × task × pairing with variance stats")
     report.add_argument("--group", default=None, help="Only include runs from this run_group")
     report.add_argument("--compare", default=None, metavar="A,B", help="Compare two run groups cell-by-cell (pass-rate delta per task × pairing)")
+    report.add_argument("--judge-agreement", action="store_true", help="Per-pair verdict agreement across report.judges (second-opinion judges), with the divergent-run list")
     report.add_argument("--experiment", default=None, metavar="MATRIX", help="Experiment arm table for a matrix spec (baseline vs jev-assist per cell)")
     report.add_argument("--budget", type=float, default=0.0, help="With --experiment: the budget the driver ran under (sizes rep targets)")
     report.add_argument("--diff-eps", type=float, default=0.15, help="With --experiment: difference-CI half-width resolution threshold")

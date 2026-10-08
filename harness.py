@@ -1023,7 +1023,7 @@ def cmd_cluster(args: argparse.Namespace) -> None:
                          indent=2, default=str))
         return
     for rep in reports:
-        print(f"\n== {rep['model']} ({rep['kind']}) — {rep['docs']} {kind} docs, "
+        print(f"\n== {rep['model']} ({rep['kind']}) - {rep['docs']} {kind} docs, "
               f"{rep['clusters']} clusters @ {rep['threshold']}")
         for c in rep["cluster_list"][:8]:
             print(f"  n={c['size']} tasks={c['tasks']} orchs={c['orchs']}")
@@ -2501,7 +2501,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     def _add_run_flags(sp: argparse.ArgumentParser) -> None:
         sp.add_argument("--planner", default="raw", choices=["raw", "ce-plan"], help="Orchestrator planning strategy: raw or ce-plan")
-        sp.add_argument("--judge", default=None, help=f"Judge model slug — comma list allowed (first is primary report.judge, the rest land in report.judges; default {DEFAULT_JUDGE}; vision-capable slugs for image tasks)")
+        sp.add_argument("--judge", default=None, help=f"Judge model slug - comma list allowed (first is primary report.judge, the rest land in report.judges; default {DEFAULT_JUDGE}; vision-capable slugs for image tasks)")
         sp.add_argument("--no-judge", action="store_true", help="Skip the judge pass entirely: mechanical verdict only")
         sp.add_argument("--no-judge-cache", action="store_true", help="Bypass judge result cache reads (still writes)")
         sp.add_argument("--jev-assist", action="store_true",

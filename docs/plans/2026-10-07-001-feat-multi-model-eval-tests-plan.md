@@ -137,7 +137,12 @@ Files: new `orchestral/clusters.py`, `harness.py` (`cluster` subcommand),
 - Model registry: `{"ollama/embeddinggemma": ollama_embed,
   "ollama/bge-m3": ollama_embed, "pplx/v2-late-0.6b": st_multi_embed,
   "pplx/embed-v1-4b": pplx_api_embed}` — each entry knows its provider +
-  output shape (single-vector vs multi-vector).
+  output shape (single-vector vs multi-vector). Registry keys are
+  CLI-facing ids that map to provider model ids: `ollama/<tag>` is the
+  Ollama model tag, `pplx/v2-late-0.6b` resolves to HF
+  `perplexity/pplx-embed-v2-late-0.6b`, and `pplx/embed-v1-4b` is the
+  Perplexity API model id. Reports and cache payloads carry the registry
+  key verbatim — one name everywhere.
 - `harness.py cluster --model <id> [--plans|--artifacts]` runs the
   prototype's extraction (plan reasoning+subtasks; artifact text) →
   per-model cache → greedy clusters → printed cluster table.

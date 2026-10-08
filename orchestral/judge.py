@@ -459,6 +459,7 @@ def _judge_via_decisions(
         "input_tokens": usage.get("input_tokens") or 0,
         "output_tokens": usage.get("output_tokens") or 0,
         "cost_usd": usage.get("cost") or 0.0,
+        "latency_ms": data.get("latency_ms") or 0.0,
         "pricing_source": "api",
         "usage": usage,
     }
@@ -549,6 +550,7 @@ def judge_artifact(
             "input_tokens": 300,
             "output_tokens": 80,
             "cost_usd": 0.00005,
+            "latency_ms": 0.0,
             "pricing_source": "none",
             "usage": None,
         }
@@ -716,6 +718,7 @@ def judge_artifact(
         "input_tokens": usage.prompt_tokens,
         "output_tokens": usage.completion_tokens,
         "cost_usd": cost_usd,
+        "latency_ms": completion["latency_ms"],
         "pricing_source": pricing_source,
         "api_cost_usd": api_cost_usd,
         "usage": usage.to_dict(),
@@ -842,6 +845,7 @@ def judge_pair(
         return result, [{
             "phase": "judge", "model": judge.slug,
             "input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0,
+            "latency_ms": 0.0,
             "pricing_source": "none", "usage": None,
         }]
 
@@ -901,6 +905,7 @@ def judge_pair(
             "input_tokens": usage.prompt_tokens,
             "output_tokens": usage.completion_tokens,
             "cost_usd": cost_usd,
+            "latency_ms": completion["latency_ms"],
             "pricing_source": pricing_source,
             "api_cost_usd": api_cost_usd,
             "usage": usage.to_dict(),
@@ -1806,4 +1811,83 @@ def pairwise_judge(
         "judge": judge.slug,
         "bt": bradley_terry(stored_battles(metas)),
         "results": results,
+    }
+
+
+def judge_agreement(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Pairwise judge agreement over runs judged by ≥2 engines.
+
+    Each row is ``{"run_id", "task_id", "judges": report.judges}``. Every
+    non-inconclusive judge pair on the same run contributes a comparison:
+    verdict agreement, mean |noul| and |score| deltas, and the divergent
+    runs sorted by probability gap — the audit surface for judge failure
+    modes (leniency, hallucinated passes on thin artifacts).
+    """
+    pairs: dict[tuple[str, str], dict[str, Any]] = {}
+    multi = 0
+    for row in rows:
+        judges = {
+            s: v for s, v in (row.get("judges") or {}).items()
+            if isinstance(v, dict) and not v.get("inconclusive")
+        }
+        if len(judges) < 2:
+            continue
+        multi += 1
+        slugs = sorted(judges)
+        for i, a in enumerate(slugs):
+            for b in slugs[i + 1:]:
+                acc = pairs.setdefault((a, b), {
+                    "compared": 0, "agree": 0,
+                    "noul_deltas": [], "score_deltas": [], "divergent": [],
+                })
+                va, vb = judges[a], judges[b]
+                pa, pb = va.get("passed"), vb.get("passed")
+                if not isinstance(pa, bool) or not isinstance(pb, bool):
+                    continue
+                acc["compared"] += 1
+                na, nb = va.get("noul"), vb.get("noul")
+                nd = (abs(float(na) - float(nb))
+                      if isinstance(na, int | float) and isinstance(nb, int | float)
+                      else None)
+                sa, sb = va.get("score"), vb.get("score")
+                sd = (abs(float(sa) - float(sb))
+                      if isinstance(sa, int | float) and isinstance(sb, int | float)
+                      else None)
+                if nd is not None:
+                    acc["noul_deltas"].append(nd)
+                if sd is not None:
+                    acc["score_deltas"].append(sd)
+                if pa == pb:
+                    acc["agree"] += 1
+                else:
+                    acc["divergent"].append({
+                        "run_id": row.get("run_id"),
+                        "task_id": row.get("task_id"),
+                        "noul_delta": nd,
+                        "score_delta": sd,
+                        "verdicts": {
+                            a: {"passed": pa, "noul": na, "score": sa},
+                            b: {"passed": pb, "noul": nb, "score": sb},
+                        },
+                    })
+    out_pairs = []
+    for (a, b), acc in sorted(pairs.items()):
+        acc["divergent"].sort(
+            key=lambda d: (-(d["noul_delta"] if d["noul_delta"] is not None else -1),
+                           str(d["run_id"])))
+        n = acc["compared"]
+        out_pairs.append({
+            "judges": [a, b],
+            "compared": n,
+            "verdict_agreement": (acc["agree"] / n) if n else None,
+            "mean_noul_delta": (sum(acc["noul_deltas"]) / len(acc["noul_deltas"])
+                                if acc["noul_deltas"] else None),
+            "mean_score_delta": (sum(acc["score_deltas"]) / len(acc["score_deltas"])
+                                 if acc["score_deltas"] else None),
+            "divergent": acc["divergent"],
+        })
+    return {
+        "runs_considered": len(rows),
+        "runs_multi_judged": multi,
+        "pairs": out_pairs,
     }

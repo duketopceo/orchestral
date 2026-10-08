@@ -1227,7 +1227,7 @@ def cmd_report(args: argparse.Namespace) -> None:
 
     if getattr(args, "judge_agreement", False):
         from orchestral.judge import judge_agreement
-        rows = []
+        judge_rows: list[dict[str, Any]] = []
         for m in runs:
             if not m.run_dir:
                 continue
@@ -1235,15 +1235,15 @@ def cmd_report(args: argparse.Namespace) -> None:
                 rep = json.loads((Path(m.run_dir) / "report.json").read_text())
             except Exception:
                 continue
-            rows.append({"run_id": m.run_id, "task_id": m.task_id,
-                         "judges": rep.get("judges")})
-        out = judge_agreement(rows)
+            judge_rows.append({"run_id": m.run_id, "task_id": m.task_id,
+                               "judges": rep.get("judges")})
+        agreement = judge_agreement(judge_rows)
         if args.json:
-            print(json.dumps(out, indent=2, default=str))
+            print(json.dumps(agreement, indent=2, default=str))
             return
-        print(f"judge agreement over {out['runs_considered']} runs "
-              f"({out['runs_multi_judged']} judged by 2+ engines)")
-        for pair in out["pairs"]:
+        print(f"judge agreement over {agreement['runs_considered']} runs "
+              f"({agreement['runs_multi_judged']} judged by 2+ engines)")
+        for pair in agreement["pairs"]:
             a, b = pair["judges"]
             agr = f"{pair['verdict_agreement'] * 100:.0f}%" if pair["verdict_agreement"] is not None else "n/a"
             nd = f"{pair['mean_noul_delta']:.3f}" if pair["mean_noul_delta"] is not None else "n/a"

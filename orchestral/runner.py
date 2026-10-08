@@ -126,6 +126,15 @@ _CANDIDATE_TASKS: dict[str, tuple[str, str, str]] = {
 }
 
 
+def _stamp_judge_metering(result: dict[str, Any], costs: list[dict[str, Any]]) -> None:
+    """Attach the incurred cost/latency to a stored verdict. A cache hit
+    returns no costs — stamp it as such rather than letting $0 read as a
+    free live call."""
+    result["cost_usd"] = round(sum(c.get("cost_usd") or 0.0 for c in costs), 8)
+    result["latency_ms"] = round(sum(c.get("latency_ms") or 0.0 for c in costs), 1)
+    result["cache_hit"] = not costs
+
+
 class RunCancelled(Exception):
     """Raised when the run's cancel_event is set between steps."""
 
@@ -1183,6 +1192,7 @@ class Runner:
                     }
                 else:
                     ledger.add_many(judge_costs)
+                    _stamp_judge_metering(judge_result, judge_costs)
                     report["judge"] = judge_result
                     report.setdefault("judges", {})[judge.slug] = judge_result
                     # KTD14: the judge never mutates `passes` or `score` — the
@@ -1228,6 +1238,7 @@ class Runner:
                         }
                     else:
                         ledger.add_many(ex_costs)
+                        _stamp_judge_metering(ex_result, ex_costs)
                     report.setdefault("judges", {})[extra.slug] = ex_result
 
             logger.lifecycle(

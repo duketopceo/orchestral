@@ -162,6 +162,38 @@ def _extra_judges_from_arg(args: argparse.Namespace, known: dict[str, ModelConfi
     return [resolve_judge(s, models_dir, known) for s in _judge_slugs(args)[1:]]
 
 
+# Worst-case judge input: task spec + decisions-state artifact cap (8000
+# chars) + rubric ≈ 16K chars ≈ 4K tokens. Decisions engines answer with a
+# probability blob (~256 tokens); a chat judge can emit up to max_tokens.
+_JUDGE_INPUT_TOKEN_EST = 4_000
+_DECISIONS_OUTPUT_TOKEN_EST = 256
+
+
+def _check_judge_cost_cap(args: argparse.Namespace, extra_judges: list[ModelConfig]) -> None:
+    """Marginal extra-judge spend stays under --judge-cost-cap per run:
+    the cap is what makes a cheap second opinion default-safe and a
+    generated-token chat judge an explicit opt-in."""
+    if not extra_judges:
+        return
+    cap = getattr(args, "judge_cost_cap", 0.001)
+    if not cap:
+        return
+    est = 0.0
+    for m in extra_judges:
+        out_tok = (_DECISIONS_OUTPUT_TOKEN_EST
+                   if (m.metadata or {}).get("engine") == "decisions"
+                   else m.max_tokens)
+        est += m.input_price * _JUDGE_INPUT_TOKEN_EST + m.output_price * out_tok
+    if est > cap:
+        print(
+            f"extra judges estimate ${est:.5f}/run worst-case, over "
+            f"--judge-cost-cap ${cap} - raise the cap to opt in to a "
+            f"pricier judge, or drop a slug from --judge.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+
 def _check_prompt_variant(args: argparse.Namespace) -> None:
     """Fail fast on an unknown --prompt-variant before any run starts."""
     variant = getattr(args, "prompt_variant", None)
@@ -188,11 +220,17 @@ def _run_preamble(args: argparse.Namespace) -> tuple[RunStore, dict[str, ModelCo
     if replicates and replicates > 1 and getattr(args, "replicate", None) is not None:
         print("--replicate and --replicates are mutually exclusive", file=sys.stderr)
         sys.exit(1)
+    cap = getattr(args, "judge_cost_cap", None)
+    if cap is not None and cap < 0:
+        print("--judge-cost-cap must be >= 0", file=sys.stderr)
+        sys.exit(1)
     _check_prompt_variant(args)
     store = RunStore(args.runs_dir)
     _budget_check(args, store, 1)
     known = _model_map(args.models_dir)
-    return store, known, _judge_from_arg(args, known), _extra_judges_from_arg(args, known)
+    extras = _extra_judges_from_arg(args, known)
+    _check_judge_cost_cap(args, extras)
+    return store, known, _judge_from_arg(args, known), extras
 
 
 def _env_float(name: str, default: float) -> float:
@@ -525,7 +563,7 @@ def cmd_run(args: argparse.Namespace) -> None:
     task = load_task(_task_from_arg(args.task, args.tasks_dir))
     orchestrator = replace(_model_from_arg(args.orchestrator, args.models_dir, known), role="orchestrator")
     worker = _apply_retry_limit(replace(_model_from_arg(args.worker, args.models_dir, known), role="worker"), args)
-    _check_provider_envs(args, orchestrator, worker, judge)
+    _check_provider_envs(args, orchestrator, worker, judge, *extra_judges)
 
     group, n_reps = _resolve_replicates(args)
     # the preamble checked n=1 before the replicate count was known -
@@ -621,7 +659,7 @@ def cmd_recover(args: argparse.Namespace) -> None:
     task = load_task(task_path)
     orchestrator = replace(_model_from_arg(meta.orchestrator, args.models_dir, known), role="orchestrator")
     worker = _apply_retry_limit(replace(_model_from_arg(meta.worker, args.models_dir, known), role="worker"), args)
-    _check_provider_envs(args, orchestrator, worker, judge)
+    _check_provider_envs(args, orchestrator, worker, judge, *extra_judges)
     cfg = meta.config or {}
     dry_run = bool(meta.dry_run) or bool(getattr(args, "dry_run", False))
     claimed = False
@@ -696,7 +734,7 @@ def cmd_grid(args: argparse.Namespace) -> None:
     if not orchestrators or not workers:
         print("No orchestrator/worker models configured for this task type. Pass --orchestrators and --workers, or add role/modalities fields in models/*.yaml.")
         sys.exit(1)
-    _check_provider_envs(args, *orchestrators, *workers, judge)
+    _check_provider_envs(args, *orchestrators, *workers, judge, *extra_judges)
     results: list[dict[str, Any]] = []
 
     group, n_reps = _resolve_replicates(args)
@@ -792,7 +830,7 @@ def cmd_batch(args: argparse.Namespace) -> None:
 
     orchestrator = replace(_model_from_arg(args.orchestrator, args.models_dir, known), role="orchestrator")
     worker = _apply_retry_limit(replace(_model_from_arg(args.worker, args.models_dir, known), role="worker"), args)
-    _check_provider_envs(args, orchestrator, worker, judge)
+    _check_provider_envs(args, orchestrator, worker, judge, *extra_judges)
 
     results: list[dict[str, Any]] = []
 
@@ -887,6 +925,7 @@ def cmd_experiment(args: argparse.Namespace) -> None:
         *[replace(models[s], role="orchestrator") for s in matrix.orchestrators],
         *[replace(models[s], role="worker") for s in matrix.workers],
         judge,
+        *extra_judges,
     )
 
     def _launch(cell: Cell, arm: str, rep: int, group: str, seed: int | None) -> RunMeta:
@@ -1079,7 +1118,7 @@ def cmd_ablate(args: argparse.Namespace) -> None:
     task = load_task(_task_from_arg(args.task, args.tasks_dir))
     orchestrator = replace(_model_from_arg(args.orchestrator, args.models_dir, known), role="orchestrator")
     base_worker = _model_from_arg(args.worker, args.models_dir, known)
-    _check_provider_envs(args, orchestrator, base_worker, judge)
+    _check_provider_envs(args, orchestrator, base_worker, judge, *extra_judges)
 
     group, n_reps = _resolve_replicates(args)
 
@@ -1254,7 +1293,9 @@ def cmd_report(args: argparse.Namespace) -> None:
                 print("    divergent runs (by noul-delta):")
                 for d in pair["divergent"][:25]:
                     delta = f"{d['noul_delta']:.2f}" if d["noul_delta"] is not None else "n/a"
-                    print(f"      {d['run_id']:<32} {d['task_id']:<24} noul-delta {delta}")
+                    va, vb = (d["verdicts"].get(s) or {} for s in pair["judges"])
+                    print(f"      {d['run_id']:<32} {d['task_id']:<24} noul-delta {delta}"
+                          f"   {va.get('passed')}/{vb.get('passed')}")
                 if len(pair["divergent"]) > 25:
                     print(f"      ... {len(pair['divergent']) - 25} more (--json for all)")
         return
@@ -2504,6 +2545,8 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--judge", default=None, help=f"Judge model slug - comma list allowed (first is primary report.judge, the rest land in report.judges; default {DEFAULT_JUDGE}; vision-capable slugs for image tasks)")
         sp.add_argument("--no-judge", action="store_true", help="Skip the judge pass entirely: mechanical verdict only")
         sp.add_argument("--no-judge-cache", action="store_true", help="Bypass judge result cache reads (still writes)")
+        sp.add_argument("--judge-cost-cap", type=float, default=_env_float("ORCHESTRAL_JUDGE_COST_CAP", 0.001),
+                        help="Worst-case USD per run allowed for extra (non-primary) judges; raise to opt in to a chat-engine judge (0=off, env ORCHESTRAL_JUDGE_COST_CAP, default 0.001)")
         sp.add_argument("--jev-assist", action="store_true",
                         help="Consult the decisions-engine judge inside the run loop: plan audit before delegation, output audit before assembly (one replan / one rework max). No-op without a decisions-model judge.")
         sp.add_argument("--retry-limit", type=int, default=None, help="Override the worker's retry_limit for this invocation")

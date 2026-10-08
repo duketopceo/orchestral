@@ -53,13 +53,13 @@ def _st_late_embedder(slug: str, model: str) -> Embedder:
     """Optional multi-vector model — one vector per token, MaxSim scoring."""
     def embed(texts: list[str], cache: dict[str, Any], base_url: str) -> list[Any]:
         try:
-            from sentence_transformers import SentenceTransformer
+            from sentence_transformers import MultiVectorEncoder
         except ImportError as exc:
             raise RuntimeError("needs sentence-transformers") from exc
-        st = SentenceTransformer(model)
-        for t in texts:
-            if _sha(t) not in cache:
-                cache[_sha(t)] = [v.tolist() for v in st.encode(t)]
+        st = MultiVectorEncoder(model)
+        todo = list(dict.fromkeys(t for t in texts if _sha(t) not in cache))
+        for t, e in zip(todo, st.encode_document(todo, batch_size=8), strict=True):
+            cache[_sha(t)] = [v.tolist() for v in e]
         return [cache[_sha(t)] for t in texts]
 
     return Embedder(slug=slug, kind="maxsim", embed=embed)

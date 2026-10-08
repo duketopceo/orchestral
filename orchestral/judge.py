@@ -459,6 +459,7 @@ def _judge_via_decisions(
         "input_tokens": usage.get("input_tokens") or 0,
         "output_tokens": usage.get("output_tokens") or 0,
         "cost_usd": usage.get("cost") or 0.0,
+        "latency_ms": data.get("latency_ms") or 0.0,
         "pricing_source": "api",
         "usage": usage,
     }
@@ -549,6 +550,7 @@ def judge_artifact(
             "input_tokens": 300,
             "output_tokens": 80,
             "cost_usd": 0.00005,
+            "latency_ms": 0.0,
             "pricing_source": "none",
             "usage": None,
         }
@@ -716,6 +718,7 @@ def judge_artifact(
         "input_tokens": usage.prompt_tokens,
         "output_tokens": usage.completion_tokens,
         "cost_usd": cost_usd,
+        "latency_ms": completion["latency_ms"],
         "pricing_source": pricing_source,
         "api_cost_usd": api_cost_usd,
         "usage": usage.to_dict(),
@@ -842,6 +845,7 @@ def judge_pair(
         return result, [{
             "phase": "judge", "model": judge.slug,
             "input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0,
+            "latency_ms": 0.0,
             "pricing_source": "none", "usage": None,
         }]
 
@@ -901,6 +905,7 @@ def judge_pair(
             "input_tokens": usage.prompt_tokens,
             "output_tokens": usage.completion_tokens,
             "cost_usd": cost_usd,
+            "latency_ms": completion["latency_ms"],
             "pricing_source": pricing_source,
             "api_cost_usd": api_cost_usd,
             "usage": usage.to_dict(),

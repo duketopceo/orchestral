@@ -17,8 +17,9 @@ from orchestral.runner import Runner
 
 
 def _model(slug: str, role: str = "worker", **kw) -> ModelConfig:
-    return ModelConfig(slug=slug, name=slug, role=role,
-                       input_price_per_mtok=0.1, output_price_per_mtok=0.4, **kw)
+    kw.setdefault("input_price_per_mtok", 0.1)
+    kw.setdefault("output_price_per_mtok", 0.4)
+    return ModelConfig(slug=slug, name=slug, role=role, **kw)
 
 
 def _task() -> TaskSpec:
@@ -134,6 +135,34 @@ class TestJudgeSlugParsing(unittest.TestCase):
         args = self._args(judge=f"{JEV},{PPLX}", no_judge=True)
         self.assertIsNone(harness._judge_from_arg(args))
         self.assertEqual(harness._extra_judges_from_arg(args), [])
+
+
+class TestJudgeCostCap(unittest.TestCase):
+    def _args(self, cap):
+        a = argparse.Namespace()
+        a.judge_cost_cap = cap
+        return a
+
+    def test_decisions_extra_fits_under_default_cap(self):
+        decider = _model(PPLX, "judge", input_price_per_mtok=0.02,
+                         output_price_per_mtok=0.0,
+                         metadata={"engine": "decisions"})
+        harness._check_judge_cost_cap(self._args(0.001), [decider])
+
+    def test_pricy_chat_judge_trips_the_cap(self):
+        chatty = _model("x-ai/grok-4.7", "judge",
+                        input_price_per_mtok=1.60, output_price_per_mtok=4.80,
+                        max_tokens=8192)
+        with self.assertRaises(SystemExit):
+            harness._check_judge_cost_cap(self._args(0.001), [chatty])
+        # explicit opt-in: a raised cap lets the same selection through
+        harness._check_judge_cost_cap(self._args(0.10), [chatty])
+
+    def test_zero_cap_disables_the_check(self):
+        chatty = _model("x-ai/grok-4.7", "judge",
+                        input_price_per_mtok=1.60, output_price_per_mtok=4.80,
+                        max_tokens=8192)
+        harness._check_judge_cost_cap(self._args(0.0), [chatty])
 
 
 if __name__ == "__main__":

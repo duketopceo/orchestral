@@ -170,7 +170,7 @@ class TestPerCellRecheck(unittest.TestCase):
             def __init__(self, **kw):
                 pass
 
-            def run(self, task, orch, worker, judge):
+            def run(self, task, orch, worker, judge, extra_judges=None):
                 calls.append(1)
                 # the cell's spend lands in the index before the next launch
                 self_store = RunStore(root / "runs")

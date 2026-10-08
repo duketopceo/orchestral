@@ -175,6 +175,10 @@ review.
   registry, tests-as-callers subtleties, and magic names. Emit JSON:
   `{symbol, file, lines, tier, evidence[], note}` where tier is A (graph +
   one other source agree), B (single source), or C (JS/template surface).
+  Tier B rows are **review-only** until a second independent source is
+  recorded in `evidence[]` — a human/agent blast-radius read counts, and
+  the read's conclusion must be written into the row before it graduates
+  to a deletion sweep. R1's two-source rule applies to every deletion.
   The report is committed so worktree agents consume it without re-running
   the pipeline.
 - **Execution note:** Treat the first full-suite coverage run as its own
@@ -190,7 +194,8 @@ review.
 
 ### U4. Deletion sweeps — batched PRs
 
-- **Goal:** Convert the Tier-A/B list into landed negative diffs.
+- **Goal:** Convert the Tier-A list into landed negative diffs (Tier B
+  joins only after its recorded second-source read — U3).
 - **Requirements:** R1, R3, R5, R6
 - **Dependencies:** U3
 - **Files:** whichever modules the report names — expected hotspots

@@ -4,7 +4,7 @@
 condition that the fault rate is measured instead. That decision is only
 honest if the measurement is trustworthy, so these tests hold three lines:
 
-- the three faults stay discriminable, because `kind` is the only thing a
+- each fault stays discriminable, because `kind` is the only thing a
   future retry decision is allowed to branch on (never the message prose);
 - the event never carries model text, because the event stream reaches
   `events.jsonl`, the call store, and from there the HTML report — the same
@@ -38,6 +38,7 @@ FAULT_CASES = {
     "no_json": "here is your plan, sorry: " + CANARY,
     "unbalanced": '{"plan": ["step one", "' + CANARY,
     "balanced_invalid": '{"plan": [1, 2,,]} trailing ' + CANARY,
+    "trailing_json": '{"plan": ["one"]} {"plan": ["restarted "' + CANARY,
 }
 
 
@@ -67,7 +68,7 @@ class TestFaultIsDiscriminable(unittest.TestCase):
                     _extract_json(content)
                 self.assertEqual(ctx.exception.kind, expected_kind)
 
-    def test_all_three_kinds_are_distinct(self):
+    def test_all_kinds_are_distinct(self):
         kinds = set()
         for content in FAULT_CASES.values():
             with self.assertRaises(PlanParseFault) as ctx:
@@ -92,6 +93,7 @@ class TestFaultIsDiscriminable(unittest.TestCase):
             "no_json": "No JSON found",
             "unbalanced": "Unbalanced JSON",
             "balanced_invalid": "did not parse",
+            "trailing_json": "Trailing JSON",
         }
         for kind, content in FAULT_CASES.items():
             with self.subTest(kind=kind):
@@ -141,7 +143,7 @@ class TestFaultEvent(unittest.TestCase):
             self.assertEqual(event["output"]["chars"], chars)
             self.assertEqual(event["output"]["sha256"], digest)
 
-    def test_event_distinguishes_all_three_faults(self):
+    def test_event_distinguishes_each_fault(self):
         for kind, content in FAULT_CASES.items():
             with self.subTest(kind=kind), tempfile.TemporaryDirectory() as tmp:
                 event = _event(tmp, content)

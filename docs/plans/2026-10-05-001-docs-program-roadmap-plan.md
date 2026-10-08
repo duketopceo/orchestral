@@ -92,6 +92,16 @@ the program state and every unit's child-plan source of truth.
 
 ---
 
+#### U9. Safe code reduction (negative-diff program)
+
+- **Status:** pending — plan written; starts with the census unit (U1 of
+  the child plan), independent of eval spend so it can run alongside U1.
+- **Child plans:**
+  `docs/plans/2026-10-06-001-refactor-safe-code-reduction-plan.md`.
+- **Scope:** evidence-triangulated dead-code removal — codebase-memory
+  graph + lint + coverage against an entry-point registry, sliced into
+  pure-deletion CI-gated PRs. Agent-dispatchable by design.
+
 ### Next
 
 #### U4. Baseline findings writeup + published artifact
@@ -174,6 +184,7 @@ the program state and every unit's child-plan source of truth.
 | `docs/plans/2026-10-02-2322-feat-the-score-redesign-plan.md` | U2, U7 | partially shipped (22/23 units; U22 blocked) |
 | `docs/plans/2026-10-03-001-feat-perplexity-eval-patterns-plan.md` | — | shipped (runner hardening, judge contract, Harbor export) |
 | `docs/plans/2026-10-04-001-feat-post-merge-consolidation-plan.md` | U3 | partially shipped (Units 1–3, 4a–4e merged; 4f pending) |
+| `docs/plans/2026-10-06-001-refactor-safe-code-reduction-plan.md` | U9 | pending (census first) |
 
 ---
 

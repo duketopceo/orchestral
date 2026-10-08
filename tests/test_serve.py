@@ -395,7 +395,7 @@ class TestJobRegistry(unittest.TestCase):
                 def __init__(self, **kwargs):
                     self.kwargs = kwargs
 
-                def run(self, task, orch, worker, judge):
+                def run(self, task, orch, worker, judge, extra_judges=None):
                     rid = "r-cancel"
                     if self.kwargs.get("on_run_created"):
                         self.kwargs["on_run_created"](rid)

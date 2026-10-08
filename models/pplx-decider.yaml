@@ -1,0 +1,15 @@
+# Perplexity Decider — typed decision engine on OpenRouter's Decisions API
+# (same /api/alpha/decisions contract as ~typesafe/jev-latest; verified
+# routable 2026-10-07). Second-opinion judge: pass it via
+# `--judge ~typesafe/jev-latest,perplexity/pplx-decider-v1.1-27b` so its
+# verdict lands in report.judges alongside the primary judge.
+models:
+  - slug: "perplexity/pplx-decider-v1.1-27b"
+    name: "Perplexity Decider v1.1 27B"
+    role: judge
+    input_price_per_mtok: 0.02
+    output_price_per_mtok: 0.0
+    context: 262144
+    metadata:
+      engine: decisions
+      provider: openrouter

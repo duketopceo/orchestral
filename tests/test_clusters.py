@@ -62,21 +62,20 @@ class TestModelMarkedCache(unittest.TestCase):
             self.assertIn(clusters._sha("plan-a"), payload["vectors"])
 
     def test_cache_incremental(self):
-        calls = {"n": 0}
+        misses: list[list[str]] = []
+
         def embed(texts, cache, base_url):
-            calls["n"] += 1
+            # mirror _ollama_embedder: provider sees only cache misses
+            misses.append([t for t in texts if clusters._sha(t) not in cache])
             for t in texts:
                 cache.setdefault(clusters._sha(t), [1.0])
             return [cache[clusters._sha(t)] for t in texts]
         emb = Embedder(slug="test/inc", kind="cosine", embed=embed)
         with tempfile.TemporaryDirectory() as tmp:
             clusters.embed_docs(emb, DOCS, tmp)
-            self.assertEqual(calls["n"], 1)
             clusters.embed_docs(emb, DOCS, tmp)
-            # embed fn is still called but every text hits the cache —
-            # the registry passes the same dict back; a real embedder only
-            # calls its provider for cache misses (see _ollama_embedder)
-            self.assertEqual(calls["n"], 2)
+        self.assertEqual(len(misses[0]), 3)
+        self.assertEqual(misses[1], [])  # second run: every text cached
 
 
 class TestOptionalModels(unittest.TestCase):

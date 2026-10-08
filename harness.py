@@ -968,7 +968,7 @@ def cmd_cluster(args: argparse.Namespace) -> None:
     compare across models — every output names the embedding model."""
     from orchestral import clusters
     store = RunStore(args.runs_dir)
-    metas = store.list_runs()
+    metas = store.list_runs(task_id=args.task, run_group=args.group)
     kind = "artifacts" if args.artifacts else "plans"
     docs = clusters.extract_docs(metas, kind)
     slugs = [s.strip() for s in (args.compare or args.model).split(",") if s.strip()]
@@ -2617,6 +2617,8 @@ def build_parser() -> argparse.ArgumentParser:
     cluster.add_argument("--compare", default=None, metavar="A,B,…", help="Compare ≥2 embedding models over the same corpus (cluster counts, same/diff-task similarity means)")
     cluster.add_argument("--plans", action="store_true", help="Cluster plan texts (default)")
     cluster.add_argument("--artifacts", action="store_true", help="Cluster artifact texts instead of plans")
+    cluster.add_argument("--task", default=None, help="Only include runs for this task")
+    cluster.add_argument("--group", default=None, help="Only include runs from this run_group")
     cluster.add_argument("--thresh", type=float, default=0.86, help="Cosine cluster threshold")
     cluster.add_argument("--ollama-url", default=None, help="Ollama base URL override")
     cluster.add_argument("--json", action="store_true", help="Output as JSON")

@@ -35,7 +35,7 @@ Doc = dict[str, Any]  # {"id", "task", "orch", "worker", "text"}
 
 def _ollama_embedder(model: str) -> Embedder:
     def embed(texts: list[str], cache: dict[str, Any], base_url: str) -> list[Any]:
-        todo = [t for t in texts if _sha(t) not in cache]
+        todo = list(dict.fromkeys(t for t in texts if _sha(t) not in cache))
         for k in range(0, len(todo), 16):
             part = todo[k:k + 16]
             r = httpx.post(f"{base_url}/api/embed",
@@ -186,7 +186,10 @@ def _plan_text(run_dir: Path) -> str | None:
 def _artifact_text(run_dir: Path) -> str | None:
     path = run_dir / "artifact.zip"
     if not path.exists():
-        art = next(run_dir.glob("artifact.*"), None)
+        art = next(
+            (p for p in run_dir.glob("artifact.*")
+             if p.suffix in {".html", ".txt", ".md", ".sql", ".py", ".json"}),
+            None)
         if art is None:
             return None
         try:

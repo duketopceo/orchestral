@@ -1242,21 +1242,21 @@ def cmd_report(args: argparse.Namespace) -> None:
             print(json.dumps(out, indent=2, default=str))
             return
         print(f"judge agreement over {out['runs_considered']} runs "
-              f"({out['runs_multi_judged']} judged by ≥2 engines)")
+              f"({out['runs_multi_judged']} judged by 2+ engines)")
         for pair in out["pairs"]:
             a, b = pair["judges"]
             agr = f"{pair['verdict_agreement'] * 100:.0f}%" if pair["verdict_agreement"] is not None else "n/a"
             nd = f"{pair['mean_noul_delta']:.3f}" if pair["mean_noul_delta"] is not None else "n/a"
             sd = f"{pair['mean_score_delta']:.3f}" if pair["mean_score_delta"] is not None else "n/a"
             print(f"\n  {a}\n  vs {b}\n    compared {pair['compared']}, "
-                  f"verdict agreement {agr}, mean |Δnoul| {nd}, mean |Δscore| {sd}")
+                  f"verdict agreement {agr}, mean noul-delta {nd}, mean score-delta {sd}")
             if pair["divergent"]:
-                print("    divergent runs (by |Δnoul|):")
+                print("    divergent runs (by noul-delta):")
                 for d in pair["divergent"][:25]:
                     delta = f"{d['noul_delta']:.2f}" if d["noul_delta"] is not None else "n/a"
-                    print(f"      {d['run_id']:<32} {d['task_id']:<24} |Δnoul| {delta}")
+                    print(f"      {d['run_id']:<32} {d['task_id']:<24} noul-delta {delta}")
                 if len(pair["divergent"]) > 25:
-                    print(f"      … {len(pair['divergent']) - 25} more (--json for all)")
+                    print(f"      ... {len(pair['divergent']) - 25} more (--json for all)")
         return
 
     if getattr(args, "contamination", False):

@@ -238,7 +238,8 @@ def embed_docs(embedder: Embedder, docs: list[Doc],
     path = _cache_path(runs_dir, embedder.slug)
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
-        cache: dict[str, Any] = json.loads(path.read_text())
+        payload = json.loads(path.read_text())
+        cache: dict[str, Any] = payload.get("vectors", payload)
     except Exception:
         cache = {}
     try:

@@ -70,5 +70,5 @@ zero-inbound would flag the whole audit check suite.
 
 Index: `index_repository` on repo root, `mode=full`, `persistence=true`.
 Zero-inbound query: `MATCH (n:Function) WHERE n.in_degree = 0 RETURN
-n.file, count(n) ORDER BY 2 DESC` via `query_graph`. LOC: `wc -l` per dir.
+n.file_path, count(n) ORDER BY count(n) DESC` via `query_graph`. LOC: `wc -l` per dir.
 Next census after the U4 sweeps complete; the delta is the program score.

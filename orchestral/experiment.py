@@ -39,7 +39,7 @@ import yaml
 
 from orchestral.agentexec import DEFAULT_TIMEOUT_SECONDS
 from orchestral.config import TaskSpec, find_task, load_task
-from orchestral.stats import diff_ci
+from orchestral.stats import diff_ci, is_evidence
 from orchestral.storage import RunMeta, RunStore
 
 ARMS = ("baseline", "jev")
@@ -185,15 +185,16 @@ def cell_runs(
 
 
 def arm_stats(runs: list[RunMeta]) -> tuple[int, int, int]:
-    """(passes, finished_n, infra_errors) for one arm.
+    """(passes, evidence_n, non_evidence) for one arm.
 
-    Infra errors (exception/timeout/cancel — any non-finished status) stay
-    out of the pass-rate denominator but are counted: asymmetric exclusion
+    Evidence is real, finished, verdicted runs (`stats.is_evidence`).
+    Everything else — crashes, dry-runs, inconclusive verdicts — stays out
+    of the pass-rate denominator but is counted: asymmetric exclusion
     would let an erroring arm look better by dropping its failures.
     """
-    finished = [r for r in runs if r.status == "finished"]
-    passes = sum(1 for r in finished if r.passes)
-    return passes, len(finished), len(runs) - len(finished)
+    evidence = [r for r in runs if is_evidence(r)]
+    passes = sum(1 for r in evidence if r.passes)
+    return passes, len(evidence), len(runs) - len(evidence)
 
 
 def status_counts(runs: list[RunMeta]) -> dict[str, int]:
@@ -206,16 +207,18 @@ def status_counts(runs: list[RunMeta]) -> dict[str, int]:
 def dual_pass_rates(runs: list[RunMeta]) -> dict[str, float | None]:
     """Both failure-accounting conventions (the search_evals pattern).
 
-    ``failed_excluded`` — pass rate over finished runs only;
-    ``failed_as_zero`` — every non-finished run scored as zero. The
-    second is display-only: mixing failure modes into ``diff_ci``
-    would conflate task failure with infra failure.
+    ``failed_excluded`` — pass rate over evidence runs (real, finished,
+    verdicted); ``failed_as_zero`` — every non-evidence real run scored
+    as zero. The second is display-only: mixing failure modes into
+    ``diff_ci`` would conflate task failure with infra failure. Dry-runs
+    sit out of both — they were never real attempts.
     """
-    finished = [r for r in runs if r.status == "finished"]
-    passes = sum(1 for r in finished if r.passes)
+    evidence = [r for r in runs if is_evidence(r)]
+    real = [r for r in runs if not r.dry_run]
+    passes = sum(1 for r in evidence if r.passes)
     return {
-        "failed_excluded": passes / len(finished) if finished else None,
-        "failed_as_zero": passes / len(runs) if runs else None,
+        "failed_excluded": passes / len(evidence) if evidence else None,
+        "failed_as_zero": passes / len(real) if real else None,
     }
 
 

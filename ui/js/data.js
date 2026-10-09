@@ -68,6 +68,7 @@ export function localAdapter() {
     overview: o => get("/api/overview", o),
     runs: (f = {}, o) => get(`/api/runs${qs({
       group: f.group, status: f.status, task: f.task, q: f.q, pairing: f.pairing, judge: f.judge,
+      outcome: f.outcome,
       type: f.type, difficulty: f.difficulty, sort: f.sort, dir: f.dir })}`, o),
     groups: o => get("/api/groups", o),
   // the groups a card may be made from: holdout groups are never offered
@@ -138,12 +139,14 @@ export function filterRuns(rows, f = {}) {
     if (f.task && r.task_id !== f.task) return false;
     if (f.pairing && pairingParam(r.orchestrator, r.worker) !== normPairing(f.pairing)) return false;
     if (f.judge && r.judge_state !== f.judge) return false;
+    if (f.outcome && r.outcome !== f.outcome) return false;
     if (f.type && r.type !== f.type) return false;
     if (f.difficulty && r.difficulty !== f.difficulty) return false;
     if (q && ![r.run_id, r.task_id, r.orchestrator, r.worker, r.run_group, r.status, r.failure_reason]
       .some(v => String(v || "").toLowerCase().includes(q))) return false;
     if (f.status === "passed") return r.status === "finished" && !!r.passes; // a withheld holdout row has no outcome
-    if (f.status === "failed") return r.status === "failed" || (r.status === "finished" && !r.passes && !r.holdout);
+    if (f.status === "failed") return r.outcome !== "dry" &&
+      (r.status === "failed" || (r.status === "finished" && r.passes === false && !r.holdout));
     if (f.status === "stalled") return !!r.stalled;
     if (f.status) return r.status === f.status;
     return true;

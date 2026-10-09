@@ -259,11 +259,18 @@ class TestLanes(_Base):
         self.assertEqual(bar["verdict"], "fail")
 
     def test_stalled_run_has_no_live_lane(self):
-        evs = [_ev(1, "run.started", "init", -7200), _ev(2, "llm_call", "plan", -7190, latency_ms=100,
-                                                            role="orchestrator")]
-        self.make("ls", status="running", started=CLOCK - timedelta(hours=2), events=evs)
+        evs = [_ev(1, "run.started", "init", -900), _ev(2, "llm_call", "plan", -890, latency_ms=100,
+                                                           role="orchestrator")]
+        self.make("ls", status="running", started=CLOCK - timedelta(minutes=15), events=evs)
         d = self.detail("ls", registry=self.registry, now=CLOCK)
         self.assertEqual(d["liveness"]["state"], "stalled")
+        self.assertIsNone(d["lanes"]["live"])
+
+    def test_lost_run_has_no_live_lane(self):
+        evs = [_ev(1, "run.started", "init", -7200)]
+        self.make("lt", status="running", started=CLOCK - timedelta(hours=2), events=evs)
+        d = self.detail("lt", registry=self.registry, now=CLOCK)
+        self.assertEqual(d["liveness"]["state"], "lost")
         self.assertIsNone(d["lanes"]["live"])
 
     def test_no_events_means_no_lanes(self):
@@ -276,7 +283,8 @@ class TestLiveness(_Base):
         self.make("o", status="running", started=CLOCK - timedelta(days=2),
                   events=[{**_ev(1, "run.started", "init", -2 * 86400)}])
         lv = self.detail("o", registry=self.registry, now=CLOCK)["liveness"]
-        self.assertEqual(lv["state"], "stalled")
+        # days without a heartbeat is past LOST_AFTER_S: a lost ghost
+        self.assertEqual(lv["state"], "lost")
         self.assertFalse(lv["owned"])
         self.assertFalse(lv["cancellable"])
         self.assertTrue(lv["abandonable"])

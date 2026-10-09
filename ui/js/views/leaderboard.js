@@ -78,15 +78,15 @@ export async function viewLeaderboard(params) {
   const stripRows = rows.map(r => ({ ...r, key: r.target, href: cardHref("pairing", r.target) }));
   const heat = mx.orchestrators.length && mx.workers.length ? heatmap({
     id: "lb-matrix",
-    caption: "Orchestrator rows by worker columns, mechanical pass rate. Scroll sideways to see every worker. Hatched cells have fewer than 3 finished runs.",
+    caption: "Orchestrator rows by worker columns, mechanical pass rate. Scroll sideways to see every worker. Hatched cells have fewer than 3 evidence runs.",
     corner: "Orchestrator / worker",
     rowHeads: mx.orchestrators.map(o => ({ key: o, label: F.shortSlug(o, 20), title: o })),
     colHeads: mx.workers.map(w => ({ key: w, label: F.shortSlug(w, 18), title: w })),
     cells: mx.cells.filter(c => c.runs).map(c => ({
-      row: c.orchestrator, col: c.worker, value: c.pass_rate, n: c.finished ?? c.runs,
+      row: c.orchestrator, col: c.worker, value: c.pass_rate, n: c.evidence ?? c.finished ?? c.runs,
       href: cardHref("pairing", `${c.orchestrator}|${c.worker}`),
       selected: `${c.orchestrator}|${c.worker}` === lens.selected_target,
-      title: `${c.orchestrator} to ${c.worker}: pass ${fmtPct(c.pass_rate)}, ${c.finished ?? c.runs} finished${c.low_sample ? ", low n" : ""}${c.score_mean != null ? `, score mean ${fmtScore(c.score_mean)}${c.score_mean_ci ? ` (bootstrap 95% CI ${fmtScore(c.score_mean_ci[0])} to ${fmtScore(c.score_mean_ci[1])})` : ""}` : ""}`,
+      title: `${c.orchestrator} to ${c.worker}: pass ${fmtPct(c.pass_rate)} over ${c.evidence ?? c.finished ?? c.runs} evidence runs${c.low_sample ? ", low n" : ""}${c.score_mean != null ? `, score mean ${fmtScore(c.score_mean)}${c.score_mean_ci ? ` (bootstrap 95% CI ${fmtScore(c.score_mean_ci[0])} to ${fmtScore(c.score_mean_ci[1])})` : ""}` : ""}`,
     })),
   }) : `<div class="empty">No pairings in this scope yet.</div>`;
 
@@ -135,7 +135,7 @@ export async function viewLeaderboard(params) {
 
     <h2>Ranking: ${esc(lens.label)}</h2>
     <div class="panel"><table class="data rank"><thead><tr>
-      <th>#</th><th>Pairing</th><th class="t-num">Runs</th>
+      <th>#</th><th>Pairing</th><th class="t-num" title="Verdicted evidence runs / total real runs">Evidence</th>
       <th class="t-num">Pass</th><th class="t-num" data-pri="2" title="Macro-averaged pass rate: mean of per-task rates, every task equal weight">Macro</th><th class="t-num">95% CI</th><th class="t-num">Judge</th>
       ${rows.some(r => r.bt) ? '<th class="t-num" data-pri="2" title="Bradley-Terry rating from position-swapped judge battles on the same tasks; 1.0 is average strength">BT</th>' : ""}
       <th class="t-num">Fail</th><th class="t-num">Cost / pass</th><th class="t-num">Cost</th>
@@ -149,7 +149,7 @@ export async function viewLeaderboard(params) {
         <td class="mono">${esc(slug(r.orchestrator))} <span class="dim">→</span> ${esc(slug(r.worker))}
           ${r.low_n_best ? ` <span class="chip chip-dim">${icon("low-n")}Low n</span>` : ""}${r.on_frontier ? ` <span class="chip" title="Pareto frontier: no pairing with a credible sample is both better on macro pass rate and cheaper per pass">${icon("frontier")}Frontier</span>` : ""}${r.target === lens.selected_target ? ' <span class="chip chip-acc">Selected</span>' : ""}
           ${r.horizon ? `<div class="dim sm" title="Time-horizon fit: pass rate vs task length says this pairing passes half of ~${fmtMinutes(r.horizon.t50_minutes)} tasks (logistic fit, n=${r.horizon.n} runs over ${r.horizon.tasks} timed tasks)">t50 ~${fmtMinutes(r.horizon.t50_minutes)}</div>` : ""}</td>
-        <td class="t-num">${r.finished ?? 0}/${r.runs ?? 0}</td>
+        <td class="t-num">${r.evidence ?? r.finished ?? 0}/${r.runs ?? 0}</td>
         <td class="t-num mech-axis">${fmtPct(r.pass_rate)}</td>
         <td class="t-num" title="${r.macro_pass_rate_ci ? `bootstrap 95% CI ${fmtPct(r.macro_pass_rate_ci[0])} to ${fmtPct(r.macro_pass_rate_ci[1])}` : "mean of per-task pass rates"}">${r.macro_pass_rate != null ? fmtPct(r.macro_pass_rate) : NIL}</td>
         <td class="t-num dim">${r.pass_ci ? F.rangePct(r.pass_ci[0], r.pass_ci[1]) : NIL}</td>

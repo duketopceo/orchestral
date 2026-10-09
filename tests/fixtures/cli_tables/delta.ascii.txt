@@ -1,12 +1,12 @@
 Delta corpus-dry -> corpus-failed  (cells joined on task x orchestrator x worker)
 task                orchestrator  worker        pass a  pass b  delta  verdict
 --------------------------------------------------------------------------------
-corpus-api-order    orch-a        worker-cheap     67%       -      -  one-sided
-corpus-bugfix-lru   orch-a        worker-cheap     83%       -      -  one-sided
-corpus-code-slu...  orch-a        worker-cheap     57%       -      -  one-sided
-corpus-extract-...  orch-a        worker-cheap     57%       -      -  one-sided
+corpus-api-order    orch-a        worker-cheap       -       -      -  one-sided
+corpus-bugfix-lru   orch-a        worker-cheap       -       -      -  one-sided
+corpus-code-slu...  orch-a        worker-cheap       -       -      -  one-sided
+corpus-extract-...  orch-a        worker-cheap       -       -      -  one-sided
 corpus-failed-task  orch-b        worker-hot         -       -      -  one-sided
-corpus-landing-...  orch-a        worker-cheap     29%       -      -  one-sided
-corpus-sql-revenue  orch-a        worker-cheap     43%       -      -  one-sided
+corpus-landing-...  orch-a        worker-cheap       -       -      -  one-sided
+corpus-sql-revenue  orch-a        worker-cheap       -       -      -  one-sided
 Verdicts: one-sided=7
 Cost: corpus-dry=$0.00  corpus-failed=$0.740

@@ -81,19 +81,21 @@ class TestRailActivity(unittest.TestCase):
             browser = pw.chromium.launch()
             try:
                 pg = self._page(browser)
-                stalled = pg.locator(f"#rail-jobs .rail-job[data-run='{self.orphan}']")
+                # the orphan's heartbeat is days old: past LOST_AFTER_S it is
+                # a lost ghost, still abandonable, wearing the stalled glyph
+                lost = pg.locator(f"#rail-jobs .rail-job[data-run='{self.orphan}']")
                 live = pg.locator("#rail-jobs .rail-job[data-run='cli-live0001']")
-                self.assertEqual(stalled.count(), 1)
-                self.assertEqual(stalled.get_attribute("data-state"), "stalled")
+                self.assertEqual(lost.count(), 1)
+                self.assertEqual(lost.get_attribute("data-state"), "lost")
                 self.assertEqual(live.get_attribute("data-state"), "live")
                 # unowned is said in words; the glyph is the sprite's, and differs by shape
-                self.assertIn("stalled", stalled.inner_text().lower())
-                self.assertIn("Started from the CLI. Stop it there.", stalled.inner_text())
+                self.assertIn("lost", lost.inner_text().lower())
+                self.assertIn("Started from the CLI. Stop it there.", lost.inner_text())
                 self.assertIn("Started from the CLI. Stop it there.", live.inner_text())
-                self.assertEqual(stalled.locator("svg use").get_attribute("href"), "#i-stalled")
+                self.assertEqual(lost.locator("svg use").get_attribute("href"), "#i-stalled")
                 self.assertEqual(live.locator("svg use").get_attribute("href"), "#i-live")
-                # abandon only on stalled unowned; cancel never on unowned
-                self.assertEqual(stalled.locator("button.abandon").count(), 1)
+                # abandon only on stalled/lost unowned; cancel never on unowned
+                self.assertEqual(lost.locator("button.abandon").count(), 1)
                 self.assertEqual(live.locator("button.abandon").count(), 0)
                 self.assertEqual(pg.locator("#rail-jobs button.cancel").count(), 0)
             finally:

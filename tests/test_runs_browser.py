@@ -102,7 +102,8 @@ class TestRunsList(_Base):
         self.assertEqual(self.total(pg), 1)
         row = pg.locator("#runs-body tr.run-row")
         self.assertEqual(row.count(), 1)
-        self.assertIn("Stalled", row.inner_text())
+        # days without a heartbeat: the quiet row is a lost ghost
+        self.assertIn("Lost", row.inner_text())
         self.assertIn(self.srv.manifest["orphan_run_id"], row.locator("a").first.get_attribute("href"))
 
     def test_zero_matches_names_the_facets_to_remove(self):

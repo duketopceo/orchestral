@@ -149,9 +149,11 @@ class TestNow(_Base):
         pg = self.open(self.page(self.srv), self.srv)
         live = pg.locator("#band-live .live-lane")
         self.assertEqual(live.count(), 2)
+        # the orphan is days past its last heartbeat: a lost ghost, still
+        # abandonable, wearing the stalled glyph
         stalled = pg.locator(f"#band-live .live-lane[data-run='{self.srv.manifest['orphan_run_id']}']")
-        self.assertEqual(stalled.get_attribute("data-state"), "stalled")
-        self.assertIn("stalled", stalled.inner_text().lower())
+        self.assertEqual(stalled.get_attribute("data-state"), "lost")
+        self.assertIn("lost", stalled.inner_text().lower())
         cli = pg.locator("#band-live .live-lane[data-run='cli-live0001']")
         self.assertEqual(cli.get_attribute("data-state"), "live")
         self.assertIn("Started from the CLI. Stop it there.", cli.inner_text())

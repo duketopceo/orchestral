@@ -296,6 +296,13 @@ class TestSpaRuntimeLocal(_Browser):
         orig = store.get_run(rid)
         assert orig is not None
         try:
+            # the corpus orphan's last heartbeat is days old (a lost ghost) —
+            # a fresh beat makes it a live row again so the finish lands visibly
+            from datetime import UTC, datetime
+            events = Path(orig.run_dir) / "events.jsonl"
+            with events.open("a") as fh:
+                fh.write(json.dumps({"type": "run.heartbeat",
+                                     "timestamp": datetime.now(UTC).isoformat()}) + "\n")
             pg.goto(f"{self.base}/#/run/{rid}")
             pg.wait_for_selector("#view[data-ready='ok']")
             pg.click(".tabs button[data-tab='events']")
@@ -451,8 +458,8 @@ class TestSpaRuntimeHosted(_Browser):
 
     def test_runs_filtered_by_status_failed_shows_only_failed_rows(self):
         expected = [r for r in self.snap["runs.json"]
-                    if r["status"] == "failed" or (
-                        r["status"] == "finished" and not r["passes"] and not r.get("holdout"))]
+                    if r.get("outcome") != "dry" and (r["status"] == "failed" or (
+                        r["status"] == "finished" and r["passes"] is False and not r.get("holdout")))]
         self.assertTrue(expected)
         pg = self.page()
         pg.goto(f"{self.hbase}/#/runs?status=failed")
@@ -460,7 +467,8 @@ class TestSpaRuntimeHosted(_Browser):
         pg.wait_for_selector("#runs-body tr .chip")
         self.assertEqual(int(pg.get_attribute("#runs-count", "data-total")), len(expected))
         chips = pg.locator("#runs-body tr td:first-child .chip").all_inner_texts()
-        self.assertTrue(chips and all(c in {"Failed", "Fail"} for c in chips), set(chips))
+        # outcome chips: a crashed attempt is infra/invalid, a verdicted one Fail
+        self.assertTrue(chips and all(c in {"Fail", "Infra", "Invalid"} for c in chips), set(chips))
 
     def test_local_only_route_renders_the_read_only_state(self):
         pg = self.page()

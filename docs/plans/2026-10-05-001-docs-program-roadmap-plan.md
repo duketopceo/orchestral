@@ -57,9 +57,13 @@ the program state and every unit's child-plan source of truth.
 
 #### U1. Jev A/B experiment + writeup
 
-- **Status:** in progress — experiment driver running against OpenRouter
-  (`--budget 12.00 --daily-cap 15.00 --seed 7 --jobs 2`), ~90 runs and
-  $0.52 recorded at time of writing.
+- **Category:** critical path — the only unit gating maintain mode.
+- **Status:** in progress — relaunched 2026-10-09 with the cube-env
+  contract sourced after the first run stopped with 38 cells pending
+  (all v3 code cells had refused on missing `ORCHESTRAL_CODE_RUNTIME`;
+  the aborted annotations were cleared so those cells resume). Spend to
+  date ~$3.28 of $12. All completed non-code cells are `inconclusive`
+  (CIs straddle zero) — see the U1 report when the matrix closes.
 - **Child plans:**
   `docs/plans/2026-09-30-001-feat-ab-experiment-coverage-plan.md`
 - **Supporting artifacts:** `experiments/jev-ab.yaml`,
@@ -86,6 +90,8 @@ the program state and every unit's child-plan source of truth.
   CIs, macro pass rate, contamination canaries, CI eval gate).
 - **Child plans:**
   `docs/plans/2026-10-04-001-feat-post-merge-consolidation-plan.md`
+- **Category:** declared post-writeup — maintain-mode improvements, not
+  build blockers.
 - **Remaining work (post-writeup tier):** inspect-log interop export,
   provider telemetry panel, Pareto frontier + composite index, METR
   horizon fit, prompt-perturbation sweeps.
@@ -94,6 +100,9 @@ the program state and every unit's child-plan source of truth.
 
 #### U9. Safe code reduction (negative-diff program)
 
+- **Category:** optional hygiene — negative-diff debt paydown that makes
+  maintain mode cheaper; agent-dispatchable, no model spend. Not a writeup
+  blocker.
 - **Status:** in progress — census (#173) and entry-point registry (#177)
   shipped; candidate-report unit planned
   (`docs/plans/2026-10-08-001-feat-dead-code-report-plan.md`), execution
@@ -109,6 +118,7 @@ the program state and every unit's child-plan source of truth.
 
 #### U4. Baseline findings writeup + published artifact
 
+- **Category:** critical path — the product.
 - **Status:** pending — gated on U1 completing; the hosted observatory
   surface is already live.
 - **Child plans:** none dedicated yet; draws on the U1 report output and
@@ -119,6 +129,8 @@ the program state and every unit's child-plan source of truth.
 
 #### U5. v3 task curation + calibration
 
+- **Category:** optional for the writeup — same-cell A/B needs no
+  difficulty bands to be valid; uncalibrated bands stay a caveat.
 - **Status:** in progress — nine real-repo tasks landed (four
   feature-gap, five bugfix pinned at parents of real boltons commits);
   calibration runs and band reassignment remain.
@@ -130,6 +142,8 @@ the program state and every unit's child-plan source of truth.
 
 #### U6. Gemini 4 Argon eval slot
 
+- **Category:** external-gated — flips on automatically when the provider
+  lists it.
 - **Status:** pending — provider-gated; announced Fairwind trusted-tester
   access, not on OpenRouter yet. Entry parked as `~google/gemini-4-argon`
   in `models/default.yaml`; `harness.py models sync` picks it up when
@@ -144,6 +158,8 @@ the program state and every unit's child-plan source of truth.
 
 #### U7. Launch video (Score U22)
 
+- **Category:** external + decision-gated — blocked on operator answers,
+  not code.
 - **Status:** blocked — awaiting Open Question answers (Remotion home,
   music license, spend approval) recorded in the Score plan.
 - **Child plans:** `docs/plans/2026-10-02-2322-feat-the-score-redesign-plan.md`
@@ -151,6 +167,7 @@ the program state and every unit's child-plan source of truth.
 
 #### U8. Program-level caveats to keep honest
 
+- **Category:** standing — caveats by design, never a deliverable.
 - **Status:** pending — standing items, not a deliverable unit: judge
   self-preference in Jev-judged cells, seeds as bookkeeping only,
   multiplicity across cells, self-executing orchestrator edge cases.
@@ -189,6 +206,8 @@ the program state and every unit's child-plan source of truth.
 | `docs/plans/2026-10-04-001-feat-post-merge-consolidation-plan.md` | U3 | partially shipped (Units 1–3, 4a–4e merged; 4f pending) |
 | `docs/plans/2026-10-06-001-refactor-safe-code-reduction-plan.md` | U9 | in progress (U1+U2 shipped #173/#177; U3 planned) |
 | `docs/plans/2026-10-08-001-feat-dead-code-report-plan.md` | U9 | pending (candidate report) |
+| `docs/plans/2026-10-08-002-feat-observatory-honest-outcomes-plan.md` | — | implemented (#183) — outcome taxonomy + evidence denominators |
+| `docs/plans/2026-10-08-003-feat-agent-quickstart-plan.md` | — | implemented (#182) — agent onboarding doc |
 
 ---
 

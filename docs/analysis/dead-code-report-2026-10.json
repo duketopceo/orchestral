@@ -1,0 +1,5318 @@
+{
+  "schema": 1,
+  "index_commit": "f24f1d5034004ddbc13b26f18af344cb44da7a07",
+  "index_fresh": true,
+  "counts": {
+    "pool": 2850,
+    "A": 2,
+    "B": 230,
+    "C": 16
+  },
+  "excluded": {
+    "registry": 71,
+    "pattern": 2480,
+    "coverage_executed": 51
+  },
+  "sources": {
+    "vulture": true,
+    "coverage": true
+  },
+  "rows": [
+    {
+      "symbol": "orchestral.providers.Provider.images",
+      "file": "orchestral/providers.py",
+      "lines": [
+        62,
+        69
+      ],
+      "tier": "A",
+      "surface": "python",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": ""
+    },
+    {
+      "symbol": "orchestral.providers.Provider.videos",
+      "file": "orchestral/providers.py",
+      "lines": [
+        71,
+        81
+      ],
+      "tier": "A",
+      "surface": "python",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": ""
+    },
+    {
+      "symbol": "scripts.serve_laya.Handler.do_GET",
+      "file": "scripts/serve_laya.py",
+      "lines": [
+        102,
+        106
+      ],
+      "tier": "B",
+      "surface": "python",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "vulture",
+          "detail": "60% confidence: unused method 'do_GET'"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "framework-dispatch name"
+    },
+    {
+      "symbol": "scripts.serve_laya.Handler.do_POST",
+      "file": "scripts/serve_laya.py",
+      "lines": [
+        108,
+        153
+      ],
+      "tier": "B",
+      "surface": "python",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "vulture",
+          "detail": "60% confidence: unused method 'do_POST'"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "framework-dispatch name"
+    },
+    {
+      "symbol": "scripts.serve_laya.Handler.log_message",
+      "file": "scripts/serve_laya.py",
+      "lines": [
+        155,
+        156
+      ],
+      "tier": "B",
+      "surface": "python",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "vulture",
+          "detail": "60% confidence: unused method 'log_message'"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "framework-dispatch name"
+    },
+    {
+      "symbol": "tests.execstub.real_unittest_suite",
+      "file": "tests/execstub.py",
+      "lines": [
+        19,
+        60
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_agentexec.StubAdapter.run_argv",
+      "file": "tests/test_agentexec.py",
+      "lines": [
+        172,
+        176
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_agentexec.TestTranscriptPathHostileInput.setUp",
+      "file": "tests/test_agentexec.py",
+      "lines": [
+        578,
+        588
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_agentic_runner._StubAdapter.run_argv",
+      "file": "tests/test_agentic_runner.py",
+      "lines": [
+        97,
+        101
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_agentic_runner.AgenticRunnerBase.setUp",
+      "file": "tests/test_agentic_runner.py",
+      "lines": [
+        177,
+        207
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_aig.TestLabeledProvider._Inner.chat",
+      "file": "tests/test_aig.py",
+      "lines": [
+        180,
+        182
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_api_task._FakeClient.chat",
+      "file": "tests/test_api_task.py",
+      "lines": [
+        137,
+        159
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_api_task._FakeClient.close",
+      "file": "tests/test_api_task.py",
+      "lines": [
+        161,
+        162
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_audit.TestTheFindingSetIsReproducible._audit_json",
+      "file": "tests/test_audit.py",
+      "lines": [
+        2862,
+        2870
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "vulture",
+          "detail": "60% confidence: unused method '_audit_json'"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_brand_assets.TestShellAndServing.setUpClass",
+      "file": "tests/test_brand_assets.py",
+      "lines": [
+        158,
+        166
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_brand_assets.TestShellAndServing.tearDownClass",
+      "file": "tests/test_brand_assets.py",
+      "lines": [
+        169,
+        172
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_budget_guard.WorkflowWiringTests.setUpClass",
+      "file": "tests/test_budget_guard.py",
+      "lines": [
+        249,
+        253
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_calibrate._JudgeClient.chat",
+      "file": "tests/test_calibrate.py",
+      "lines": [
+        45,
+        60
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_calibrate._JudgeClient.close",
+      "file": "tests/test_calibrate.py",
+      "lines": [
+        62,
+        63
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_canary.TestEchoes.setUp",
+      "file": "tests/test_canary.py",
+      "lines": [
+        58,
+        61
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_charts_browser._Base.setUpClass",
+      "file": "tests/test_charts_browser.py",
+      "lines": [
+        46,
+        49
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_charts_browser._Base.tearDownClass",
+      "file": "tests/test_charts_browser.py",
+      "lines": [
+        52,
+        54
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_cli_tables._Stream.isatty",
+      "file": "tests/test_cli_tables.py",
+      "lines": [
+        55,
+        56
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_cli_tables._Stream.encoding",
+      "file": "tests/test_cli_tables.py",
+      "lines": [
+        59,
+        60
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_cli_tables.setUpModule",
+      "file": "tests/test_cli_tables.py",
+      "lines": [
+        215,
+        219
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "vulture",
+          "detail": "60% confidence: unused function 'setUpModule'"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_cli_tables.tearDownModule",
+      "file": "tests/test_cli_tables.py",
+      "lines": [
+        222,
+        224
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "vulture",
+          "detail": "60% confidence: unused function 'tearDownModule'"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_config.LoadTaskTests.setUp",
+      "file": "tests/test_config.py",
+      "lines": [
+        9,
+        11
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_config.LoadTaskTests.tearDown",
+      "file": "tests/test_config.py",
+      "lines": [
+        13,
+        14
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_config.LoadModelsTests.setUp",
+      "file": "tests/test_config.py",
+      "lines": [
+        62,
+        64
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_config.LoadModelsTests.tearDown",
+      "file": "tests/test_config.py",
+      "lines": [
+        66,
+        67
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_constraint_tasks._FakeClient.chat",
+      "file": "tests/test_constraint_tasks.py",
+      "lines": [
+        151,
+        169
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_constraint_tasks._FakeClient.close",
+      "file": "tests/test_constraint_tasks.py",
+      "lines": [
+        171,
+        172
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_cost_budget_log.CostBudgetLogTests.setUp",
+      "file": "tests/test_cost_budget_log.py",
+      "lines": [
+        76,
+        77
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_cost_truth._Corpus.setUpClass",
+      "file": "tests/test_cost_truth.py",
+      "lines": [
+        71,
+        75
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_cost_truth._Corpus.tearDownClass",
+      "file": "tests/test_cost_truth.py",
+      "lines": [
+        78,
+        79
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_coverage.TestCoverageRows.setUp",
+      "file": "tests/test_coverage.py",
+      "lines": [
+        45,
+        47
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_coverage.TestCoverageRows.tearDown",
+      "file": "tests/test_coverage.py",
+      "lines": [
+        49,
+        50
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_coverage.TestDualScoring.setUp",
+      "file": "tests/test_coverage.py",
+      "lines": [
+        107,
+        109
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_coverage.TestDualScoring.tearDown",
+      "file": "tests/test_coverage.py",
+      "lines": [
+        111,
+        112
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_coverage.TestPublishMark.setUp",
+      "file": "tests/test_coverage.py",
+      "lines": [
+        158,
+        160
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_coverage.TestPublishMark.tearDown",
+      "file": "tests/test_coverage.py",
+      "lines": [
+        162,
+        163
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_cubeexec._FakeCommands.bind",
+      "file": "tests/test_cubeexec.py",
+      "lines": [
+        82,
+        83
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_cubeexec._FakeCommands.run",
+      "file": "tests/test_cubeexec.py",
+      "lines": [
+        85,
+        107
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_cubeexec.FakeSandbox.create",
+      "file": "tests/test_cubeexec.py",
+      "lines": [
+        166,
+        167
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_cubeexec._FakeFilesV1.write",
+      "file": "tests/test_cubeexec.py",
+      "lines": [
+        175,
+        179
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_cubeexec.FakeSandboxV1.kill",
+      "file": "tests/test_cubeexec.py",
+      "lines": [
+        194,
+        196
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_cubeexec._install_fake_e2b_v1",
+      "file": "tests/test_cubeexec.py",
+      "lines": [
+        209,
+        218
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "vulture",
+          "detail": "60% confidence: unused attribute 'CommandExitException'"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_cubeexec._install_fake_e2b_v1_no_exc_module",
+      "file": "tests/test_cubeexec.py",
+      "lines": [
+        221,
+        229
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "vulture",
+          "detail": "60% confidence: unused attribute 'CommandExitException'"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_cubeexec._install_fake_e2b_incompatible",
+      "file": "tests/test_cubeexec.py",
+      "lines": [
+        232,
+        237
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_cubeexec._install_fake_e2b_no_sandbox",
+      "file": "tests/test_cubeexec.py",
+      "lines": [
+        240,
+        244
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "vulture",
+          "detail": "60% confidence: unused attribute 'CommandExitException'"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_cubeexec._install_fake_e2b_no_timeout",
+      "file": "tests/test_cubeexec.py",
+      "lines": [
+        247,
+        253
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "vulture",
+          "detail": "60% confidence: unused attribute 'CommandExitException'"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_cubeexec.FakeSandboxCreateMismatch.create",
+      "file": "tests/test_cubeexec.py",
+      "lines": [
+        262,
+        263
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_cubeexec._install_fake_e2b_create_mismatch",
+      "file": "tests/test_cubeexec.py",
+      "lines": [
+        266,
+        273
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "vulture",
+          "detail": "60% confidence: unused attribute 'CommandExitException'"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_cubeexec.CubeExecBase.setUp",
+      "file": "tests/test_cubeexec.py",
+      "lines": [
+        277,
+        279
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_cubeexec._RepoCommands.bind",
+      "file": "tests/test_cubeexec.py",
+      "lines": [
+        606,
+        607
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_cubeexec._RepoCommands.run",
+      "file": "tests/test_cubeexec.py",
+      "lines": [
+        609,
+        627
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_dead_code_report._Fixture.setUp",
+      "file": "tests/test_dead_code_report.py",
+      "lines": [
+        91,
+        109
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_dead_code_report._Fixture.tearDown",
+      "file": "tests/test_dead_code_report.py",
+      "lines": [
+        111,
+        112
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_design_tokens.TestShellContract.setUp",
+      "file": "tests/test_design_tokens.py",
+      "lines": [
+        128,
+        129
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_design_tokens._Served.setUpClass",
+      "file": "tests/test_design_tokens.py",
+      "lines": [
+        155,
+        162
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_design_tokens._Served.tearDownClass",
+      "file": "tests/test_design_tokens.py",
+      "lines": [
+        165,
+        167
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_entrypoints.TestEntrypointRegistry.setUpClass",
+      "file": "tests/test_entrypoints.py",
+      "lines": [
+        35,
+        37
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_experiment.TestRepTarget.setUp",
+      "file": "tests/test_experiment.py",
+      "lines": [
+        108,
+        110
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_experiment.TestRepTarget.tearDown",
+      "file": "tests/test_experiment.py",
+      "lines": [
+        112,
+        113
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_experiment.TestDriver.setUp",
+      "file": "tests/test_experiment.py",
+      "lines": [
+        152,
+        155
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_experiment.TestDriver.tearDown",
+      "file": "tests/test_experiment.py",
+      "lines": [
+        157,
+        158
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_experiment.TestOrphanRecovery.setUp",
+      "file": "tests/test_experiment.py",
+      "lines": [
+        383,
+        386
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_experiment.TestOrphanRecovery.tearDown",
+      "file": "tests/test_experiment.py",
+      "lines": [
+        388,
+        389
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_experiment.TestCmdRecover.setUp",
+      "file": "tests/test_experiment.py",
+      "lines": [
+        479,
+        489
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_experiment.TestCmdRecover.tearDown",
+      "file": "tests/test_experiment.py",
+      "lines": [
+        491,
+        492
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_experiment.TestOrphanCostRepair.setUp",
+      "file": "tests/test_experiment.py",
+      "lines": [
+        616,
+        618
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_experiment.TestOrphanCostRepair.tearDown",
+      "file": "tests/test_experiment.py",
+      "lines": [
+        620,
+        621
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_experiment.TestMissingCostCount.setUp",
+      "file": "tests/test_experiment.py",
+      "lines": [
+        675,
+        677
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_experiment.TestMissingCostCount.tearDown",
+      "file": "tests/test_experiment.py",
+      "lines": [
+        679,
+        680
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_experiment.TestCellState.setUp",
+      "file": "tests/test_experiment.py",
+      "lines": [
+        742,
+        744
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_experiment.TestCellState.tearDown",
+      "file": "tests/test_experiment.py",
+      "lines": [
+        746,
+        747
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_extract_task._FakeClient.chat",
+      "file": "tests/test_extract_task.py",
+      "lines": [
+        64,
+        86
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_extract_task._FakeClient.close",
+      "file": "tests/test_extract_task.py",
+      "lines": [
+        88,
+        89
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_fixture_corpus._Corpus.setUpClass",
+      "file": "tests/test_fixture_corpus.py",
+      "lines": [
+        51,
+        55
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_fixture_corpus._Corpus.tearDownClass",
+      "file": "tests/test_fixture_corpus.py",
+      "lines": [
+        58,
+        59
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_fixtures.RegistryTests.setUp",
+      "file": "tests/test_fixtures.py",
+      "lines": [
+        53,
+        56
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_fixtures.FetchTests.setUp",
+      "file": "tests/test_fixtures.py",
+      "lines": [
+        98,
+        102
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_format.TestBrowserFormatter.setUpClass",
+      "file": "tests/test_format.py",
+      "lines": [
+        154,
+        162
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_format.TestBrowserFormatter.tearDownClass",
+      "file": "tests/test_format.py",
+      "lines": [
+        165,
+        167
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_format.TestCorpusCopy.setUpClass",
+      "file": "tests/test_format.py",
+      "lines": [
+        195,
+        203
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_format.TestCorpusCopy.tearDownClass",
+      "file": "tests/test_format.py",
+      "lines": [
+        206,
+        208
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_gate.setUpModule",
+      "file": "tests/test_gate.py",
+      "lines": [
+        25,
+        29
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "vulture",
+          "detail": "60% confidence: unused function 'setUpModule'"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_gate.tearDownModule",
+      "file": "tests/test_gate.py",
+      "lines": [
+        32,
+        34
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "vulture",
+          "detail": "60% confidence: unused function 'tearDownModule'"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_hosted_deploy.TestSyncPath.setUpClass",
+      "file": "tests/test_hosted_deploy.py",
+      "lines": [
+        41,
+        55
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_hosted_deploy.TestSyncPath.tearDownClass",
+      "file": "tests/test_hosted_deploy.py",
+      "lines": [
+        58,
+        59
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_jevassist._Client.decide",
+      "file": "tests/test_jevassist.py",
+      "lines": [
+        49,
+        55
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "vulture",
+          "detail": "60% confidence: unused attribute 'last_state'"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_jevassist._Client.chat",
+      "file": "tests/test_jevassist.py",
+      "lines": [
+        57,
+        58
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_jevassist._Client.close",
+      "file": "tests/test_jevassist.py",
+      "lines": [
+        60,
+        61
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_judge_backfill.FakeJudgeClient.chat",
+      "file": "tests/test_judge_backfill.py",
+      "lines": [
+        27,
+        34
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_judge_backfill.TestBackfill.setUp",
+      "file": "tests/test_judge_backfill.py",
+      "lines": [
+        38,
+        46
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_judge_gate._CodeJudgeFake.chat",
+      "file": "tests/test_judge_gate.py",
+      "lines": [
+        137,
+        149
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_liveness._Base.setUp",
+      "file": "tests/test_liveness.py",
+      "lines": [
+        51,
+        55
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_liveness._Base.tearDown",
+      "file": "tests/test_liveness.py",
+      "lines": [
+        57,
+        58
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_liveness.TestCorpusOrphan.setUpClass",
+      "file": "tests/test_liveness.py",
+      "lines": [
+        207,
+        214
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_liveness.TestCorpusOrphan.tearDownClass",
+      "file": "tests/test_liveness.py",
+      "lines": [
+        217,
+        218
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_liveness_browser.TestRailActivity.setUpClass",
+      "file": "tests/test_liveness_browser.py",
+      "lines": [
+        43,
+        63
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_liveness_browser.TestRailActivity.tearDownClass",
+      "file": "tests/test_liveness_browser.py",
+      "lines": [
+        66,
+        69
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_liveness_browser.TestRailActivity._clear_annotations",
+      "file": "tests/test_liveness_browser.py",
+      "lines": [
+        102,
+        106
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_motion_browser.TestMotionBrowser.setUpClass",
+      "file": "tests/test_motion_browser.py",
+      "lines": [
+        90,
+        97
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_motion_browser.TestMotionBrowser.tearDownClass",
+      "file": "tests/test_motion_browser.py",
+      "lines": [
+        100,
+        104
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_motion_browser.TestMotionBrowser._module",
+      "file": "tests/test_motion_browser.py",
+      "lines": [
+        120,
+        121
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "vulture",
+          "detail": "60% confidence: unused method '_module'"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_multi_file_tasks._FakeClient.chat",
+      "file": "tests/test_multi_file_tasks.py",
+      "lines": [
+        45,
+        71
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_multi_file_tasks._FakeClient.close",
+      "file": "tests/test_multi_file_tasks.py",
+      "lines": [
+        73,
+        74
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_multi_judge._PipeClient.chat",
+      "file": "tests/test_multi_judge.py",
+      "lines": [
+        32,
+        42
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_multi_judge._PipeClient.close",
+      "file": "tests/test_multi_judge.py",
+      "lines": [
+        44,
+        45
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_multi_judge._Decider.decide",
+      "file": "tests/test_multi_judge.py",
+      "lines": [
+        55,
+        67
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_multi_judge._Decider.close",
+      "file": "tests/test_multi_judge.py",
+      "lines": [
+        69,
+        70
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_needle_task._FakeClient.chat",
+      "file": "tests/test_needle_task.py",
+      "lines": [
+        48,
+        67
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_needle_task._FakeClient.close",
+      "file": "tests/test_needle_task.py",
+      "lines": [
+        69,
+        70
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_new_models_guide_browser._Base.tearDownClass",
+      "file": "tests/test_new_models_guide_browser.py",
+      "lines": [
+        34,
+        36
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_new_models_guide_browser.TestNewRun.setUpClass",
+      "file": "tests/test_new_models_guide_browser.py",
+      "lines": [
+        64,
+        66
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_new_models_guide_browser.TestModelsGuideLocal.setUpClass",
+      "file": "tests/test_new_models_guide_browser.py",
+      "lines": [
+        263,
+        265
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_new_models_guide_browser.TestHosted.setUpClass",
+      "file": "tests/test_new_models_guide_browser.py",
+      "lines": [
+        270,
+        272
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_now_browser.TestNow.setUpClass",
+      "file": "tests/test_now_browser.py",
+      "lines": [
+        131,
+        133
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_now_browser.TestNow.tearDownClass",
+      "file": "tests/test_now_browser.py",
+      "lines": [
+        136,
+        138
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_now_browser.TestNowEmpty.setUpClass",
+      "file": "tests/test_now_browser.py",
+      "lines": [
+        316,
+        318
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_now_browser.TestNowEmpty.tearDownClass",
+      "file": "tests/test_now_browser.py",
+      "lines": [
+        321,
+        323
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_now_browser.TestExperiments.setUpClass",
+      "file": "tests/test_now_browser.py",
+      "lines": [
+        350,
+        353
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_now_browser.TestExperiments.tearDownClass",
+      "file": "tests/test_now_browser.py",
+      "lines": [
+        356,
+        359
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_now_browser.TestRailHeight.setUpClass",
+      "file": "tests/test_now_browser.py",
+      "lines": [
+        413,
+        415
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_observatory_cards._Writer.chat",
+      "file": "tests/test_observatory_cards.py",
+      "lines": [
+        360,
+        362
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_openrouter_videos._FakeStream.raise_for_status",
+      "file": "tests/test_openrouter_videos.py",
+      "lines": [
+        51,
+        52
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_openrouter_videos._FakeStream.iter_bytes",
+      "file": "tests/test_openrouter_videos.py",
+      "lines": [
+        54,
+        55
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_openrouter_videos._FailingStream.is_redirect",
+      "file": "tests/test_openrouter_videos.py",
+      "lines": [
+        71,
+        72
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_openrouter_videos._FailingStream.raise_for_status",
+      "file": "tests/test_openrouter_videos.py",
+      "lines": [
+        74,
+        79
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_pairwise_judge._PairClient.chat",
+      "file": "tests/test_pairwise_judge.py",
+      "lines": [
+        39,
+        53
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_pairwise_judge._Logger.log_llm_call",
+      "file": "tests/test_pairwise_judge.py",
+      "lines": [
+        59,
+        60
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_pairwise_judge._Logger.log",
+      "file": "tests/test_pairwise_judge.py",
+      "lines": [
+        62,
+        63
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_pairwise_judge.TestPairwiseJudge.setUp",
+      "file": "tests/test_pairwise_judge.py",
+      "lines": [
+        166,
+        174
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_palette_browser._Base.tearDownClass",
+      "file": "tests/test_palette_browser.py",
+      "lines": [
+        33,
+        35
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_palette_browser.TestPaletteLocal.setUpClass",
+      "file": "tests/test_palette_browser.py",
+      "lines": [
+        167,
+        169
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_palette_browser.TestPaletteHosted.setUpClass",
+      "file": "tests/test_palette_browser.py",
+      "lines": [
+        178,
+        180
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_pipeline._FakeClient.chat",
+      "file": "tests/test_pipeline.py",
+      "lines": [
+        42,
+        57
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_pipeline._FakeClient.close",
+      "file": "tests/test_pipeline.py",
+      "lines": [
+        59,
+        60
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_preserve_ref_convention.TestPreserveRefConventionIsDocumented.setUp",
+      "file": "tests/test_preserve_ref_convention.py",
+      "lines": [
+        53,
+        54
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_privacy_holdout_config.TestRunIsHoldout.setUp",
+      "file": "tests/test_privacy_holdout_config.py",
+      "lines": [
+        42,
+        44
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_privacy_holdout_config.TestSyncSurfaces.setUp",
+      "file": "tests/test_privacy_holdout_config.py",
+      "lines": [
+        106,
+        122
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_privacy_holdout_config.TestHostedSnapshot.setUpClass",
+      "file": "tests/test_privacy_holdout_config.py",
+      "lines": [
+        172,
+        187
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_privacy_holdout_config.TestHostedSnapshot.tearDownClass",
+      "file": "tests/test_privacy_holdout_config.py",
+      "lines": [
+        190,
+        191
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_publish_browser.TestPublishHosted.setUpClass",
+      "file": "tests/test_publish_browser.py",
+      "lines": [
+        280,
+        291
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_publish_browser.TestPublishHosted.tearDownClass",
+      "file": "tests/test_publish_browser.py",
+      "lines": [
+        294,
+        298
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_publish_cards.TestHoldoutNeverPublished.setUpClass",
+      "file": "tests/test_publish_cards.py",
+      "lines": [
+        144,
+        149
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_publish_cards.TestHoldoutNeverPublished.tearDownClass",
+      "file": "tests/test_publish_cards.py",
+      "lines": [
+        152,
+        155
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_publish_cards.TestShotEndpointErrors.setUpClass",
+      "file": "tests/test_publish_cards.py",
+      "lines": [
+        353,
+        358
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_publish_cards.TestShotEndpointErrors.tearDownClass",
+      "file": "tests/test_publish_cards.py",
+      "lines": [
+        361,
+        364
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_publish_cards.TestOgMeta.setUp",
+      "file": "tests/test_publish_cards.py",
+      "lines": [
+        422,
+        423
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_publishing_doc.TestPublishingDocMatchesPolicy.setUpClass",
+      "file": "tests/test_publishing_doc.py",
+      "lines": [
+        135,
+        136
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_remotecatalog._Resp.raise_for_status",
+      "file": "tests/test_remotecatalog.py",
+      "lines": [
+        23,
+        25
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_remotecatalog._Resp.json",
+      "file": "tests/test_remotecatalog.py",
+      "lines": [
+        27,
+        28
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_render.visible_text",
+      "file": "tests/test_render.py",
+      "lines": [
+        37,
+        40
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "vulture",
+          "detail": "60% confidence: unused function 'visible_text'"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_render.TestErrorPagesOverHttp.setUpClass",
+      "file": "tests/test_render.py",
+      "lines": [
+        113,
+        121
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_render.TestErrorPagesOverHttp.tearDownClass",
+      "file": "tests/test_render.py",
+      "lines": [
+        124,
+        127
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_render.TestErrorPagesOverHttp.get",
+      "file": "tests/test_render.py",
+      "lines": [
+        129,
+        137
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_revalidate.TestRevalidate.setUp",
+      "file": "tests/test_revalidate.py",
+      "lines": [
+        25,
+        32
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_review.FakeClient.chat",
+      "file": "tests/test_review.py",
+      "lines": [
+        34,
+        36
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_review.TestReview.setUp",
+      "file": "tests/test_review.py",
+      "lines": [
+        40,
+        48
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_run_detail._Base.setUp",
+      "file": "tests/test_run_detail.py",
+      "lines": [
+        32,
+        36
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_run_detail._Base.tearDown",
+      "file": "tests/test_run_detail.py",
+      "lines": [
+        38,
+        39
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_run_detail_browser.TestRunDetailBrowser.setUpClass",
+      "file": "tests/test_run_detail_browser.py",
+      "lines": [
+        57,
+        105
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_run_detail_browser.TestRunDetailBrowser.tearDownClass",
+      "file": "tests/test_run_detail_browser.py",
+      "lines": [
+        122,
+        127
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_run_detail_browser.TestRunDetailBrowser.tearDown",
+      "file": "tests/test_run_detail_browser.py",
+      "lines": [
+        145,
+        146
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_run_detail_browser.TestRunDetailBrowser._clear_annotations",
+      "file": "tests/test_run_detail_browser.py",
+      "lines": [
+        375,
+        377
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_runs_browser._Base.setUpClass",
+      "file": "tests/test_runs_browser.py",
+      "lines": [
+        31,
+        34
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_runs_browser._Base.tearDownClass",
+      "file": "tests/test_runs_browser.py",
+      "lines": [
+        37,
+        39
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_runs_browser.TestNewRunsBanner.setUpClass",
+      "file": "tests/test_runs_browser.py",
+      "lines": [
+        249,
+        254
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_runs_browser.TestNewRunsBanner.tearDownClass",
+      "file": "tests/test_runs_browser.py",
+      "lines": [
+        257,
+        260
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_runs_payload.TestRunsPayload.setUpClass",
+      "file": "tests/test_runs_payload.py",
+      "lines": [
+        27,
+        30
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_selfcheck.TestReferenceReplay.setUp",
+      "file": "tests/test_selfcheck.py",
+      "lines": [
+        42,
+        43
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_serve.TestHttpRoutes.setUpClass",
+      "file": "tests/test_serve.py",
+      "lines": [
+        429,
+        437
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_serve.TestHttpRoutes.tearDownClass",
+      "file": "tests/test_serve.py",
+      "lines": [
+        440,
+        442
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_serve._NoRedirect.redirect_request",
+      "file": "tests/test_serve.py",
+      "lines": [
+        730,
+        731
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "vulture",
+          "detail": "60% confidence: unused method 'redirect_request'"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_serve.TestThreadRefusesUnreadableCard.setUpClass",
+      "file": "tests/test_serve.py",
+      "lines": [
+        880,
+        892
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_serve.TestThreadRefusesUnreadableCard.tearDownClass",
+      "file": "tests/test_serve.py",
+      "lines": [
+        895,
+        897
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_serve.TestLivenessRoutes.setUpClass",
+      "file": "tests/test_serve.py",
+      "lines": [
+        929,
+        950
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_serve.TestLivenessRoutes.tearDownClass",
+      "file": "tests/test_serve.py",
+      "lines": [
+        953,
+        955
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_serve_browser.TestBrowserSmoke.setUpClass",
+      "file": "tests/test_serve_browser.py",
+      "lines": [
+        55,
+        64
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_serve_browser.TestBrowserSmoke.tearDownClass",
+      "file": "tests/test_serve_browser.py",
+      "lines": [
+        67,
+        69
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_serve_browser._QuietServer.handle_error",
+      "file": "tests/test_serve_browser.py",
+      "lines": [
+        131,
+        132
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "vulture",
+          "detail": "60% confidence: unused method 'handle_error'"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_serve_browser.TestSpaRuntimeLocal.setUpClass",
+      "file": "tests/test_serve_browser.py",
+      "lines": [
+        178,
+        185
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_serve_browser.TestSpaRuntimeLocal.tearDownClass",
+      "file": "tests/test_serve_browser.py",
+      "lines": [
+        188,
+        192
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_serve_browser._WorkerSim.log_message",
+      "file": "tests/test_serve_browser.py",
+      "lines": [
+        351,
+        352
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "vulture",
+          "detail": "60% confidence: unused method 'log_message'"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "framework-dispatch name; tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_serve_browser._WorkerSim.do_GET",
+      "file": "tests/test_serve_browser.py",
+      "lines": [
+        360,
+        377
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "vulture",
+          "detail": "60% confidence: unused method 'do_GET'"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "framework-dispatch name; tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_serve_browser._WorkerSim.do_POST",
+      "file": "tests/test_serve_browser.py",
+      "lines": [
+        379,
+        380
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "vulture",
+          "detail": "60% confidence: unused method 'do_POST'"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "framework-dispatch name; tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_serve_browser.TestSpaRuntimeHosted.setUpClass",
+      "file": "tests/test_serve_browser.py",
+      "lines": [
+        388,
+        405
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_serve_browser.TestSpaRuntimeHosted.tearDownClass",
+      "file": "tests/test_serve_browser.py",
+      "lines": [
+        408,
+        413
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_shell_browser._Base.setUpClass",
+      "file": "tests/test_shell_browser.py",
+      "lines": [
+        28,
+        32
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_shell_browser._Base.tearDownClass",
+      "file": "tests/test_shell_browser.py",
+      "lines": [
+        35,
+        37
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_shell_static.TestSpriteDelivery.setUpClass",
+      "file": "tests/test_shell_static.py",
+      "lines": [
+        96,
+        102
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_shell_static.TestSpriteDelivery.tearDownClass",
+      "file": "tests/test_shell_static.py",
+      "lines": [
+        105,
+        107
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_snapshot.TestSnapshot.setUpClass",
+      "file": "tests/test_snapshot.py",
+      "lines": [
+        30,
+        41
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_snapshot.TestSnapshot.tearDownClass",
+      "file": "tests/test_snapshot.py",
+      "lines": [
+        44,
+        45
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_spec_anchors._product_page",
+      "file": "tests/test_spec_anchors.py",
+      "lines": [
+        209,
+        215
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "vulture",
+          "detail": "60% confidence: unused function '_product_page'"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_spec_anchors.TestAnchorsTellSpecsApart.setUp",
+      "file": "tests/test_spec_anchors.py",
+      "lines": [
+        286,
+        289
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_spec_anchors.TestMultiFileReadsFileBodies.setUp",
+      "file": "tests/test_spec_anchors.py",
+      "lines": [
+        497,
+        499
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_spend_guard.TestSpendMeters.setUp",
+      "file": "tests/test_spend_guard.py",
+      "lines": [
+        32,
+        34
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_spend_guard.TestSpendMeters.tearDown",
+      "file": "tests/test_spend_guard.py",
+      "lines": [
+        36,
+        37
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_spend_guard.TestBudgetCheck.setUp",
+      "file": "tests/test_spend_guard.py",
+      "lines": [
+        71,
+        73
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_spend_guard.TestBudgetCheck.tearDown",
+      "file": "tests/test_spend_guard.py",
+      "lines": [
+        75,
+        76
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_spend_guard.TestPerCellRecheck.setUp",
+      "file": "tests/test_spend_guard.py",
+      "lines": [
+        132,
+        134
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_spend_guard.TestPerCellRecheck.tearDown",
+      "file": "tests/test_spend_guard.py",
+      "lines": [
+        136,
+        137
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_sql_task._FakeClient.chat",
+      "file": "tests/test_sql_task.py",
+      "lines": [
+        58,
+        80
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_sql_task._FakeClient.close",
+      "file": "tests/test_sql_task.py",
+      "lines": [
+        82,
+        83
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_sql_task.TestShippedMonthlyRevenueSpec.setUp",
+      "file": "tests/test_sql_task.py",
+      "lines": [
+        285,
+        291
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_swe_patch._FakeClient.chat",
+      "file": "tests/test_swe_patch.py",
+      "lines": [
+        104,
+        118
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_swe_patch._FakeClient.close",
+      "file": "tests/test_swe_patch.py",
+      "lines": [
+        120,
+        121
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_terminal.TestVirtualShell.setUp",
+      "file": "tests/test_terminal.py",
+      "lines": [
+        59,
+        66
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_terminal._FakeClient.chat",
+      "file": "tests/test_terminal.py",
+      "lines": [
+        160,
+        174
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_terminal._FakeClient.close",
+      "file": "tests/test_terminal.py",
+      "lines": [
+        176,
+        177
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_tui.TestSpendParity.setUpClass",
+      "file": "tests/test_tui.py",
+      "lines": [
+        809,
+        814
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_tui.TestSpendParity.tearDownClass",
+      "file": "tests/test_tui.py",
+      "lines": [
+        817,
+        818
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_video_tasks._FakeClient.chat",
+      "file": "tests/test_video_tasks.py",
+      "lines": [
+        131,
+        141
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_video_tasks._FakeClient.videos",
+      "file": "tests/test_video_tasks.py",
+      "lines": [
+        143,
+        154
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_video_tasks._FakeClient.close",
+      "file": "tests/test_video_tasks.py",
+      "lines": [
+        156,
+        157
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_web_experiment.TestExperimentPayload.setUp",
+      "file": "tests/test_web_experiment.py",
+      "lines": [
+        26,
+        34
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_web_experiment.TestExperimentPayload.tearDown",
+      "file": "tests/test_web_experiment.py",
+      "lines": [
+        36,
+        37
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_web_meta.TestMetaRoute.setUpClass",
+      "file": "tests/test_web_meta.py",
+      "lines": [
+        46,
+        53
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_web_meta.TestMetaRoute.tearDownClass",
+      "file": "tests/test_web_meta.py",
+      "lines": [
+        56,
+        58
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_web_models_catalog.TestModelsCatalog.setUp",
+      "file": "tests/test_web_models_catalog.py",
+      "lines": [
+        43,
+        49
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_web_models_catalog.TestModelsCatalog.tearDown",
+      "file": "tests/test_web_models_catalog.py",
+      "lines": [
+        51,
+        52
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_web_new_models_payload._Fixture.setUp",
+      "file": "tests/test_web_new_models_payload.py",
+      "lines": [
+        38,
+        51
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_web_new_models_payload._Fixture.tearDown",
+      "file": "tests/test_web_new_models_payload.py",
+      "lines": [
+        53,
+        54
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_web_now.TestNowPayload.setUpClass",
+      "file": "tests/test_web_now.py",
+      "lines": [
+        57,
+        74
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_web_now.TestNowPayload.tearDownClass",
+      "file": "tests/test_web_now.py",
+      "lines": [
+        77,
+        78
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_web_now.TestExperimentsList.setUp",
+      "file": "tests/test_web_now.py",
+      "lines": [
+        144,
+        150
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_web_spend_gate._Server.setUpClass",
+      "file": "tests/test_web_spend_gate.py",
+      "lines": [
+        59,
+        69
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_web_spend_gate._Server.tearDownClass",
+      "file": "tests/test_web_spend_gate.py",
+      "lines": [
+        72,
+        74
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "tests.test_workflow_security.WorkflowSecurityTests.setUpClass",
+      "file": "tests/test_workflow_security.py",
+      "lines": [
+        47,
+        50
+      ],
+      "tier": "B",
+      "surface": "tests",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": "tests surface rides with the code it covers"
+    },
+    {
+      "symbol": "ui.js.api.ApiError.constructor",
+      "file": "ui/js/api.js",
+      "lines": [
+        5,
+        11
+      ],
+      "tier": "C",
+      "surface": "js",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": ""
+    },
+    {
+      "symbol": "ui.js.charts.scale.moneyTick",
+      "file": "ui/js/charts/scale.js",
+      "lines": [
+        32,
+        34
+      ],
+      "tier": "C",
+      "surface": "js",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": ""
+    },
+    {
+      "symbol": "ui.js.chips.runRow",
+      "file": "ui/js/chips.js",
+      "lines": [
+        31,
+        43
+      ],
+      "tier": "C",
+      "surface": "js",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": ""
+    },
+    {
+      "symbol": "ui.js.components.combobox.setItems",
+      "file": "ui/js/components/combobox.js",
+      "lines": [
+        118,
+        118
+      ],
+      "tier": "C",
+      "surface": "js",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": ""
+    },
+    {
+      "symbol": "ui.js.components.combobox.setValue",
+      "file": "ui/js/components/combobox.js",
+      "lines": [
+        119,
+        119
+      ],
+      "tier": "C",
+      "surface": "js",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": ""
+    },
+    {
+      "symbol": "ui.js.components.combobox.invalid",
+      "file": "ui/js/components/combobox.js",
+      "lines": [
+        120,
+        122
+      ],
+      "tier": "C",
+      "surface": "js",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": ""
+    },
+    {
+      "symbol": "ui.js.components.program-card.measure",
+      "file": "ui/js/components/program-card.js",
+      "lines": [
+        93,
+        108
+      ],
+      "tier": "C",
+      "surface": "js",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": ""
+    },
+    {
+      "symbol": "ui.js.components.table.isNarrow",
+      "file": "ui/js/components/table.js",
+      "lines": [
+        90,
+        90
+      ],
+      "tier": "C",
+      "surface": "js",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": ""
+    },
+    {
+      "symbol": "ui.js.data.cmp",
+      "file": "ui/js/data.js",
+      "lines": [
+        161,
+        161
+      ],
+      "tier": "C",
+      "surface": "js",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": ""
+    },
+    {
+      "symbol": "ui.js.motion.fillBars",
+      "file": "ui/js/motion.js",
+      "lines": [
+        55,
+        55
+      ],
+      "tier": "C",
+      "surface": "js",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": ""
+    },
+    {
+      "symbol": "ui.js.poller.active",
+      "file": "ui/js/poller.js",
+      "lines": [
+        70,
+        70
+      ],
+      "tier": "C",
+      "surface": "js",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": ""
+    },
+    {
+      "symbol": "ui.js.util.calAxis",
+      "file": "ui/js/util.js",
+      "lines": [
+        113,
+        121
+      ],
+      "tier": "C",
+      "surface": "js",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": ""
+    },
+    {
+      "symbol": "ui.js.views.compare.rowHtml",
+      "file": "ui/js/views/compare.js",
+      "lines": [
+        58,
+        74
+      ],
+      "tier": "C",
+      "surface": "js",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": ""
+    },
+    {
+      "symbol": "ui.js.views.experiment.armText",
+      "file": "ui/js/views/experiment.js",
+      "lines": [
+        21,
+        22
+      ],
+      "tier": "C",
+      "surface": "js",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": ""
+    },
+    {
+      "symbol": "ui.js.views.now.isFail",
+      "file": "ui/js/views/now.js",
+      "lines": [
+        76,
+        76
+      ],
+      "tier": "C",
+      "surface": "js",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": ""
+    },
+    {
+      "symbol": "ui.js.views.now.refreshLive",
+      "file": "ui/js/views/now.js",
+      "lines": [
+        283,
+        287
+      ],
+      "tier": "C",
+      "surface": "js",
+      "evidence": [
+        {
+          "source": "graph",
+          "detail": "zero inbound CALLS|USAGE"
+        },
+        {
+          "source": "coverage",
+          "detail": "line range unexecuted"
+        }
+      ],
+      "note": ""
+    }
+  ]
+}

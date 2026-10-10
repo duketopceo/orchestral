@@ -67,6 +67,12 @@ def _fixture_db(path: Path) -> None:
         # framework-dispatch name — B-capped even with corroboration
         ("Method", "do_GET", "orchestral.scripts.serve.Handler.do_GET",
          "scripts/serve.py", 10, 14),
+        # interface-shaped pair: A.shared is dead, B.shared has callers —
+        # the dead one caps at B (override dispatch is invisible)
+        ("Method", "shared", "orchestral.orchestral.foo.A.shared",
+         "orchestral/foo.py", 55, 58),
+        ("Method", "shared", "orchestral.orchestral.foo.B.shared",
+         "orchestral/foo.py", 60, 65),
     ]
     for label, name, qn, fp, start, end in nodes:
         db.execute(
@@ -74,7 +80,8 @@ def _fixture_db(path: Path) -> None:
             "start_line,end_line) VALUES ('orchestral',?,?,?,?,?,?)",
             (label, name, qn, fp, start, end),
         )
-    # caller -> alive (CALLS), caller -> callback (USAGE)
+    # caller -> alive (CALLS), caller -> callback (USAGE),
+    # caller -> B.shared (CALLS: keeps A.shared capped but candidate)
     db.execute(
         "INSERT INTO edges (project,source_id,target_id,type) "
         "VALUES ('orchestral',4,1,'CALLS')"
@@ -82,6 +89,10 @@ def _fixture_db(path: Path) -> None:
     db.execute(
         "INSERT INTO edges (project,source_id,target_id,type) "
         "VALUES ('orchestral',4,9,'USAGE')"
+    )
+    db.execute(
+        "INSERT INTO edges (project,source_id,target_id,type) "
+        "VALUES ('orchestral',4,13,'CALLS')"
     )
     db.commit()
     db.close()
@@ -133,7 +144,8 @@ class TestPoolAndFilters(_Fixture):
             symbols,
             {"orchestral.foo.dead", "orchestral.foo.caller",
              "orchestral.proxy.wrapped", "orchestral.lazy.go",
-             "scripts.serve.Handler.do_GET", "ui.js.app.renderThing"},
+             "scripts.serve.Handler.do_GET", "orchestral.foo.A.shared",
+             "ui.js.app.renderThing"},
         )
 
     def test_registry_symbol_never_a_candidate(self) -> None:
@@ -212,6 +224,15 @@ class TestEvidenceJoin(_Fixture):
         handler = next(r for r in rows if r["symbol"].endswith("do_GET"))
         self.assertEqual(handler["tier"], "B")
         self.assertIn("framework-dispatch", handler["note"])
+
+    def test_same_named_method_with_callers_caps_at_b(self) -> None:
+        v = self._vulture(
+            "orchestral/foo.py:56: unused method 'shared' (90% confidence)\n"
+        )
+        rows = self._report(vulture_path=v)["rows"]
+        shared = next(r for r in rows if r["symbol"].endswith("A.shared"))
+        self.assertEqual(shared["tier"], "B")
+        self.assertIn("same-named", shared["note"])
 
     def test_no_optional_sources_means_no_tier_a(self) -> None:
         report = self._report()

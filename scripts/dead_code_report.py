@@ -129,7 +129,7 @@ def _candidate_pool(db_path: Path) -> list[dict[str, Any]]:
     params = [p + "%" if p.endswith("/") else p for p in REPO_OWNED]
     rows = db.execute(
         f"""SELECT n.qualified_name, n.name, n.file_path,
-                   n.start_line, n.end_line, n.properties
+                   n.start_line, n.end_line, n.properties, n.label
             FROM nodes n
             WHERE n.label IN ('Function', 'Method')
               AND ({clauses})
@@ -141,7 +141,7 @@ def _candidate_pool(db_path: Path) -> list[dict[str, Any]]:
     ).fetchall()
     db.close()
     pool = []
-    for qualified, name, path, start, end, props in rows:
+    for qualified, name, path, start, end, props, label in rows:
         pool.append(
             {
                 "qualified_name": qualified,
@@ -149,6 +149,7 @@ def _candidate_pool(db_path: Path) -> list[dict[str, Any]]:
                 "file": path,
                 "start_line": start,
                 "end_line": end,
+                "label": label,
                 "properties": json.loads(props or "{}"),
             }
         )
@@ -293,6 +294,29 @@ def _vulture_hit(
     return None
 
 
+def _redefined_with_callers(
+    db_path: Path, cache: dict[str, int]
+) -> dict[str, int]:
+    """{name: count of same-named Function/Method nodes with inbound
+    CALLS|USAGE}. A candidate whose name is implemented and reachable
+    elsewhere is interface-shaped (override/duck-type dispatch the graph
+    does not record) — cap at B, never A."""
+    if cache:
+        return cache
+    db = sqlite3.connect(db_path)
+    for name, cnt in db.execute(
+        """SELECT n.name, COUNT(*) FROM nodes n
+           WHERE n.label IN ('Function', 'Method')
+             AND EXISTS (SELECT 1 FROM edges e
+                         WHERE e.target_id = n.id
+                           AND e.type IN ('CALLS', 'USAGE'))
+           GROUP BY n.name"""
+    ):
+        cache[name] = cnt
+    db.close()
+    return cache
+
+
 def _coverage_state(
     candidate: dict[str, Any], executed: dict[str, set[int]] | None
 ) -> str | None:
@@ -349,6 +373,7 @@ def build_report(
 
     vulture = _parse_vulture(vulture_path) if vulture_path else {}
     executed = _parse_coverage(coverage_path) if coverage_path else None
+    redefined_counts = _redefined_with_callers(db_path, {})
 
     rows: list[dict[str, Any]] = []
     excluded_registry = excluded_pattern = dropped_executed = 0
@@ -381,6 +406,11 @@ def build_report(
         caps: list[str] = []
         if _FRAMEWORK_CALLBACK.match(cand["name"]):
             caps.append("framework-dispatch name")
+        if (
+            cand["label"] == "Method"
+            and redefined_counts.get(cand["name"], 0) > 0
+        ):
+            caps.append("same-named method reachable elsewhere")
         if cand["file"].startswith("tests/"):
             caps.append("tests surface rides with the code it covers")
         if cand["file"].endswith(".py"):

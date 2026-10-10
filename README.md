@@ -43,6 +43,9 @@ Does the quality of the final output depend more on:
 
 ## Install
 
+Agents: [docs/agent-quickstart.md](docs/agent-quickstart.md) is a
+self-contained walkthrough you can fetch and follow verbatim.
+
 ```bash
 pip install -e .            # from a clone
 pip install "orchestral @ git+https://github.com/duketopceo/orchestral"  # or straight from git

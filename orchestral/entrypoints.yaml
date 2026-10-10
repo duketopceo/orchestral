@@ -436,6 +436,9 @@ entry_points:
 - name: scripts/capture-ui-matrix.py
   kind: main_guard
   via: if __name__ == "__main__"
+- name: scripts/dead_code_report.py
+  kind: main_guard
+  via: if __name__ == "__main__"
 - name: scripts/e2e-hosted.py
   kind: main_guard
   via: if __name__ == "__main__"

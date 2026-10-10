@@ -61,6 +61,9 @@ def _fixture_db(path: Path) -> None:
         # callback absorbed by USAGE edge — not a candidate
         ("Function", "callback", "orchestral.orchestral.foo.callback",
          "orchestral/foo.py", 46, 50),
+        # zero-inbound fn in a module lazy-imported by harness.py — B-capped
+        ("Function", "go", "orchestral.orchestral.lazy.go",
+         "orchestral/lazy.py", 1, 2),
     ]
     for label, name, qn, fp, start, end in nodes:
         db.execute(
@@ -126,7 +129,8 @@ class TestPoolAndFilters(_Fixture):
         self.assertEqual(
             symbols,
             {"orchestral.foo.dead", "orchestral.foo.caller",
-             "orchestral.proxy.wrapped", "ui.js.app.renderThing"},
+             "orchestral.proxy.wrapped", "orchestral.lazy.go",
+             "ui.js.app.renderThing"},
         )
 
     def test_registry_symbol_never_a_candidate(self) -> None:
@@ -144,6 +148,16 @@ class TestPoolAndFilters(_Fixture):
         js = next(r for r in rows if r["file"].startswith("ui/js/"))
         self.assertEqual(js["tier"], "C")
         self.assertEqual(js["surface"], "js")
+
+    def test_lazy_imported_module_caps_at_b(self) -> None:
+        (self.repo / "harness.py").write_text(
+            "def cmd():\n    from orchestral import lazy\n    lazy.go()\n"
+        )
+        (self.repo / "orchestral" / "lazy.py").write_text("def go():\n    pass\n")
+        rows = self._report()["rows"]
+        lazy = next(r for r in rows if r["symbol"].endswith("lazy.go"))
+        self.assertEqual(lazy["tier"], "B")
+        self.assertIn("lazy-imported", lazy["note"])
 
     def test_freshness_gate(self) -> None:
         with self.assertRaises(SystemExit):

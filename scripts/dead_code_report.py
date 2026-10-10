@@ -233,6 +233,9 @@ def _function_scope_imports(path: Path) -> set[str]:
                     scoped.update(a.name for a in inner.names)
                 elif isinstance(inner, ast.ImportFrom) and inner.module:
                     scoped.add(inner.module)
+                    scoped.update(
+                        f"{inner.module}.{a.name}" for a in inner.names
+                    )
     return scoped
 
 

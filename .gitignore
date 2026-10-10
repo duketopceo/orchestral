@@ -69,3 +69,4 @@ models/provider-catalog.json
 # hosted Worker: staged ui/ (scripts/build-hosted-assets.py)
 infra/cloudflare/observatory/.build/
 infra/cloudflare/observatory/.wrangler/
+.coverage*

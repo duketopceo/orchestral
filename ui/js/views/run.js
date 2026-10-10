@@ -1,7 +1,7 @@
 import { $view } from "../dom.js";
 import { can, data, isHosted } from "../data.js";
 import { isAbort } from "../api.js";
-import { judgeChip, statusChip } from "../chips.js";
+import { judgeChip, outcomeChip } from "../chips.js";
 import { HOSTED_NOTE, UNOWNED_NOTE } from "../live.js";
 import { confirmAction } from "../components/action-dialog.js";
 import { artifactHtml, bindArtifact } from "../components/artifact-viewer.js";
@@ -47,10 +47,10 @@ function liveLine(d, hosted) {
   if (lv.state === "abandoned") {
     return `<span class="rd-live" id="rd-live" data-state="abandoned">${icon("cancelled")} Marked abandoned. The index still lists it as running.</span>`;
   }
-  const stalled = lv.state === "stalled";
+  const stalled = lv.state === "stalled" || lv.state === "lost";
   const idle = lv.idle_s == null ? "no events recorded" : `last event ${duration(lv.idle_s * 1000)} ago`;
   const note = lv.owned ? "" : ` <span class="rj-note">${UNOWNED_NOTE}</span>`;
-  return `<span class="rd-live" id="rd-live" data-state="${esc(lv.state)}">${liveGlyph({ stalled })} ${stalled ? "Stalled" : "Live"}, ${idle}.${note}</span>`;
+  return `<span class="rd-live" id="rd-live" data-state="${esc(lv.state)}">${liveGlyph({ stalled })} ${lv.state === "lost" ? "Lost" : stalled ? "Stalled" : "Live"}, ${idle}.${note}</span>`;
 }
 
 function actionButtons(d, hosted) {
@@ -111,7 +111,7 @@ function headHtml(d, runId, tab, hosted) {
       <div class="rh-pair dim">${[`${esc(d.group_label || m.run_group || "")}${d.group_label ? ` <span class="dim">(${esc(m.run_group)})</span>` : ""}`,
         m.replicate ? `replicate ${m.replicate}` : "", `run ${esc(runId.slice(0, 12))}`].filter(Boolean).join(" · ")}</div>
       <div class="run-stats rd-stats">
-        <div class="stat"><span class="s-label">Verdict</span><span class="s-val">${statusChip(m)}${m.dry_run ? ' <span class="chip chip-dim">Dry run</span>' : ""}${d.holdout ? ' <span class="chip chip-dim">Holdout</span>' : ""}</span></div>
+        <div class="stat"><span class="s-label">Outcome</span><span class="s-val">${outcomeChip(m)}${d.holdout ? ' <span class="chip chip-dim">Holdout</span>' : ""}</span></div>
         <div class="stat"><span class="s-label">Judge</span><span class="s-val">${judgeChip({ ...m, judge_state: d.judge_state, judge_reason: d.judge_reason })}${
           extra.length ? ` <span class="chip chip-dim" title="Secondary judge verdicts. The primary axis is ${esc(primary || "unknown")}">${extra.map(([s, j]) => `${esc(slug(s))} ${fmtScore(j && j.score)}`).join(" · ")}</span>` : ""}</span></div>
         ${kv("Cost", `<span data-tick="cost">${nilOr(fmtMoney(billed))}</span>${m.cost_basis ? ` <span class="dim sm" title="${esc(basisNote(m))}">${esc(basisNote(m))}</span>` : ""}${

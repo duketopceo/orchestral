@@ -1,6 +1,6 @@
 #  orchestrator  worker                n  pass%  med cost  fail%  $/pass
 ────────────────────────────────────────────────────────────────────────
-1  orch-a        worker-cheap        292    74%   $0.0079    29%  $0.010
+1  orch-a        worker-cheap        292    77%   $0.0082    26%  $0.012
 2  orch-b        worker-cheap        240    73%    $0.010    29%  $0.015
 3  orch-a        worker-mid          240    61%    $0.015    43%  $0.027
 4  orch-b        worker-hot          241    54%    $0.019    51%  $0.044

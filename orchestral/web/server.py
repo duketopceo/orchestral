@@ -307,6 +307,7 @@ def make_handler(obs: Observatory) -> type[BaseHTTPRequestHandler]:
                     tasks_dir=obs.tasks_dir,
                     pairing=self._q1(qs, "pairing"),
                     judge=self._q1(qs, "judge"),
+                    outcome=self._q1(qs, "outcome"),
                     type=self._q1(qs, "type"),
                     difficulty=self._q1(qs, "difficulty"),
                     sort=self._q1(qs, "sort"),

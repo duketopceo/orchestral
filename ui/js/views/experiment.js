@@ -18,11 +18,11 @@ const stateChip = s => ({
   pending: "chip-dim", skipped: "chip-dim",
 }[s] || "chip-dim");
 
-const armText = a => (a && a.n
-  ? `${a.passes} of ${a.n} (${fmtPct(a.rate)})${a.ci ? `, interval ${F.rangePct(a.ci[0], a.ci[1])}` : ""}` : "no runs yet");
+const armText = a => (a && (a.n || a.non_evidence)
+  ? `${a.passes} of ${a.n} verdicted (${fmtPct(a.rate)})${a.ci ? `, interval ${F.rangePct(a.ci[0], a.ci[1])}` : ""}${a.non_evidence ? `, ${a.non_evidence} non-evidence` : ""}` : "no runs yet");
 const armCell = a => a && a.n
-  ? `${a.passes}/${a.n} <span class="dim sm">${fmtPct(a.rate)}${a.ci ? ` [${F.rangePct(a.ci[0], a.ci[1])}]` : ""}</span>`
-  : `<span class="dim">·</span>`;
+  ? `${a.passes}/${a.n} <span class="dim sm">${fmtPct(a.rate)}${a.ci ? ` [${F.rangePct(a.ci[0], a.ci[1])}]` : ""}${a.non_evidence ? ` +${a.non_evidence} non-ev.` : ""}</span>`
+  : `<span class="dim" title="${a && a.non_evidence ? `${a.non_evidence} runs excluded from evidence` : "no runs"}">·</span>`;
 
 /* The pass-rate dumbbell is the chart kit's: baseline ring, jev filled point, Wilson whiskers,
    hatched when an arm has fewer finished runs than the low-n threshold. */

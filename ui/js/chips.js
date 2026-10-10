@@ -3,14 +3,34 @@ import { icon, liveGlyph } from "./components/states.js";
 import { flagWidget } from "./flags.js";
 import { NIL, basisNote, billedOf, esc, fmtMoney, fmtMs, fmtScore, fmtTok, fmtWhen, slug } from "./util.js";
 
-export function statusChip(r) {
-  if (r.status === "running") return `<span class="chip chip-warn">${liveGlyph()}Running</span>`;
-  if (r.status === "failed") return `<span class="chip chip-fail">${icon("fail")}Failed</span>`;
-  if (r.status === "cancelled") return `<span class="chip chip-dim">${icon("cancelled")}Cancelled</span>`;
-  if (r.holdout && r.status === "finished") return `<span class="chip chip-dim" title="Holdout arm: the outcome is not published">Withheld</span>`;
-  if (r.passes === true || r.passes === 1) return `<span class="chip chip-pass">${icon("pass")}Pass</span>`;
-  if (r.passes === false || r.passes === 0) return `<span class="chip chip-fail">${icon("fail")}Fail</span>`;
-  return `<span class="chip chip-dim">${esc(r.status)}</span>`;
+/* The outcome axis (what happened to the run) is separate from the judge
+   axis (whether a verdict exists): a malformed output is Invalid, not a
+   Fail, and an infra death never reached the model-quality question. */
+const OUTCOMES = {
+  pass: ["chip-pass", "pass", "Pass", "The run met the task's pass criteria"],
+  fail: ["chip-fail", "fail", "Fail", "Judged and failed, or failed the mechanical checks"],
+  invalid: ["chip-warn", "inconclusive", "Invalid",
+    "The output never became a judgeable artifact; this is not a model-quality verdict"],
+  infra: ["chip-warn", "cost", "Infra",
+    "Infrastructure failure: the run never got a fair attempt"],
+  inconclusive: ["chip-dim", "inconclusive", "Inconclusive",
+    "Finished without a usable verdict"],
+  dry: ["chip-dim", "not-judged", "Dry run", "Sample data; never counted as evidence"],
+  lost: ["chip-warn", "stalled", "Lost",
+    "Still marked running but silent for over an hour; the process is presumed dead"],
+  cancelled: ["chip-dim", "cancelled", "Cancelled", "Stopped before a terminal state"],
+  running: ["chip-warn", "live", "Running", "Still in progress"],
+  unknown: ["chip-dim", null, "Unknown", "Unrecognized status"],
+};
+
+export function outcomeChip(r) {
+  if (r.holdout && r.status === "finished")
+    return `<span class="chip chip-dim" title="Holdout arm: the outcome is not published">Withheld</span>`;
+  const st = r.outcome || (r.status === "running" ? "running" : r.status);
+  const [cls, ic, label, dflt] = OUTCOMES[st] || OUTCOMES.unknown;
+  const why = esc(r.outcome_reason || dflt);
+  const glyph = st === "running" ? liveGlyph() : ic ? icon(ic) : "";
+  return `<span class="chip ${cls}" title="${why}">${glyph}${label}</span>`;
 }
 
 export function judgeChip(r) {
@@ -30,7 +50,7 @@ export function judgeChip(r) {
 
 export function runRow(r) {
   return `<tr>
-    <td>${statusChip(r)} ${flagWidget("run", r.run_id)}</td>
+    <td>${outcomeChip(r)} ${flagWidget("run", r.run_id)}</td>
     <td><a href="#/run/${esc(r.run_id)}">${esc(r.task_title || r.task_id)}</a>${r.task_title ? `<div class="dim sm">${esc(r.task_id)}</div>` : ""}</td>
     <td class="mono">${esc(slug(r.orchestrator))} <span class="dim">→</span> ${esc(slug(r.worker))}</td>
     <td>${judgeChip(r)}</td>
@@ -43,7 +63,7 @@ export function runRow(r) {
 }
 
 export const RUN_HEAD = `<tr>
-  <th>Verdict</th><th>Task</th><th>Orchestrator → Worker</th><th>Judge</th>
+  <th>Outcome</th><th>Task</th><th>Orchestrator → Worker</th><th>Judge</th>
   <th class="t-num">Cost</th><th class="t-num" data-pri="2">Tokens</th><th class="t-num" data-pri="2">Duration</th>
   <th data-pri="3">Group</th><th data-pri="3">Started</th>
 </tr>`;

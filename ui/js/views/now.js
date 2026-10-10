@@ -47,12 +47,13 @@ const bandHtml = (id, title, body, sub = "") => `
   </section>`;
 
 function liveLane(j, hosted) {
-  const stalled = j.state === "stalled";
+  const stalled = j.state === "stalled" || j.state === "lost";
+  const lost = j.state === "lost";
   const idle = j.idle_s == null || hosted ? "" : `${stalled ? "quiet for " : "last event "}${F.duration(j.idle_s * 1000)}`;
   const name = j.run_id
     ? `<a class="jl" href="#/run/${encodeURIComponent(j.run_id)}">${esc(j.label)}</a>`
     : `<span class="jl">${esc(j.label)}</span>`;
-  const bits = [hosted ? HOSTED_NOTE : stalled ? "stalled" : (j.phase || "live"),
+  const bits = [hosted ? HOSTED_NOTE : lost ? "lost" : stalled ? "stalled" : (j.phase || "live"),
     j.elapsed && j.elapsed !== F.NULL_GLYPH ? j.elapsed : "", idle, j.spend_usd ? `${fmtMoney(j.spend_usd)} so far` : ""]
     .filter(Boolean);
   const note = !hosted && !j.owned ? `<span class="ll-note">${UNOWNED_NOTE}</span>` : "";
@@ -101,7 +102,8 @@ function changedBand(ov, since, firstVisit) {
 }
 
 const LOOK_KIND = {
-  stalled: ["stalled", "Stalled"], infra_error: ["fail", "Infra error"],
+  stalled: ["stalled", "Stalled"], lost: ["stalled", "Lost"],
+  infra_error: ["fail", "Infra error"], task_health: ["fail", "Task health"],
   inconclusive_judge: ["inconclusive", "Judge inconclusive"], flagged: ["flag", "Flagged"],
   pricing_drift: ["cost", "Pricing drift"],
 };
@@ -152,11 +154,15 @@ function heatmapBand(mx) {
       if (!c) continue;
       const [orch, worker] = splitPairing(p);
       const v = c.pass_rate;
+      const ev = c.evidence ?? c.n;
       const jm = c.judge_mean != null ? `, judge ${fmtScore(c.judge_mean)}` : "";
+      const excl = Object.entries(c.outcomes || {})
+        .filter(([k]) => k !== "pass" && k !== "fail")
+        .map(([k, n]) => `${n} ${k}`).join(", ");
       cells.push({
-        row: t.task_id, col: p, value: v, n: c.n, unrated: v == null,
+        row: t.task_id, col: p, value: v, n: ev, unrated: v == null,
         href: `#/runs?task=${encodeURIComponent(t.task_id)}&pairing=${encodeURIComponent(pairingParam(orch, worker))}`,
-        title: `${t.task_title || t.task_id}, ${p}: ${v == null ? "no finished runs" : `${fmtPct(v)} pass`} over ${c.n} run${c.n === 1 ? "" : "s"}${jm}${F.lowNCell(c.n) ? ", low n" : ""}`,
+        title: `${t.task_title || t.task_id}, ${p}: ${v == null ? "no verdicts yet" : `${fmtPct(v)} pass`} over ${ev} evidence run${ev === 1 ? "" : "s"} of ${c.n} total${excl ? ` (${excl})` : ""}${jm}${F.lowNCell(ev) ? ", low n" : ""}`,
       });
     }
   }

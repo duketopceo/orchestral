@@ -53,6 +53,7 @@ class CellAggregate:
     runs: int = 0
     finished: int = 0
     passed: int = 0
+    evidence: int = 0
     pass_rate: float | None = None
     score_mean: float | None = None
     score_sd: float = 0.0
@@ -77,6 +78,7 @@ class CellAggregate:
             "runs": self.runs,
             "finished": self.finished,
             "passed": self.passed,
+            "evidence": self.evidence,
             "pass_rate": self.pass_rate,
             "score_mean": self.score_mean,
             "score_sd": self.score_sd,
@@ -123,6 +125,14 @@ def _cost_per_pass(rs: list[RunMeta], cost_basis: str) -> float | None:
     return cost / passed if passed and cost > 0 else None
 
 
+def is_evidence(r: RunMeta) -> bool:
+    """Runs a pass rate may count: real (not dry), finished, and the run
+    reached a pass/fail verdict (`passes is not None`). Dry-runs and
+    finished-but-inconclusive runs are not evidence in either direction —
+    counting them deflates rates with runs that were never scored."""
+    return r.status == "finished" and not r.dry_run and r.passes is not None
+
+
 def _macro_pass(rs: list[RunMeta]) -> float | None:
     """Mean of per-task pass rates — every task weighs the same regardless
     of how much spend it attracted."""
@@ -162,16 +172,20 @@ def aggregate(runs: Iterable[RunMeta], *, by_group: bool = True,
     out: list[CellAggregate] = []
     for (group, task_id, orch, worker), cell in cells.items():
         n = len(cell)
-        finished = [r for r in cell if r.status == "finished"]
-        passed = sum(1 for r in cell if r.passes)
+        real = [r for r in cell if not r.dry_run]
+        finished = [r for r in real if r.status == "finished"]
+        evidence = [r for r in finished if r.passes is not None]
+        passed = sum(1 for r in finished if r.passes)
         scored = [r.score for r in finished if r.score is not None]
         judged = [r.judge_score for r in finished if r.judge_score is not None]
-        costs = [run_cost(r, cost_basis) for r in cell]
-        latencies = [r.latency_ms for r in cell if r.latency_ms]
-        tokens = [r.total_input_tokens + r.total_output_tokens for r in cell]
+        # dry-run cost/token/latency fields are synthetic — never bill them
+        # into a cell's medians or totals
+        costs = [run_cost(r, cost_basis) for r in real]
+        latencies = [r.latency_ms for r in real if r.latency_ms]
+        tokens = [r.total_input_tokens + r.total_output_tokens for r in real]
         cost_total = math.fsum(costs)
         failures: dict[str, int] = {}
-        for r in cell:
+        for r in real:
             if r.failure_reason:
                 failures[r.failure_reason] = failures.get(r.failure_reason, 0) + 1
         out.append(CellAggregate(
@@ -182,9 +196,11 @@ def aggregate(runs: Iterable[RunMeta], *, by_group: bool = True,
             runs=n,
             finished=len(finished),
             passed=passed,
+            evidence=len(evidence),
             # capability axis: crashed/infra-failed runs are noise, not
-            # evidence against the pairing — pass rate is over finished runs
-            pass_rate=passed / len(finished) if finished else None,
+            # evidence against the pairing — pass rate is over verdicted
+            # runs only (dry-runs and inconclusive verdicts excluded)
+            pass_rate=passed / len(evidence) if evidence else None,
             score_mean=mean(scored) if scored else None,
             score_sd=stdev(scored),
             judge_score_mean=mean(judged) if judged else None,
@@ -223,6 +239,7 @@ class PairingAggregate:
     runs: int = 0
     finished: int = 0
     passed: int = 0
+    evidence: int = 0
     tasks_covered: int = 0
     pass_rate: float | None = None
     macro_pass_rate: float | None = None
@@ -254,6 +271,7 @@ class PairingAggregate:
             "runs": self.runs,
             "finished": self.finished,
             "passed": self.passed,
+            "evidence": self.evidence,
             "tasks_covered": self.tasks_covered,
             "pass_rate": self.pass_rate,
             "macro_pass_rate": self.macro_pass_rate,
@@ -301,10 +319,12 @@ def pairing_leaderboard(
 ) -> list[PairingAggregate]:
     """Aggregate runs into leaderboard rows keyed on (orchestrator, worker).
 
-    Medians, pass_rate, and `low_sample` are over finished runs only —
-    a crashed run is infra noise, not evidence about the pairing, so three
-    crashes and zero finishes cannot rank. `failure_rate` stays over all
-    runs: infra fragility is real signal, just a different axis.
+    Medians, pass_rate, and `low_sample` are over evidence runs — real,
+    finished, verdicted runs only (`is_evidence`). A crashed run is infra
+    noise, a dry-run was never judged, and an inconclusive verdict is not
+    evidence in either direction, so three crashes or two dry-runs plus
+    zero verdicts cannot rank. `failure_rate` stays over all real runs:
+    infra fragility is real signal, just a different axis.
 
     `unmetered_workers` carries worker slugs whose calls are declared
     unmetered (free/local agent CLIs). A $0 total must not read as a free
@@ -345,9 +365,10 @@ def pairing_leaderboard(
 
     out: list[PairingAggregate] = []
     for (orch, worker), cell in published.items():
-        n = len(cell)
-        finished = [r for r in cell if r.status == "finished"]
-        passed = sum(1 for r in cell if r.passes)
+        real = [r for r in cell if not r.dry_run]
+        finished = [r for r in real if r.status == "finished"]
+        evidence = [r for r in finished if r.passes is not None]
+        passed = sum(1 for r in finished if r.passes)
         scored = [r.score for r in finished if r.score is not None]
         judge_scores: list[float] = []
         for r in finished:
@@ -357,30 +378,36 @@ def pairing_leaderboard(
         judge_approved = sum(1 for r in judged if r.judge_passed is True)
         costs = [run_cost(r, cost_basis) for r in finished]
         latencies = [r.latency_ms for r in finished if r.latency_ms]
-        cost_total = math.fsum(run_cost(r, cost_basis) for r in cell)
+        cost_total = math.fsum(run_cost(r, cost_basis) for r in real)
         failures: dict[str, int] = {}
-        for r in cell:
+        for r in real:
             if r.failure_reason:
                 failures[r.failure_reason] = failures.get(r.failure_reason, 0) + 1
-        failed_n = sum(1 for r in cell if not r.passes)
+        # terminal non-success: crashed + failed-verdict runs; inconclusive
+        # (finished without a verdict) is not a failure in either direction
+        failed_n = sum(
+            1 for r in real
+            if r.status == "failed" or (r.status == "finished" and r.passes is False)
+        )
         out.append(PairingAggregate(
             orchestrator=orch,
             worker=worker,
-            runs=n,
+            runs=len(cell),
             finished=len(finished),
             passed=passed,
-            tasks_covered=len({r.task_id for r in cell}),
-            pass_rate=passed / len(finished) if finished else None,
+            evidence=len(evidence),
+            tasks_covered=len({r.task_id for r in real}),
+            pass_rate=passed / len(evidence) if evidence else None,
             # pooled pass rate silently weighs tasks by where spend went;
             # macro gives every task equal say — the publishable headline
-            macro_pass_rate=_macro_pass(finished),
+            macro_pass_rate=_macro_pass(evidence),
             macro_pass_rate_ci=(
                 bootstrap_ci(
-                    finished, _macro_pass,
+                    evidence, _macro_pass,
                     clusters=lambda r: (run_task_type(r), r.task_id),
                     n_boot=bootstrap,
                     seed=_seed_for("macro", orch, worker))
-                if bootstrap and finished else None
+                if bootstrap and evidence else None
             ),
             score_median=statistics.median(scored) if scored else None,
             score_mean=mean(scored) if scored else None,
@@ -392,7 +419,7 @@ def pairing_leaderboard(
             cost_total=cost_total,
             duration_median_ms=statistics.median(latencies) if latencies else 0.0,
             duration_p90_ms=percentile(latencies, 90) if latencies else 0.0,
-            failure_rate=failed_n / n if n else None,
+            failure_rate=failed_n / len(real) if real else None,
             cost_per_pass=(
                 None
                 if worker in unmetered or not passed or cost_total <= 0
@@ -415,7 +442,9 @@ def pairing_leaderboard(
                 if bootstrap else None
             ),
             failures=failures,
-            low_sample=len(finished) < min_samples,
+            # thin samples never rank: evidence runs (verdicted) are the
+            # denominator that matters, not merely finished ones
+            low_sample=len(evidence) < min_samples,
             holdout_runs=holdout.get((orch, worker), 0),
         ))
     # thin samples never rank: low_sample rows always tail, whatever the

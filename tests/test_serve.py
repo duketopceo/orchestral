@@ -38,6 +38,16 @@ def _seed_run(runs_dir: str, **kw) -> str:
     return meta.run_id
 
 
+def _seed_real_run(runs_dir: str, **kw) -> str:
+    """A dry-seeded run flipped to real - evidence-bearing for rate tests."""
+    rid = _seed_run(runs_dir, **kw)
+    store = RunStore(runs_dir)
+    meta = store.get_run(rid)
+    meta.dry_run = False
+    store.update_meta(meta)
+    return rid
+
+
 def _write_specs(root: Path) -> tuple[Path, Path]:
     tasks = root / "tasks"
     models = root / "models"
@@ -124,7 +134,7 @@ class TestPureLayer(unittest.TestCase):
 
     def test_card_payload_run_group_and_missing(self):
         with tempfile.TemporaryDirectory() as tmp:
-            rid = _seed_run(tmp, run_group="g-cards")
+            rid = _seed_real_run(tmp, run_group="g-cards")
             store = RunStore(tmp)
             store.set_annotation("run", rid, "interesting")
             card = state.card_payload(store, "run", rid)
@@ -156,7 +166,7 @@ class TestPureLayer(unittest.TestCase):
         """title/blurb on specs + groups.yaml entries surface through every
         payload — a stranger reads 'Expression parser', not a raw slug."""
         with tempfile.TemporaryDirectory() as tmp:
-            rid = _seed_run(tmp, run_group="g-cards")
+            rid = _seed_real_run(tmp, run_group="g-cards")
             store = RunStore(tmp)
             tasks = Path(tmp) / "tasks"
             tasks.mkdir()
@@ -187,7 +197,7 @@ class TestPureLayer(unittest.TestCase):
         """Specs without title/blurb and groups without a groups.yaml entry
         degrade to raw names — the explainability layer is additive."""
         with tempfile.TemporaryDirectory() as tmp:
-            rid = _seed_run(tmp, run_group="g-bare")
+            rid = _seed_real_run(tmp, run_group="g-bare")
             store = RunStore(tmp)
             gcard = state.card_payload(store, "group", "g-bare")
             self.assertEqual(gcard["task_rows"][0]["title"], "")
@@ -285,7 +295,7 @@ class TestPureLayer(unittest.TestCase):
         """The tasks × pairings heatmap carries pass rate, n, judge mean,
         and task metadata; cells are absent (not zero) when unattempted."""
         with tempfile.TemporaryDirectory() as tmp:
-            _seed_run(tmp, run_group="g1")
+            _seed_real_run(tmp, run_group="g1")
             store = RunStore(tmp)
             m = state.task_matrix_payload(store)
             self.assertEqual(len(m["tasks"]), 1)
@@ -300,7 +310,7 @@ class TestPureLayer(unittest.TestCase):
     def test_pairing_aggregate_p90_and_judged_count(self):
         from orchestral.stats import pairing_leaderboard
         with tempfile.TemporaryDirectory() as tmp:
-            _seed_run(tmp, run_group="g1")
+            _seed_real_run(tmp, run_group="g1")
             store = RunStore(tmp)
             rid = store.list_runs()[0].run_id
             meta = store.get_run(rid)
@@ -312,7 +322,7 @@ class TestPureLayer(unittest.TestCase):
 
     def test_card_payload_pairing_description_and_type_rows(self):
         with tempfile.TemporaryDirectory() as tmp:
-            _seed_run(tmp, run_group="g1")
+            _seed_real_run(tmp, run_group="g1")
             store = RunStore(tmp)
             card = state.card_payload(store, "pairing", "o/model|w/model")
             self.assertIsNotNone(card)

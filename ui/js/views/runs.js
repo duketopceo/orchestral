@@ -7,7 +7,7 @@ import { STALE, can, data, filterRuns, isHosted, latest } from "../data.js";
 import { stateHtml, icon } from "../components/states.js";
 import { appliedNames, chipsHtml, debounce, liveFacets, selectHtml, RUN_FACETS } from "../components/facets.js";
 import { isAbort } from "../api.js";
-import { judgeChip, statusChip } from "../chips.js";
+import { judgeChip, outcomeChip } from "../chips.js";
 import { bindFlags, flagWidget, loadFlags } from "../flags.js";
 import { start } from "../poller.js";
 import { announce } from "../shell.js";
@@ -46,9 +46,10 @@ function hashFor(st) {
 const applied = f => Object.values(f).some(Boolean);
 
 function statusCell(r) {
-  const chip = r.stalled
+  // quiet-but-alive is a liveness annotation; lost is an outcome
+  const chip = r.stalled && r.outcome !== "lost"
     ? `<span class="chip chip-warn" title="No event for 10 minutes">${icon("stalled")}Stalled</span>`
-    : statusChip(r);
+    : outcomeChip(r);
   return `${chip} ${flagWidget("run", r.run_id)}`;
 }
 

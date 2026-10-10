@@ -56,6 +56,12 @@ DEFAULT_OUT = "docs/analysis/dead-code-report-2026-10.json"
 
 _DUNDER = re.compile(r"^__\w+__$")
 _TEST_NAME = re.compile(r"^(Test\w+|test_\w+)$")
+# Convention-named framework callbacks — http.server (do_*/log_message),
+# HTMLParser (handle_*tag), Textual (key_*/action_*/on_*). The graph cannot
+# see the dispatcher, so zero-inbound is meaningless for these names.
+_FRAMEWORK_CALLBACK = re.compile(
+    r"^(do_[A-Z]+|log_message|handle_\w+tag\w*|key_\w+|action_\w+|on_\w+)$"
+)
 _VULTURE_LINE = re.compile(r"^(.+?):(\d+):\s+(.+?)\s+\((\d+)%\s+confidence\)\s*$")
 
 
@@ -197,25 +203,6 @@ def _pattern_excluded(candidate: dict[str, Any]) -> str | None:
     if candidate["file"].startswith("tests/") and _TEST_NAME.match(candidate["name"]):
         return "unittest_discovery"
     return None
-
-
-def _parse_module_imports(path: Path) -> set[str]:
-    """Module-level and function-scope import targets of one file."""
-    try:
-        tree = ast.parse(path.read_text())
-    except (OSError, SyntaxError):
-        return set()
-    return _imports_in(tree)
-
-
-def _imports_in(tree: ast.AST) -> set[str]:
-    targets: set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            targets.update(a.name for a in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            targets.add(node.module)
-    return targets
 
 
 def _function_scope_imports(path: Path) -> set[str]:
@@ -392,6 +379,8 @@ def build_report(
             )
 
         caps: list[str] = []
+        if _FRAMEWORK_CALLBACK.match(cand["name"]):
+            caps.append("framework-dispatch name")
         if cand["file"].startswith("tests/"):
             caps.append("tests surface rides with the code it covers")
         if cand["file"].endswith(".py"):

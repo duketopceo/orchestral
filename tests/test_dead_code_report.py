@@ -64,6 +64,9 @@ def _fixture_db(path: Path) -> None:
         # zero-inbound fn in a module lazy-imported by harness.py — B-capped
         ("Function", "go", "orchestral.orchestral.lazy.go",
          "orchestral/lazy.py", 1, 2),
+        # framework-dispatch name — B-capped even with corroboration
+        ("Method", "do_GET", "orchestral.scripts.serve.Handler.do_GET",
+         "scripts/serve.py", 10, 14),
     ]
     for label, name, qn, fp, start, end in nodes:
         db.execute(
@@ -130,7 +133,7 @@ class TestPoolAndFilters(_Fixture):
             symbols,
             {"orchestral.foo.dead", "orchestral.foo.caller",
              "orchestral.proxy.wrapped", "orchestral.lazy.go",
-             "ui.js.app.renderThing"},
+             "scripts.serve.Handler.do_GET", "ui.js.app.renderThing"},
         )
 
     def test_registry_symbol_never_a_candidate(self) -> None:
@@ -200,6 +203,15 @@ class TestEvidenceJoin(_Fixture):
         )
         rows = self._report(coverage_path=c)["rows"]
         self.assertNotIn("orchestral.foo.dead", {r["symbol"] for r in rows})
+
+    def test_framework_callback_never_tier_a(self) -> None:
+        v = self._vulture(
+            "scripts/serve.py:10: unused method 'do_GET' (90% confidence)\n"
+        )
+        rows = self._report(vulture_path=v)["rows"]
+        handler = next(r for r in rows if r["symbol"].endswith("do_GET"))
+        self.assertEqual(handler["tier"], "B")
+        self.assertIn("framework-dispatch", handler["note"])
 
     def test_no_optional_sources_means_no_tier_a(self) -> None:
         report = self._report()

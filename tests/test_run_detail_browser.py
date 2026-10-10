@@ -359,7 +359,8 @@ class TestRunDetailBrowser(unittest.TestCase):
     def test_stalled_orphan_offers_abandon_not_cancel_and_abandon_retires_it(self):
         self.addCleanup(self._clear_annotations)
         pg = self.open(self.orphan)
-        self.assertIn("Stalled", pg.inner_text("#rd-live"))
+        # days past its last heartbeat: the orphan is a lost ghost, still abandonable
+        self.assertIn("Lost", pg.inner_text("#rd-live"))
         self.assertEqual(pg.locator("#cancel-btn").count(), 0)
         pg.click("#abandon-btn")
         self.assertEqual(pg.locator("dialog.action-dialog[open]").count(), 1)

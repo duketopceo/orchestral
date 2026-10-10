@@ -69,6 +69,14 @@ class TestNowPayload(unittest.TestCase):
         cls._add(cls, "u10-fresh-dry", "finished", now - timedelta(minutes=3), passes=True, dry=True)
         cls._add(cls, "u10-inconclusive", "finished", now - timedelta(minutes=2), passes=False,
                  judge={"inconclusive": True, "reasoning": "no usable verdict"})
+        # stalled but not yet lost: quiet for 15 minutes, inside the
+        # STALL_AFTER_S..LOST_AFTER_S band
+        (cls.root / "u10-stalled").mkdir()
+        cls.store.index_meta(RunMeta(
+            run_id="u10-stalled", orchestrator="corpus/orch-a", task_id="corpus-landing-page",
+            worker="corpus/worker-cheap", status="running",
+            started_at=(now - timedelta(minutes=15)).isoformat(),
+            run_dir=str(cls.root / "u10-stalled"), run_group="u10-group"))
         cls.store.set_annotation("group", "corpus-solo", "interesting", note="look at this")
         cls.payload = state.overview_payload(
             cls.store, cls.registry, tasks_dir=FIXTURES / "tasks")
@@ -107,7 +115,8 @@ class TestNowPayload(unittest.TestCase):
 
     def test_needs_look_covers_every_kind(self):
         kinds = {i["kind"] for i in self.payload["needs_look"]}
-        self.assertEqual(kinds, {"inconclusive_judge", "infra_error", "flagged", "stalled", "pricing_drift"})
+        self.assertEqual(kinds, {"inconclusive_judge", "infra_error", "flagged", "stalled",
+                                 "lost", "task_health", "pricing_drift"})
 
     def test_needs_look_items_point_somewhere_and_say_why(self):
         by = {}
@@ -116,7 +125,10 @@ class TestNowPayload(unittest.TestCase):
             self.assertTrue(i["title"] and i["href"].startswith("#/"), i)
         self.assertEqual(by["inconclusive_judge"][0]["run_id"], "u10-inconclusive")
         self.assertTrue(any(i["run_id"] == "u10-fresh-fail" for i in by["infra_error"]))
-        self.assertEqual(by["stalled"][0]["run_id"], self.manifest["orphan_run_id"])
+        self.assertEqual(by["stalled"][0]["run_id"], "u10-stalled")
+        # the corpus orphan is days-old: a collapsed lost item, not a stalled one
+        self.assertIn("outcome=lost", by["lost"][0]["href"])
+        self.assertTrue(by["task_health"][0]["title"])
         self.assertEqual(by["flagged"][0]["href"], "#/runs?group=corpus-solo")
         self.assertIn("corpus/worker-hot", " ".join(i["title"] for i in by["pricing_drift"]))
 

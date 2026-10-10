@@ -15,10 +15,11 @@ export const UNOWNED_NOTE = "Started from the CLI. Stop it there.";
 export const HOSTED_NOTE = "Running at last sync";
 
 export function jobRow(j, { hosted = false } = {}) {
-  const stalled = j.state === "stalled";
+  const stalled = j.state === "stalled" || j.state === "lost";
+  const lost = j.state === "lost";
   const idle = j.idle_s == null || hosted ? "" : `${stalled ? "quiet for " : "last event "}${F.duration(j.idle_s * 1000)}`;
   const bits = [
-    hosted ? HOSTED_NOTE : stalled ? "stalled" : "live",
+    hosted ? HOSTED_NOTE : lost ? "lost" : stalled ? "stalled" : "live",
     idle,
     j.spend_usd ? fmtMoney(j.spend_usd) : "",
   ].filter(Boolean);

@@ -29,6 +29,11 @@ const JUDGE = [
   ["judged", "Judged"], ["not_judged", "Not judged"], ["inconclusive", "Inconclusive"],
   ["unreadable", "Unreadable"], ["not_judgeable", "Not judgeable"],
 ];
+const OUTCOME = [
+  ["pass", "Pass"], ["fail", "Fail"], ["invalid", "Invalid"], ["infra", "Infra"],
+  ["inconclusive", "Inconclusive"], ["dry", "Dry run"], ["lost", "Lost"],
+  ["cancelled", "Cancelled"], ["running", "Running"],
+];
 
 /* key: URL parameter. options(rows) -> [[value, label], ...] from the unfiltered rows. */
 export const RUN_FACETS = [
@@ -39,6 +44,7 @@ export const RUN_FACETS = [
       r => (r.orchestrator && r.worker ? `${r.orchestrator}|${r.worker}` : ""),
       r => `${shortSlug(r.orchestrator)} / ${shortSlug(r.worker)}`) },
   { key: "status", label: "Verdict", all: "Any verdict", options: () => STATUS },
+  { key: "outcome", label: "Outcome", all: "Any outcome", options: rows => OUTCOME.filter(([v]) => rows.some(r => r.outcome === v)) },
   { key: "judge", label: "Judge", all: "Any judge state", options: rows => JUDGE.filter(([v]) => rows.some(r => r.judge_state === v)) },
   { key: "type", label: "Type", all: "Any type", options: rows => uniq(rows, r => r.type, r => r.type) },
   { key: "difficulty", label: "Difficulty", all: "Any difficulty", options: rows => uniq(rows, r => r.difficulty, r => r.difficulty) },

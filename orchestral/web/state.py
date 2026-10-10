@@ -56,6 +56,7 @@ from orchestral.stats import (
     bootstrap_diff_ci,
     bradley_terry,
     horizon_fit,
+    is_evidence,
     mean,
     pairing_leaderboard,
     wilson_interval,
@@ -338,6 +339,7 @@ def _public_run(r: Any) -> dict[str, Any]:
     d = r.to_public_dict()
     d["billed_cost_usd"] = r.display_cost_usd
     d["cost_basis"] = r.cost_basis or "calibrated"
+    d["outcome"], d["outcome_reason"] = outcome_state(r)
     return d
 
 
@@ -409,7 +411,7 @@ def thread_context(store: RunStore, kind: str, target: str,
         if subject is not None:
             ctx["cost_total"] = subject.cost_total
             ctx["runs"] = subject.runs
-            if subject.low_sample or not subject.finished:
+            if subject.low_sample or not subject.evidence:
                 ctx["low_sample"] = True
             if orch in unmetered or worker in unmetered:
                 ctx["unmetered"] = True
@@ -426,7 +428,7 @@ def thread_context(store: RunStore, kind: str, target: str,
         elif subject is not None and not ctx.get("low_sample"):
             ctx["unranked"] = True
         eligible = sorted(
-            (p for p in board if not p.low_sample and p.finished),
+            (p for p in board if not p.low_sample and p.evidence),
             key=lambda p: _pairing_quality_key(p.to_dict()),
         )
         metered = sorted((p for p in eligible if p.cost_per_pass is not None),
@@ -531,6 +533,10 @@ def live_runs(store: RunStore, registry: JobRegistry, now: datetime | None = Non
         job = registry.job_for_run(r.run_id)
         owned = bool(job and job.active)
         state_ = liveness_state(idle)
+        if idle is not None and idle > LOST_AFTER_S:
+            # far past stalled: the process is presumed dead and the row is
+            # operational debris, not a live attempt
+            state_ = "lost"
         spend = r.display_cost_usd or _event_spend(events)
         rows.append({
             "run_id": r.run_id,
@@ -546,9 +552,10 @@ def live_runs(store: RunStore, registry: JobRegistry, now: datetime | None = Non
             "spend_usd": spend,
             "owned": owned,
             "state": state_,
-            "stalled": state_ == "stalled",
+            "stalled": state_ in ("stalled", "lost"),
+            "lost": state_ == "lost",
             "cancellable": owned,
-            "abandonable": state_ == "stalled" and not owned,
+            "abandonable": state_ in ("stalled", "lost") and not owned,
             "detail": job.detail if job else "",
         })
     for job in registry.jobs:
@@ -638,6 +645,9 @@ def overview_payload(
 CHANGES_CAP = 500
 CHANGES_WINDOW = timedelta(days=30)
 NEEDS_LOOK_CAP = 50
+# minimum invalid+infra outcomes on one task before it reads as a spec or
+# pipeline problem rather than ordinary model failures
+TASK_HEALTH_MIN_BAD = 3
 # Failure categories that say the environment failed, not the model's output.
 _INFRA_REASONS = frozenset({
     "rate_limit", "auth", "timeout", "transport", "provider_error", "submitted_job",
@@ -664,10 +674,12 @@ def changes_rows(runs: list[Any], tmeta: dict[str, dict[str, str]]) -> list[dict
         done = _parse_ts(r.finished_at)
         if done is None or done < cutoff:
             continue
+        oc, oc_reason = outcome_state(r)
         rows.append((done, {
             "run_id": r.run_id, "task_id": r.task_id,
             "task_title": (tmeta.get(r.task_id) or {}).get("title") or "",
             "status": r.status, "passes": r.passes, "failure_reason": r.failure_reason,
+            "outcome": oc, "outcome_reason": oc_reason,
             "cost_usd": r.display_cost_usd, "finished_at": r.finished_at,
         }))
     rows.sort(key=lambda t: t[0], reverse=True)
@@ -682,15 +694,27 @@ def needs_look_items(store: RunStore, models_dir: Path | str,
     from orchestral.pricing import pricing_drift
 
     items: list[dict[str, Any]] = []
+    lost = [row for row in live if row.get("lost")]
+    if lost:
+        items.append({
+            "kind": "lost", "run_id": None,
+            "title": f"{len(lost)} run{'s' if len(lost) != 1 else ''} went dark and never reported a terminal state",
+            "detail": "No heartbeat in over an hour; the processes are presumed dead. Abandoning them clears the record.",
+            "href": "#/runs?outcome=lost"})
     for row in live:
-        if row["stalled"]:
+        if row["stalled"] and not row.get("lost"):
             items.append({
                 "kind": "stalled", "run_id": row["run_id"], "title": f"{row['label']} has gone quiet",
                 "detail": "No events for a while. Check whether it is still running.",
                 "href": f"#/run/{row['run_id']}" if row["run_id"] else "#/runs"})
+    invalid_by_task: dict[str, dict[str, int]] = {}
     for r in store.list_runs(limit=None):
         if r.dry_run or r.status == "running":
             continue
+        oc, _ = outcome_state(r)
+        if oc in ("invalid", "infra"):
+            slot = invalid_by_task.setdefault(r.task_id, {"invalid": 0, "infra": 0})
+            slot[oc] += 1
         if r.status == "failed" and _is_infra(r.failure_reason):
             items.append({
                 "kind": "infra_error", "run_id": r.run_id,
@@ -702,6 +726,20 @@ def needs_look_items(store: RunStore, models_dir: Path | str,
                 "kind": "inconclusive_judge", "run_id": r.run_id,
                 "title": f"The judge was inconclusive on {r.task_id}",
                 "detail": judge_state(r)[1], "href": f"#/run/{r.run_id}"})
+    # repeated invalid/infra outcomes on one task usually means the spec or
+    # the pipeline is broken, not that the models keep failing
+    for task_id, counts in sorted(invalid_by_task.items()):
+        bad = counts["invalid"] + counts["infra"]
+        if bad < TASK_HEALTH_MIN_BAD:
+            continue
+        parts = [f"{counts['invalid']} invalid" if counts["invalid"] else "",
+                 f"{counts['infra']} infra" if counts["infra"] else ""]
+        items.append({
+            "kind": "task_health", "run_id": None,
+            "title": f"{task_id} keeps producing unusable runs",
+            "detail": f"{' and '.join(p for p in parts if p)} outcomes. "
+                      f"Check the task spec and pipeline before blaming the models.",
+            "href": f"#/runs?task={quote(task_id, safe='')}&outcome=invalid"})
     for a in store.annotations():
         if a["flag"] != "interesting":
             continue
@@ -1042,6 +1080,72 @@ def judge_state(meta) -> tuple[str, str]:
     return "not_judged", "judge wasn't run for this run"
 
 
+# A `running` index row with no heartbeat this long is dead, not stalled: the
+# process was killed (budget stop, OOM, reboot) and never wrote a terminal
+# status. Far above STALL_AFTER_S so a genuinely slow quiet run is not
+# condemned. Read-time only — nothing is rewritten.
+LOST_AFTER_S = 3600
+
+# The single answer to "what kind of result is this run?" — sibling of
+# judge_state, which answers "did the judge produce a verdict?". The two axes
+# compose: a run can be `invalid` (never produced a judgeable artifact) or
+# `fail` with a live judge verdict.
+OUTCOME_EVIDENCE = frozenset({"pass", "fail"})
+# Hidden by default: dry-runs are unjudged by design, not missing verdicts.
+OUTCOME_HIDDEN = frozenset({"dry"})
+# Shown but never counted in rates: the run was not a fair attempt or could
+# not produce a verdict.
+OUTCOME_EXCLUDED = frozenset({"invalid", "infra", "inconclusive", "lost", "cancelled"})
+
+_INVALID_REASONS = {
+    "malformed_output": "the output never became a judgeable artifact",
+    "empty_output": "the run produced no output",
+    "validation": "the run died at contract-check",
+    "unknown": "the run failed without a recorded cause",
+}
+
+
+def outcome_state(meta, now: datetime | None = None) -> tuple[str, str]:
+    """Closed taxonomy for the run's overall result — (outcome, one-line reason).
+
+    `status=failed` lumps three different things together — infra exceptions
+    (the run never got a fair attempt), invalid output (no parseable artifact
+    to score), and scored contract failures recorded under a bare
+    `validation` reason on a `finished` run. `judge_state` cannot see the
+    difference because it only knows the judge axis. This is the axis views
+    should render when they ask "what happened": ``pass`` | ``fail`` |
+    ``inconclusive`` | ``invalid`` | ``infra`` | ``dry`` | ``lost`` |
+    ``cancelled`` | ``running`` | ``unknown``.
+    """
+    if meta.dry_run:
+        return "dry", "dry run: sample data, nothing real to score"
+    status = str(meta.status or "")
+    if status == "running":
+        beat = last_heartbeat(meta.run_dir, meta.started_at) if meta.run_dir else _parse_ts(meta.started_at)
+        idle = (_now() if now is None else now) - beat if beat else None
+        if idle is not None and idle.total_seconds() > LOST_AFTER_S:
+            return "lost", "no heartbeat for over an hour: the process is dead, the index just never heard"
+        return "running", ""
+    if status == "cancelled":
+        return "cancelled", "cancelled before it finished"
+    if status == "failed":
+        reason = str(meta.failure_reason or "")
+        code = reason.removeprefix("exception:")
+        if _is_infra(reason):
+            return "infra", f"{reason}: the run never got a fair attempt"
+        return "invalid", _INVALID_REASONS.get(code, f"{code or 'unknown'}: no judgeable artifact was produced")
+    if status == "finished":
+        if meta.passes:
+            return "pass", ""
+        if meta.passes is not None:
+            return "fail", ""
+        jstate, why = judge_state(meta)
+        if jstate == "judged" and not why:
+            why = "scored, but no pass/fail verdict"
+        return "inconclusive", why or "the run finished but produced no verdict"
+    return "unknown", f"unrecognized status {status!r}"
+
+
 # Sortable Runs columns: query value -> (row key, default direction).
 RUN_SORTS: dict[str, tuple[str, str]] = {
     "started": ("started_at", "desc"), "cost": ("billed_cost_usd", "desc"),
@@ -1073,6 +1177,7 @@ def runs_payload(
     *,
     pairing: str | None = None,
     judge: str | None = None,
+    outcome: str | None = None,
     type: str | None = None,
     difficulty: str | None = None,
     sort: str | None = None,
@@ -1110,7 +1215,9 @@ def runs_payload(
     if status == "passed":
         rows = [r for r in rows if r.status == "finished" and r.passes]
     elif status == "failed":
-        rows = [r for r in rows if r.status == "failed" or (r.status == "finished" and not r.passes)]
+        rows = [r for r in rows
+                if (r.status == "failed" or (r.status == "finished" and r.passes is False))
+                and not r.dry_run]
     elif status == "stalled":
         rows = [r for r in rows if r.run_id in stalled]
     elif status:
@@ -1133,6 +1240,8 @@ def runs_payload(
         d["tokens"] = (r.total_input_tokens or 0) + (r.total_output_tokens or 0)
         d["judge_state"], d["judge_reason"] = judge_state(r)
         if judge and d["judge_state"] != judge:
+            continue
+        if outcome and d["outcome"] != outcome:
             continue
         out.append(d)
     return _sort_runs(out, sort, direction)
@@ -1339,8 +1448,10 @@ def run_liveness(store: RunStore, registry: JobRegistry | None, meta: Any,
     idle = max(0.0, (now - beat).total_seconds()) if beat else None
     owned = bool(registry and registry.owns(meta.run_id))
     st = liveness_state(idle)
+    if idle is not None and idle > LOST_AFTER_S:
+        st = "lost"
     return {"state": st, "owned": owned, "cancellable": owned,
-            "abandonable": st == "stalled" and not owned,
+            "abandonable": st in ("stalled", "lost") and not owned,
             "idle_s": int(idle) if idle is not None else None}
 
 
@@ -1512,13 +1623,15 @@ def groups_payload(
     for r in store.list_runs(limit=None):
         g = groups.setdefault(r.run_group or "(ungrouped)", {
             "group": r.run_group or "(ungrouped)",
-            "runs": 0, "finished": 0, "passed": 0, "cost_usd": 0.0,
+            "runs": 0, "finished": 0, "evidence": 0, "passed": 0, "cost_usd": 0.0,
             "scores": [], "judge_scores": [], "tasks": set(), "pairings": set(),
             "latest": None,
         })
         g["runs"] += 1
-        if r.status == "finished":
+        if r.status == "finished" and not r.dry_run:
             g["finished"] += 1
+        if is_evidence(r):
+            g["evidence"] += 1
             g["passed"] += 1 if r.passes else 0
         g["cost_usd"] += r.display_cost_usd or 0.0
         if r.score is not None:
@@ -1543,7 +1656,7 @@ def groups_payload(
             "description": gm.get("description") or "",
             "tasks": len(g["tasks"]),
             "pairings": len(g["pairings"]),
-            "pass_rate": (g["passed"] / g["finished"]) if g["finished"] else None,
+            "pass_rate": (g["passed"] / g["evidence"]) if g["evidence"] else None,
             "score_median": scores[n // 2] if n else None,
             "judge_score_median": judge_scores[jn // 2] if jn else None,
         })
@@ -1554,8 +1667,13 @@ def groups_payload(
 def task_matrix_payload(
     store: RunStore, tasks_dir: Path | str | None = None
 ) -> dict[str, Any]:
-    """Tasks × pairings heatmap: pass rate + judge mean per cell over
-    finished runs. Cells with no runs are simply absent — sparse is honest."""
+    """Tasks × pairings heatmap: evidence pass rate + judge mean per cell.
+
+    `n` is every recorded run in the cell; `evidence` is the subset a pass
+    rate may count (real, finished, verdicted); `outcomes` is the full
+    outcome histogram so excluded categories stay visible rather than
+    silently shaping the rate. Cells with no runs are simply absent —
+    sparse is honest."""
     runs = store.list_runs(limit=None)
     tmeta = _task_meta(store, tasks_dir)
     cells: dict[tuple[str, str], list] = {}
@@ -1577,14 +1695,21 @@ def task_matrix_payload(
             cell = cells.get((task_id, p))
             if not cell:
                 continue
-            fin = [r for r in cell if r.status == "finished"]
-            judged = [r.judge_score for r in fin if r.judge_score is not None]
+            outcomes: dict[str, int] = {}
+            judged: list[float] = []
+            for r in cell:
+                oc, _ = outcome_state(r)
+                outcomes[oc] = outcomes.get(oc, 0) + 1
+                if r.judge_score is not None:
+                    judged.append(r.judge_score)
+            passed = outcomes.get("pass", 0)
+            evidence = passed + outcomes.get("fail", 0)
             row["cells"][p] = {
                 "n": len(cell),
-                "pass_rate": (
-                    sum(1 for r in fin if r.passes) / len(fin) if fin else None
-                ),
+                "evidence": evidence,
+                "pass_rate": passed / evidence if evidence else None,
                 "judge_mean": mean(judged) if judged else None,
+                "outcomes": outcomes,
             }
         rows.append(row)
     return {"pairings": pairings, "tasks": rows}
@@ -1644,7 +1769,7 @@ def _pairing_quality_key(row: dict[str, Any]) -> tuple[Any, ...]:
         -(float(pass_rate) if pass_rate is not None else -1.0),
         cost if cost is not None else float("inf"),
         -(float(judge_score) if judge_score is not None else -1.0),
-        -int(row.get("finished") or 0),
+        -int(row.get("evidence") or row.get("finished") or 0),
         str(row.get("orchestrator") or ""),
         str(row.get("worker") or ""),
     )
@@ -1732,7 +1857,7 @@ def _lens_payloads(rows: list[Any]) -> list[dict[str, Any]]:
         "No pairing has a judged semantic axis to compare",
         key=lambda row: (
             -abs(float(row.get("pass_rate") or 0) - _lens_judge_rate(row)),
-            -int(row.get("finished") or 0),
+            -int(row.get("evidence") or row.get("finished") or 0),
             str(row.get("orchestrator") or ""),
             str(row.get("worker") or ""),
         ),
@@ -1772,7 +1897,7 @@ def pairings_payload(
         for m in cell:
             t = types.get(m.task_id, "?")
             st = per_type.setdefault(t, [0, 0])
-            if m.status == "finished":
+            if is_evidence(m):
                 st[1] += 1
                 st[0] += 1 if m.passes else 0
         strengths = sorted(
@@ -1794,11 +1919,11 @@ def pairings_payload(
             "best_type": best[0] if best else None,
             "worst_type": worst[0] if worst else None,
             "why": _pairing_why(r, best, worst, top_failure),
-            "low_n_best": is_low_n_best(r.finished),
+            "low_n_best": is_low_n_best(r.evidence),
             "horizon": horizon_fit([
                 (task_minutes[m.task_id], bool(m.passes))
                 for m in cell
-                if m.status == "finished" and m.task_id in task_minutes
+                if is_evidence(m) and m.task_id in task_minutes
             ]),
         })
         enriched.append(d)
@@ -1879,11 +2004,11 @@ def _wilson(passes: int, n: int) -> list[float] | None:
 
 
 def _pass_rate_stat(rs: list[Any]) -> float | None:
-    """Pass rate over finished runs — the stat compare diffs bootstrap."""
-    fin = [r for r in rs if r.status == "finished"]
-    if not fin:
+    """Pass rate over evidence runs — the stat compare diffs bootstrap."""
+    ev = [r for r in rs if is_evidence(r)]
+    if not ev:
         return None
-    return sum(1 for r in fin if r.passes) / len(fin)
+    return sum(1 for r in ev if r.passes) / len(ev)
 
 
 def _verdict_line(mech_pass: bool | None, judge_passed: bool | None,
@@ -1991,7 +2116,8 @@ def _calibration_map(
 
 def _cohort_payload(metas: list[Any]) -> dict[str, Any]:
     """Composition facts for a card's originating scope, never a synthetic score."""
-    finished = [m for m in metas if m.status == "finished"]
+    finished = [m for m in metas if m.status == "finished" and not m.dry_run]
+    evidence = [m for m in finished if m.passes is not None]
     orchestrators = sorted({m.orchestrator for m in metas})
     workers = sorted({m.worker for m in metas})
     tasks = sorted({m.task_id for m in metas})
@@ -1999,6 +2125,7 @@ def _cohort_payload(metas: list[Any]) -> dict[str, Any]:
     return {
         "runs": len(metas),
         "finished": len(finished),
+        "evidence": len(evidence),
         "orchestrators": len(orchestrators),
         "workers": len(workers),
         "tasks": len(tasks),
@@ -2237,7 +2364,7 @@ def _task_evidence_refs(
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     cells: dict[str, list[Any]] = {}
     for meta in metas:
-        if meta.status == "finished":
+        if is_evidence(meta):
             cells.setdefault(meta.task_id, []).append(meta)
     if not cells:
         return None, None
@@ -2676,8 +2803,9 @@ def card_payload(
         cell = [m for m in metas if m.orchestrator == orch and m.worker == worker]
         if not cell:
             return None
-        finished = [m for m in cell if m.status == "finished"]
-        passed = sum(1 for m in finished if m.passes)
+        finished = [m for m in cell if m.status == "finished" and not m.dry_run]
+        evidence = [m for m in finished if m.passes is not None]
+        passed = sum(1 for m in evidence if m.passes)
         scores = [m.score for m in finished if m.score is not None]
         costs = [m.display_cost_usd for m in finished]
         lat = [m.latency_ms for m in finished if m.latency_ms]
@@ -2694,9 +2822,10 @@ def card_payload(
             if m.failure_reason:
                 failures[m.failure_reason] = failures.get(m.failure_reason, 0) + 1
             if m.status == "finished":
-                st = per_type.setdefault(types.get(m.task_id, "?"), [0, 0])
-                st[1] += 1
-                st[0] += 1 if m.passes else 0
+                if is_evidence(m):
+                    st = per_type.setdefault(types.get(m.task_id, "?"), [0, 0])
+                    st[1] += 1
+                    st[0] += 1 if m.passes else 0
                 j, read_why = _judge_block(m.run_dir)
                 if read_why:
                     unreadable_n += 1
@@ -2709,8 +2838,8 @@ def card_payload(
                     judge_passed_n += 1
                 if j.get("model"):
                     judge_models.add(j["model"])
-        pr = passed / len(finished) if finished else None
-        ci = _wilson(passed, len(finished))
+        pr = passed / len(evidence) if evidence else None
+        ci = _wilson(passed, len(evidence))
         top_failure = max(failures.items(), key=lambda kv: kv[1])[0] if failures else None
         groups = sorted({m.run_group for m in cell if m.run_group})
         strong = sorted(((t, p, n) for t, (p, n) in per_type.items() if n),
@@ -2739,7 +2868,8 @@ def card_payload(
             "kind": "pairing", "target": target, "suite": SUITE_VERSION,
             "target_pair": target,
             "orchestrator": orch, "worker": worker,
-            "runs": len(cell), "finished": len(finished), "passed": passed,
+            "runs": len(cell), "finished": len(finished), "evidence": len(evidence),
+            "passed": passed,
             "pass_rate": pr, "pass_ci": ci, "verdict_line": line,
             "score_mean": round(sum(scores) / len(scores), 3) if scores else None,
             "judged": judged_n,
@@ -2805,14 +2935,15 @@ def card_payload(
         for m in metas:
             if m.status != "finished":
                 continue
-            st = per_task.setdefault(m.task_id, [0, 0])
-            st[1] += 1
-            st[0] += 1 if m.passes else 0
-            key = (m.orchestrator, m.worker)
-            ps = per_pair.setdefault(key, [0, 0])
-            ps[1] += 1
-            ps[0] += 1 if m.passes else 0
-            pair_cost[key] = pair_cost.get(key, 0.0) + (m.display_cost_usd or 0.0)
+            if is_evidence(m):
+                st = per_task.setdefault(m.task_id, [0, 0])
+                st[1] += 1
+                st[0] += 1 if m.passes else 0
+                key = (m.orchestrator, m.worker)
+                ps = per_pair.setdefault(key, [0, 0])
+                ps[1] += 1
+                ps[0] += 1 if m.passes else 0
+                pair_cost[key] = pair_cost.get(key, 0.0) + (m.display_cost_usd or 0.0)
             j, read_why = _judge_block(m.run_dir)
             if read_why:
                 unreadable_n += 1
@@ -2939,12 +3070,13 @@ def card_payload(
         pair_rows = []
         for (o, w), rs in sorted(sib.items()):
             fin = [r for r in rs if r.status == "finished"]
+            ev = [r for r in rs if is_evidence(r)]
             js = [r.judge_score for r in fin if r.judge_score is not None]
             pair_rows.append({
                 "orchestrator": o, "worker": w,
-                "n": len(rs), "finished": len(fin),
-                "passed": sum(1 for r in fin if r.passes),
-                "pass_rate": (sum(1 for r in fin if r.passes) / len(fin)) if fin else None,
+                "n": len(rs), "finished": len(fin), "evidence": len(ev),
+                "passed": sum(1 for r in ev if r.passes),
+                "pass_rate": (sum(1 for r in ev if r.passes) / len(ev)) if ev else None,
                 "judge_score": mean(js) if js else None,
                 "cost_usd": sum(r.display_cost_usd or 0 for r in rs),
                 "self": (o, w) == (meta.orchestrator, meta.worker),
@@ -3247,15 +3379,20 @@ def _jev_interventions(metas: list[Any]) -> dict[str, int]:
 def _arm_block(runs: list[Any]) -> dict[str, Any]:
     """Per-arm BI block for one experiment cell."""
     from orchestral.experiment import arm_stats, status_counts
-    passes, n, errors = arm_stats(runs)
+    passes, n, non_evidence = arm_stats(runs)
     ci = _wilson(passes, n)
     cost = sum(r.display_cost_usd or 0.0 for r in runs)
+    outcomes: dict[str, int] = {}
+    for r in runs:
+        oc, _ = outcome_state(r)
+        outcomes[oc] = outcomes.get(oc, 0) + 1
     return {
         "passes": passes,
         "n": n,
         "rate": passes / n if n else None,
         "ci": ci,
-        "errors": errors,
+        "non_evidence": non_evidence,
+        "outcomes": outcomes,
         "status": status_counts(runs),
         # same concept as CoverageRow.to_dict's failed_as_zero — one name
         "failed_as_zero": passes / len(runs) if runs else None,

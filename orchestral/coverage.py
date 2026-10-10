@@ -42,7 +42,7 @@ class CoverageRow:
     baseline_n: int = 0
     jev_passes: int = 0
     jev_n: int = 0
-    infra_errors: int = 0
+    non_evidence: int = 0
     baseline_status: dict[str, int] = field(default_factory=dict)
     jev_status: dict[str, int] = field(default_factory=dict)
     baseline_rates: dict[str, float | None] = field(default_factory=dict)
@@ -75,7 +75,7 @@ class CoverageRow:
                 "status": self.jev_status,
                 **self.jev_rates,
             },
-            "infra_errors": self.infra_errors,
+            "non_evidence": self.non_evidence,
             "diff_ci": self.diff,
             "verdict": self.verdict,
             "cost": round(self.cost, 6),
@@ -113,8 +113,8 @@ def coverage_rows(
         target, est = rep_target(store, cell, cell_budget)
         state = cell_state(store, matrix.name, cell, target, diff_eps)
         arms = cell_runs(store, matrix.name, cell)
-        a_pass, a_n, a_err = arm_stats(arms["baseline"])
-        b_pass, b_n, b_err = arm_stats(arms["jev"])
+        a_pass, a_n, a_non = arm_stats(arms["baseline"])
+        b_pass, b_n, b_non = arm_stats(arms["jev"])
         ci = diff_ci(a_pass, a_n, b_pass, b_n)
         row = CoverageRow(
             cell_key=cell.key,
@@ -127,7 +127,7 @@ def coverage_rows(
             baseline_n=a_n,
             jev_passes=b_pass,
             jev_n=b_n,
-            infra_errors=a_err + b_err,
+            non_evidence=a_non + b_non,
             baseline_status=status_counts(arms["baseline"]),
             jev_status=status_counts(arms["jev"]),
             baseline_rates=dual_pass_rates(arms["baseline"]),

@@ -1,16 +1,16 @@
 {
   "schema": 1,
-  "index_commit": "955aed44593f13f12722fd738452814f08da9ebb",
+  "index_commit": "034bb504688de9fb9f2d01b0d79f5ae927a6ecfe",
   "index_fresh": true,
   "counts": {
-    "pool": 2851,
+    "pool": 2852,
     "A": 0,
     "B": 232,
     "C": 16
   },
   "excluded": {
     "registry": 71,
-    "pattern": 2481,
+    "pattern": 2482,
     "coverage_executed": 51
   },
   "sources": {
@@ -77,10 +77,6 @@
         {
           "source": "vulture",
           "detail": "60% confidence: unused method 'do_GET'"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "framework-dispatch name"
@@ -102,10 +98,6 @@
         {
           "source": "vulture",
           "detail": "60% confidence: unused method 'do_POST'"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "framework-dispatch name"
@@ -127,10 +119,6 @@
         {
           "source": "vulture",
           "detail": "60% confidence: unused method 'log_message'"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "framework-dispatch name"
@@ -148,10 +136,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "tests surface rides with the code it covers"
@@ -169,10 +153,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -190,10 +170,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -211,10 +187,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -232,10 +204,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -253,10 +221,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -274,10 +238,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -295,10 +255,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -320,10 +276,6 @@
         {
           "source": "vulture",
           "detail": "60% confidence: unused method '_audit_json'"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "tests surface rides with the code it covers"
@@ -341,10 +293,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -362,10 +310,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -383,10 +327,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -404,10 +344,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -425,10 +361,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -446,10 +378,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -467,10 +395,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -488,10 +412,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -509,10 +429,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "tests surface rides with the code it covers"
@@ -530,10 +446,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "tests surface rides with the code it covers"
@@ -555,10 +467,6 @@
         {
           "source": "vulture",
           "detail": "60% confidence: unused function 'setUpModule'"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "tests surface rides with the code it covers"
@@ -580,10 +488,6 @@
         {
           "source": "vulture",
           "detail": "60% confidence: unused function 'tearDownModule'"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "tests surface rides with the code it covers"
@@ -601,10 +505,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -622,10 +522,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "tests surface rides with the code it covers"
@@ -643,10 +539,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -664,10 +556,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "tests surface rides with the code it covers"
@@ -685,10 +573,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -706,10 +590,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -727,10 +607,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -748,10 +624,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -769,10 +641,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -790,10 +658,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -811,10 +675,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "tests surface rides with the code it covers"
@@ -832,10 +692,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -853,10 +709,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "tests surface rides with the code it covers"
@@ -874,10 +726,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -895,10 +743,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "tests surface rides with the code it covers"
@@ -916,10 +760,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "tests surface rides with the code it covers"
@@ -937,10 +777,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -958,10 +794,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "tests surface rides with the code it covers"
@@ -979,10 +811,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -1000,10 +828,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -1025,10 +849,6 @@
         {
           "source": "vulture",
           "detail": "60% confidence: unused attribute 'CommandExitException'"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "tests surface rides with the code it covers"
@@ -1050,10 +870,6 @@
         {
           "source": "vulture",
           "detail": "60% confidence: unused attribute 'CommandExitException'"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "tests surface rides with the code it covers"
@@ -1071,10 +887,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "tests surface rides with the code it covers"
@@ -1096,10 +908,6 @@
         {
           "source": "vulture",
           "detail": "60% confidence: unused attribute 'CommandExitException'"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "tests surface rides with the code it covers"
@@ -1121,10 +929,6 @@
         {
           "source": "vulture",
           "detail": "60% confidence: unused attribute 'CommandExitException'"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "tests surface rides with the code it covers"
@@ -1142,10 +946,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "tests surface rides with the code it covers"
@@ -1167,10 +967,6 @@
         {
           "source": "vulture",
           "detail": "60% confidence: unused attribute 'CommandExitException'"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "tests surface rides with the code it covers"
@@ -1188,10 +984,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -1209,10 +1001,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "tests surface rides with the code it covers"
@@ -1230,10 +1018,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -1251,10 +1035,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -1272,10 +1052,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "tests surface rides with the code it covers"
@@ -1293,10 +1069,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -1314,10 +1086,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -1335,10 +1103,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -1356,10 +1120,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -1377,10 +1137,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -1398,10 +1154,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "tests surface rides with the code it covers"
@@ -1419,10 +1171,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -1440,10 +1188,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "tests surface rides with the code it covers"
@@ -1461,10 +1205,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -1482,10 +1222,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "tests surface rides with the code it covers"
@@ -1503,10 +1239,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -1524,10 +1256,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "tests surface rides with the code it covers"
@@ -1545,10 +1273,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -1566,10 +1290,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "tests surface rides with the code it covers"
@@ -1587,10 +1307,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -1608,10 +1324,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "tests surface rides with the code it covers"
@@ -1629,10 +1341,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -1650,10 +1358,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "tests surface rides with the code it covers"
@@ -1671,10 +1375,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -1692,10 +1392,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -1713,10 +1409,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -1734,10 +1426,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -1755,10 +1443,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -1776,10 +1460,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -1797,10 +1477,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -1818,10 +1494,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -1839,10 +1511,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -1860,10 +1528,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -1885,10 +1549,6 @@
         {
           "source": "vulture",
           "detail": "60% confidence: unused function 'setUpModule'"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "tests surface rides with the code it covers"
@@ -1910,10 +1570,6 @@
         {
           "source": "vulture",
           "detail": "60% confidence: unused function 'tearDownModule'"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "tests surface rides with the code it covers"
@@ -1931,10 +1587,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -1952,10 +1604,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -1977,10 +1625,6 @@
         {
           "source": "vulture",
           "detail": "60% confidence: unused attribute 'last_state'"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -1998,10 +1642,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -2019,10 +1659,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -2040,10 +1676,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -2061,10 +1693,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -2082,10 +1710,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -2103,10 +1727,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -2124,10 +1744,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "tests surface rides with the code it covers"
@@ -2145,10 +1761,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -2166,10 +1778,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -2187,10 +1795,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -2208,10 +1812,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -2229,10 +1829,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "tests surface rides with the code it covers"
@@ -2250,10 +1846,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -2271,10 +1863,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -2296,10 +1884,6 @@
         {
           "source": "vulture",
           "detail": "60% confidence: unused method '_module'"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "tests surface rides with the code it covers"
@@ -2317,10 +1901,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -2338,10 +1918,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -2359,10 +1935,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -2380,10 +1952,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -2401,10 +1969,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -2422,10 +1986,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -2443,10 +2003,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -2464,10 +2020,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -2485,10 +2037,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -2506,10 +2054,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -2527,10 +2071,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -2548,10 +2088,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -2569,10 +2105,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -2590,10 +2122,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -2611,10 +2139,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -2632,10 +2156,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -2653,10 +2173,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -2674,10 +2190,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -2695,10 +2207,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -2716,10 +2224,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -2737,10 +2241,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "tests surface rides with the code it covers"
@@ -2758,10 +2258,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "tests surface rides with the code it covers"
@@ -2779,10 +2275,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -2800,10 +2292,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "tests surface rides with the code it covers"
@@ -2821,10 +2309,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -2842,10 +2326,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -2863,10 +2343,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -2884,10 +2360,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -2905,10 +2377,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -2926,10 +2394,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -2947,10 +2411,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -2968,10 +2428,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -2989,10 +2445,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -3010,10 +2462,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -3031,10 +2479,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -3052,10 +2496,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -3073,10 +2513,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -3094,10 +2530,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -3115,10 +2547,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -3136,10 +2564,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -3157,10 +2581,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -3178,10 +2598,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -3199,10 +2615,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -3220,10 +2632,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -3241,10 +2649,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -3262,10 +2666,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -3283,10 +2683,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "tests surface rides with the code it covers"
@@ -3304,10 +2700,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -3329,10 +2721,6 @@
         {
           "source": "vulture",
           "detail": "60% confidence: unused function 'visible_text'"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "tests surface rides with the code it covers"
@@ -3350,10 +2738,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -3371,10 +2755,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -3392,10 +2772,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -3413,10 +2789,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -3434,10 +2806,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -3455,10 +2823,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -3476,10 +2840,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -3497,10 +2857,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "tests surface rides with the code it covers"
@@ -3518,10 +2874,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -3539,10 +2891,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -3560,10 +2908,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "tests surface rides with the code it covers"
@@ -3581,10 +2925,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "tests surface rides with the code it covers"
@@ -3602,10 +2942,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -3623,10 +2959,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -3644,10 +2976,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -3665,10 +2993,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -3686,10 +3010,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -3707,10 +3027,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -3728,10 +3044,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -3749,10 +3061,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -3774,10 +3082,6 @@
         {
           "source": "vulture",
           "detail": "60% confidence: unused method 'redirect_request'"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "tests surface rides with the code it covers"
@@ -3795,10 +3099,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -3816,10 +3116,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -3837,10 +3133,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -3858,10 +3150,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -3879,10 +3167,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -3900,10 +3184,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -3925,10 +3205,6 @@
         {
           "source": "vulture",
           "detail": "60% confidence: unused method 'handle_error'"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "tests surface rides with the code it covers"
@@ -3946,10 +3222,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -3967,10 +3239,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -3992,10 +3260,6 @@
         {
           "source": "vulture",
           "detail": "60% confidence: unused method 'log_message'"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "framework-dispatch name; tests surface rides with the code it covers"
@@ -4017,10 +3281,6 @@
         {
           "source": "vulture",
           "detail": "60% confidence: unused method 'do_GET'"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "framework-dispatch name; tests surface rides with the code it covers"
@@ -4042,10 +3302,6 @@
         {
           "source": "vulture",
           "detail": "60% confidence: unused method 'do_POST'"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "framework-dispatch name; tests surface rides with the code it covers"
@@ -4063,10 +3319,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -4084,10 +3336,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -4105,10 +3353,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -4126,10 +3370,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -4147,10 +3387,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -4168,10 +3404,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -4189,10 +3421,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -4210,10 +3438,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -4235,10 +3459,6 @@
         {
           "source": "vulture",
           "detail": "60% confidence: unused function '_product_page'"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "tests surface rides with the code it covers"
@@ -4256,10 +3476,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -4277,10 +3493,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -4298,10 +3510,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -4319,10 +3527,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "tests surface rides with the code it covers"
@@ -4340,10 +3544,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -4361,10 +3561,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "tests surface rides with the code it covers"
@@ -4382,10 +3578,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -4403,10 +3595,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "tests surface rides with the code it covers"
@@ -4424,10 +3612,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -4445,10 +3629,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -4466,10 +3646,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -4487,10 +3663,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -4508,10 +3680,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -4529,10 +3697,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -4550,10 +3714,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -4571,10 +3731,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -4592,10 +3748,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -4613,10 +3765,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -4634,10 +3782,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -4655,10 +3799,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -4676,10 +3816,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -4697,10 +3833,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -4718,10 +3850,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "tests surface rides with the code it covers"
@@ -4739,10 +3867,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -4760,10 +3884,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -4781,10 +3901,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -4802,10 +3918,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "tests surface rides with the code it covers"
@@ -4823,10 +3935,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -4844,10 +3952,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "tests surface rides with the code it covers"
@@ -4865,10 +3969,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -4886,10 +3986,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -4907,10 +4003,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -4928,10 +4020,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -4949,10 +4037,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -4970,10 +4054,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
@@ -4991,10 +4071,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": ""
@@ -5012,10 +4088,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": ""
@@ -5033,10 +4105,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": ""
@@ -5054,10 +4122,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": ""
@@ -5075,10 +4139,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": ""
@@ -5096,10 +4156,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": ""
@@ -5117,10 +4173,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": ""
@@ -5138,10 +4190,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": ""
@@ -5159,10 +4207,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": ""
@@ -5180,10 +4224,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": ""
@@ -5201,10 +4241,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": ""
@@ -5222,10 +4258,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": ""
@@ -5243,10 +4275,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": ""
@@ -5264,10 +4292,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": ""
@@ -5285,10 +4309,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": ""
@@ -5306,10 +4326,6 @@
         {
           "source": "graph",
           "detail": "zero inbound CALLS|USAGE"
-        },
-        {
-          "source": "coverage",
-          "detail": "line range unexecuted"
         }
       ],
       "note": ""

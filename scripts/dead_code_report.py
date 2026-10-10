@@ -320,10 +320,13 @@ def _redefined_with_callers(
 def _coverage_state(
     candidate: dict[str, Any], executed: dict[str, set[int]] | None
 ) -> str | None:
-    """'executed' | 'zero' | None when no coverage input was supplied."""
-    if executed is None:
+    """'executed' | 'zero' | None when the file went unmeasured.
+
+    A file absent from the coverage data is unknown, not zero — coverage
+    may simply not have measured it (e.g. paths outside --source)."""
+    if executed is None or candidate["file"] not in executed:
         return None
-    lines = executed.get(candidate["file"], set())
+    lines = executed[candidate["file"]]
     return (
         "executed"
         if any(ln in lines for ln in range(candidate["start_line"],

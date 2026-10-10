@@ -234,6 +234,19 @@ class TestEvidenceJoin(_Fixture):
         self.assertEqual(shared["tier"], "B")
         self.assertIn("same-named", shared["note"])
 
+    def test_unmeasured_file_gets_no_coverage_evidence(self) -> None:
+        # scripts/serve.py is outside the coverage file entirely —
+        # absent means unmeasured, not "unexecuted"
+        v = self._vulture(
+            "scripts/serve.py:10: unused method 'do_GET' (90% confidence)\n"
+        )
+        c = self._coverage({"orchestral/foo.py": {"executed_lines": [5]}})
+        rows = self._report(vulture_path=v, coverage_path=c)["rows"]
+        handler = next(r for r in rows if r["symbol"].endswith("do_GET"))
+        self.assertNotIn(
+            "coverage", {e["source"] for e in handler["evidence"]}
+        )
+
     def test_no_optional_sources_means_no_tier_a(self) -> None:
         report = self._report()
         self.assertEqual(report["counts"]["A"], 0)

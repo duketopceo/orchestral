@@ -1,16 +1,16 @@
 {
   "schema": 1,
-  "index_commit": "f24f1d5034004ddbc13b26f18af344cb44da7a07",
+  "index_commit": "955aed44593f13f12722fd738452814f08da9ebb",
   "index_fresh": true,
   "counts": {
-    "pool": 2850,
-    "A": 2,
-    "B": 230,
+    "pool": 2851,
+    "A": 0,
+    "B": 232,
     "C": 16
   },
   "excluded": {
     "registry": 71,
-    "pattern": 2480,
+    "pattern": 2481,
     "coverage_executed": 51
   },
   "sources": {
@@ -25,7 +25,7 @@
         62,
         69
       ],
-      "tier": "A",
+      "tier": "B",
       "surface": "python",
       "evidence": [
         {
@@ -37,7 +37,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": ""
+      "note": "same-named method reachable elsewhere"
     },
     {
       "symbol": "orchestral.providers.Provider.videos",
@@ -46,7 +46,7 @@
         71,
         81
       ],
-      "tier": "A",
+      "tier": "B",
       "surface": "python",
       "evidence": [
         {
@@ -58,7 +58,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": ""
+      "note": "same-named method reachable elsewhere"
     },
     {
       "symbol": "scripts.serve_laya.Handler.do_GET",
@@ -175,7 +175,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_agentexec.TestTranscriptPathHostileInput.setUp",
@@ -196,7 +196,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_agentic_runner._StubAdapter.run_argv",
@@ -217,7 +217,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_agentic_runner.AgenticRunnerBase.setUp",
@@ -238,7 +238,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_aig.TestLabeledProvider._Inner.chat",
@@ -259,7 +259,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_api_task._FakeClient.chat",
@@ -280,7 +280,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_api_task._FakeClient.close",
@@ -301,7 +301,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_audit.TestTheFindingSetIsReproducible._audit_json",
@@ -347,7 +347,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_brand_assets.TestShellAndServing.tearDownClass",
@@ -368,7 +368,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_budget_guard.WorkflowWiringTests.setUpClass",
@@ -389,7 +389,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_calibrate._JudgeClient.chat",
@@ -410,7 +410,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_calibrate._JudgeClient.close",
@@ -431,7 +431,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_canary.TestEchoes.setUp",
@@ -452,7 +452,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_charts_browser._Base.setUpClass",
@@ -473,7 +473,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_charts_browser._Base.tearDownClass",
@@ -494,7 +494,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_cli_tables._Stream.isatty",
@@ -607,7 +607,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_config.LoadTaskTests.tearDown",
@@ -649,7 +649,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_config.LoadModelsTests.tearDown",
@@ -691,7 +691,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_constraint_tasks._FakeClient.close",
@@ -712,7 +712,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_cost_budget_log.CostBudgetLogTests.setUp",
@@ -733,7 +733,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_cost_truth._Corpus.setUpClass",
@@ -754,7 +754,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_cost_truth._Corpus.tearDownClass",
@@ -775,7 +775,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_coverage.TestCoverageRows.setUp",
@@ -796,7 +796,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_coverage.TestCoverageRows.tearDown",
@@ -838,7 +838,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_coverage.TestDualScoring.tearDown",
@@ -880,7 +880,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_coverage.TestPublishMark.tearDown",
@@ -943,7 +943,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_cubeexec.FakeSandbox.create",
@@ -985,7 +985,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_cubeexec.FakeSandboxV1.kill",
@@ -1006,7 +1006,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_cubeexec._install_fake_e2b_v1",
@@ -1194,7 +1194,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_cubeexec._RepoCommands.bind",
@@ -1236,14 +1236,14 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_dead_code_report._Fixture.setUp",
       "file": "tests/test_dead_code_report.py",
       "lines": [
-        91,
-        109
+        102,
+        120
       ],
       "tier": "B",
       "surface": "tests",
@@ -1257,14 +1257,14 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_dead_code_report._Fixture.tearDown",
       "file": "tests/test_dead_code_report.py",
       "lines": [
-        111,
-        112
+        122,
+        123
       ],
       "tier": "B",
       "surface": "tests",
@@ -1299,7 +1299,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_design_tokens._Served.setUpClass",
@@ -1320,7 +1320,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_design_tokens._Served.tearDownClass",
@@ -1341,7 +1341,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_entrypoints.TestEntrypointRegistry.setUpClass",
@@ -1362,7 +1362,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_experiment.TestRepTarget.setUp",
@@ -1383,7 +1383,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_experiment.TestRepTarget.tearDown",
@@ -1425,7 +1425,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_experiment.TestDriver.tearDown",
@@ -1467,7 +1467,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_experiment.TestOrphanRecovery.tearDown",
@@ -1509,7 +1509,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_experiment.TestCmdRecover.tearDown",
@@ -1551,7 +1551,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_experiment.TestOrphanCostRepair.tearDown",
@@ -1593,7 +1593,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_experiment.TestMissingCostCount.tearDown",
@@ -1635,7 +1635,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_experiment.TestCellState.tearDown",
@@ -1677,7 +1677,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_extract_task._FakeClient.close",
@@ -1698,7 +1698,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_fixture_corpus._Corpus.setUpClass",
@@ -1719,7 +1719,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_fixture_corpus._Corpus.tearDownClass",
@@ -1740,7 +1740,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_fixtures.RegistryTests.setUp",
@@ -1761,7 +1761,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_fixtures.FetchTests.setUp",
@@ -1782,7 +1782,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_format.TestBrowserFormatter.setUpClass",
@@ -1803,7 +1803,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_format.TestBrowserFormatter.tearDownClass",
@@ -1824,7 +1824,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_format.TestCorpusCopy.setUpClass",
@@ -1845,7 +1845,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_format.TestCorpusCopy.tearDownClass",
@@ -1866,7 +1866,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_gate.setUpModule",
@@ -1937,7 +1937,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_hosted_deploy.TestSyncPath.tearDownClass",
@@ -1958,7 +1958,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_jevassist._Client.decide",
@@ -1983,7 +1983,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_jevassist._Client.chat",
@@ -2004,7 +2004,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_jevassist._Client.close",
@@ -2025,7 +2025,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_judge_backfill.FakeJudgeClient.chat",
@@ -2046,7 +2046,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_judge_backfill.TestBackfill.setUp",
@@ -2067,7 +2067,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_judge_gate._CodeJudgeFake.chat",
@@ -2088,7 +2088,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_liveness._Base.setUp",
@@ -2109,7 +2109,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_liveness._Base.tearDown",
@@ -2151,7 +2151,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_liveness.TestCorpusOrphan.tearDownClass",
@@ -2172,7 +2172,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_liveness_browser.TestRailActivity.setUpClass",
@@ -2193,7 +2193,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_liveness_browser.TestRailActivity.tearDownClass",
@@ -2214,7 +2214,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_liveness_browser.TestRailActivity._clear_annotations",
@@ -2256,7 +2256,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_motion_browser.TestMotionBrowser.tearDownClass",
@@ -2277,7 +2277,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_motion_browser.TestMotionBrowser._module",
@@ -2323,7 +2323,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_multi_file_tasks._FakeClient.close",
@@ -2344,7 +2344,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_multi_judge._PipeClient.chat",
@@ -2365,7 +2365,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_multi_judge._PipeClient.close",
@@ -2386,7 +2386,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_multi_judge._Decider.decide",
@@ -2407,7 +2407,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_multi_judge._Decider.close",
@@ -2428,7 +2428,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_needle_task._FakeClient.chat",
@@ -2449,7 +2449,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_needle_task._FakeClient.close",
@@ -2470,7 +2470,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_new_models_guide_browser._Base.tearDownClass",
@@ -2491,7 +2491,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_new_models_guide_browser.TestNewRun.setUpClass",
@@ -2512,7 +2512,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_new_models_guide_browser.TestModelsGuideLocal.setUpClass",
@@ -2533,7 +2533,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_new_models_guide_browser.TestHosted.setUpClass",
@@ -2554,7 +2554,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_now_browser.TestNow.setUpClass",
@@ -2575,7 +2575,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_now_browser.TestNow.tearDownClass",
@@ -2596,7 +2596,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_now_browser.TestNowEmpty.setUpClass",
@@ -2617,7 +2617,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_now_browser.TestNowEmpty.tearDownClass",
@@ -2638,7 +2638,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_now_browser.TestExperiments.setUpClass",
@@ -2659,7 +2659,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_now_browser.TestExperiments.tearDownClass",
@@ -2680,7 +2680,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_now_browser.TestRailHeight.setUpClass",
@@ -2701,7 +2701,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_observatory_cards._Writer.chat",
@@ -2722,7 +2722,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_openrouter_videos._FakeStream.raise_for_status",
@@ -2785,7 +2785,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_openrouter_videos._FailingStream.raise_for_status",
@@ -2827,7 +2827,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_pairwise_judge._Logger.log_llm_call",
@@ -2848,7 +2848,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_pairwise_judge._Logger.log",
@@ -2869,7 +2869,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_pairwise_judge.TestPairwiseJudge.setUp",
@@ -2890,7 +2890,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_palette_browser._Base.tearDownClass",
@@ -2911,7 +2911,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_palette_browser.TestPaletteLocal.setUpClass",
@@ -2932,7 +2932,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_palette_browser.TestPaletteHosted.setUpClass",
@@ -2953,7 +2953,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_pipeline._FakeClient.chat",
@@ -2974,7 +2974,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_pipeline._FakeClient.close",
@@ -2995,7 +2995,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_preserve_ref_convention.TestPreserveRefConventionIsDocumented.setUp",
@@ -3016,7 +3016,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_privacy_holdout_config.TestRunIsHoldout.setUp",
@@ -3037,7 +3037,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_privacy_holdout_config.TestSyncSurfaces.setUp",
@@ -3058,7 +3058,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_privacy_holdout_config.TestHostedSnapshot.setUpClass",
@@ -3079,7 +3079,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_privacy_holdout_config.TestHostedSnapshot.tearDownClass",
@@ -3100,7 +3100,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_publish_browser.TestPublishHosted.setUpClass",
@@ -3121,7 +3121,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_publish_browser.TestPublishHosted.tearDownClass",
@@ -3142,7 +3142,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_publish_cards.TestHoldoutNeverPublished.setUpClass",
@@ -3163,7 +3163,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_publish_cards.TestHoldoutNeverPublished.tearDownClass",
@@ -3184,7 +3184,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_publish_cards.TestShotEndpointErrors.setUpClass",
@@ -3205,7 +3205,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_publish_cards.TestShotEndpointErrors.tearDownClass",
@@ -3226,7 +3226,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_publish_cards.TestOgMeta.setUp",
@@ -3247,7 +3247,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_publishing_doc.TestPublishingDocMatchesPolicy.setUpClass",
@@ -3268,7 +3268,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_remotecatalog._Resp.raise_for_status",
@@ -3310,7 +3310,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_render.visible_text",
@@ -3356,7 +3356,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_render.TestErrorPagesOverHttp.tearDownClass",
@@ -3377,7 +3377,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_render.TestErrorPagesOverHttp.get",
@@ -3398,7 +3398,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_revalidate.TestRevalidate.setUp",
@@ -3419,7 +3419,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_review.FakeClient.chat",
@@ -3440,7 +3440,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_review.TestReview.setUp",
@@ -3461,7 +3461,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_run_detail._Base.setUp",
@@ -3482,7 +3482,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_run_detail._Base.tearDown",
@@ -3524,7 +3524,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_run_detail_browser.TestRunDetailBrowser.tearDownClass",
@@ -3545,7 +3545,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_run_detail_browser.TestRunDetailBrowser.tearDown",
@@ -3608,7 +3608,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_runs_browser._Base.tearDownClass",
@@ -3629,7 +3629,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_runs_browser.TestNewRunsBanner.setUpClass",
@@ -3650,7 +3650,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_runs_browser.TestNewRunsBanner.tearDownClass",
@@ -3671,7 +3671,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_runs_payload.TestRunsPayload.setUpClass",
@@ -3692,7 +3692,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_selfcheck.TestReferenceReplay.setUp",
@@ -3713,7 +3713,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_serve.TestHttpRoutes.setUpClass",
@@ -3734,7 +3734,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_serve.TestHttpRoutes.tearDownClass",
@@ -3755,7 +3755,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_serve._NoRedirect.redirect_request",
@@ -3801,7 +3801,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_serve.TestThreadRefusesUnreadableCard.tearDownClass",
@@ -3822,7 +3822,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_serve.TestLivenessRoutes.setUpClass",
@@ -3843,7 +3843,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_serve.TestLivenessRoutes.tearDownClass",
@@ -3864,7 +3864,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_serve_browser.TestBrowserSmoke.setUpClass",
@@ -3885,7 +3885,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_serve_browser.TestBrowserSmoke.tearDownClass",
@@ -3906,7 +3906,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_serve_browser._QuietServer.handle_error",
@@ -3952,7 +3952,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_serve_browser.TestSpaRuntimeLocal.tearDownClass",
@@ -3973,7 +3973,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_serve_browser._WorkerSim.log_message",
@@ -4069,7 +4069,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_serve_browser.TestSpaRuntimeHosted.tearDownClass",
@@ -4090,7 +4090,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_shell_browser._Base.setUpClass",
@@ -4111,7 +4111,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_shell_browser._Base.tearDownClass",
@@ -4132,7 +4132,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_shell_static.TestSpriteDelivery.setUpClass",
@@ -4153,7 +4153,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_shell_static.TestSpriteDelivery.tearDownClass",
@@ -4174,7 +4174,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_snapshot.TestSnapshot.setUpClass",
@@ -4195,7 +4195,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_snapshot.TestSnapshot.tearDownClass",
@@ -4216,7 +4216,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_spec_anchors._product_page",
@@ -4262,7 +4262,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_spec_anchors.TestMultiFileReadsFileBodies.setUp",
@@ -4283,7 +4283,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_spend_guard.TestSpendMeters.setUp",
@@ -4304,7 +4304,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_spend_guard.TestSpendMeters.tearDown",
@@ -4346,7 +4346,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_spend_guard.TestBudgetCheck.tearDown",
@@ -4388,7 +4388,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_spend_guard.TestPerCellRecheck.tearDown",
@@ -4430,7 +4430,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_sql_task._FakeClient.close",
@@ -4451,7 +4451,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_sql_task.TestShippedMonthlyRevenueSpec.setUp",
@@ -4472,7 +4472,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_swe_patch._FakeClient.chat",
@@ -4493,7 +4493,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_swe_patch._FakeClient.close",
@@ -4514,7 +4514,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_terminal.TestVirtualShell.setUp",
@@ -4535,7 +4535,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_terminal._FakeClient.chat",
@@ -4556,7 +4556,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_terminal._FakeClient.close",
@@ -4577,7 +4577,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_tui.TestSpendParity.setUpClass",
@@ -4598,7 +4598,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_tui.TestSpendParity.tearDownClass",
@@ -4619,7 +4619,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_video_tasks._FakeClient.chat",
@@ -4640,7 +4640,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_video_tasks._FakeClient.videos",
@@ -4661,7 +4661,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_video_tasks._FakeClient.close",
@@ -4682,7 +4682,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_web_experiment.TestExperimentPayload.setUp",
@@ -4703,7 +4703,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_web_experiment.TestExperimentPayload.tearDown",
@@ -4745,7 +4745,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_web_meta.TestMetaRoute.tearDownClass",
@@ -4766,7 +4766,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_web_models_catalog.TestModelsCatalog.setUp",
@@ -4787,7 +4787,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_web_models_catalog.TestModelsCatalog.tearDown",
@@ -4829,7 +4829,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_web_new_models_payload._Fixture.tearDown",
@@ -4871,7 +4871,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_web_now.TestNowPayload.tearDownClass",
@@ -4892,7 +4892,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_web_now.TestExperimentsList.setUp",
@@ -4913,7 +4913,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_web_spend_gate._Server.setUpClass",
@@ -4934,7 +4934,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_web_spend_gate._Server.tearDownClass",
@@ -4955,7 +4955,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "tests.test_workflow_security.WorkflowSecurityTests.setUpClass",
@@ -4976,7 +4976,7 @@
           "detail": "line range unexecuted"
         }
       ],
-      "note": "tests surface rides with the code it covers"
+      "note": "same-named method reachable elsewhere; tests surface rides with the code it covers"
     },
     {
       "symbol": "ui.js.api.ApiError.constructor",

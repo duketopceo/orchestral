@@ -1171,3 +1171,6 @@ html[data-capture="1"] #view { max-width: none; }
   .legend-rests li { grid-template-columns: 64px 80px 1fr; }
   .combo-list { max-height: 240px; }
 }
+
+/* ---------- Small sans text: Instrument Sans spaces read tight at 11-12px (DESIGN.md 6.2) ---------- */
+.band-sub, .look-why, .ll-note, .hint, .facet-label, .dim.sm { word-spacing: .08em; }

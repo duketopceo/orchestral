@@ -118,6 +118,7 @@ orchestral dashboard               # reports/dashboard.html
 | `scrub` | Redact secrets/paths from `runs/` into `runs-pub/` + `manifest.json`, withholding the answer key |
 | `calibrate` | Judge-vs-human agreement; `--emit <group>` writes a label skeleton, `--labels` computes + persists (`--json`) |
 | `judge` | Retroactively judge artifacts of finished runs (writes judge result into `report.json` + index score); `--pairwise` runs position-swapped head-to-head battles between pairings' same-task artifacts and prints Bradley-Terry ratings |
+| `cluster` | Embed plans/artifacts through an embedding-model registry and cluster them, or compare embedding models over the same corpus (`--model`, `--compare`, `--plans`) |
 | `revalidate` | Replay mechanical validators on stored artifacts (no model calls): repairs `score`/`passes`/`checks` on report + index, stamps `report.revalidated` with old values |
 | `review` | Frontier-model audit of run evidence: per-run `review.json` + `reports/review-*.md` (`--model`, `--group`, `--dry-run`) |
 | `audit` | Static task-spec audit: fail-open checks, structural-only graders, contamination risk (`--json`, `--strict`), see [docs/task-audit.md](docs/task-audit.md) |

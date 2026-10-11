@@ -797,6 +797,8 @@ td > .state { margin: 0; }
   /* priority 3 columns fold into a row expand */
   [data-pri="3"] { display: none; }
   .row-expand { display: inline-flex; float: left; margin: 0 6px 0 0; }
+  /* verdict cell: expander, chip and flag pair stay on one line, so the pair never wraps into the Task column */
+  .run-row > td:first-child { min-width: 176px; }
   .tbl-wrap table.data td, .tbl-wrap table.data th { height: 40px; }
   .tbl-wrap { max-height: none; }
   .filters > * { flex: 1 1 140px; min-width: 0; }

@@ -161,7 +161,7 @@ the program state and every unit's child-plan source of truth.
 #### U6. Gemini 4 Argon eval slot
 
 - **Difficulty:** easy - a config entry is already parked.
-- **Feasibility:** Provider listing (Fairwind trusted testers only), price $2/$10 per Mtok.
+- **Feasibility:** Provider listing (Fairwind trusted testers only), price $2/$10 per Mtok — **introductory rate**; Google lists $4/$20 as the post-intro price, so estimates here should be treated as a floor.
 - **Simpler alternative:** Nothing to build: run `harness.py models sync` when it lists. Remove the watchlist prose from README-level docs once resolved.
 - **Category:** external-gated — flips on automatically when the provider
   lists it.

@@ -389,4 +389,6 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). CI runs `python -m unittest discover -s 
 
 ## License
 
-MIT
+AGPL-3.0. Free to use and modify, including privately. If you host or distribute a modified version, you must publish your source under the same license. See [`LICENSE`](LICENSE).
+
+Versions of this repository before the AGPL-3.0 change were published under the MIT License, and those copies remain available under MIT.

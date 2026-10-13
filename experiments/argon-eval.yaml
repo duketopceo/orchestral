@@ -1,0 +1,37 @@
+# Argon orchestrator evaluation — same cells as jev-ab for direct
+# cross-orchestrator comparability (same workers, same task family).
+#
+# Argon is mandatory-reasoning, $2/$10 per Mtok introductory ($4/$20 after
+# intro) — the priciest orchestrator in the registry; the budget flag is
+# the binding constraint, not the cell count.
+#
+# NOTE: `:batch` variants are deferred-fulfillment (OpenAI-style batch
+# jobs, 24h window; a 1-request probe ran 8min+ in_progress). The eval
+# loop's dependent call chain (Plan -> Delegate -> Judge per run) cannot
+# use them — batch fits bulk independent calls only (retro-judge,
+# specaudit, review sweeps). This matrix runs the regular endpoint.
+name: argon-eval
+
+orchestrators:
+  - google/gemini-4-argon
+
+workers:
+  - z-ai/glm-5.3-flash
+  - deepseek/deepseek-v4-flash-0731
+
+tasks:
+  - landing-page-coffee
+  - needle-deploy-token
+  - code-fizzbuzz
+  - multi-file-site
+  - constraint-product-blurb
+  # v3 real-repo family — same discriminating cells as jev-ab.
+  - v3-mi-run-length
+  - v3-mi-runs-of
+  - v3-mi-chunked-by
+  - v3-boltons-deep-merge
+  - v3-boltons-parseqsl-encoding
+  - v3-boltons-namedutils-empty
+  - v3-boltons-bits-empty
+  - v3-boltons-jsonl-seek
+  - v3-boltons-barrellist-delete

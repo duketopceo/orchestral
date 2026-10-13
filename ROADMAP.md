@@ -9,7 +9,7 @@ unit ledger.
 OpenRouter — does a cheap planner plus cheap workers produce frontier-quality
 output at a fraction of the cost?
 
-Last updated: 2026-09-30.
+Last updated: 2026-10-11 (shipped list refreshed; priorities unchanged).
 
 ## Shipped
 
@@ -23,6 +23,14 @@ Last updated: 2026-09-30.
   fixtures (`fixtures/registry.yaml` → fetch/check/lock), staged in-sandbox,
   graded by a declared `verify.command` with a verifier-owned `test_files`
   oracle overlay. No guest network — deps ride a staged `wheelhouse/`.
+- Since 2026-09-30: Inspect AI eval-log export (`export --format inspect`, #166),
+  measured provider telemetry in the model catalog (#167), pairing-leaderboard
+  macro-averaged pass rate (#164), Pareto frontier marker (#168) and
+  METR-style time-horizon fit (#169), multi-model judge + embedding
+  comparison (`cluster`, #176), honest outcome taxonomy in the observatory
+  (#183), agent quickstart (`docs/agent-quickstart.md`, #182), and the
+  negative-diff code-reduction program (#172, #173, #177, #185 —
+  `docs/analysis/`). Per-unit status lives in the program index above.
 
 ## Next (priority order)
 

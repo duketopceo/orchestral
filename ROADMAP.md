@@ -9,7 +9,9 @@ unit ledger.
 OpenRouter — does a cheap planner plus cheap workers produce frontier-quality
 output at a fraction of the cost?
 
-Last updated: 2026-10-11 (shipped list refreshed; priorities unchanged).
+Last updated: 2026-10-13 — shipped list refreshed; every unit in the
+program index now carries **Difficulty / Feasibility / Simpler
+alternative** notes.
 
 ## Shipped
 

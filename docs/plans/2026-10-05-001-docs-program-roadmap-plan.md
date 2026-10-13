@@ -57,6 +57,9 @@ the program state and every unit's child-plan source of truth.
 
 #### U1. Jev A/B experiment + writeup
 
+- **Difficulty:** medium - the driver exists; what is left is running paired arms to budget and reading CIs honestly.
+- **Feasibility:** OpenRouter spend (~$3.28 of $12 used), `ORCHESTRAL_CODE_RUNTIME` cube-env availability for v3 code cells, Jev endpoint health; CIs may stay inconclusive at this n.
+- **Simpler alternative:** Report only the non-code cells first (they already run); skip the v3 code cells until the runtime is stable. Nothing to delete.
 - **Category:** critical path — the only unit gating maintain mode.
 - **Status:** in progress — relaunched 2026-10-09 with the cube-env
   contract sourced after the first run stopped with 38 cells pending
@@ -74,6 +77,9 @@ the program state and every unit's child-plan source of truth.
 
 #### U2. The Score redesign — residual units
 
+- **Difficulty:** easy - only the video compose/render is left.
+- **Feasibility:** Remotion hosting, music licence and spend approval are operator decisions, not code.
+- **Simpler alternative:** Ship the storyboard as a static SVG/PNG sequence and cut the render; the Score UI already carries the story.
 - **Status:** nearly done — 22 of 23 units merged. U14 (#148), U15
   (#149), and U19–U21 (#154) all landed after the plan's 2026-10-04
   status block was written. Only U22 (launch video compose + render)
@@ -85,6 +91,9 @@ the program state and every unit's child-plan source of truth.
 
 #### U3. Post-merge consolidation — residual 4f tier
 
+- **Difficulty:** hard - each remaining item (inspect-log export, Pareto/composite index, METR fit, perturbation sweeps) is a new analysis surface.
+- **Feasibility:** Needs enough real runs to be meaningful; METR horizon fit and perturbation sweeps add model spend; inspect-log schema is upstream-owned.
+- **Simpler alternative:** Defer all of it until the writeup exists. an Inspect export already exists as `export --format inspect`; do not build a second path.
 - **Status:** in progress — Units 1–3 and 4a–4e merged (PRs #159–#164:
   dead weight, pairwise judging + Bradley–Terry, hierarchical bootstrap
   CIs, macro pass rate, contamination canaries, CI eval gate).
@@ -100,6 +109,9 @@ the program state and every unit's child-plan source of truth.
 
 #### U9. Safe code reduction (negative-diff program)
 
+- **Difficulty:** medium - mechanical, but each deletion needs triangulated evidence.
+- **Feasibility:** Dynamic dispatch and entry-point registry gaps cause false positives; every slice must pass the CI gate.
+- **Simpler alternative:** Start from `scripts/dead_code_report.py` output and delete only tier-1 candidates; skip anything the entry-point registry cannot explain.
 - **Category:** optional hygiene — negative-diff debt paydown that makes
   maintain mode cheaper; agent-dispatchable, no model spend. Not a writeup
   blocker.
@@ -118,6 +130,9 @@ the program state and every unit's child-plan source of truth.
 
 #### U4. Baseline findings writeup + published artifact
 
+- **Difficulty:** medium - the writing is the work; the hosted surface is live.
+- **Feasibility:** Gated on U1 evidence; Cloudflare Access config at `obs.shippedit.dev`; scrub must keep the answer key out.
+- **Simpler alternative:** Publish one README-linked report page from `reports/` rather than a bespoke site; reuse the static snapshot (`scripts/build-static-snapshot.py`).
 - **Category:** critical path — the product.
 - **Status:** pending — gated on U1 completing; the hosted observatory
   surface is already live.
@@ -129,6 +144,9 @@ the program state and every unit's child-plan source of truth.
 
 #### U5. v3 task curation + calibration
 
+- **Difficulty:** medium - curation is manual and calibration costs model runs.
+- **Feasibility:** Pinned upstream repos and licences (boltons), no guest network so wheelhouse staging must stay current, spend for calibration pairings.
+- **Simpler alternative:** Skip band reassignment; ship the nine tasks with bands marked uncalibrated, as the plan already allows.
 - **Category:** optional for the writeup — same-cell A/B needs no
   difficulty bands to be valid; uncalibrated bands stay a caveat.
 - **Status:** in progress — nine real-repo tasks landed (four
@@ -142,6 +160,9 @@ the program state and every unit's child-plan source of truth.
 
 #### U6. Gemini 4 Argon eval slot
 
+- **Difficulty:** easy - a config entry is already parked.
+- **Feasibility:** Provider listing (Fairwind trusted testers only), price $2/$10 per Mtok — **introductory rate**; Google lists $4/$20 as the post-intro price, so estimates here should be treated as a floor.
+- **Simpler alternative:** Nothing to build: run `harness.py models sync` when it lists. Remove the watchlist prose from README-level docs once resolved.
 - **Category:** external-gated — flips on automatically when the provider
   lists it.
 - **Status:** pending — provider-gated; announced Fairwind trusted-tester
@@ -158,6 +179,9 @@ the program state and every unit's child-plan source of truth.
 
 #### U7. Launch video (Score U22)
 
+- **Difficulty:** hard - video production tooling plus assets.
+- **Feasibility:** Operator decisions on Remotion, music licence and spend.
+- **Simpler alternative:** Replace with a recorded `capture-ui-matrix.py` walkthrough (GIF/WebM); no new toolchain.
 - **Category:** external + decision-gated — blocked on operator answers,
   not code.
 - **Status:** blocked — awaiting Open Question answers (Remotion home,
@@ -167,6 +191,9 @@ the program state and every unit's child-plan source of truth.
 
 #### U8. Program-level caveats to keep honest
 
+- **Difficulty:** easy - wording only.
+- **Feasibility:** None; these are standing caveats.
+- **Simpler alternative:** Keep as one caveats block that the writeup includes verbatim; do not grow into features.
 - **Category:** standing — caveats by design, never a deliverable.
 - **Status:** pending — standing items, not a deliverable unit: judge
   self-preference in Jev-judged cells, seeds as bookkeeping only,

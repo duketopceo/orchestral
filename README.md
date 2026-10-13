@@ -376,6 +376,17 @@ This repo's own `.github/workflows/orchestral.yml` dogfoods the harness on
 internal PRs (skipped on forks, which can't see the secret). `.github/workflows/ci.yml`
 runs tests, lint, and types on every PR with no secrets required.
 
+## Status and roadmap
+
+The harness is feature-complete for its question; the open work is running the
+Jev A/B experiment and writing up the result. Units, status and difficulty
+notes live in [ROADMAP.md](ROADMAP.md) and the program plan it links.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). CI runs `python -m unittest discover -s tests`,
+`ruff check .` and `mypy orchestral harness.py` with no secrets.
+
 ## License
 
 MIT

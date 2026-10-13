@@ -207,6 +207,14 @@ class TestExecuteLayer(unittest.TestCase):
     def test_no_tests_is_silent(self) -> None:
         self.assertEqual(check_execution(_spec("code", module="a.py"), None), [])
 
+    def test_fixture_spec_skips_execute_named(self) -> None:
+        # The verify command grades inside a staged sandbox this layer
+        # cannot replay — silent [] used to hide the ungraded check.
+        spec = _spec("code", fixture="repo-1.0", verify={"command": ["pytest"]})
+        found = check_execution(spec, None)
+        self.assertEqual(len(found), 1)
+        self.assertEqual(found[0].rule, "execute_skipped_fixture")
+
     def test_zero_test_suite_flags(self) -> None:
         # A suite that defines no TestCase must not self-certify.
         spec = _spec(

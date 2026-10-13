@@ -472,6 +472,26 @@ _REQUIRED_META: dict[str, tuple[str, ...]] = {
     "code": ("module", "tests"),
     "multi-file": ("expected_paths",),
 }
+# fixture-graded code specs stage a repo checkout and grade via
+# metadata.verify.command in the sandbox — the runner never reads
+# module/tests on that branch (cubeexec fails closed on a missing command,
+# so that is the real contract). Dotted keys address nested metadata.
+_FIXTURE_REQUIRED_META = ("verify.command",)
+
+
+def _required_meta(task: TaskSpec) -> tuple[str, ...]:
+    if task.type == "code" and task.metadata.get("fixture"):
+        return _FIXTURE_REQUIRED_META
+    return _REQUIRED_META.get(task.type, ())
+
+
+def _meta_has(metadata: dict, key: str) -> bool:
+    node = metadata
+    for part in key.split("."):
+        if not isinstance(node, dict) or part not in node:
+            return False
+        node = node[part]
+    return bool(node)
 # validation names that read a metadata key - requesting the check without
 # the metadata silently no-ops or errors at run time
 _VALIDATION_META = {
@@ -514,7 +534,7 @@ def cmd_validate(args: argparse.Namespace) -> None:
             failures += 1
             print(f"  FAIL {path.name}: {exc}")
             continue
-        missing = [k for k in _REQUIRED_META.get(task.type, ()) if k not in task.metadata]
+        missing = [k for k in _required_meta(task) if not _meta_has(task.metadata, k)]
         try:
             expected_paths(task.metadata)
             required_content(task.metadata)

@@ -298,6 +298,21 @@ def check_execution(
     """Run ``metadata.tests`` against the spec's reference fileset."""
     tests = str(spec.metadata.get("tests") or "").strip()
     if not tests:
+        if (spec.metadata or {}).get("fixture"):
+            # The verify command grades inside a staged repo checkout —
+            # this layer has no sandbox, so the honest result is a named
+            # skip, not silence.
+            return [Finding(
+                rule="execute_skipped_fixture",
+                severity=INFO,
+                task_id=spec.id,
+                path=str(path) if path else None,
+                detail=(
+                    "fixture spec grades via metadata.verify.command in a "
+                    "staged repo checkout; the local execute layer cannot "
+                    "replay it."
+                ),
+            )]
         return []
     try:
         fileset = _reference_files(spec)

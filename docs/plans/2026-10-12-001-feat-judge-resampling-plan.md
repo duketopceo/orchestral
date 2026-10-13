@@ -53,9 +53,10 @@ samples only where the judge is uncertain.
 - **R3 — honest aggregation, not majority vote.** Aggregate N verdicts
   into a judgment result with an added `samples` list (per-sample
   noul/score/passed/confidence) plus:
-  - `pass_fraction` — fraction of samples with a definitive `passed`
+  - `pass_fraction` — fraction of definitive samples with `passed`
     (inconclusive samples excluded from the denominator, counted
-    separately)
+    separately in `inconclusive_samples`; **`null` when no definitive
+    samples exist** — never a divide-by-zero guess)
   - `verdict` — passed iff **all** definitive samples passed; failed iff
     all failed; **inconclusive when samples split or none definitive**
   - `judge_split: true` on any mixed or fully-inconclusive set
@@ -66,10 +67,10 @@ samples only where the judge is uncertain.
 
 - **R4 — adaptive sampling band.** Sampling cost is linear in N; the
   accuracy value concentrates at the uncertain region. When N>1 the
-  runner first draws sample 0; if its noul falls outside the
+  runner first draws sample 0; if its noul falls **inside** the
   uncertainty band `[0.3, 0.7]` (defaults, `--judge-band lo hi`
   overridable) or is null, remaining samples are drawn; a confident
-  single verdict short-circuits. Chat judges have no noul — they always
+  single verdict (noul outside the band) short-circuits. Chat judges have no noul — they always
   draw all N. This keeps the common case at 1 call and pays only where
   verdicts can flip.
 
@@ -133,9 +134,10 @@ Files: `orchestral/runner.py`, `harness.py`,
   CLI flags → `RunnerConfig`; `run()` passes them into
   `judge_artifact`/`judge_pair`.
 - `report.judge` records the aggregated result incl. `samples` and
-  `judge_split`; `report.passes`/`score` derive from the aggregate
-  exactly as today (verdict field is the same shape — downstream
-  readers see inconclusive splits through the existing path).
+  `judge_split`. `report.passes`/`score` stay **mechanical-only** —
+  the judge does not mutate them (runner.py:~1186 contract); a split
+  verdict surfaces as `report.judge.verdict: "inconclusive"` +
+  `judge_split`, flowing through the existing inconclusive path.
 - `_check_judge_cost_cap` worst-case estimate multiplies the primary
   judge's unit cost by `--judge-samples`.
 - `runs.config` JSON records `judge_samples` + `judge_band` for
@@ -157,15 +159,17 @@ Files: `orchestral/judge.py` (`judge_agreement` or sibling fn),
 
 - `same_judge_split_rate(rows) -> dict` — group sampled verdicts by
   (task, judge slug): split_rate, mean pass_fraction, n_samples. Reads
-  `report.judge.samples` where present; unsampled runs contribute 0
-  splits, not an error.
+  `report.judge.samples` where present; runs without `samples`
+  metadata are **excluded from the denominator** (their outcome is
+  unknown, not a non-split) and reported as `unsampled_runs: n`.
 - Surface in `harness.py report --judge-agreement` output (extend the
   existing panel rather than a new flag).
 
 Test scenarios:
 - 3 sampled runs, one split → split_rate 1/3.
-- unsampled runs (no `samples` key) counted with split_rate 0 — no
-  fabricated splits from absent data.
+- unsampled runs (no `samples` key) excluded from the rate denominator,
+  surfaced as `unsampled_runs` — no fabricated non-splits from absent
+  data.
 - per-judge breakdown isolates slugs (jev vs pplx-decider rows don't
   merge).
 

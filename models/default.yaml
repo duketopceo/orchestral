@@ -8,18 +8,20 @@
 # price_per_video_second bills video tasks when the API reports no usage.cost.
 # Non-OpenRouter providers are chat-only; image and video tasks require OpenRouter.
 models:
-  # WATCHLIST — announced 2026-09-30, gated to Fairwind trusted testers;
-  # not on OpenRouter yet (harness.py models sync will surface it when it
-  # lists). We intend to spend on this — prefer the :batch variant if
-  # offered (~50% off). List price $2/$10 per Mtok; cached input 95% off.
-  - slug: "~google/gemini-4-argon"
-    name: "Gemini 4 Argon (gated — watchlist)"
+  # Listed on OpenRouter 2026-10-13 (canonical -20261013) — Google /
+  # Google AI Studio endpoints only; served probe OK via eval key.
+  # Endpoint pricing is tiered $1/$2/$3.6 in, $5/$10/$18 out; entry keeps
+  # the mid list tier. Mandatory reasoning model.
+  - slug: "google/gemini-4-argon"
+    name: "Gemini 4 Argon"
     role: orchestrator
     input_price_per_mtok: 2.00
     output_price_per_mtok: 10.00
-    context: 0
-    max_tokens: 0
+    context: 1048576
+    max_tokens: 65536
     retry_limit: 2
+    metadata:
+      vision: true
 
   - slug: "~deepseek/deepseek-v4-flash-latest"
     name: "DeepSeek V4 Flash Latest"
@@ -238,15 +240,7 @@ models:
       resolutions: ["720p", "1080p"]
       aspect_ratios: ["16:9", "9:16", "1:1", "4:3", "3:4"]
 
-  - slug: "qwen/qwen3-max"
-    name: "Qwen 3 Max"
-    role: orchestrator
-    input_price_per_mtok: 0.78
-    output_price_per_mtok: 3.90
-    context: 262144
-    max_tokens: 65536
-    metadata:
-      vision: true
+  # qwen3-max removed 2026-10-12 — deprecated upstream, 404s on OR.
 
   - slug: "mistralai/mistral-large-2512"
     name: "Mistral Large 2512"
@@ -283,6 +277,19 @@ models:
     output_price_per_mtok: 2.30
     context: 131072
     max_tokens: 16384
+
+  # Meta frontier reasoning, listed 2026-10-12 (canonical -20261012).
+  # $4/$20 is above the eval spend ceiling — reference only, no benches.
+  - slug: "meta/muse-wonder"
+    name: "Muse Wonder"
+    role: reference
+    input_price_per_mtok: 4.00
+    output_price_per_mtok: 20.00
+    context: 1048576
+    max_tokens: 943718
+    metadata:
+      vision: true
+      reasoning: true
 
   - slug: "x-ai/grok-4.6"
     name: "Grok 4.6"

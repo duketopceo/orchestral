@@ -63,29 +63,59 @@ across independent worker calls?
 4 fixture specs, `type: code`, each asking for **N ≥ 8 member units** in a
 real repo checkout, per-member `fail_to_pass` test files:
 
-- `v4-wide-mi-filters` — more-itertools: N new utility functions across N
-  modules, each with an independent hidden test file.
-- `v4-wide-boltons-iterutils` — boltons: N independent buglets across
-  distinct modules (each member = one fix + one test file).
-- `v4-wide-attrs-validators` — attrs (or another fetched fixture): N
-  validators to implement, shared import surface (forces cross-member
-  consistency).
-- `v4-wide-jsonlines-io` — N file-format codecs with a shared base
-  (members can't be written in total isolation — plan must sequence or
-  share the base).
+- `v4-wide-mi-filters` — more-itertools (`more-itertools-10.8` exists):
+  N new utility functions across N modules, each with an independent
+  hidden test file.
+- `v4-wide-boltons-iterutils` — boltons (`boltons-25.1` exists): N
+  independent buglets across distinct modules (each member = one fix +
+  one test file).
+- `v4-wide-boltons-validate` — boltons reuse: N small validators with a
+  shared import surface (forces cross-member consistency).
+- `v4-wide-mi-codecs` — more-itertools reuse: N file-format codecs with a
+  shared base (members can't be written in total isolation — the plan
+  must sequence or share the base).
 
-Fixture tarballs via `fixtures fetch` as today; `expected_paths` declares
-the N member paths; `verify.command` runs the staged pytest tree;
-`fail_to_pass` names `test_member_*` files so per-member score is
-recoverable.
+**Fixture grounding is per-spec acceptance, not assumed**: only repos
+whose tarballs already exist under `fixtures/` may be used on first pass —
+`attrs`, `jsonlines`, etc. require a fetch + lock + member-inventory step
+*before* the spec is authored, not during. Each spec also carries an
+author-side inventory check: the N member units must actually exist in
+the repo at the pinned commit, and each member's hidden test file must be
+authored at spec time (generated-oracle specs are a separate pattern).
+
+**Member size bound (hard constraint, learned from the boltons run):**
+the worker output contract is whole-file JSON, and one 57.5KB file
+already hit glm-5.3-flash's ~32k-token output cap (`finish_reason:
+length`, unparseable). Member units must be **small**: target ≤ ~5KB of
+emitted source per member and **≤ ~50KB total across all members** in one
+subtask's output — so a spec that wants N large files must decompose to
+multiple subtasks (which is *also* the orchestration signal, but a
+too-large single response just dies). Specs state the bound in
+`metadata.max_member_bytes` so the spec-audit can flag oversize members.
 
 ### U2 — per-member score surface in report/cards
 
-`execution` already stores `tests_run`/`failures`/`ok`. Add a
-`member_results` map `{member: bool}` parsed from the verify output when
-`fail_to_pass` names follow `test_member_<name>`, surfaced on the pairing
-card as "members: k/N". No schema break — additive key, absent on
-non-wide runs.
+`execution` already stores `tests_run`/`failures`/`ok`. Add
+`execution.member_results: {member: bool}` — the per-member truth map.
+
+**Parsing contract (concrete, not "parse the output"):** for each
+`fail_to_pass` entry naming a `test_member_<name>.py` file, the member
+passes iff that file ran ≥1 test with 0 failures and 0 errors. A member
+whose source file is **absent from the worker artifact counts as fail** —
+not inconclusive, not skipped (a missing member is the exact signal the
+benchmark exists to measure). Parse from the recorded pytest output the
+sandbox already returns; when no `test_member_*` names exist, the key is
+absent (non-wide runs unchanged). Surfaced on the pairing card as
+"members: k/N".
+
+**Orchestrator-vs-worker attribution (the point of the benchmark):**
+each member also records `targeted: bool` — whether the plan's declared
+file list covered the member's path. Attribution rule: member not in the
+plan's `files`/`expected_paths` → **orchestrator miss** (plan coverage
+failure); member targeted but tests fail → **worker miss**. Surface both
+counts per run — `members_orchestrator_miss` / `members_worker_miss` —
+because that split is what lets a better planner show its edge instead of
+drowning in worker capability.
 
 ### U3 — rerun argon vs glm on the wide family
 
@@ -94,6 +124,12 @@ are directly comparable. Prediction to falsify: argon's margin shows up
 here (plan coverage + member consistency) where it couldn't on v3 — if
 glm-orchestrator still ties, the "orchestrator quality" claim is dead at
 this difficulty too, which is itself the finding.
+
+**Price a cell before any matrix**: a wide run costs ≈ 1 plan call +
+N×worker calls + N-file output tokens — the priciest shape we run.
+First live run of each spec doubles as the cost probe (measured
+`total_cost_usd` × reps × orchestrators ⇒ the real matrix estimate);
+the `$25` capped key stays the spend ceiling.
 
 ### U4 — document the discrimination boundary
 

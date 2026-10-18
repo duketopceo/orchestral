@@ -98,23 +98,29 @@ too-large single response just dies). Specs state the bound in
 `execution` already stores `tests_run`/`failures`/`ok`. Add
 `execution.member_results: {member: bool}` — the per-member truth map.
 
-**Parsing contract (concrete, not "parse the output"):** for each
-`fail_to_pass` entry naming a `test_member_<name>.py` file, the member
-passes iff that file ran ≥1 test with 0 failures and 0 errors. A member
-whose source file is **absent from the worker artifact counts as fail** —
-not inconclusive, not skipped (a missing member is the exact signal the
-benchmark exists to measure). Parse from the recorded pytest output the
-sandbox already returns; when no `test_member_*` names exist, the key is
-absent (non-wide runs unchanged). Surfaced on the pairing card as
-"members: k/N".
+**Concrete seam (found while reading `cubeexec.py`):** today's
+`run_repo_suite` is *command-granularity* — the comment at
+cubeexec.py:744 says it plainly: "Command granularity can't attribute
+which declared tests failed," so a nonzero exit scores the whole batch 0.
+Per-member truth needs a structured report, not stdout scraping
+(`output_tail` is capped at 4,000 chars — 8+ members × `-v` lines can
+overflow it). Implementation: when `fail_to_pass` entries match
+`test_member_*`, the verify step runs pytest twice — the scored pass
+as today, plus `--junitxml=/tmp/members.xml` (or `-v --tb=no` if junitxml
+isn't guaranteed), reads the file back through the sandbox file API, and
+parses `classname`/`name` → member map. Member pass iff its entry has
+zero failures/errors; **absent member file in the worker artifact counts
+as fail** (never inconclusive). `member_results` lands under
+`report["execution"]["member_results"]`; absent on non-wide runs — no
+schema break.
 
 **Orchestrator-vs-worker attribution (the point of the benchmark):**
 each member also records `targeted: bool` — whether the plan's declared
-file list covered the member's path. Attribution rule: member not in the
-plan's `files`/`expected_paths` → **orchestrator miss** (plan coverage
-failure); member targeted but tests fail → **worker miss**. Surface both
-counts per run — `members_orchestrator_miss` / `members_worker_miss` —
-because that split is what lets a better planner show its edge instead of
+file list covered the member's path. Member absent from plan
+`files`/`expected_paths` → **orchestrator miss**; targeted but tests
+fail → **worker miss**. Surface `members_orchestrator_miss` /
+`members_worker_miss` per run on the pairing card alongside "members:
+k/N" — that split is what lets a better planner show its edge instead of
 drowning in worker capability.
 
 ### U3 — rerun argon vs glm on the wide family

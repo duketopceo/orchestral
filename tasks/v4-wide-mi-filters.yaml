@@ -1,0 +1,208 @@
+id: v4-wide-mi-filters
+title: "more-itertools: eight small iterator utilities"
+blurb: "Wide-decomposition probe — add 8 independent member modules, each graded by its own hidden pytest file."
+type: code
+prompt: |
+  You are contributing to the `more-itertools` library. A maintainer has
+  approved a new `more_itertools/extras/` subpackage of small iterator
+  utilities. Deliver **all eight** member modules below — each is an
+  independent unit and is graded by its own hidden pytest file.
+
+  Create `more_itertools/extras/__init__.py` (empty is fine) and these
+  modules, each exposing exactly the named public function:
+
+  1. `extras/compact.py` — `compact(iterable)`: drop falsy items, keep
+     order. `compact([0,1,'',2,None,3]) == [1,2,3]`.
+  2. `extras/flatten_one.py` — `flatten_one(iterable)`: flatten exactly
+     one nesting level; non-iterable members are yielded as-is.
+     `flatten_one([[1,2],[3],4]) == [1,2,3,4]`.
+  3. `extras/first_true.py` — `first_true(iterable, default=None, pred=bool)`:
+     first item where `pred(item)` is truthy, else `default`.
+  4. `extras/nth_or_default.py` — `nth_or_default(iterable, n, default=None)`:
+     nth item (0-based) or `default` if the iterable is too short.
+  5. `extras/round_robin.py` — `round_robin(*iterables)`: interleave one
+     item at a time from each iterable in order, skipping exhausted ones,
+     until all are exhausted.
+     `round_robin('abc','d','ef') == ['a','d','e','b','f','c']` as list.
+  6. `extras/take_until.py` — `take_until(pred, iterable)`: yield items
+     until the first item where `pred(item)` is true (exclusive).
+  7. `extras/partition.py` — `partition(pred, iterable)`: return
+     `(falses, trues)` — two lazy iterators splitting the input by pred.
+  8. `extras/unique.py` — `unique(iterable, key=None)`: yield first-seen
+     items only, preserving order; `key` customizes the dedup identity.
+
+  All functions must be lazy (generator-based where applicable, no
+  materializing the input), import cleanly, and match library style
+  (short docstring, snake_case).
+
+  Return a JSON object `{"files": [{"path": "...", "content": "..."}]}` —
+  one entry per created file. The harness overlays your files onto a full
+  repo checkout and runs per-member hidden tests.
+metadata:
+  human_minutes: 60
+  canary: "orc-canary-c9707f66c825235a"
+  difficulty: standard
+  archetype: wide-decomposition
+  contamination_risk: low
+  max_member_bytes: 8192
+  max_subtasks: 16
+  fixture: more-itertools-10.8
+  workdir: repo
+  expected_paths:
+    - more_itertools/extras/__init__.py
+    - more_itertools/extras/compact.py
+    - more_itertools/extras/flatten_one.py
+    - more_itertools/extras/first_true.py
+    - more_itertools/extras/nth_or_default.py
+    - more_itertools/extras/round_robin.py
+    - more_itertools/extras/take_until.py
+    - more_itertools/extras/partition.py
+    - more_itertools/extras/unique.py
+  setup_commands:
+    - "python -m pip install --quiet --no-index --find-links /home/user/wheelhouse pytest"
+  verify:
+    command: ["python", "-m", "pytest", "tests/", "-v"]
+    fail_to_pass:
+      - test_member_compact
+      - test_member_flatten_one
+      - test_member_first_true
+      - test_member_nth_or_default
+      - test_member_round_robin
+      - test_member_take_until
+      - test_member_partition
+      - test_member_unique
+  timeout_seconds: 240
+  reference:
+    more_itertools/extras/__init__.py: ""
+    more_itertools/extras/compact.py: |
+      """Small iterator utilities."""
+      def compact(iterable):
+          """Yield truthy items, preserving order."""
+          return (x for x in iterable if x)
+    more_itertools/extras/flatten_one.py: |
+      """Flatten helpers."""
+      def flatten_one(iterable):
+          """Flatten one nesting level; non-iterables pass through."""
+          for item in iterable:
+              try:
+                  it = iter(item)
+              except TypeError:
+                  yield item
+              else:
+                  if isinstance(item, (str, bytes)):
+                      yield item
+                  else:
+                      yield from it
+    more_itertools/extras/first_true.py: |
+      def first_true(iterable, default=None, pred=bool):
+          """First item where pred(item) is truthy, else default."""
+          for item in iterable:
+              if pred(item):
+                  return item
+          return default
+    more_itertools/extras/nth_or_default.py: |
+      def nth_or_default(iterable, n, default=None):
+          """nth item (0-based) or default when the iterable is too short."""
+          for i, item in enumerate(iterable):
+              if i == n:
+                  return item
+          return default
+    more_itertools/extras/round_robin.py: |
+      import itertools
+      def round_robin(*iterables):
+          """Interleave one item per iterable in turn until all exhaust."""
+          iters = [iter(it) for it in iterables]
+          active = len(iters)
+          while active:
+              for i, it in enumerate(iters):
+                  if it is None:
+                      continue
+                  try:
+                      yield next(it)
+                  except StopIteration:
+                      iters[i] = None
+                      active -= 1
+    more_itertools/extras/take_until.py: |
+      def take_until(pred, iterable):
+          """Yield items until pred(item) is true (exclusive)."""
+          for item in iterable:
+              if pred(item):
+                  return
+              yield item
+    more_itertools/extras/partition.py: |
+      import itertools
+      def partition(pred, iterable):
+          """Split iterable into (falses, trues) lazy iterators."""
+          a, b = itertools.tee(iterable)
+          return (x for x in a if not pred(x)), (x for x in b if pred(x))
+    more_itertools/extras/unique.py: |
+      def unique(iterable, key=None):
+          """Yield first-seen items, preserving order."""
+          seen = set()
+          k = key or (lambda x: x)
+          for item in iterable:
+              ident = k(item)
+              if ident not in seen:
+                  seen.add(ident)
+                  yield item
+  test_files:
+    tests/test_member_compact.py: |
+      from more_itertools.extras.compact import compact
+
+      def test_member_compact():
+          assert list(compact([0, 1, '', 2, None, 3])) == [1, 2, 3]
+          assert list(compact([])) == []
+          assert list(compact([False, 0.0, 'x'])) == ['x']
+    tests/test_member_flatten_one.py: |
+      from more_itertools.extras.flatten_one import flatten_one
+
+      def test_member_flatten_one():
+          assert list(flatten_one([[1, 2], [3], 4])) == [1, 2, 3, 4]
+          assert list(flatten_one([])) == []
+          assert list(flatten_one([['ab'], 'cd'])) == ['a', 'b', 'cd']
+    tests/test_member_first_true.py: |
+      from more_itertools.extras.first_true import first_true
+
+      def test_member_first_true():
+          assert first_true([0, 0, 3, 4]) == 3
+          assert first_true([0, '']) == 0 or first_true([0, '']) is None
+          assert first_true([], default='d') == 'd'
+          assert first_true([2, 4, 5], pred=lambda x: x % 2) == 5
+    tests/test_member_nth_or_default.py: |
+      from more_itertools.extras.nth_or_default import nth_or_default
+
+      def test_member_nth_or_default():
+          assert nth_or_default([10, 20, 30], 1) == 20
+          assert nth_or_default([1], 5) is None
+          assert nth_or_default([], 0, default='x') == 'x'
+          assert nth_or_default(iter([7, 8]), 1) == 8
+    tests/test_member_round_robin.py: |
+      from more_itertools.extras.round_robin import round_robin
+
+      def test_member_round_robin():
+          assert list(round_robin('abc', 'd', 'ef')) == ['a', 'd', 'e', 'b', 'f', 'c']
+          assert list(round_robin()) == []
+          assert list(round_robin([], [1, 2])) == [1, 2]
+    tests/test_member_take_until.py: |
+      from more_itertools.extras.take_until import take_until
+
+      def test_member_take_until():
+          assert list(take_until(lambda x: x > 2, [1, 2, 3, 4])) == [1, 2]
+          assert list(take_until(lambda x: True, [1])) == []
+          assert list(take_until(lambda x: False, [1, 2])) == [1, 2]
+    tests/test_member_partition.py: |
+      from more_itertools.extras.partition import partition
+
+      def test_member_partition():
+          falses, trues = partition(lambda x: x % 2, [1, 2, 3, 4])
+          assert list(falses) == [2, 4]
+          assert list(trues) == [1, 3]
+          falses, trues = partition(bool, [])
+          assert list(falses) == [] and list(trues) == []
+    tests/test_member_unique.py: |
+      from more_itertools.extras.unique import unique
+
+      def test_member_unique():
+          assert list(unique([1, 2, 1, 3, 2])) == [1, 2, 3]
+          assert list(unique([])) == []
+          assert list(unique(['a', 'A', 'b'], key=str.lower)) == ['a', 'b']

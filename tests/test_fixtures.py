@@ -17,6 +17,7 @@ from orchestral.fixtures import (
     FixtureError,
     check_fixtures,
     fetch_fixture,
+    fixture_repo_files,
     load_registry,
     screen_members,
     verified_fixture_bytes,
@@ -174,6 +175,46 @@ class FetchTests(unittest.TestCase):
     def test_verified_bytes_rejects_bad_id(self):
         with self.assertRaises(FixtureError):
             verified_fixture_bytes("../escape", self.root)
+
+    def test_repo_files_extracts_named_members(self):
+        payload = _repo_tarball({"a.py": b"print(1)", "b.py": b"print(2)"})
+        with mock.patch("orchestral.fixtures._download", return_value=payload):
+            fetch_fixture("tool-1.0", self.root)
+        out = fixture_repo_files("tool-1.0", ["a.py", "missing.py"], root=self.root)
+        self.assertEqual(out, {"a.py": "print(1)"})
+
+    def test_repo_files_normalizes_path_prefixes(self):
+        payload = _repo_tarball({"a.py": b"print(1)"})
+        with mock.patch("orchestral.fixtures._download", return_value=payload):
+            fetch_fixture("tool-1.0", self.root)
+        for rel in ("a.py", "./a.py", "/a.py", "repo/a.py"):
+            self.assertEqual(
+                fixture_repo_files("tool-1.0", [rel], root=self.root),
+                {"a.py": "print(1)"},
+                rel,
+            )
+
+    def test_repo_files_degrades_on_missing_fixture(self):
+        self.assertEqual(fixture_repo_files("tool-1.0", ["a.py"], root=self.root), {})
+
+    def test_repo_files_empty_paths(self):
+        self.assertEqual(fixture_repo_files("tool-1.0", [], root=self.root), {})
+
+    def test_repo_files_skips_non_text_members(self):
+        payload = _repo_tarball({"bin.dat": b"\xff\xfe\x00", "a.py": b"1"})
+        with mock.patch("orchestral.fixtures._download", return_value=payload):
+            fetch_fixture("tool-1.0", self.root)
+        out = fixture_repo_files("tool-1.0", ["bin.dat", "a.py"], root=self.root)
+        self.assertEqual(out, {"a.py": "1"})
+
+    def test_repo_files_honors_total_budget(self):
+        payload = _repo_tarball({"a.py": b"x" * 300, "b.py": b"y" * 300})
+        with mock.patch("orchestral.fixtures._download", return_value=payload):
+            fetch_fixture("tool-1.0", self.root)
+        out = fixture_repo_files(
+            "tool-1.0", ["a.py", "b.py"], root=self.root, total_bytes=400
+        )
+        self.assertEqual(out, {"a.py": "x" * 300})
 
     def test_refetch_is_deterministic(self):
         # same commit + same wheels → same sha256, so the lock detects real

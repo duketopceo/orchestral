@@ -588,6 +588,32 @@ class Runner:
                 subtasks=len(subtasks),
                 subtask_ids=[(s.get("id") if isinstance(s, dict) else i) for i, s in enumerate(subtasks)],
             )
+            # fixture code specs ask the worker to modify repo files — hand
+            # the worker the file or it can only hallucinate one (the boltons
+            # cells failed this way: "fix urlutils.py" with no file in view)
+            fixture_repo: dict[str, str] = {}
+            if task.type == "code" and task.metadata.get("fixture"):
+                from orchestral.fixtures import fixture_repo_files
+
+                # spec-declared paths anchor the injection — a plan that omits
+                # `files` (argon did) still gets the repo file it names in
+                # prose, because the spec's expected_paths never lies
+                fixture_repo = fixture_repo_files(
+                    str(task.metadata["fixture"]),
+                    [
+                        *[
+                            p for p in (task.metadata.get("expected_paths") or [])
+                            if isinstance(p, str)
+                        ],
+                        *[
+                            p
+                            for s in subtasks if isinstance(s, dict)
+                            for f in (s.get("files") or [])
+                            for p in [f.get("path") if isinstance(f, dict) else f]
+                            if isinstance(p, str)
+                        ],
+                    ],
+                )
             for i, sub in enumerate(subtasks):
                 self._check_cancelled()
                 # models sometimes return a list of strings; normalize to dicts
@@ -601,6 +627,21 @@ class Runner:
                 # guessing the spec (review: workers hallucinated the task)
                 sub = {**sub}
                 sub.setdefault("task_prompt", task.prompt)
+                if fixture_repo:
+                    raw_paths = [f.get("path") if isinstance(f, dict) else f for f in (sub.get("files") or [])]
+                    wanted = {
+                        p.lstrip("/").removeprefix("./").removeprefix("repo/")
+                        for p in raw_paths if isinstance(p, str)
+                    }
+                    if not wanted:
+                        wanted = {
+                            p.lstrip("/").removeprefix("./").removeprefix("repo/")
+                            for p in (task.metadata.get("expected_paths") or [])
+                            if isinstance(p, str)
+                        }
+                    inject = {p: c for p, c in fixture_repo.items() if p in wanted}
+                    if inject:
+                        sub["repo_files"] = inject
                 if is_pipeline and results:
                     # each subtask sees the outputs of every prior subtask —
                     # the chain is the test: does context actually propagate

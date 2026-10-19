@@ -423,6 +423,61 @@ def verified_fixture_bytes(fixture_id: str, root: Path | str = FIXTURES_DIR) -> 
     return tarball
 
 
+def fixture_repo_files(
+    fixture_id: str,
+    rel_paths: Iterable[str],
+    *,
+    root: Path | str = FIXTURES_DIR,
+    per_file_bytes: int = 256 * 1024,
+    total_bytes: int = 768 * 1024,
+) -> dict[str, str]:
+    """Read named ``repo/`` members out of the verified fixture tarball.
+
+    The delegate path must be able to hand the worker the file it is being
+    asked to modify — fixture code specs otherwise grade the worker's guess
+    at an unseen file. ``rel_paths`` are repo-relative (``boltons/urlutils.py``);
+    ``repo/``, ``./`` and leading-slash prefixes are normalized out. Missing,
+    oversized, or non-text members are skipped. Returns ``{}`` when the
+    fixture can't be verified — callers degrade to the pre-injection prompt
+    rather than fail the run over enrichment.
+    """
+    wanted = {
+        p.lstrip("/").removeprefix("./").removeprefix("repo/")
+        for p in rel_paths
+        if isinstance(p, str) and p.strip()
+    }
+    if not wanted:
+        return {}
+    try:
+        tarball = verified_fixture_bytes(fixture_id, root)
+    except FixtureError:
+        return {}
+    out: dict[str, str] = {}
+    budget = total_bytes
+    try:
+        with tarfile.open(fileobj=io.BytesIO(tarball), mode="r:gz") as tf:
+            for m in tf.getmembers():
+                if not m.isfile():
+                    continue
+                rel = m.name.removeprefix("repo/").removeprefix("./")
+                if rel not in wanted or rel in out or m.size > per_file_bytes:
+                    continue
+                body = tf.extractfile(m)
+                if body is None:
+                    continue
+                try:
+                    text = body.read().decode("utf-8")
+                except UnicodeDecodeError:
+                    continue
+                if len(text) > budget:
+                    continue
+                out[rel] = text
+                budget -= len(text)
+    except (tarfile.TarError, OSError):
+        return {}
+    return out
+
+
 def check_fixtures(root: Path | str = FIXTURES_DIR) -> list[str]:
     """Drift report: missing tarballs, stale locks, hash mismatches."""
     problems: list[str] = []

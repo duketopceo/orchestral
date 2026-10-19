@@ -1,0 +1,210 @@
+id: v4-wide-boltons-validate
+title: "boltons: eight validators on a shared surface"
+blurb: "Wide-decomposition probe — 8 validator modules that must share one import surface cleanly."
+type: code
+prompt: |
+  You are contributing to the `boltons` library. Deliver **all eight**
+  validator modules below under a new `boltons/validate/` subpackage —
+  each is an independent unit graded by its own hidden pytest file, but
+  they must share ONE import surface: `boltons/validate/__init__.py`
+  re-exports every public function below so `from boltons.validate import
+  is_email` works. A broken package init fails every member.
+
+  Create `boltons/validate/__init__.py` (re-exporting all eight) and:
+
+  1. `validate/emails.py` — `is_email(s)`: True if s looks like
+     `local@domain.tld` (nonempty local, domain with a dot, no spaces).
+  2. `validate/urls.py` — `is_url(s)`: True if s starts with http:// or
+     https:// and has a nonempty host.
+  3. `validate/uuids.py` — `is_uuid(s)`: True if s parses as a UUID
+     (36 chars, 4 dashes in the right positions, hex digits).
+  4. `validate/dates.py` — `is_iso_date(s)`: True if s is `YYYY-MM-DD`
+     with valid month/day ranges.
+  5. `validate/ranges.py` — `in_range(x, lo, hi)`: lo <= x <= hi; raises
+     ValueError if lo > hi.
+  6. `validate/nonempty.py` — `nonempty(seq)`: True if seq is not None
+     and len(seq) > 0 (works for str/list/dict/tuple).
+  7. `validate/integers.py` — `is_int(s)`: True if s is a str (or int)
+     convertible to int; False for floats, bools, non-numeric strings.
+  8. `validate/semver.py` — `is_semver(s)`: True if s is `X.Y.Z` with
+     three non-negative int parts and no leading whitespace.
+
+  All functions must be stdlib-only, import cleanly, and match library
+  style (short docstring, snake_case).
+
+  Return a JSON object `{"files": [{"path": "...", "content": "..."}]}` —
+  one entry per created file. The harness overlays your files onto a full
+  repo checkout and runs per-member hidden tests.
+metadata:
+  human_minutes: 60
+  canary: "orc-canary-9d1f2a3b4c5e6f70"
+  difficulty: standard
+  archetype: wide-decomposition
+  contamination_risk: low
+  max_member_bytes: 8192
+  max_subtasks: 16
+  fixture: boltons-25.1
+  workdir: repo
+  expected_paths:
+    - boltons/validate/__init__.py
+    - boltons/validate/emails.py
+    - boltons/validate/urls.py
+    - boltons/validate/uuids.py
+    - boltons/validate/dates.py
+    - boltons/validate/ranges.py
+    - boltons/validate/nonempty.py
+    - boltons/validate/integers.py
+    - boltons/validate/semver.py
+  setup_commands:
+    - "python -m pip install --quiet --no-index --find-links /home/user/wheelhouse pytest"
+  verify:
+    command: ["python", "-m", "pytest", "tests/", "-v"]
+    fail_to_pass:
+      - test_member_emails
+      - test_member_urls
+      - test_member_uuids
+      - test_member_dates
+      - test_member_ranges
+      - test_member_nonempty
+      - test_member_integers
+      - test_member_semver
+  timeout_seconds: 240
+  reference:
+    boltons/validate/__init__.py: |
+      from .emails import is_email
+      from .urls import is_url
+      from .uuids import is_uuid
+      from .dates import is_iso_date
+      from .ranges import in_range
+      from .nonempty import nonempty
+      from .integers import is_int
+      from .semver import is_semver
+    boltons/validate/emails.py: |
+      def is_email(s):
+          """True if s looks like local@domain.tld."""
+          if not isinstance(s, str) or " " in s or "@" not in s:
+              return False
+          local, _, domain = s.rpartition("@")
+          return bool(local) and "." in domain and not domain.startswith(".") and not domain.endswith(".")
+    boltons/validate/urls.py: |
+      def is_url(s):
+          """True for http(s) URLs with a nonempty host."""
+          if not isinstance(s, str):
+              return False
+          for scheme in ("http://", "https://"):
+              if s.startswith(scheme):
+                  return bool(s[len(scheme):].split("/")[0])
+          return False
+    boltons/validate/uuids.py: |
+      import uuid
+      def is_uuid(s):
+          """True if s parses as a UUID string."""
+          if not isinstance(s, str):
+              return False
+          try:
+              uuid.UUID(s)
+          except (ValueError, AttributeError):
+              return False
+          return True
+    boltons/validate/dates.py: |
+      def is_iso_date(s):
+          """True if s is YYYY-MM-DD with valid ranges."""
+          if not isinstance(s, str):
+              return False
+          try:
+              y, m, d = (int(p) for p in s.split("-"))
+          except (ValueError, AttributeError):
+              return False
+          return 1 <= m <= 12 and 1 <= d <= 31 and 0 < y < 10000 and len(s) == 10
+    boltons/validate/ranges.py: |
+      def in_range(x, lo, hi):
+          """True if lo <= x <= hi; ValueError when lo > hi."""
+          if lo > hi:
+              raise ValueError("lo must not exceed hi")
+          return lo <= x <= hi
+    boltons/validate/nonempty.py: |
+      def nonempty(seq):
+          """True if seq is not None and has len > 0."""
+          if seq is None:
+              return False
+          try:
+              return len(seq) > 0
+          except TypeError:
+              return False
+    boltons/validate/integers.py: |
+      def is_int(s):
+          """True if s converts cleanly to int (not float/bool/str-junk)."""
+          if isinstance(s, bool):
+              return False
+          if isinstance(s, int):
+              return True
+          if not isinstance(s, str):
+              return False
+          try:
+              int(s.strip())
+          except ValueError:
+              return False
+          return True
+    boltons/validate/semver.py: |
+      def is_semver(s):
+          """True if s is X.Y.Z with three non-negative int parts."""
+          if not isinstance(s, str) or s != s.strip():
+              return False
+          parts = s.split(".")
+          if len(parts) != 3:
+              return False
+          try:
+              return all(int(p) >= 0 and p == str(int(p)) for p in parts)
+          except ValueError:
+              return False
+  test_files:
+    tests/test_member_emails.py: |
+      from boltons.validate.emails import is_email
+
+      def test_member_emails():
+          assert is_email("a@b.co") and not is_email("a@b") and not is_email("a b@c.d")
+          assert not is_email("") and not is_email(None) and not is_email("@x.y")
+    tests/test_member_urls.py: |
+      from boltons.validate.urls import is_url
+
+      def test_member_urls():
+          assert is_url("https://x.io/p") and is_url("http://h")
+          assert not is_url("ftp://x.io") and not is_url("https://") and not is_url(3)
+    tests/test_member_uuids.py: |
+      from boltons.validate.uuids import is_uuid
+
+      def test_member_uuids():
+          assert is_uuid("12345678-1234-5678-1234-567812345678")
+          assert not is_uuid("not-a-uuid") and not is_uuid(None)
+    tests/test_member_dates.py: |
+      from boltons.validate.dates import is_iso_date
+
+      def test_member_dates():
+          assert is_iso_date("2026-02-28") and not is_iso_date("2026-13-01")
+          assert not is_iso_date("01/02/2026") and not is_iso_date(None)
+    tests/test_member_ranges.py: |
+      import pytest
+      from boltons.validate.ranges import in_range
+
+      def test_member_ranges():
+          assert in_range(5, 1, 10) and not in_range(11, 1, 10)
+          with pytest.raises(ValueError):
+              in_range(5, 10, 1)
+    tests/test_member_nonempty.py: |
+      from boltons.validate.nonempty import nonempty
+
+      def test_member_nonempty():
+          assert nonempty([1]) and nonempty("x") and nonempty({"a": 1})
+          assert not nonempty([]) and not nonempty("") and not nonempty(None)
+    tests/test_member_integers.py: |
+      from boltons.validate.integers import is_int
+
+      def test_member_integers():
+          assert is_int("42") and is_int(7) and is_int(" -3 ")
+          assert not is_int("4.2") and not is_int(True) and not is_int("x")
+    tests/test_member_semver.py: |
+      from boltons.validate.semver import is_semver
+
+      def test_member_semver():
+          assert is_semver("1.2.3") and is_semver("0.0.0")
+          assert not is_semver("1.2") and not is_semver("1.2.x") and not is_semver(" 1.2.3")

@@ -1,0 +1,182 @@
+id: v4-wide-mi-codecs
+title: "more-itertools: eight codecs on a shared base"
+blurb: "Wide-decomposition probe — 8 codec modules sharing one Codec base class; the base must come first."
+type: code
+prompt: |
+  You are contributing to the `more-itertools` library. Deliver **all
+  eight** codec modules below under a new `more_itertools/codecs/`
+  subpackage — each is an independent unit graded by its own hidden
+  pytest file, but every codec subclasses ONE shared base:
+  `more_itertools/codecs/base.py` defines `Codec` with
+  `encode(self, s)`/`decode(self, s)` abstract methods. A broken base
+  fails every member.
+
+  Create `codecs/__init__.py` (empty is fine), `codecs/base.py`
+  (`class Codec` with `encode`/`decode` raising NotImplementedError),
+  and these modules, each exposing the named subclass:
+
+  1. `codecs/reverse.py` — `ReverseCodec`: `encode` returns `s[::-1]`.
+  2. `codecs/rot13.py` — `Rot13Codec`: ROT13 (encode == decode).
+  3. `codecs/hexlify.py` — `HexCodec`: encode to lowercase hex string,
+     decode back.
+  4. `codecs/base64c.py` — `Base64Codec`: standard b64 encode/decode.
+  5. `codecs/upper.py` — `UpperCodec`: encode to upper case; decode
+     returns lower case.
+  6. `codecs/words.py` — `WordsCodec`: encode joins words with `-`,
+     decode splits on `-` returning a list.
+  7. `codecs/repeat.py` — `RepeatCodec`: encode duplicates each
+     character (`"ab"` -> `"aabb"`); decode takes every other char.
+  8. `codecs/shift.py` — `ShiftCodec`: `__init__(self, n=1)` Caesar
+     shift of a-z letters only; decode applies -n.
+
+  All modules are stdlib-only, import cleanly, match library style.
+
+  Return a JSON object `{"files": [{"path": "...", "content": "..."}]}` —
+  one entry per created file. The harness overlays your files onto a full
+  repo checkout and runs per-member hidden tests.
+metadata:
+  human_minutes: 60
+  canary: "orc-canary-a1b2c3d4e5f60718"
+  difficulty: standard
+  archetype: wide-decomposition
+  contamination_risk: low
+  max_member_bytes: 8192
+  max_subtasks: 16
+  fixture: more-itertools-10.8
+  workdir: repo
+  expected_paths:
+    - more_itertools/codecs/__init__.py
+    - more_itertools/codecs/base.py
+    - more_itertools/codecs/reverse.py
+    - more_itertools/codecs/rot13.py
+    - more_itertools/codecs/hexlify.py
+    - more_itertools/codecs/base64c.py
+    - more_itertools/codecs/upper.py
+    - more_itertools/codecs/words.py
+    - more_itertools/codecs/repeat.py
+    - more_itertools/codecs/shift.py
+  setup_commands:
+    - "python -m pip install --quiet --no-index --find-links /home/user/wheelhouse pytest"
+  verify:
+    command: ["python", "-m", "pytest", "tests/", "-v"]
+    fail_to_pass:
+      - test_member_reverse
+      - test_member_rot13
+      - test_member_hexlify
+      - test_member_base64c
+      - test_member_upper
+      - test_member_words
+      - test_member_repeat
+      - test_member_shift
+  timeout_seconds: 240
+  reference:
+    more_itertools/codecs/__init__.py: ""
+    more_itertools/codecs/base.py: |
+      class Codec:
+          """Shared codec base — subclass and implement both directions."""
+          def encode(self, s):
+              raise NotImplementedError
+          def decode(self, s):
+              raise NotImplementedError
+    more_itertools/codecs/reverse.py: |
+      from .base import Codec
+      class ReverseCodec(Codec):
+          def encode(self, s): return s[::-1]
+          def decode(self, s): return s[::-1]
+    more_itertools/codecs/rot13.py: |
+      import codecs as _c
+      from .base import Codec
+      class Rot13Codec(Codec):
+          def encode(self, s): return _c.encode(s, "rot_13")
+          def decode(self, s): return _c.decode(s, "rot_13")
+    more_itertools/codecs/hexlify.py: |
+      import binascii
+      from .base import Codec
+      class HexCodec(Codec):
+          def encode(self, s): return s.encode().hex()
+          def decode(self, s): return binascii.unhexlify(s).decode()
+    more_itertools/codecs/base64c.py: |
+      import base64
+      from .base import Codec
+      class Base64Codec(Codec):
+          def encode(self, s): return base64.b64encode(s.encode()).decode()
+          def decode(self, s): return base64.b64decode(s).decode()
+    more_itertools/codecs/upper.py: |
+      from .base import Codec
+      class UpperCodec(Codec):
+          def encode(self, s): return s.upper()
+          def decode(self, s): return s.lower()
+    more_itertools/codecs/words.py: |
+      from .base import Codec
+      class WordsCodec(Codec):
+          def encode(self, words): return "-".join(words)
+          def decode(self, s): return s.split("-")
+    more_itertools/codecs/repeat.py: |
+      from .base import Codec
+      class RepeatCodec(Codec):
+          def encode(self, s): return "".join(c * 2 for c in s)
+          def decode(self, s): return s[::2]
+    more_itertools/codecs/shift.py: |
+      from .base import Codec
+      class ShiftCodec(Codec):
+          def __init__(self, n=1): self.n = n
+          def _shift(self, s, d):
+              out = []
+              for c in s:
+                  if "a" <= c <= "z":
+                      out.append(chr((ord(c) - 97 + d) % 26 + 97))
+                  else:
+                      out.append(c)
+              return "".join(out)
+          def encode(self, s): return self._shift(s, self.n)
+          def decode(self, s): return self._shift(s, -self.n)
+  test_files:
+    tests/test_member_reverse.py: |
+      from more_itertools.codecs.reverse import ReverseCodec
+
+      def test_member_reverse():
+          c = ReverseCodec()
+          assert c.encode("abc") == "cba" and c.decode("cba") == "abc"
+    tests/test_member_rot13.py: |
+      from more_itertools.codecs.rot13 import Rot13Codec
+
+      def test_member_rot13():
+          c = Rot13Codec()
+          assert c.encode("hello") == "uryyb" and c.decode("uryyb") == "hello"
+    tests/test_member_hexlify.py: |
+      from more_itertools.codecs.hexlify import HexCodec
+
+      def test_member_hexlify():
+          c = HexCodec()
+          assert c.encode("ab") == "6162" and c.decode("6162") == "ab"
+    tests/test_member_base64c.py: |
+      from more_itertools.codecs.base64c import Base64Codec
+
+      def test_member_base64c():
+          c = Base64Codec()
+          assert c.encode("hi") == "aGk=" and c.decode("aGk=") == "hi"
+    tests/test_member_upper.py: |
+      from more_itertools.codecs.upper import UpperCodec
+
+      def test_member_upper():
+          c = UpperCodec()
+          assert c.encode("ab") == "AB" and c.decode("AB") == "ab"
+    tests/test_member_words.py: |
+      from more_itertools.codecs.words import WordsCodec
+
+      def test_member_words():
+          c = WordsCodec()
+          assert c.encode(["a", "b"]) == "a-b" and c.decode("a-b") == ["a", "b"]
+    tests/test_member_repeat.py: |
+      from more_itertools.codecs.repeat import RepeatCodec
+
+      def test_member_repeat():
+          c = RepeatCodec()
+          assert c.encode("ab") == "aabb" and c.decode("aabb") == "ab"
+    tests/test_member_shift.py: |
+      from more_itertools.codecs.shift import ShiftCodec
+
+      def test_member_shift():
+          c = ShiftCodec(1)
+          assert c.encode("abc") == "bcd" and c.decode("bcd") == "abc"
+          assert ShiftCodec(3).encode("xyz") == "abc"

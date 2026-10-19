@@ -1,0 +1,202 @@
+id: v4-wide-boltons-helpers
+title: "boltons: eight small helper functions"
+blurb: "Wide-decomposition probe — add 8 independent member modules under boltons/extras/, each graded by its own hidden pytest file."
+type: code
+prompt: |
+  You are contributing to the `boltons` library (a stdlib-extension
+  collection). Deliver **all eight** member modules below under a new
+  `boltons/extras/` subpackage — each is an independent unit graded by
+  its own hidden pytest file.
+
+  Create `boltons/extras/__init__.py` (empty is fine) and these modules,
+  each exposing exactly the named public function:
+
+  1. `extras/chunked.py` — `chunked(iterable, n)`: yield lists of at most
+     n items, in order. `list(chunked(range(5),2)) == [[0,1],[2,3],[4]]`.
+  2. `extras/interleave.py` — `interleave(*iterables)`: yield one item
+     per iterable in turn; stop at the SHORTEST iterable.
+  3. `extras/peekable.py` — `peekable(iterable)`: return `(first, rest)`
+     where `first` is the first item (or `None` if empty) and `rest` is
+     an iterator over the FULL iterable including `first`.
+  4. `extras/sliding.py` — `sliding(iterable, n)`: yield overlapping
+     n-tuples. `list(sliding([1,2,3,4],2)) == [(1,2),(2,3),(3,4)]`.
+  5. `extras/group_by.py` — `group_by(iterable, key)`: return a dict
+     {key(item): [items...]} preserving order, keyed by `key(item)`.
+  6. `extras/tap.py` — `tap(iterable, fn)`: yield items unchanged while
+     calling `fn(item)` on each (lazy side-effects).
+  7. `extras/dedupe_by.py` — `dedupe_by(iterable, key)`: yield items with
+     no two CONSECUTIVE items sharing `key(item)`.
+  8. `extras/split_when.py` — `split_when(iterable, pred)`: yield
+     sublists, cutting BEFORE each item where `pred(item)` is true.
+
+  All functions must be lazy where applicable, import cleanly, and match
+  library style (short docstring, snake_case).
+
+  Return a JSON object `{"files": [{"path": "...", "content": "..."}]}` —
+  one entry per created file. The harness overlays your files onto a full
+  repo checkout and runs per-member hidden tests.
+metadata:
+  human_minutes: 60
+  canary: "orc-canary-b4e2f8a91c0d357e"
+  difficulty: standard
+  archetype: wide-decomposition
+  contamination_risk: low
+  max_member_bytes: 8192
+  max_subtasks: 16
+  fixture: boltons-25.1
+  workdir: repo
+  expected_paths:
+    - boltons/extras/__init__.py
+    - boltons/extras/chunked.py
+    - boltons/extras/interleave.py
+    - boltons/extras/peekable.py
+    - boltons/extras/sliding.py
+    - boltons/extras/group_by.py
+    - boltons/extras/tap.py
+    - boltons/extras/dedupe_by.py
+    - boltons/extras/split_when.py
+  setup_commands:
+    - "python -m pip install --quiet --no-index --find-links /home/user/wheelhouse pytest"
+  verify:
+    command: ["python", "-m", "pytest", "tests/", "-v"]
+    fail_to_pass:
+      - test_member_chunked
+      - test_member_interleave
+      - test_member_peekable
+      - test_member_sliding
+      - test_member_group_by
+      - test_member_tap
+      - test_member_dedupe_by
+      - test_member_split_when
+  timeout_seconds: 240
+  reference:
+    boltons/extras/__init__.py: ""
+    boltons/extras/chunked.py: |
+      def chunked(iterable, n):
+          """Yield lists of at most n items, in order."""
+          if n <= 0:
+              raise ValueError("n must be positive")
+          it = iter(iterable)
+          while True:
+              chunk = list(__import__('itertools').islice(it, n))
+              if not chunk:
+                  return
+              yield chunk
+    boltons/extras/interleave.py: |
+      def interleave(*iterables):
+          """Yield one item per iterable in turn; stop at the shortest."""
+          for row in zip(*iterables):
+              yield from row
+    boltons/extras/peekable.py: |
+      import itertools
+      def peekable(iterable):
+          """Return (first, rest) — first item (or None) + full iterator."""
+          it = iter(iterable)
+          try:
+              first = next(it)
+          except StopIteration:
+              return None, iter(())
+          return first, itertools.chain([first], it)
+    boltons/extras/sliding.py: |
+      import collections, itertools
+      def sliding(iterable, n):
+          """Yield overlapping n-tuples."""
+          it = iter(iterable)
+          win = collections.deque(itertools.islice(it, n), maxlen=n)
+          if len(win) == n:
+              yield tuple(win)
+          for item in it:
+              win.append(item)
+              yield tuple(win)
+    boltons/extras/group_by.py: |
+      def group_by(iterable, key):
+          """Dict {key(item): [items]} preserving order."""
+          out = {}
+          for item in iterable:
+              out.setdefault(key(item), []).append(item)
+          return out
+    boltons/extras/tap.py: |
+      def tap(iterable, fn):
+          """Yield items unchanged, calling fn(item) on each."""
+          for item in iterable:
+              fn(item)
+              yield item
+    boltons/extras/dedupe_by.py: |
+      def dedupe_by(iterable, key):
+          """Drop items sharing key(item) with the item before them."""
+          sentinel = object()
+          prev = sentinel
+          for item in iterable:
+              ident = key(item)
+              if prev is sentinel or ident != prev:
+                  yield item
+              prev = ident
+    boltons/extras/split_when.py: |
+      def split_when(iterable, pred):
+          """Yield sublists, cutting before each item where pred is true."""
+          buf = []
+          for item in iterable:
+              if pred(item) and buf:
+                  yield buf
+                  buf = []
+              buf.append(item)
+          if buf:
+              yield buf
+  test_files:
+    tests/test_member_chunked.py: |
+      from boltons.extras.chunked import chunked
+
+      def test_member_chunked():
+          assert list(chunked(range(5), 2)) == [[0, 1], [2, 3], [4]]
+          assert list(chunked([], 3)) == []
+          assert list(chunked([1, 2, 3], 3)) == [[1, 2, 3]]
+    tests/test_member_interleave.py: |
+      from boltons.extras.interleave import interleave
+
+      def test_member_interleave():
+          assert list(interleave([1, 2], ['a', 'b', 'c'])) == [1, 'a', 2, 'b']
+          assert list(interleave()) == []
+          assert list(interleave([], [1])) == []
+    tests/test_member_peekable.py: |
+      from boltons.extras.peekable import peekable
+
+      def test_member_peekable():
+          first, rest = peekable([1, 2, 3])
+          assert first == 1 and list(rest) == [1, 2, 3]
+          first, rest = peekable([])
+          assert first is None and list(rest) == []
+    tests/test_member_sliding.py: |
+      from boltons.extras.sliding import sliding
+
+      def test_member_sliding():
+          assert list(sliding([1, 2, 3, 4], 2)) == [(1, 2), (2, 3), (3, 4)]
+          assert list(sliding([1], 2)) == []
+          assert list(sliding([1, 2, 3], 3)) == [(1, 2, 3)]
+    tests/test_member_group_by.py: |
+      from boltons.extras.group_by import group_by
+
+      def test_member_group_by():
+          assert group_by([1, 2, 3, 4], lambda x: x % 2) == {1: [1, 3], 0: [2, 4]}
+          assert group_by([], str) == {}
+          assert group_by(['a', 'bb', 'c'], len) == {1: ['a', 'c'], 2: ['bb']}
+    tests/test_member_tap.py: |
+      from boltons.extras.tap import tap
+
+      def test_member_tap():
+          seen = []
+          out = list(tap([1, 2, 3], seen.append))
+          assert out == [1, 2, 3] and seen == [1, 2, 3]
+    tests/test_member_dedupe_by.py: |
+      from boltons.extras.dedupe_by import dedupe_by
+
+      def test_member_dedupe_by():
+          assert list(dedupe_by([1, 1, 2, 2, 1], lambda x: x)) == [1, 2, 1]
+          assert list(dedupe_by([], lambda x: x)) == []
+          assert list(dedupe_by(['a', 'A', 'b'], str.lower)) == ['a', 'b']
+    tests/test_member_split_when.py: |
+      from boltons.extras.split_when import split_when
+
+      def test_member_split_when():
+          assert list(split_when([1, 2, 3, 1, 2], lambda x: x == 1)) == [[1, 2, 3], [1, 2]]
+          assert list(split_when([], bool)) == []
+          assert list(split_when([0, 0], lambda x: x == 0)) == [[0], [0]]

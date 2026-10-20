@@ -8,7 +8,7 @@ prompt: |
   utilities. Deliver **all eight** member modules below — each is an
   independent unit and is graded by its own hidden pytest file.
 
-  Create `more_itertools/extras/__init__.py` (empty is fine) and these
+  Create `more_itertools/extras/__init__.py` (a one-line module docstring) and these
   modules, each exposing exactly the named public function:
 
   1. `extras/compact.py` — `compact(iterable)`: drop falsy items, keep
@@ -73,7 +73,8 @@ metadata:
       - test_member_unique
   timeout_seconds: 240
   reference:
-    more_itertools/extras/__init__.py: ""
+    more_itertools/extras/__init__.py: |
+      """Extra iterator utilities for more_itertools."""
     more_itertools/extras/compact.py: |
       """Small iterator utilities."""
       def compact(iterable):
@@ -159,7 +160,7 @@ metadata:
       def test_member_flatten_one():
           assert list(flatten_one([[1, 2], [3], 4])) == [1, 2, 3, 4]
           assert list(flatten_one([])) == []
-          assert list(flatten_one([['ab'], 'cd'])) == ['a', 'b', 'cd']
+          assert list(flatten_one([['ab'], 'cd'])) == ['ab', 'cd']
     tests/test_member_first_true.py: |
       from more_itertools.extras.first_true import first_true
 

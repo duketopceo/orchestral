@@ -11,7 +11,7 @@ prompt: |
   `encode(self, s)`/`decode(self, s)` abstract methods. A broken base
   fails every member.
 
-  Create `codecs/__init__.py` (empty is fine), `codecs/base.py`
+  Create `codecs/__init__.py` (a one-line module docstring), `codecs/base.py`
   (`class Codec` with `encode`/`decode` raising NotImplementedError),
   and these modules, each exposing the named subclass:
 
@@ -70,7 +70,8 @@ metadata:
       - test_member_shift
   timeout_seconds: 240
   reference:
-    more_itertools/codecs/__init__.py: ""
+    more_itertools/codecs/__init__.py: |
+      """Codec utilities for more_itertools."""
     more_itertools/codecs/base.py: |
       class Codec:
           """Shared codec base — subclass and implement both directions."""

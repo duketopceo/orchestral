@@ -8,7 +8,7 @@ prompt: |
   `boltons/extras/` subpackage — each is an independent unit graded by
   its own hidden pytest file.
 
-  Create `boltons/extras/__init__.py` (empty is fine) and these modules,
+  Create `boltons/extras/__init__.py` (a one-line module docstring) and these modules,
   each exposing exactly the named public function:
 
   1. `extras/chunked.py` — `chunked(iterable, n)`: yield lists of at most
@@ -70,7 +70,8 @@ metadata:
       - test_member_split_when
   timeout_seconds: 240
   reference:
-    boltons/extras/__init__.py: ""
+    boltons/extras/__init__.py: |
+      """Extra helpers for boltons."""
     boltons/extras/chunked.py: |
       def chunked(iterable, n):
           """Yield lists of at most n items, in order."""

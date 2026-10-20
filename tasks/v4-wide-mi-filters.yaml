@@ -160,7 +160,7 @@ metadata:
       def test_member_flatten_one():
           assert list(flatten_one([[1, 2], [3], 4])) == [1, 2, 3, 4]
           assert list(flatten_one([])) == []
-          assert list(flatten_one([['ab'], 'cd'])) == ['a', 'b', 'cd']
+          assert list(flatten_one([['ab'], 'cd'])) == ['ab', 'cd']
     tests/test_member_first_true.py: |
       from more_itertools.extras.first_true import first_true
 

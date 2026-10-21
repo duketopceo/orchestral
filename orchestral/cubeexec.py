@@ -749,9 +749,129 @@ def run_repo_suite(
         report["errors"] = 0
         tail = (stderr_tail.text or stdout_tail.text).strip().splitlines()
         report["output_tail"] = "\n".join(tail[-15:])[-4000:]
+
+        # Wide-spec member attribution: when fail_to_pass declares
+        # test_member_* entries, re-run only those oracle files under
+        # --junitxml and read the structured result back — the scored
+        # command's exit code cannot say WHICH members failed, and the
+        # 4k output tail cannot hold per-member detail. The scored verdict
+        # above is unchanged; this is additive evidence only.
+        member_names = [
+            str(n) for n in (fail_to_pass or []) if str(n).startswith("test_member_")
+        ]
+        member_test_paths = sorted(
+            rel for rel, _ in oracle
+            if PurePosixPath(rel).name.startswith("test_member_")
+        )
+        if member_names and member_test_paths and remaining() > 15:
+            produced_stems = {PurePosixPath(rel).stem for rel, _ in members}
+            xml_guest = f"{_WORKDIR}/_orch_members.xml"
+            try:
+                _run_guest(
+                    sandbox,
+                    "python -m pytest "
+                    + " ".join(shlex.quote(p) for p in member_test_paths)
+                    + f" --junitxml={shlex.quote(xml_guest)} -p no:cacheprovider",
+                    cwd=repo_dir,
+                    budget_seconds=min(120.0, remaining()),
+                    request_timeout=request_timeout(),
+                    stdout_tail=_Tail(),
+                    stderr_tail=_Tail(),
+                    timeout_exc=timeout_exc,
+                    exit_exc=exit_exc,
+                )
+                raw_xml = _sdk_call(
+                    sandbox.files.read, xml_guest, timeout=request_timeout(),
+                    positional_tail=("text", "user"),
+                )
+                member_results, counts = _parse_member_junit(
+                    raw_xml, member_names, produced_stems
+                )
+                report["member_results"] = member_results
+                report["members_total"] = len(member_names)
+                report["members_passed"] = sum(
+                    1 for m in member_results.values() if m["passed"]
+                )
+                report["members_orchestrator_miss"] = counts["orchestrator_miss"]
+                report["members_worker_miss"] = counts["worker_miss"]
+                report["member_results_source"] = "junitxml"
+                # Real per-member failures/errors replace the all-or-nothing
+                # batch counts for wide runs — same fields, honest numbers.
+                report["tests_run"] = sum(
+                    m["tests"] for m in member_results.values()
+                ) or report["tests_run"]
+                report["failures"] = sum(
+                    m["failures"] for m in member_results.values()
+                )
+                report["errors"] = sum(
+                    m["errors"] for m in member_results.values()
+                )
+            except Exception as exc:
+                report["member_results_error"] = _safe_error_message(exc)
     except Exception as exc:  # endpoint unreachable, auth, template missing…
         report["error"] = f"sandbox runtime error: {_safe_error_message(exc)}"
     finally:
         if sandbox is not None:
             _kill_sandbox(sandbox, report, request_timeout)
     return report
+
+
+def _parse_member_junit(
+    raw_xml: str,
+    member_names: list[str],
+    produced_stems: set[str],
+) -> tuple[dict[str, dict[str, Any]], dict[str, int]]:
+    """Parse a --junitxml report into per-member results.
+
+    Member names arrive as ``test_member_<name>`` fail_to_pass entries;
+    pytest reports each oracle file's cases under a classname whose last
+    segment is that same stem. A member passes iff at least one case ran
+    with zero failures and zero errors. ``targeted`` is whether the run's
+    produced fileset emitted a file whose stem is ``<name>`` — absent
+    means the plan never decomposed to it (orchestrator miss); targeted
+    but failing is the worker's miss.
+    """
+    import xml.etree.ElementTree as ET
+
+    results: dict[str, dict[str, Any]] = {}
+    for entry in member_names:
+        member = entry[len("test_member_"):]
+        results[member] = {
+            "passed": False,
+            "targeted": member in produced_stems,
+            "tests": 0,
+            "failures": 0,
+            "errors": 0,
+            "skipped": 0,
+        }
+    root = ET.fromstring(raw_xml)
+    for case in root.iter("testcase"):
+        classname = str(case.get("classname") or "")
+        stem = PurePosixPath(classname.replace(".", "/")).stem
+        if not stem.startswith("test_member_"):
+            continue
+        member_result = results.get(stem[len("test_member_"):])
+        if member_result is None:
+            continue
+        member_result["tests"] += 1
+        if case.find("failure") is not None:
+            member_result["failures"] += 1
+        elif case.find("error") is not None:
+            member_result["errors"] += 1
+        elif case.find("skipped") is not None:
+            member_result["skipped"] += 1
+    counts = {"orchestrator_miss": 0, "worker_miss": 0}
+    for member_result in results.values():
+        member_result["passed"] = (
+            member_result["tests"] > 0
+            and member_result["failures"] == 0
+            and member_result["errors"] == 0
+            and member_result["skipped"] < member_result["tests"]
+        )
+        if member_result["passed"]:
+            continue
+        if member_result["targeted"]:
+            counts["worker_miss"] += 1
+        else:
+            counts["orchestrator_miss"] += 1
+    return results, counts

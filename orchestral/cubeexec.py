@@ -847,8 +847,13 @@ def _parse_member_junit(
     root = ET.fromstring(raw_xml)
     for case in root.iter("testcase"):
         classname = str(case.get("classname") or "")
-        stem = PurePosixPath(classname.replace(".", "/")).stem
-        if not stem.startswith("test_member_"):
+        # The member identity is the oracle *module* segment — a class-based
+        # test's classname ends in the class name, not the module stem.
+        stem = next(
+            (seg for seg in classname.split(".") if seg.startswith("test_member_")),
+            None,
+        )
+        if stem is None:
             continue
         member_result = results.get(stem[len("test_member_"):])
         if member_result is None:
@@ -863,7 +868,8 @@ def _parse_member_junit(
     counts = {"orchestrator_miss": 0, "worker_miss": 0}
     for member_result in results.values():
         member_result["passed"] = (
-            member_result["tests"] > 0
+            member_result["targeted"]
+            and member_result["tests"] > 0
             and member_result["failures"] == 0
             and member_result["errors"] == 0
             and member_result["skipped"] < member_result["tests"]

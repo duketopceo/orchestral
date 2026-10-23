@@ -290,6 +290,9 @@ class TestRunDetailBrowser(unittest.TestCase):
         self.assertEqual(pg.evaluate("document.activeElement.id"), "tab-events")
         pg.keyboard.press("ArrowRight")
         pg.wait_for_function("location.hash.includes('tab=calls')")
+        # The hash update triggers an async re-render that restores focus via
+        # refocusTab afterwards — End only works once a tab is active again.
+        pg.wait_for_function("document.activeElement?.id === 'tab-calls'")
         pg.keyboard.press("End")
         pg.wait_for_function("location.hash.includes('tab=manifest')")
         pg.wait_for_selector("#tab-manifest[aria-selected='true']")

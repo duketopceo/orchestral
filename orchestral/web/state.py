@@ -2748,7 +2748,22 @@ def _story_metrics(payload: dict[str, Any]) -> list[dict[str, Any]]:
         ]
     judged = int(payload.get("judged") or 0)
     judge_value = f"{payload.get('judge_approved', 0)}/{judged}" if judged else NULL_GLYPH
-    return [
+    members_total = payload.get("members_total")
+    members_chip = (
+        {
+            "id": "members",
+            "label": "Member pass",
+            "value": f"{payload.get('members_passed', 0)}/{members_total}",
+            "detail": (
+                f"{payload.get('members_orchestrator_miss', 0)} orchestrator / "
+                f"{payload.get('members_worker_miss', 0)} worker misses"
+            ),
+            "tone": "mech",
+        }
+        if members_total
+        else None
+    )
+    chips = [
         {
             "id": "mechanical",
             "label": "Mechanical pass",
@@ -2756,6 +2771,7 @@ def _story_metrics(payload: dict[str, Any]) -> list[dict[str, Any]]:
             "detail": f"{fmt_percent(payload.get('pass_rate'))} observed",
             "tone": "mech",
         },
+        members_chip,
         {
             "id": "judge",
             "label": "Judge approved",
@@ -2771,6 +2787,7 @@ def _story_metrics(payload: dict[str, Any]) -> list[dict[str, Any]]:
             "tone": "cost",
         },
     ]
+    return [c for c in chips if c]
 
 
 def card_payload(
@@ -2818,6 +2835,10 @@ def card_payload(
         unreadable_n = 0
         judge_passed_n = 0
         judge_models: set[str] = set()
+        members_total = 0
+        members_passed = 0
+        members_orch_miss = 0
+        members_work_miss = 0
         for m in cell:
             if m.failure_reason:
                 failures[m.failure_reason] = failures.get(m.failure_reason, 0) + 1
@@ -2838,6 +2859,13 @@ def card_payload(
                     judge_passed_n += 1
                 if j.get("model"):
                     judge_models.add(j["model"])
+                ex = _mapping(_mapping(read_json(
+                    Path(m.run_dir) / "report.json")).get("execution"))
+                if int(ex.get("members_total") or 0) > 0:
+                    members_total += int(ex.get("members_total") or 0)
+                    members_passed += int(ex.get("members_passed") or 0)
+                    members_orch_miss += int(ex.get("members_orchestrator_miss") or 0)
+                    members_work_miss += int(ex.get("members_worker_miss") or 0)
         pr = passed / len(evidence) if evidence else None
         ci = _wilson(passed, len(evidence))
         top_failure = max(failures.items(), key=lambda kv: kv[1])[0] if failures else None
@@ -2879,6 +2907,10 @@ def card_payload(
             "judge_score_mean": round(sum(judged_scores) / len(judged_scores), 3) if judged_scores else None,
             "cost_usd": round(sum(costs), 4),
             "cost_median": round(statistics.median(costs), 4) if costs else None,
+            "members_total": members_total or None,
+            "members_passed": members_passed if members_total else None,
+            "members_orchestrator_miss": members_orch_miss if members_total else None,
+            "members_worker_miss": members_work_miss if members_total else None,
             "latency_median_ms": round(statistics.median(lat)) if lat else None,
             "tasks": len({m.task_id for m in cell}),
             "type_split": {t: {"passed": p, "finished": n} for t, (p, n) in per_type.items()},

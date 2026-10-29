@@ -1,0 +1,132 @@
+name: Model evaluation study
+description: Request or plan a controlled evaluation of one or more models.
+title: "Models: evaluate "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use one issue for one evaluation question or decision, not one issue per model and not every possible model permutation.
+
+        A study may qualify one candidate against a baseline or compare a small, deliberate set. Keep other factors fixed when possible (for example, vary the orchestrator while holding the worker constant). Do not launch until exact model IDs, access, and spend limits are verified.
+
+        Before closing a study, record completed runs and artifacts, and resolve each planned cell as completed, blocked, or intentionally dropped. Distinguish provider/runtime failures from model and oracle outcomes.
+
+  - type: input
+    id: question
+    attributes:
+      label: Evaluation question
+      description: What decision should this study answer?
+      placeholder: "Does candidate X improve wide-task orchestration over Argon at an acceptable cost?"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: study_kind
+    attributes:
+      label: Study type
+      options:
+        - Qualify one candidate against a baseline
+        - Compare orchestrators with a fixed worker
+        - Compare workers with a fixed orchestrator
+        - Compare a small set of explicit pairings
+        - Measure a non-generation model role
+    validations:
+      required: true
+
+  - type: textarea
+    id: candidates
+    attributes:
+      label: Candidate models
+      description: |
+        One candidate per line. Use the exact provider model ID when known; mark unverified names as announced/anticipated. Include a source URL and checked date for model facts.
+      placeholder: |
+        - Display name | exact provider/model-id or UNVERIFIED | source URL | checked YYYY-MM-DD
+        - Role(s): orchestrator, worker, planner, judge, decision, embedding, reranker, other
+        - Class: general text, reasoning, code, multimodal, decision, embedding, reranker, other
+        - Size: small/edge, mid-size, large/frontier, unknown; total and active parameters if known
+        - Context: input/output limits and source, or unknown
+        - Access: public API, preview, restricted, open weights, local only, unknown
+        - Pricing: input/output and cached or batch rates, or unknown
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: roles
+    attributes:
+      label: Roles to evaluate
+      options:
+        - label: Orchestrator
+        - label: Worker
+        - label: Planner
+        - label: Judge
+        - label: Decision model
+        - label: Embedding model
+        - label: Reranker
+        - label: Other (explain below)
+
+  - type: textarea
+    id: pairings
+    attributes:
+      label: Explicit pairing matrix
+      description: List only the intended pairings. Keep the worker fixed for an orchestrator comparison, or the orchestrator fixed for a worker comparison. Avoid an unbounded Cartesian product.
+      placeholder: |
+        | Orchestrator | Worker | Other role/model | Why this pairing |
+        | --- | --- | --- | --- |
+        | candidate-A | fixed-worker | n/a | primary comparison |
+        | baseline | fixed-worker | n/a | control |
+
+  - type: textarea
+    id: benchmark
+    attributes:
+      label: Benchmark and run design
+      description: Name task families, replicate count, and any controls. State whether this is a smoke test or a scored comparison.
+      placeholder: |
+        Tasks/suite:
+        Replicates per cell:
+        Fixed factors:
+        Metrics (for example: member pass rate, full-pass rate, latency):
+
+  - type: textarea
+    id: completed_runs
+    attributes:
+      label: Completed runs and results
+      description: Fill in as runs complete. Include run-group/artifact links and separate executed results from provider, runtime, or validation failures.
+      placeholder: |
+        | Candidate/pairing | Task cells | Executed/JUnit reports | Full passes | Member pass | Orchestrator misses | Worker misses | Cost | Run group/artifacts |
+        | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+        | model-A / worker-B | 12 | 10 | 7/10 | 76/80 | 0 | 4 | $0.10 | group or URL |
+
+  - type: textarea
+    id: pending_runs
+    attributes:
+      label: Pending runs and blockers
+      description: Track unrun or incomplete cells, their status, prerequisites, and estimated remaining spend. Mark announcement-only candidates as unverified.
+      placeholder: |
+        | Candidate/pairing | Task cells and replicates | Status | Blocker/prerequisite | Estimated remaining cost |
+        | --- | --- | --- | --- | --- |
+        | model-C / worker-B | 4 tasks x 3 reps | blocked | exact provider route/access not verified | $X |
+
+  - type: input
+    id: budget
+    attributes:
+      label: Maximum spend
+      description: Hard cap for this study, including retries and failed calls. Estimate before launch.
+      placeholder: "$X total; estimated cost per run: $Y"
+    validations:
+      required: true
+
+  - type: textarea
+    id: decision
+    attributes:
+      label: Decision rule and follow-up
+      description: What evidence would justify adding the model to a maintained roster, expanding the study, or dropping it?
+      placeholder: |
+        Success threshold:
+        Stop condition:
+        If successful, next step:
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: Unknowns and notes
+      description: Record unverified slugs, changing access, missing prices/context limits, or other caveats. Do not treat announcements as runnable API access.

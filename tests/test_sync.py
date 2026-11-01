@@ -383,6 +383,61 @@ class TestFinishHook(unittest.TestCase):
                     harness._CF_HOOK_CLIENT.close()
                     harness._CF_HOOK_CLIENT = None
 
+    def test_hook_does_not_publish_other_active_runs(self):
+        import harness
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = RunStore(tmp)
+            active_id, _ = store.new_run("org/orch", "corpus-landing-page", "wrk/y")
+            finished_id, _ = _make_run(store)
+            finished = store.get_run(finished_id)
+            finished.task_id = "corpus-landing-page"
+            store.update_meta(finished)
+
+            fixture_root = Path(__file__).parent / "fixtures" / "observatory"
+            tasks_dir = fixture_root / "tasks"
+            models_dir = fixture_root / "models"
+            args = SimpleNamespace(
+                dry_run=False, planner="raw", runs_dir=store.root,
+                tasks_dir=tasks_dir, models_dir=models_dir,
+            )
+            posted = []
+
+            def fake_post(_client, path, body):
+                posted.append((path, body))
+                return {
+                    "ok": True,
+                    "written": len(body.get("payloads", {}))
+                    + len(body.get("files", {})),
+                }
+
+            try:
+                with unittest.mock.patch.dict(
+                        os.environ, {"ORCH_CF_SYNC": "1",
+                                     "ORCHESTRAL_OBS_TOKEN": "id:secret"}), \
+                     unittest.mock.patch.object(
+                         harness, "_CF_HOOK_CLIENT", None), \
+                     unittest.mock.patch(
+                         "orchestral.cf.ingest_client",
+                         return_value=unittest.mock.Mock()), \
+                     unittest.mock.patch(
+                         "orchestral.cf._post", side_effect=fake_post):
+                    hook = harness._runner_kwargs(args, store)["on_run_finished"]
+                    self.assertIsNotNone(hook)
+                    hook(finished)
+
+                posted_run_ids = {
+                    body["run_id"] for path, body in posted
+                    if path == "/ingest/run"
+                }
+                self.assertEqual(posted_run_ids, {finished_id})
+                self.assertIn(active_id, store.dirty_runs())
+                self.assertNotIn(finished_id, store.dirty_runs())
+            finally:
+                if harness._CF_HOOK_CLIENT is not None:
+                    harness._CF_HOOK_CLIENT.close()
+                    harness._CF_HOOK_CLIENT = None
+
     def test_hook_skips_holdout_runs(self):
         import harness
         from orchestral import privacy

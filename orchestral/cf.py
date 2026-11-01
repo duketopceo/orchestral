@@ -410,6 +410,7 @@ def _sync_writer_lock(root: Path) -> Iterator[None]:
 
 def sync(store: RunStore, tasks_dir: Path, models_dir: Path, groups_file: Path,
          *, push: bool = False, all_runs: bool = False,
+         terminal_only: bool = False,
          client: httpx.Client | None = None) -> PushResult:
     """Render + push the dirty set (or everything with --all).
 
@@ -420,16 +421,19 @@ def sync(store: RunStore, tasks_dir: Path, models_dir: Path, groups_file: Path,
         with _sync_writer_lock(store.root):
             return _sync_unlocked(
                 store, tasks_dir, models_dir, groups_file,
-                push=True, all_runs=all_runs, client=client,
+                push=True, all_runs=all_runs, terminal_only=terminal_only,
+                client=client,
             )
     return _sync_unlocked(
         store, tasks_dir, models_dir, groups_file,
-        push=False, all_runs=all_runs, client=client,
+        push=False, all_runs=all_runs, terminal_only=terminal_only,
+        client=client,
     )
 
 
 def _sync_unlocked(store: RunStore, tasks_dir: Path, models_dir: Path,
                    groups_file: Path, *, push: bool, all_runs: bool,
+                   terminal_only: bool,
                    client: httpx.Client | None) -> PushResult:
     result = PushResult()
     # Watermark before the first push: entries re-dirtied mid-sync must
@@ -438,6 +442,8 @@ def _sync_unlocked(store: RunStore, tasks_dir: Path, models_dir: Path,
     watermark = datetime.now(UTC).isoformat()
     dirty = {r.run_id for r in store.list_runs(limit=None)} if all_runs else store.dirty_runs()
     metas = [m for rid in dirty if (m := store.get_run(rid)) is not None]
+    if terminal_only:
+        metas = [meta for meta in metas if meta.status != "running"]
     owned = client is None
     if client is None:
         client = httpx.Client(headers=_ingest_headers() if push else {})

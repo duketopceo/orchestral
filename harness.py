@@ -383,7 +383,7 @@ def _cf_sync_hook(
         try:
             result = cf.sync(
                 store, tasks_dir, models_dir, groups_file,
-                push=True, client=client,
+                push=True, terminal_only=True, client=client,
             )
         except Exception as exc:
             store.debug_log(

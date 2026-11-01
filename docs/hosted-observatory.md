@@ -32,11 +32,12 @@ export ORCH_CF_SYNC=1
 export ORCHESTRAL_OBS_TOKEN="$(omaseal get cloudflare obs-ingest | tr -d '[:space:]')"
 ```
 
-The first automatic push also flushes every existing dirty run, not just the
-run that just finished. Holdouts are skipped and run artifacts pass through the
-same scrubber as `sync --push`. This hook is opt-in for local harness processes;
-the paid GitHub eval workflow uploads reports as GitHub artifacts and does not
-publish to this mirror.
+The first automatic push also flushes existing dirty terminal runs, not just
+the run that just finished. Active runs stay dirty until they reach a terminal
+state. Holdouts are skipped and run artifacts pass through the same scrubber
+as `sync --push`. This hook is opt-in for local harness processes; the paid
+GitHub eval workflow uploads reports as GitHub artifacts and does not publish
+to this mirror.
 
 Journal semantics: every `update_meta`, `backfill_calls`, and run
 annotation marks the run dirty; entries clear only after a clean push.

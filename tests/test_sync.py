@@ -242,6 +242,7 @@ class TestSyncOrchestration(unittest.TestCase):
 
             self.assertFalse(first.is_alive())
             self.assertFalse(second.is_alive())
+            self.assertTrue(second_entered.is_set())
             self.assertEqual(errors, [])
 
     def test_sync_cli_reports_writer_lock_timeout(self):

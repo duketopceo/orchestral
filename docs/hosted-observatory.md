@@ -39,6 +39,10 @@ as `sync --push`. This hook is opt-in for local harness processes; the paid
 GitHub eval workflow uploads reports as GitHub artifacts and does not publish
 to this mirror.
 
+The hook waits for sync before the run command returns. If the dry run shows a
+large historical backlog, run `sync --push` before launching a batch so the
+one-time backfill does not hold up a completed run.
+
 Journal semantics: every `update_meta`, `backfill_calls`, and run
 annotation marks the run dirty; entries clear only after a clean push.
 Holdouts are terminal skips and clear without uploading. Missing-directory

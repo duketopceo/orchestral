@@ -362,13 +362,11 @@ def _check_provider_envs(args: argparse.Namespace, *models: ModelConfig | None) 
 _CF_HOOK_CLIENT: Any = None
 
 
-def _cf_sync_hook(store: RunStore) -> Any:
-    """Runner.on_run_finished: push the terminal row + calls ledger to the
-    hosted observatory when ORCH_CF_SYNC is set (1/true/yes). Best-effort -
-    Runner suppresses callback errors, and the sync_dirty journal records the
-    run regardless, so `harness.py sync` catches anything the hook misses.
-    Holdouts are skipped here too; their journal entries clear as terminal on
-    the next sync."""
+def _cf_sync_hook(
+    store: RunStore,
+    tasks_dir: Path = Path("tasks"),
+    models_dir: Path = Path("models"),
+) -> Any:
     if os.environ.get("ORCH_CF_SYNC") not in ("1", "true", "yes"):
         return None
     from orchestral import cf, privacy  # deferred: cf pulls httpx/state deps
@@ -381,17 +379,40 @@ def _cf_sync_hook(store: RunStore) -> Any:
     def _push(meta: Any) -> None:
         if privacy.run_is_holdout(Path(meta.run_dir), meta.config):
             return
-        cf.push_run_events_only(client, store, meta)
+        groups_file = tasks_dir.parent / "groups.yaml"
+        try:
+            result = cf.sync(
+                store, tasks_dir, models_dir, groups_file,
+                push=True, client=client,
+            )
+        except Exception as exc:
+            store.debug_log(
+                "cloudflare_sync",
+                "post-run sync failed; dirty runs remain for retry",
+                run_id=meta.run_id,
+                error_type=type(exc).__name__,
+            )
+            return
+        if result.errors or result.skipped_missing or meta.run_id not in result.pushed:
+            store.debug_log(
+                "cloudflare_sync",
+                "post-run sync incomplete; dirty runs remain for retry",
+                run_id=meta.run_id,
+                error_count=len(result.errors),
+                skipped_missing_count=len(result.skipped_missing),
+            )
 
     return _push
 
 
 def _runner_kwargs(args: argparse.Namespace, store: RunStore, **extra: Any) -> dict[str, Any]:
+    tasks_dir = Path(getattr(args, "tasks_dir", "tasks"))
+    models_dir = Path(getattr(args, "models_dir", "models"))
     return {
         "dry_run": args.dry_run,
         "planner": args.planner,
         "runs_dir": args.runs_dir,
-        "on_run_finished": _cf_sync_hook(store),
+        "on_run_finished": _cf_sync_hook(store, tasks_dir, models_dir),
         "prompt_variant": getattr(args, "prompt_variant", None),
         "use_judge_cache": not getattr(args, "no_judge_cache", False),
         "jev_assist": getattr(args, "jev_assist", False),

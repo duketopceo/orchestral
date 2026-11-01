@@ -29,10 +29,13 @@ import base64
 import hashlib
 import json
 import os
+import sqlite3
 import subprocess
 import tempfile
 import time
 import zipfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -388,24 +391,22 @@ def push_state(client: httpx.Client, store: RunStore, tasks_dir: Path,
     return {"ok": True, "written": written}
 
 
-def push_run_events_only(client: httpx.Client, store: RunStore, meta: Any) -> dict[str, Any]:
-    """Lightweight post-run hook: one run's row + calls ledger, no artifacts.
-
-    Keeps hosted row state fresh after every finish/failure; the heavy
-    scrub+artifact push happens on `harness.py sync`.
-    """
-    return _post(client, "/ingest/run", {
-        "run_id": meta.run_id,
-        "payloads": {},
-        "d1": d1_projection(store, [meta.run_id]),
-        "files": {},
-        "manifest_hash": None,
-    })
-
-
 # ---------------------------------------------------------------------------
 # Dirty-set orchestration
 # ---------------------------------------------------------------------------
+
+@contextmanager
+def _sync_writer_lock(root: Path) -> Iterator[None]:
+    lock_db = root.resolve() / ".cf-sync-lock.sqlite3"
+    conn = sqlite3.connect(lock_db, timeout=600.0)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        yield
+    finally:
+        if conn.in_transaction:
+            conn.rollback()
+        conn.close()
+
 
 def sync(store: RunStore, tasks_dir: Path, models_dir: Path, groups_file: Path,
          *, push: bool = False, all_runs: bool = False,
@@ -415,6 +416,21 @@ def sync(store: RunStore, tasks_dir: Path, models_dir: Path, groups_file: Path,
     Dry run (push=False) renders nothing remote — it reports what would
     move so the operator can see the dirty set without credentials.
     """
+    if push:
+        with _sync_writer_lock(store.root):
+            return _sync_unlocked(
+                store, tasks_dir, models_dir, groups_file,
+                push=True, all_runs=all_runs, client=client,
+            )
+    return _sync_unlocked(
+        store, tasks_dir, models_dir, groups_file,
+        push=False, all_runs=all_runs, client=client,
+    )
+
+
+def _sync_unlocked(store: RunStore, tasks_dir: Path, models_dir: Path,
+                   groups_file: Path, *, push: bool, all_runs: bool,
+                   client: httpx.Client | None) -> PushResult:
     result = PushResult()
     # Watermark before the first push: entries re-dirtied mid-sync must
     # survive clear_dirty or a mutation would silently never sync.
@@ -425,6 +441,7 @@ def sync(store: RunStore, tasks_dir: Path, models_dir: Path, groups_file: Path,
     owned = client is None
     if client is None:
         client = httpx.Client(headers=_ingest_headers() if push else {})
+    state_pushed = False
     try:
         for meta in metas:
             try:
@@ -444,13 +461,16 @@ def sync(store: RunStore, tasks_dir: Path, models_dir: Path, groups_file: Path,
         if push:
             try:
                 push_state(client, store, tasks_dir, models_dir, groups_file)
+                state_pushed = True
             except SyncError as exc:
                 result.errors.append(f"state: {exc}")
         # Journal entries clear per run, and only for runs that actually
         # landed (or are terminally withheld as holdout). Failed and
         # missing-dir runs stay dirty so the next sync retries them.
         if push:
-            settled = set(result.pushed) | set(result.skipped_holdout)
+            settled = set(result.skipped_holdout)
+            if state_pushed:
+                settled.update(result.pushed)
             store.clear_dirty(settled & dirty, before=watermark)
     finally:
         if owned:

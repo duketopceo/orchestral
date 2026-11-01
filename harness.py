@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sqlite3
 import sys
 import time
 import uuid
@@ -2308,10 +2309,18 @@ def cmd_sync(args: argparse.Namespace) -> int:
                   f"{', '.join(diff['remote_only'][:10])}")
         return 1 if diff["missing_remote"] else 0
 
-    result = cf.sync(
-        store, tasks_dir, Path(args.models_dir), groups_file,
-        push=args.push, all_runs=args.all,
-    )
+    try:
+        result = cf.sync(
+            store, tasks_dir, Path(args.models_dir), groups_file,
+            push=args.push, all_runs=args.all,
+        )
+    except sqlite3.OperationalError as exc:
+        if "locked" in str(exc).casefold():
+            message = "sync writer lock is busy; retry after the other publisher finishes"
+        else:
+            message = f"SQLite operation failed during sync: {exc}"
+        print(message, file=sys.stderr)
+        return 1
     verb = "pushed" if args.push else "would push"
     print(f"{verb}: {len(result.pushed)} run(s)"
           + (f", {len(result.skipped_holdout)} holdout withheld"

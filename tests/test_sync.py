@@ -5,8 +5,10 @@ Every test runs against a real RunStore + real run dirs — the guarantees
 here are publication boundaries, not logic that can be faked.
 """
 
+import io
 import json
 import os
+import sqlite3
 import tempfile
 import threading
 import unittest
@@ -241,6 +243,26 @@ class TestSyncOrchestration(unittest.TestCase):
             self.assertFalse(first.is_alive())
             self.assertFalse(second.is_alive())
             self.assertEqual(errors, [])
+
+    def test_sync_cli_reports_writer_lock_timeout(self):
+        import harness
+
+        with tempfile.TemporaryDirectory() as tmp:
+            args = SimpleNamespace(
+                runs_dir=tmp,
+                tasks_dir=Path(tmp) / "tasks",
+                models_dir=Path(tmp) / "models",
+                verify=False,
+                push=True,
+                all=False,
+            )
+            stderr = io.StringIO()
+            with unittest.mock.patch(
+                    "orchestral.cf.sync",
+                    side_effect=sqlite3.OperationalError("database is locked")), \
+                 unittest.mock.patch("sys.stderr", stderr):
+                self.assertEqual(harness.cmd_sync(args), 1)
+            self.assertIn("sync writer lock is busy", stderr.getvalue())
 
     def test_dry_run_reports_dirty_without_pushing(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -511,12 +533,14 @@ class TestPartialFailureAndRetry(unittest.TestCase):
                            Path(tmp) / "groups.yaml", push=True,
                            client=client, **kw)
 
-    def test_failed_runs_stay_dirty_successes_clear(self):
+    def test_run_failure_defers_state_until_all_dirty_runs_push(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = RunStore(tmp)
             good, bad = (_make_run(store, with_calls=False)[0] for _ in range(2))
+            paths = []
 
             def handler(req: httpx.Request) -> httpx.Response:
+                paths.append(req.url.path)
                 body = json.loads(req.content)
                 if req.url.path == "/ingest/run" and body["run_id"] == bad:
                     return httpx.Response(503, text="<html>" + "x" * 500 + "</html>")
@@ -524,12 +548,20 @@ class TestPartialFailureAndRetry(unittest.TestCase):
 
             result = self._sync(tmp, store, handler)
             self.assertEqual(result.pushed, [good])
-            self.assertEqual(len(result.errors), 1)
-            self.assertLessEqual(len(result.errors[0]), 250)  # no HTML dump
-            self.assertEqual(store.dirty_runs(), {bad})
+            self.assertTrue(any(error.startswith(f"{bad}:") for error in result.errors))
+            self.assertTrue(any(error.startswith("state: skipped") for error in result.errors))
+            self.assertNotIn("/ingest/state", paths)
+            self.assertEqual(store.dirty_runs(), {good, bad})
 
-            again = self._sync(tmp, store, lambda r: httpx.Response(200, json={}))
-            self.assertEqual(again.pushed, [bad])
+            retry_paths = []
+
+            def succeeds(req: httpx.Request) -> httpx.Response:
+                retry_paths.append(req.url.path)
+                return httpx.Response(200, json={})
+
+            again = self._sync(tmp, store, succeeds)
+            self.assertEqual(set(again.pushed), {good, bad})
+            self.assertIn("/ingest/state", retry_paths)
             self.assertEqual(store.dirty_runs(), set())
 
     def test_state_failure_keeps_pushed_runs_dirty_for_retry(self):
@@ -596,4 +628,5 @@ class TestPartialFailureAndRetry(unittest.TestCase):
 
             result = self._sync(tmp, store, handler)
             self.assertEqual(len(calls), 1)
-            self.assertEqual(len(result.errors), 1)
+            self.assertTrue(any("403" in error for error in result.errors))
+            self.assertTrue(any(error.startswith("state: skipped") for error in result.errors))

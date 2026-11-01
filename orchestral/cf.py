@@ -464,7 +464,11 @@ def _sync_unlocked(store: RunStore, tasks_dir: Path, models_dir: Path,
                 result.skipped_holdout.append(meta.run_id)
             except (SyncError, OSError) as exc:
                 result.errors.append(f"{meta.run_id}: {exc}")
-        if push:
+        if push and result.errors:
+            result.errors.append(
+                "state: skipped because one or more run uploads failed"
+            )
+        elif push:
             try:
                 push_state(client, store, tasks_dir, models_dir, groups_file)
                 state_pushed = True

@@ -24,14 +24,29 @@ ORCHESTRAL_OBS_TOKEN=$(omaseal get cloudflare obs-ingest) \
 ORCHESTRAL_OBS_TOKEN=$(omaseal get cloudflare obs-ingest) \
   python3 harness.py sync --verify
 
-# push run rows + ledgers automatically as runs finish
-export ORCH_CF_SYNC=1 ORCHESTRAL_OBS_TOKEN=<id:secret>
+# inspect the pending set before enabling automatic publication
+python3 harness.py sync
+
+# publish the scrubbed run, artifacts, and refreshed R2 snapshots after each run
+export ORCH_CF_SYNC=1
+export ORCHESTRAL_OBS_TOKEN="$(omaseal get cloudflare obs-ingest | tr -d '[:space:]')"
 ```
+
+The first automatic push also flushes existing dirty terminal runs, not just
+the run that just finished. Active runs stay dirty until they reach a terminal
+state. Holdouts are skipped and run artifacts pass through the same scrubber
+as `sync --push`. This hook is opt-in for local harness processes; the paid
+GitHub eval workflow uploads reports as GitHub artifacts and does not publish
+to this mirror.
+
+The hook waits for sync before the run command returns. If the dry run shows a
+large historical backlog, run `sync --push` before launching a batch so the
+one-time backfill does not hold up a completed run.
 
 Journal semantics: every `update_meta`, `backfill_calls`, and run
 annotation marks the run dirty; entries clear only after a clean push.
-Holdout and missing-dir runs are terminal skips — they clear without
-uploading anything.
+Holdouts are terminal skips and clear without uploading. Missing-directory
+entries remain dirty until their run directories are restored or removed.
 
 ## AI Gateway inference telemetry
 

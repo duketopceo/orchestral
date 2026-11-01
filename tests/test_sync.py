@@ -5,12 +5,16 @@ Every test runs against a real RunStore + real run dirs — the guarantees
 here are publication boundaries, not logic that can be faked.
 """
 
+import io
 import json
 import os
+import sqlite3
 import tempfile
+import threading
 import unittest
 import unittest.mock
 from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 
@@ -192,6 +196,75 @@ class TestManifestHash(unittest.TestCase):
 
 
 class TestSyncOrchestration(unittest.TestCase):
+    def test_concurrent_pushes_are_serialized(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = RunStore(tmp)
+            first_entered = threading.Event()
+            release_first = threading.Event()
+            second_attempting = threading.Event()
+            second_entered = threading.Event()
+            errors = []
+
+            def fake_sync(*args, **kwargs):
+                if threading.current_thread().name == "first-sync":
+                    first_entered.set()
+                    if not release_first.wait(3):
+                        raise RuntimeError("first sync was not released")
+                else:
+                    second_entered.set()
+                return cf.PushResult()
+
+            def run_sync():
+                try:
+                    cf.sync(store, Path(tmp) / "tasks", Path(tmp) / "models",
+                            Path(tmp) / "groups.yaml", push=True)
+                except Exception as exc:
+                    errors.append(exc)
+
+            def run_second():
+                second_attempting.set()
+                run_sync()
+
+            with unittest.mock.patch.object(
+                    cf, "_sync_unlocked", side_effect=fake_sync):
+                first = threading.Thread(target=run_sync, name="first-sync")
+                second = threading.Thread(target=run_second, name="second-sync")
+                first.start()
+                self.assertTrue(first_entered.wait(2))
+                second.start()
+                try:
+                    self.assertTrue(second_attempting.wait(2))
+                    self.assertFalse(second_entered.wait(0.2))
+                finally:
+                    release_first.set()
+                first.join(3)
+                second.join(3)
+
+            self.assertFalse(first.is_alive())
+            self.assertFalse(second.is_alive())
+            self.assertTrue(second_entered.is_set())
+            self.assertEqual(errors, [])
+
+    def test_sync_cli_reports_writer_lock_timeout(self):
+        import harness
+
+        with tempfile.TemporaryDirectory() as tmp:
+            args = SimpleNamespace(
+                runs_dir=tmp,
+                tasks_dir=Path(tmp) / "tasks",
+                models_dir=Path(tmp) / "models",
+                verify=False,
+                push=True,
+                all=False,
+            )
+            stderr = io.StringIO()
+            with unittest.mock.patch(
+                    "orchestral.cf.sync",
+                    side_effect=sqlite3.OperationalError("database is locked")), \
+                 unittest.mock.patch("sys.stderr", stderr):
+                self.assertEqual(harness.cmd_sync(args), 1)
+            self.assertIn("sync writer lock is busy", stderr.getvalue())
+
     def test_dry_run_reports_dirty_without_pushing(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = RunStore(tmp)
@@ -273,6 +346,121 @@ class TestFinishHook(unittest.TestCase):
             os.environ.pop("ORCH_CF_SYNC", None)
             self.assertIsNone(harness._cf_sync_hook(store))
 
+    def test_hook_refreshes_hosted_snapshot_after_run(self):
+        import harness
+        from orchestral.web.snapshot import enc
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = RunStore(tmp)
+            run_id, _ = _make_run(store)
+            meta = store.get_run(run_id)
+            meta.task_id = "corpus-landing-page"
+            store.update_meta(meta)
+            fixture_root = Path(__file__).parent / "fixtures" / "observatory"
+            tasks_dir = fixture_root / "tasks"
+            models_dir = fixture_root / "models"
+            args = SimpleNamespace(
+                dry_run=False, planner="raw", runs_dir=store.root,
+                tasks_dir=tasks_dir, models_dir=models_dir,
+            )
+            posted = []
+
+            def fake_post(_client, path, body):
+                posted.append((path, body))
+                return {
+                    "ok": True,
+                    "written": len(body.get("payloads", {}))
+                    + len(body.get("files", {})),
+                }
+
+            try:
+                with unittest.mock.patch.dict(
+                        os.environ, {"ORCH_CF_SYNC": "1",
+                                     "ORCHESTRAL_OBS_TOKEN": "id:secret"}), \
+                     unittest.mock.patch.object(
+                         harness, "_CF_HOOK_CLIENT", None), \
+                     unittest.mock.patch(
+                         "orchestral.cf.ingest_client",
+                         return_value=unittest.mock.Mock()), \
+                     unittest.mock.patch(
+                         "orchestral.cf._post", side_effect=fake_post):
+                    hook = harness._runner_kwargs(args, store)["on_run_finished"]
+                    self.assertIsNotNone(hook)
+                    hook(meta)
+
+                run_post = next(body for path, body in posted
+                                if path == "/ingest/run")
+                state_post = next(body for path, body in posted
+                                  if path == "/ingest/state")
+                self.assertIn(f"api/run/{enc(run_id)}.json", run_post["payloads"])
+                self.assertIn(f"runs/{run_id}/report.json", run_post["files"])
+                self.assertIn("api/runs.json", state_post["payloads"])
+                self.assertIn(
+                    run_id,
+                    {row["run_id"] for row in state_post["payloads"]["api/runs.json"]},
+                )
+                self.assertNotIn(CANARY, json.dumps(run_post))
+                self.assertNotIn(run_id, store.dirty_runs())
+            finally:
+                if harness._CF_HOOK_CLIENT is not None:
+                    harness._CF_HOOK_CLIENT.close()
+                    harness._CF_HOOK_CLIENT = None
+
+    def test_hook_does_not_publish_other_active_runs(self):
+        import harness
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = RunStore(tmp)
+            active_id, _ = store.new_run("org/orch", "corpus-landing-page", "wrk/y")
+            finished_id, _ = _make_run(store)
+            finished = store.get_run(finished_id)
+            finished.task_id = "corpus-landing-page"
+            store.update_meta(finished)
+
+            fixture_root = Path(__file__).parent / "fixtures" / "observatory"
+            tasks_dir = fixture_root / "tasks"
+            models_dir = fixture_root / "models"
+            args = SimpleNamespace(
+                dry_run=False, planner="raw", runs_dir=store.root,
+                tasks_dir=tasks_dir, models_dir=models_dir,
+            )
+            posted = []
+
+            def fake_post(_client, path, body):
+                posted.append((path, body))
+                return {
+                    "ok": True,
+                    "written": len(body.get("payloads", {}))
+                    + len(body.get("files", {})),
+                }
+
+            try:
+                with unittest.mock.patch.dict(
+                        os.environ, {"ORCH_CF_SYNC": "1",
+                                     "ORCHESTRAL_OBS_TOKEN": "id:secret"}), \
+                     unittest.mock.patch.object(
+                         harness, "_CF_HOOK_CLIENT", None), \
+                     unittest.mock.patch(
+                         "orchestral.cf.ingest_client",
+                         return_value=unittest.mock.Mock()), \
+                     unittest.mock.patch(
+                         "orchestral.cf._post", side_effect=fake_post):
+                    hook = harness._runner_kwargs(args, store)["on_run_finished"]
+                    self.assertIsNotNone(hook)
+                    hook(finished)
+
+                posted_run_ids = {
+                    body["run_id"] for path, body in posted
+                    if path == "/ingest/run"
+                }
+                self.assertEqual(posted_run_ids, {finished_id})
+                self.assertIn(active_id, store.dirty_runs())
+                self.assertNotIn(finished_id, store.dirty_runs())
+            finally:
+                if harness._CF_HOOK_CLIENT is not None:
+                    harness._CF_HOOK_CLIENT.close()
+                    harness._CF_HOOK_CLIENT = None
+
     def test_hook_skips_holdout_runs(self):
         import harness
         from orchestral import privacy
@@ -280,19 +468,16 @@ class TestFinishHook(unittest.TestCase):
             store = RunStore(tmp)
             run_id, _ = _make_run(store, holdout=True)
             meta = store.get_run(run_id)
-            pushed = []
             try:
                 with unittest.mock.patch.dict(
                         os.environ, {"ORCH_CF_SYNC": "1",
                                      "ORCHESTRAL_OBS_TOKEN": "id:secret"}), \
-                     unittest.mock.patch(
-                         "orchestral.cf.push_run_events_only",
-                         side_effect=lambda c, s, m: pushed.append(m.run_id)):
+                     unittest.mock.patch("orchestral.cf.sync") as full_sync:
                     hook = harness._cf_sync_hook(store)
                     self.assertIsNotNone(hook)
                     self.assertTrue(privacy.run_is_holdout(Path(meta.run_dir)))
                     hook(meta)
-                self.assertEqual(pushed, [])
+                full_sync.assert_not_called()
             finally:
                 if harness._CF_HOOK_CLIENT is not None:
                     harness._CF_HOOK_CLIENT.close()
@@ -349,12 +534,14 @@ class TestPartialFailureAndRetry(unittest.TestCase):
                            Path(tmp) / "groups.yaml", push=True,
                            client=client, **kw)
 
-    def test_failed_runs_stay_dirty_successes_clear(self):
+    def test_run_failure_defers_state_until_all_dirty_runs_push(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = RunStore(tmp)
             good, bad = (_make_run(store, with_calls=False)[0] for _ in range(2))
+            paths = []
 
             def handler(req: httpx.Request) -> httpx.Response:
+                paths.append(req.url.path)
                 body = json.loads(req.content)
                 if req.url.path == "/ingest/run" and body["run_id"] == bad:
                     return httpx.Response(503, text="<html>" + "x" * 500 + "</html>")
@@ -362,13 +549,37 @@ class TestPartialFailureAndRetry(unittest.TestCase):
 
             result = self._sync(tmp, store, handler)
             self.assertEqual(result.pushed, [good])
-            self.assertEqual(len(result.errors), 1)
-            self.assertLessEqual(len(result.errors[0]), 250)  # no HTML dump
-            self.assertEqual(store.dirty_runs(), {bad})
+            self.assertTrue(any(error.startswith(f"{bad}:") for error in result.errors))
+            self.assertTrue(any(error.startswith("state: skipped") for error in result.errors))
+            self.assertNotIn("/ingest/state", paths)
+            self.assertEqual(store.dirty_runs(), {good, bad})
 
-            again = self._sync(tmp, store, lambda r: httpx.Response(200, json={}))
-            self.assertEqual(again.pushed, [bad])
+            retry_paths = []
+
+            def succeeds(req: httpx.Request) -> httpx.Response:
+                retry_paths.append(req.url.path)
+                return httpx.Response(200, json={})
+
+            again = self._sync(tmp, store, succeeds)
+            self.assertEqual(set(again.pushed), {good, bad})
+            self.assertIn("/ingest/state", retry_paths)
             self.assertEqual(store.dirty_runs(), set())
+
+    def test_state_failure_keeps_pushed_runs_dirty_for_retry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = RunStore(tmp)
+            run_id = _make_run(store, with_calls=False)[0]
+
+            def state_fails(req: httpx.Request) -> httpx.Response:
+                if req.url.path == "/ingest/state":
+                    return httpx.Response(503, text="snapshot busy")
+                return httpx.Response(200, json={})
+
+            result = self._sync(tmp, store, state_fails)
+
+            self.assertEqual(result.pushed, [run_id])
+            self.assertTrue(any(error.startswith("state:") for error in result.errors))
+            self.assertEqual(store.dirty_runs(), {run_id})
 
     def test_retries_503_then_succeeds(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -418,4 +629,5 @@ class TestPartialFailureAndRetry(unittest.TestCase):
 
             result = self._sync(tmp, store, handler)
             self.assertEqual(len(calls), 1)
-            self.assertEqual(len(result.errors), 1)
+            self.assertTrue(any("403" in error for error in result.errors))
+            self.assertTrue(any(error.startswith("state: skipped") for error in result.errors))

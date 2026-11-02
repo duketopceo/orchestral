@@ -9,9 +9,8 @@ unit ledger.
 OpenRouter — does a cheap planner plus cheap workers produce frontier-quality
 output at a fraction of the cost?
 
-Last updated: 2026-10-13 — shipped list refreshed; every unit in the
-program index now carries **Difficulty / Feasibility / Simpler
-alternative** notes.
+Last updated: 2026-11-02. The program index preserves the older workstreams
+and records current priorities and open questions.
 
 ## Shipped
 
@@ -33,46 +32,43 @@ alternative** notes.
   (#183), agent quickstart (`docs/agent-quickstart.md`, #182), and the
   negative-diff code-reduction program (#172, #173, #177, #185 —
   `docs/analysis/`). Per-unit status lives in the program index above.
+- Wide-task member attribution (#198) and completed study records:
+  Argon vs GLM ([#200](https://github.com/duketopceo/orchestral/issues/200))
+  and the frontier bakeoff ([#201](https://github.com/duketopceo/orchestral/issues/201)).
+- The model-study issue form (#206) and opt-in full hosted sync after
+  terminal runs (#207). Sync remains best-effort; failures stay dirty.
 
 ## Next (priority order)
 
-1. **Jev A/B lane** — the headline experiment: same spec, same seed, two arms
-   (baseline orchestrator vs Jev in the decision loop), 5–10 runs per arm per
-   spec, scored by spec self-check. Question: does Jev lift quality 20% or 5%,
-   and what does it do to quality-per-dollar? Expect Jev to help routing but
-   not rescue weak workers — a negative result here is still publishable.
-   Repetition count is dynamic on measured per-cell cost — see
-   `docs/plans/2026-09-30-001-feat-ab-experiment-coverage-plan.md`.
-   Driver shipped: `harness.py experiment` (batched paired arms, live-spend +
-   error + diff-CI gates), `coverage` (done/pending/aborted/posted ledger),
-   `publish-mark`, the observatory Experiment section, and
-   `docs/runbooks/tonight-ab.md`. What remains is executing the run.
-2. **v3 task curation + calibration** — real-repo tasks across
-   bugfix/feature-gap, calibrated difficulty split. Nine tasks are in:
-   four feature-gap and five bugfix pinned at parents of real boltons fix
-   commits (`docs/v3-curation.md` has provenance + the deferred
-   revert/refactor note). Remaining: calibration runs on reference
-   pairings, band reassignment from evidence, 1–3 more tasks.
-3. Write up the baseline findings (100+ commits of harness, zero published
-   conclusions — the writeup is the product).
-4. Publish the harness + findings as the artifact.
-   - Hosted observatory — **live** at `obs.shippedit.dev`: Access-gated
-     Worker mirroring R2 snapshots rendered locally by `harness.py sync`,
-     D1 reconciliation ledger, AI Gateway inference telemetry. First
-     backfill verified at parity (163 runs). Runbook:
-     `docs/hosted-observatory.md`; plan:
-     `docs/plans/2026-10-02-001-feat-cloudflare-hosted-observatory-plan.md`.
-5. **Gemini 4 Argon eval slot** (watchlist, logged 2026-09-30) — announced
-   today, gated to Fairwind trusted testers; not on OpenRouter yet.
-   Approved spend when it lists — prefer `:batch` (~50% off) if offered;
-   list price $2/$10 per Mtok. Entry parked as `~google/gemini-4-argon` in
-   `models/default.yaml`; `harness.py models sync` + the Models catalog
-   will show it the moment the provider lists it. Candidate run: Argon as
-   orchestrator (full model, not a Flash tier) × best-known worker or
-   `openai/gpt-5.6-luna`, against the v3 real-repo family — measure where
-   a frontier orchestrator lands on the pairing board.
+1. **Make comparisons reproducible:** pin and record serving providers
+   ([#179](https://github.com/duketopceo/orchestral/issues/179)). Label
+   earlier unpinned comparisons accordingly rather than attributing every
+   difference to the model. Assess the draft judge-resampling plan to
+   measure disagreement; repeated verdicts are not proof of truth.
+2. **Run focused, capped model studies:** verify current routes and prices,
+   then smoke Particle-1 ([#202](https://github.com/duketopceo/orchestral/issues/202))
+   and Liquid decision models ([#199](https://github.com/duketopceo/orchestral/issues/199)).
+   Scope the small Liquid text worker to suitable tasks
+   ([#203](https://github.com/duketopceo/orchestral/issues/203)); verify
+   Qwen routes ([#205](https://github.com/duketopceo/orchestral/issues/205)).
+   Carbon remains gated on verified access and model ID
+   ([#204](https://github.com/duketopceo/orchestral/issues/204)).
+3. **Publish evidence:** write up completed studies with failure, provider,
+   and uncertainty caveats; publish scrubbed examples for v1.0
+   ([#5](https://github.com/duketopceo/orchestral/issues/5)).
+   The hosted observatory is Access-gated and is not itself a public example.
+4. **Operate the hosted mirror:** install the merged harness on publishing
+   runners and configure opt-in sync as described in
+   `docs/hosted-observatory.md`. Investigate missing run directories before
+   attempting artifact recovery. The paid GitHub eval workflow does not
+   publish to the mirror.
+5. **Reconcile older experiments and task calibration:** check the current
+   Jev A/B ledger before resuming; calibrate v3 task difficulty and repair
+   missing fixtures as needed. Run paid evaluations only with a defined cap.
 
-## Cut
+## Later
 
-Anything that is not the A/B experiment or the writeup. The harness is
-feature-complete for the question it was built to answer.
+Keep the observatory a thin mirror over the harness. The Score launch video,
+optional code reduction, and RL/eval research
+([#196](https://github.com/duketopceo/orchestral/issues/196)) are not
+prerequisites for publishing benchmark evidence.

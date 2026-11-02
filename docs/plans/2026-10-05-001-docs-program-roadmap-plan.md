@@ -55,25 +55,78 @@ the program state and every unit's child-plan source of truth.
 
 ### Now
 
+Current priorities are provider-stable comparisons (U10), focused model
+studies (U11), judge uncertainty (U13), and scrubbed publication (U4).
+Older units remain below for continuity; their historical ordering does not
+override `ROADMAP.md`.
+
+#### U10. Provider-stable comparisons
+
+- **Difficulty:** medium - route configuration and provenance must work
+  without breaking other OpenAI-compatible providers.
+- **Feasibility:** OpenRouter routing and response metadata must be verified
+  against the active API before implementation.
+- **Simpler alternative:** Record unresolved provider provenance and label
+  unpinned comparisons; do not claim that this makes them reproducible.
+- **Status:** pending - [#179](https://github.com/duketopceo/orchestral/issues/179).
+- **Child plans:** none.
+- **Remaining work:** support optional pinned routes, record the serving
+  provider when reported, and qualify earlier unpinned results.
+
+#### U11. Focused model studies
+
+- **Difficulty:** medium - candidate routes, task fit, costs, and failure
+  classifications need verification before expanding a matrix.
+- **Feasibility:** depends on live provider access, suitable model serving
+  paths, sandbox fixtures, and an explicit spend cap.
+- **Simpler alternative:** one smoke cell per viable candidate before a
+  full comparison; stop on provider or runtime failures.
+- **Status:** pending - Particle-1 [#202](https://github.com/duketopceo/orchestral/issues/202),
+  Liquid decision models [#199](https://github.com/duketopceo/orchestral/issues/199),
+  Liquid text worker [#203](https://github.com/duketopceo/orchestral/issues/203),
+  Qwen route verification [#205](https://github.com/duketopceo/orchestral/issues/205),
+  and Carbon access [#204](https://github.com/duketopceo/orchestral/issues/204).
+- **Child plans:** `docs/plans/2026-10-17-001-feat-wide-tasks-benchmark-plan.md`
+  for the wide-task family; individual study issues define their own controls.
+- **Remaining work:** verify routes and prices, use task-appropriate baselines,
+  hold comparison controls fixed, and report uncertainty and cost per pass.
+
+#### U13. Judge resampling and uncertainty
+
+- **Difficulty:** medium - independent samples, cache behavior, aggregation,
+  and per-sample cost need a consistent contract.
+- **Feasibility:** draft plan exists; the design and current implementation
+  need review before work begins.
+- **Simpler alternative:** report existing judge disagreements and uncertainty
+  without claiming repeated verdicts establish truth.
+- **Status:** pending - the plan was added in #189; no `--judge-samples`
+  implementation was found in the harness at this checkpoint.
+- **Child plans:** `docs/plans/2026-10-12-001-feat-judge-resampling-plan.md`.
+- **Remaining work:** validate the draft's sampling and aggregation rules,
+  cache separation, and cost controls before implementation.
+
 #### U1. Jev A/B experiment + writeup
 
 - **Difficulty:** medium - the driver exists; what is left is running paired arms to budget and reading CIs honestly.
-- **Feasibility:** OpenRouter spend (~$3.28 of $12 used), `ORCHESTRAL_CODE_RUNTIME` cube-env availability for v3 code cells, Jev endpoint health; CIs may stay inconclusive at this n.
+- **Feasibility:** Current spend and coverage need rechecking; v3 code cells
+  require the isolated runtime and fixtures, and CIs may stay inconclusive.
 - **Simpler alternative:** Report only the non-code cells first (they already run); skip the v3 code cells until the runtime is stable. Nothing to delete.
-- **Category:** critical path — the only unit gating maintain mode.
-- **Status:** in progress — relaunched 2026-10-09 with the cube-env
+- **Category:** existing experiment; not a prerequisite for publishing
+  other completed studies.
+- **Status:** pending reconciliation — last recorded as relaunched 2026-10-09 with the cube-env
   contract sourced after the first run stopped with 38 cells pending
   (all v3 code cells had refused on missing `ORCHESTRAL_CODE_RUNTIME`;
   the aborted annotations were cleared so those cells resume). Spend to
-  date ~$3.28 of $12. All completed non-code cells are `inconclusive`
-  (CIs straddle zero) — see the U1 report when the matrix closes.
+  that checkpoint was ~$3.28 of $12; completed non-code cells were
+  `inconclusive`. Current coverage and spend have not been revalidated.
 - **Child plans:**
   `docs/plans/2026-09-30-001-feat-ab-experiment-coverage-plan.md`
 - **Supporting artifacts:** `experiments/jev-ab.yaml`,
   `docs/runbooks/tonight-ab.md`, `harness.py coverage|report|publish-mark`.
-- **Remaining work:** run to budget/coverage completion, then the
-  baseline-vs-Jev writeup (pass rates, diff CIs, quality-per-dollar,
-  caveats — self-preference, seed, multiplicity).
+- **Remaining work:** inspect the current ledger before deciding whether to
+  resume within a fresh approved cap; report pass rates, diff CIs,
+  quality-per-dollar, and caveats without treating an inconclusive result
+  as a win.
 
 #### U2. The Score redesign — residual units
 
@@ -91,19 +144,19 @@ the program state and every unit's child-plan source of truth.
 
 #### U3. Post-merge consolidation — residual 4f tier
 
-- **Difficulty:** hard - each remaining item (inspect-log export, Pareto/composite index, METR fit, perturbation sweeps) is a new analysis surface.
+- **Difficulty:** hard - remaining analysis surfaces need credible evidence.
 - **Feasibility:** Needs enough real runs to be meaningful; METR horizon fit and perturbation sweeps add model spend; inspect-log schema is upstream-owned.
 - **Simpler alternative:** Defer all of it until the writeup exists. an Inspect export already exists as `export --format inspect`; do not build a second path.
-- **Status:** in progress — Units 1–3 and 4a–4e merged (PRs #159–#164:
-  dead weight, pairwise judging + Bradley–Terry, hierarchical bootstrap
-  CIs, macro pass rate, contamination canaries, CI eval gate).
+- **Status:** in progress — Units 1–3 and 4a–4e merged (#159–#164).
+  Inspect export (#166), catalog provider telemetry (#167), Pareto marker
+  (#168), and METR fit (#169) have also shipped.
 - **Child plans:**
   `docs/plans/2026-10-04-001-feat-post-merge-consolidation-plan.md`
 - **Category:** declared post-writeup — maintain-mode improvements, not
   build blockers.
-- **Remaining work (post-writeup tier):** inspect-log interop export,
-  provider telemetry panel, Pareto frontier + composite index, METR
-  horizon fit, prompt-perturbation sweeps.
+- **Remaining work (post-writeup tier):** assess the remaining composite
+  index and prompt-perturbation work against the child plan; do not rebuild
+  the shipped surfaces.
 
 ---
 
@@ -115,10 +168,8 @@ the program state and every unit's child-plan source of truth.
 - **Category:** optional hygiene — negative-diff debt paydown that makes
   maintain mode cheaper; agent-dispatchable, no model spend. Not a writeup
   blocker.
-- **Status:** in progress — census (#173) and entry-point registry (#177)
-  shipped; candidate-report unit planned
-  (`docs/plans/2026-10-08-001-feat-dead-code-report-plan.md`), execution
-  pending.
+- **Status:** in progress — census (#173), entry-point registry (#177),
+  and candidate report (#185) shipped; further removal remains optional.
 - **Child plans:**
   `docs/plans/2026-10-06-001-refactor-safe-code-reduction-plan.md`,
   `docs/plans/2026-10-08-001-feat-dead-code-report-plan.md`.
@@ -131,16 +182,18 @@ the program state and every unit's child-plan source of truth.
 #### U4. Baseline findings writeup + published artifact
 
 - **Difficulty:** medium - the writing is the work; the hosted surface is live.
-- **Feasibility:** Gated on U1 evidence; Cloudflare Access config at `obs.shippedit.dev`; scrub must keep the answer key out.
+- **Feasibility:** Completed studies can be written up independently of U1.
+  Cloudflare Access gates `obs.shippedit.dev`; scrub must keep answer keys out.
 - **Simpler alternative:** Publish one README-linked report page from `reports/` rather than a bespoke site; reuse the static snapshot (`scripts/build-static-snapshot.py`).
 - **Category:** critical path — the product.
-- **Status:** pending — gated on U1 completing; the hosted observatory
-  surface is already live.
+- **Status:** pending — completed study records #200 and #201 can seed a
+  writeup. Public scrubbed examples remain open in #5; the hosted
+  observatory is live but Access-gated.
 - **Child plans:** none dedicated yet; draws on the U1 report output and
   the hosted observatory (`docs/plans/2026-10-02-001-feat-cloudflare-hosted-observatory-plan.md`,
   live at `obs.shippedit.dev`, runbook `docs/hosted-observatory.md`).
-- **Scope:** the writeup is the product — 100+ commits of harness with
-  zero published conclusions. Publish scrubbed evidence only.
+- **Scope:** publish scrubbed evidence with provider, uncertainty, and
+  infrastructure-failure caveats.
 
 #### U5. v3 task curation + calibration
 
@@ -160,18 +213,31 @@ the program state and every unit's child-plan source of truth.
 
 #### U6. Gemini 4 Argon eval slot
 
-- **Difficulty:** easy - a config entry is already parked.
-- **Feasibility:** Provider listing (Fairwind trusted testers only), price $2/$10 per Mtok — **introductory rate**; Google lists $4/$20 as the post-intro price, so estimates here should be treated as a floor.
-- **Simpler alternative:** Nothing to build: run `harness.py models sync` when it lists. Remove the watchlist prose from README-level docs once resolved.
-- **Category:** external-gated — flips on automatically when the provider
-  lists it.
-- **Status:** pending — provider-gated; announced Fairwind trusted-tester
-  access, not on OpenRouter yet. Entry parked as `~google/gemini-4-argon`
-  in `models/default.yaml`; `harness.py models sync` picks it up when
-  listed.
-- **Child plans:** none.
-- **Candidate run:** Argon as orchestrator × best-known worker on the v3
-  family; prefer `:batch` pricing if offered.
+- **Difficulty:** easy - initial access and evaluation are complete.
+- **Feasibility:** verify current route and price before any new run.
+- **Simpler alternative:** reuse the recorded studies rather than rerun
+  without a new question.
+- **Category:** completed initial evaluation; future studies belong in U11.
+- **Status:** done - Argon is in `models/default.yaml`; wide comparison
+  [#200](https://github.com/duketopceo/orchestral/issues/200) and bakeoff
+  [#201](https://github.com/duketopceo/orchestral/issues/201) are closed.
+- **Child plans:** `docs/plans/2026-10-17-001-feat-wide-tasks-benchmark-plan.md`.
+- **Follow-up:** the original v3 comparison is a separate question; check
+  existing coverage before planning any additional paid cells.
+
+#### U12. Hosted publication operations
+
+- **Difficulty:** easy - the full sync path and completion hook shipped.
+- **Feasibility:** each publishing runner needs the updated harness, opt-in
+  setting, credential, and access to the mirror.
+- **Simpler alternative:** run the existing manual `sync --push` path.
+- **Status:** in progress - #207 merged; an automatic-sync smoke and
+  count/cost parity were verified. Four missing-directory entries remained
+  dirty at that checkpoint.
+- **Child plans:** `docs/plans/2026-10-02-001-feat-cloudflare-hosted-observatory-plan.md`.
+- **Remaining work:** configure intended runners, reconcile missing run
+  directories if their artifacts are needed, and decide separately whether
+  paid CI evals should publish. Sync remains best-effort and synchronous.
 
 ---
 
@@ -225,16 +291,20 @@ the program state and every unit's child-plan source of truth.
 | `docs/plans/2026-09-27-001-fix-benchmark-spec-integrity-plan.md` | — | shipped (spec anchors, reference-verified grading) |
 | `docs/plans/2026-09-29-001-fix-e2b-sdk-v1-compat-plan.md` | — | shipped (SDK v1/v2 compat) |
 | `docs/plans/2026-09-29-002-feat-cubesandbox-durable-integration-plan.md` | — | shipped (durable CubeSandbox runtime) |
-| `docs/plans/2026-09-30-001-feat-ab-experiment-coverage-plan.md` | U1 | shipped driver; experiment in progress |
+| `docs/plans/2026-09-30-001-feat-ab-experiment-coverage-plan.md` | U1 | shipped driver; current experiment status needs reconciliation |
 | `docs/plans/2026-09-30-002-feat-v3-realrepo-task-family-plan.md` | U5 | partially shipped (9 tasks; calibration pending) |
-| `docs/plans/2026-10-02-001-feat-cloudflare-hosted-observatory-plan.md` | U4 | shipped (live at obs.shippedit.dev) |
+| `docs/plans/2026-10-02-001-feat-cloudflare-hosted-observatory-plan.md` | U4, U12 | shipped; runner opt-in and missing artifacts remain |
 | `docs/plans/2026-10-02-2322-feat-the-score-redesign-plan.md` | U2, U7 | partially shipped (22/23 units; U22 blocked) |
 | `docs/plans/2026-10-03-001-feat-perplexity-eval-patterns-plan.md` | — | shipped (runner hardening, judge contract, Harbor export) |
-| `docs/plans/2026-10-04-001-feat-post-merge-consolidation-plan.md` | U3 | partially shipped (Units 1–3, 4a–4e merged; 4f pending) |
-| `docs/plans/2026-10-06-001-refactor-safe-code-reduction-plan.md` | U9 | in progress (U1+U2 shipped #173/#177; U3 planned) |
-| `docs/plans/2026-10-08-001-feat-dead-code-report-plan.md` | U9 | pending (candidate report) |
+| `docs/plans/2026-10-04-001-feat-post-merge-consolidation-plan.md` | U3 | partially shipped; assess remaining 4f work |
+| `docs/plans/2026-10-06-001-refactor-safe-code-reduction-plan.md` | U9 | in progress (census, registry, report shipped) |
+| `docs/plans/2026-10-07-001-feat-multi-model-eval-tests-plan.md` | — | shipped (#176) |
+| `docs/plans/2026-10-08-001-feat-dead-code-report-plan.md` | U9 | shipped (#185) |
 | `docs/plans/2026-10-08-002-feat-observatory-honest-outcomes-plan.md` | — | implemented (#183) — outcome taxonomy + evidence denominators |
 | `docs/plans/2026-10-08-003-feat-agent-quickstart-plan.md` | — | implemented (#182) — agent onboarding doc |
+| `docs/plans/2026-10-12-001-feat-judge-resampling-plan.md` | U13 | draft; implementation pending review |
+| `docs/plans/2026-10-13-001-fix-v3-validate-contract-plan.md` | — | shipped (#191) |
+| `docs/plans/2026-10-17-001-feat-wide-tasks-benchmark-plan.md` | U6, U11 | initial wide studies completed; future studies tracked separately |
 
 ---
 

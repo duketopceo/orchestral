@@ -1,5 +1,10 @@
 # Provisioned Cloudflare resources (2026-10-03)
 
+> This is the **provisioning record** — what was created, and what was verified
+> at creation time. For the current inventory, deploy/sync/verify commands and
+> today's verified state, see [docs/infra.md](../../docs/infra.md). Keep the
+> resource IDs here and there in step.
+
 Account `1661907b2d7e4a20800306e6a57844c5`.
 
 | Resource | Name / ID | Notes |

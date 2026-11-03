@@ -299,6 +299,14 @@ Validation checks and the full schema are documented in
 tasks/           task specs (YAML)
 models/          orchestrator and worker model configs
 prompts/         orchestrator prompt variants
+packs/           shared criteria/extra-question packs referenced by task specs
+experiments/     A/B matrix files for `harness.py experiment`
+fixtures/        pinned-repo registry + fetched fixtures for v3 tasks
+bench/           lane packs + recorded baselines (wisp lane branch only)
+ui/              the observatory SPA (served locally by `serve`, hosted by the Worker)
+infra/           Cloudflare Worker, wrangler configs, provisioning record
+docs/            runbooks, specs, plans (index: docs/README.md)
+scripts/         dev tooling: venv bootstrap, hosted asset build, e2e, CI helpers
 runs/            output artifacts (ignored by git)
 runs-pub/        scrubbed, publishable output of `scrub` (ignored by git)
 reports/         generated reports/dashboards (ignored by git)
@@ -372,15 +380,41 @@ workflow rather than copying this repo's workflow:
     OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
 ```
 
-This repo's own `.github/workflows/orchestral.yml` dogfoods the harness on
-internal PRs (skipped on forks, which can't see the secret). `.github/workflows/ci.yml`
-runs tests, lint, and types on every PR with no secrets required.
+This repo's own CI lives in `.github/workflows/`. `ci.yml` runs tests, lint,
+types, the task-spec audit and the spec self-check on every PR with no secrets
+required. The paid eval (`orchestral.yml`) is `workflow_dispatch`-only and
+environment-gated, and deliberately unreachable from a PR, because a
+same-repository PR can write to this repository.
+
+## Hosting and infrastructure
+
+One thing is hosted: the read-only observatory at **https://obs.shippedit.dev**,
+a Cloudflare Worker over R2 snapshots and a D1 ledger, gated by Cloudflare
+Access. There is no deploy-on-push anywhere; the Worker ships by hand with
+`wrangler`. Everything else (the harness, the eval runs, the reports) lives on
+the machine that ran them, and `sync --push` publishes only scrubbed payloads.
+
+- [docs/infra.md](docs/infra.md): the inventory - what runs where, resource IDs,
+  which omaseal entry holds each credential, and the deploy/sync/verify
+  commands.
+- [docs/hosted-observatory.md](docs/hosted-observatory.md): the runbook -
+  daily operation, ingest contract, what the hosted build cannot do.
+- [infra/cloudflare/resources.md](infra/cloudflare/resources.md): the
+  provisioning record from the original build-out.
 
 ## Status and roadmap
 
 The harness is feature-complete for its question; the open work is running the
 Jev A/B experiment and writing up the result. Units, status and difficulty
 notes live in [ROADMAP.md](ROADMAP.md) and the program plan it links.
+
+Open threads that are tracked as GitHub issues rather than roadmap units: model
+evaluation asks (#202 to #205), the LFM3 decider bench (#199), the RL/eval
+research track (#196), provider-pinning of comparisons (#179), and v1.0
+open-source publication (#5). Work that is deliberately not destined for `main`
+lives on its own branch. The wisp model-matrix lane (`feat/wisp-model-matrix`)
+is one: it is measurement scaffolding for a different product and stays off the
+harness's publication path.
 
 ## Contributing
 

@@ -64,6 +64,11 @@ scripts/cube-env.sh
 # Provider model-catalog snapshot (harness.py models sync) — fetched data,
 # not config
 models/provider-catalog.json
+
+# Wisp bench lane output — one file per model × replicate run. The versioned
+# half (`bench/packs/`, `bench/baselines/`) is committed deliberately on the
+# wisp lane branch; raw results are run output and never land here.
+/bench/results/
 .wrangler/
 
 # hosted Worker: staged ui/ (scripts/build-hosted-assets.py)

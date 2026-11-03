@@ -65,15 +65,18 @@ export CLOUDFLARE_API_TOKEN=$(omaseal get Cloudflare_duketopceo Personal)
 wrangler deploy --dry-run --outdir /tmp/obs-dry
 wrangler deploy
 
-# D1 schema — once, or after schema.sql changes
+# D1 schema — once, or after schema.sql changes. Run it from the observatory
+# directory: schema.sql is resolved relative to the current directory.
 wrangler d1 execute orchestral-runs --file schema.sql --remote
 
-# data: snapshots + scrubbed run payloads
+# data: snapshots + scrubbed run payloads. harness.py lives at the repo root,
+# so come back before syncing or every command below is a missing-file error.
+cd ../../..
 export ORCHESTRAL_OBS_TOKEN=$(omaseal get cloudflare obs-ingest)
-python3 harness.py sync            # dry run: what is dirty
-python3 harness.py sync --push     # push the dirty set
-python3 harness.py sync --all      # full backfill / repair
-python3 harness.py sync --verify   # local vs hosted run count + total cost
+python3 harness.py sync                 # dry run: what is dirty
+python3 harness.py sync --push          # push the dirty set
+python3 harness.py sync --push --all    # full backfill / repair (--all alone is still a dry run)
+python3 harness.py sync --verify        # local vs hosted run count + total cost
 ```
 
 Publishing after each run is opt-in: `ORCH_CF_SYNC=1` (plus the token) makes a

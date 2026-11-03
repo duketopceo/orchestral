@@ -137,7 +137,8 @@ reports the figure and fails the job. That is an alarm, not a limit. Nothing in
 this workflow prevents a run from overspending, and nothing in the old workflow
 did either: `MAX_COST_USD` was a per-job env var under an unbounded trigger,
 which is why 161 runs were possible. Repository-level spend is
-[DUK-212](/DUK/issues/DUK-212)'s question to answer.
+DUK-212's question to answer. (DUK-212 is a board card id, not a GitHub issue —
+board ids in this repo's docs and comments have no issue-number mapping.)
 
 The guard was, until this change, an observability defect on top of that: both
 `echo` lines escaped their variables, so a passing run logged the literal text

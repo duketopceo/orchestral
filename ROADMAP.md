@@ -9,9 +9,19 @@ unit ledger.
 OpenRouter — does a cheap planner plus cheap workers produce frontier-quality
 output at a fraction of the cost?
 
-Last updated: 2026-10-13 — shipped list refreshed; every unit in the
-program index now carries **Difficulty / Feasibility / Simpler
-alternative** notes.
+Last updated: 2026-11-03 — open work redirected to the GitHub issue tracker
+(model asks, provider pinning, publication), docs indexed, and the hosted
+infrastructure recorded in [`docs/infra.md`](docs/infra.md).
+
+Tracked issues (the things not framed as roadmap units): [#202](https://github.com/duketopceo/orchestral/issues/202)–[#205](https://github.com/duketopceo/orchestral/issues/205)
+model evaluation asks, [#199](https://github.com/duketopceo/orchestral/issues/199) LFM3 decider bench,
+[#196](https://github.com/duketopceo/orchestral/issues/196) RL/eval research track,
+[#179](https://github.com/duketopceo/orchestral/issues/179) provider-pinned comparisons (bug),
+[#5](https://github.com/duketopceo/orchestral/issues/5) v1.0 open-source publication.
+
+Work that is measurement scaffolding for another product stays off `main` on
+its own branch: the wisp model-matrix lane (`feat/wisp-model-matrix`) and the
+agent-CLI executor-model change it depends on (`feat/agent-cli-executor-model`).
 
 ## Shipped
 

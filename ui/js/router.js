@@ -18,6 +18,7 @@ import { viewCards } from "./views/cards.js";
 import { viewCompare } from "./views/compare.js";
 import { viewLeaderboard } from "./views/leaderboard.js";
 import { viewModels } from "./views/models.js";
+import { viewPricing } from "./views/pricing.js";
 import { viewNew } from "./views/new.js";
 import { viewNow } from "./views/now.js";
 import { viewRun } from "./views/run.js";
@@ -51,6 +52,7 @@ function dispatch(path, params) {
   if (path === "/cards") return viewCards(params);
   if (path === "/card") return viewCard(params);
   if (path === "/models") return viewModels(params);
+  if (path === "/pricing") return viewPricing(params);
   if (path === "/new") return viewNew();
   if (path === "/about") return viewAbout(params);
   $view.innerHTML = stateHtml("nomatch", {

@@ -20,6 +20,11 @@ class TokenUsage:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     cached_tokens: int = 0
+    # Decomposed cache components (OpenRouter/Anthropic usage shape):
+    # cache_read_input_tokens are billed at the cache-read rate;
+    # cache_creation_input_tokens are billed at the (full) input rate.
+    cache_read_input_tokens: int = 0
+    cache_creation_input_tokens: int = 0
     reasoning_tokens: int = 0
     total_tokens: int = 0
 
@@ -28,6 +33,8 @@ class TokenUsage:
             "prompt_tokens": self.prompt_tokens,
             "completion_tokens": self.completion_tokens,
             "cached_tokens": self.cached_tokens,
+            "cache_read_input_tokens": self.cache_read_input_tokens,
+            "cache_creation_input_tokens": self.cache_creation_input_tokens,
             "reasoning_tokens": self.reasoning_tokens,
             "total_tokens": self.total_tokens,
         }
@@ -41,6 +48,9 @@ class CostRecord:
     output_tokens: int
     cost_usd: float
     usage: dict[str, int] | None = None
+    # Decomposed cache token counts (0 when a call didn't report them).
+    cache_read_input_tokens: int = 0
+    cache_creation_input_tokens: int = 0
     # where cost_usd came from: "api_reported" (provider usage.cost),
     # "configured" (token pricing), "configured_estimate" (rate-card
     # fallback), or "none" (dry-run fake)
@@ -63,6 +73,8 @@ class CostLedger:
                 output_tokens=record.get("output_tokens", 0),
                 cost_usd=record.get("cost_usd", 0.0),
                 usage=record.get("usage"),
+                cache_read_input_tokens=record.get("cache_read_input_tokens", 0),
+                cache_creation_input_tokens=record.get("cache_creation_input_tokens", 0),
                 pricing_source=record.get("pricing_source"),
                 api_cost_usd=record.get("api_cost_usd"),
             )
@@ -81,6 +93,12 @@ class CostLedger:
     def total_output_tokens(self) -> int:
         return sum(r.output_tokens for r in self.records)
 
+    def total_cache_read_tokens(self) -> int:
+        return sum(r.cache_read_input_tokens for r in self.records)
+
+    def total_cache_creation_tokens(self) -> int:
+        return sum(r.cache_creation_input_tokens for r in self.records)
+
     def to_breakdown(self) -> list[dict[str, Any]]:
         return [
             {
@@ -88,6 +106,8 @@ class CostLedger:
                 "model": r.model,
                 "input_tokens": r.input_tokens,
                 "output_tokens": r.output_tokens,
+                "cache_read_input_tokens": r.cache_read_input_tokens,
+                "cache_creation_input_tokens": r.cache_creation_input_tokens,
                 "cost_usd": r.cost_usd,
                 "pricing_source": r.pricing_source,
                 "api_cost_usd": r.api_cost_usd,
@@ -103,6 +123,8 @@ class CostLedger:
             "total_cost_usd": self.total_cost_usd(),
             "total_input_tokens": self.total_input_tokens(),
             "total_output_tokens": self.total_output_tokens(),
+            "total_cache_read_input_tokens": self.total_cache_read_tokens(),
+            "total_cache_creation_input_tokens": self.total_cache_creation_tokens(),
             "breakdown": self.to_breakdown(),
         }
 
@@ -112,10 +134,22 @@ def _token_component(tokens: int, price_per_token: float) -> Decimal:
 
 
 def token_usage_from_raw(usage: dict[str, Any]) -> TokenUsage:
+    """Normalize a provider usage body into TokenUsage.
+
+    OpenRouter and Anthropic report `cache_read_input_tokens` and
+    `cache_creation_input_tokens` (cache-read billed cheap, cache-creation
+    billed at full input). Older payloads used a flat `cached_tokens` — treat
+    that as read tokens so its cost gets decomposed too.
+    """
+    cached = usage.get("cache_read_input_tokens")
+    if cached is None:
+        cached = usage.get("cached_tokens", 0)
     return TokenUsage(
         prompt_tokens=usage.get("prompt_tokens", 0),
         completion_tokens=usage.get("completion_tokens", 0),
         cached_tokens=usage.get("cached_tokens", 0),
+        cache_read_input_tokens=int(cached or 0),
+        cache_creation_input_tokens=int(usage.get("cache_creation_input_tokens", 0) or 0),
         reasoning_tokens=usage.get("reasoning_tokens", 0),
         total_tokens=usage.get("total_tokens", 0),
     )
@@ -134,10 +168,24 @@ def pricing_source_for(api_cost_usd: Any) -> str:
 def compute_cost(usage: TokenUsage, model_cfg: ModelConfig) -> tuple[float, TokenUsage]:
     """Return (cost_usd, usage) — cost from configured per-token pricing.
 
-    The token usage object is returned unchanged; normalization from raw API
-    payloads happens upstream via `token_usage_from_raw`.
+    Cached tokens are decomposed only when the model declares a
+    `cache_read_price_per_mtok`: cache-read tokens bill at that rate,
+    cache-creation tokens bill at the full input rate, and the remainder of
+    `prompt_tokens` bills at the input rate. When the model has no cache-read
+    rate configured (0.0), every prompt token bills at the input rate exactly
+    as before, so existing configs are unchanged.
     """
-    input_cost = _token_component(usage.prompt_tokens, model_cfg.input_price)
+    read_price = model_cfg.cache_read_price
+    if model_cfg.cache_read_price_per_mtok > 0:
+        read = usage.cache_read_input_tokens
+        created = usage.cache_creation_input_tokens
+        fresh = max(0, usage.prompt_tokens - read - created)
+        input_cost = (
+            _token_component(fresh + created, model_cfg.input_price)
+            + _token_component(read, read_price)
+        )
+    else:
+        input_cost = _token_component(usage.prompt_tokens, model_cfg.input_price)
     output_cost = _token_component(usage.completion_tokens, model_cfg.output_price)
     cost = input_cost + output_cost
     return usd(cost), usage

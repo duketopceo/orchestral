@@ -75,13 +75,13 @@ class TestTaxonomy(unittest.TestCase):
         self.assertGreaterEqual(len(set(CATEGORIES)), 10)
 
     def test_list_plan_fails_as_malformed_output(self):
-        """Orchestrator returning a bare JSON list must not crash the runner —
-        a non-dict plan is malformed model output, not an 'unknown' TypeError."""
+        """Orchestrator returning a bare JSON scalar must not crash the runner —
+        a non-plan is malformed model output, not an 'unknown' TypeError."""
 
         class _ListPlanClient:
             def chat(self, model, messages, max_tokens=4096, temperature=0.4):
                 return {
-                    "content": '[{"method": "GET", "path": "/x"}]',
+                    "content": "[1, 2]",
                     "usage": {"prompt_tokens": 10, "completion_tokens": 5},
                     "latency_ms": 1, "id": "fake",
                 }

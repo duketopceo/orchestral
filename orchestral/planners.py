@@ -450,6 +450,29 @@ def _fake_output(input_data: dict[str, Any], phase: str) -> Any:
 # ---------------------------------------------------------------------------
 
 
+def normalize_plan(plan: Any) -> dict[str, Any]:
+    """Turn a parsed orchestrator response into a plan object, or raise PlanError.
+
+    A top-level JSON list is legitimate: tasks like `api-order-lookup` say
+    "Return ONLY the JSON list", and the orchestrator obeys. A list of step
+    objects (or strings) is a plan and becomes `{"subtasks": [...]}`. A list of
+    {method, path} calls is the orchestrator answering the task itself, so it
+    is carried as the self-executed `content` payload. Anything else (scalar,
+    empty or mixed list) is malformed output.
+    """
+    if isinstance(plan, dict):
+        return plan
+    kind = type(plan).__name__
+    if isinstance(plan, list) and plan:
+        if all(isinstance(i, dict) for i in plan):
+            if all("method" in i and "path" in i for i in plan):
+                return {"content": json.dumps(plan)}
+            return {"subtasks": plan}
+        if all(isinstance(i, str) and i.strip() for i in plan):
+            return {"subtasks": [{"id": f"s{n}", "description": i} for n, i in enumerate(plan)]}
+    raise PlanError(f"orchestrator plan must be a JSON object or a list of steps, got {kind}")
+
+
 def plan_raw(
     *,
     logger: EventLogger,
@@ -474,10 +497,7 @@ def plan_raw(
         system_override=load_prompt_variant(prompt_variant) if prompt_variant else None,
     )
     plan = _parse_plan(logger=logger, content=content, step=step)
-    if not isinstance(plan, dict):
-        # e.g. the model answered the task directly with a JSON list —
-        # malformed orchestrator output, not an infra error
-        raise PlanError(f"orchestrator plan must be a JSON object, got {type(plan).__name__}")
+    plan = normalize_plan(plan)
     plan["task_id"] = task.id
     plan["orchestrator"] = orchestrator.slug
     plan["planner"] = "raw"
@@ -1727,8 +1747,7 @@ def plan_ce(
         system_override=load_prompt_variant(prompt_variant) if prompt_variant else None,
     )
     plan = _parse_plan(logger=logger, content=content, step=step)
-    if not isinstance(plan, dict):
-        raise PlanError(f"orchestrator plan must be a JSON object, got {type(plan).__name__}")
+    plan = normalize_plan(plan)
     plan["task_id"] = task.id
     plan["orchestrator"] = orchestrator.slug
     plan["planner"] = "ce-plan"

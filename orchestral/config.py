@@ -14,6 +14,9 @@ class ModelConfig:
     role: str  # orchestrator | worker | reference
     input_price_per_mtok: float
     output_price_per_mtok: float
+    # Cache-read price per Mtok; 0.0 means "not configured" — costs keep the
+    # legacy behavior of billing everything (incl cached tokens) at input price.
+    cache_read_price_per_mtok: float = 0.0
     context: int = 128_000
     max_tokens: int = 8_192
     retry_limit: int = 2
@@ -36,6 +39,15 @@ class ModelConfig:
     def output_price(self) -> float:
         return self.output_price_per_mtok / 1_000_000
 
+    @property
+    def cache_read_price(self) -> float:
+        """Price per cache-read token. Falls back to the input price so a
+        model without a configured cache-read rate still prices cached tokens
+        at its input rate (the legacy behavior)."""
+        if self.cache_read_price_per_mtok > 0:
+            return self.cache_read_price_per_mtok / 1_000_000
+        return self.input_price
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "slug": self.slug,
@@ -43,6 +55,7 @@ class ModelConfig:
             "role": self.role,
             "input_price_per_mtok": self.input_price_per_mtok,
             "output_price_per_mtok": self.output_price_per_mtok,
+            "cache_read_price_per_mtok": self.cache_read_price_per_mtok,
             "context": self.context,
             "max_tokens": self.max_tokens,
             "retry_limit": self.retry_limit,
